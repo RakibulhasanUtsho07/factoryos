@@ -55,19 +55,28 @@ describe('SaasTenantPropagationService external saga', () => {
     const adapter = {
       storeKind: kind,
       adapterKey: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      adapterVersion: '1.0.0',
       isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
+      preflight: jest.fn<(...args: unknown[]) => Promise<{
+        outcome: 'READY' | 'BLOCKED' | 'RETAINED'; resourceClass: string; adapterVersion: string;
+        maxPageSize: number; maxBatchSize: number; reason?: string;
+      }>>(),
       prepare: jest.fn<(...args: unknown[]) => Promise<SaasExternalPropagationPlan>>(),
-      erase: jest.fn<(...args: unknown[]) => Promise<{ deletedCopies: string; manifestDigest: string; providerReceiptReference: string }>>(),
+      execute: jest.fn<(...args: unknown[]) => Promise<{ deletedCopies: string; manifestDigest: string; providerReceiptReference: string }>>(),
       verify: jest.fn<(...args: unknown[]) => Promise<{ verifiedManifestDigest: string; residualCopies: string; residualReferences: string[]; verificationReference: string }>>(),
       recover: jest.fn<(...args: unknown[]) => Promise<void>>(),
     };
     adapter.isConfigured.mockResolvedValue(true);
+    adapter.preflight.mockResolvedValue({
+      outcome: 'READY', resourceClass: kind, adapterVersion: '1.0.0',
+      maxPageSize: 500, maxBatchSize: 100,
+    });
     adapter.prepare.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
       if (activateHoldAfterPrepare) legalHoldActivated = true;
       return { manifestDigest: 'a'.repeat(64), plannedCopies: '2', planReference: 'plan.' + input.target.targetId };
     });
-    adapter.erase.mockImplementation(async (...args: unknown[]) => {
+    adapter.execute.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
       return {
         deletedCopies: input.plan.plannedCopies,
@@ -144,6 +153,9 @@ describe('SaasTenantPropagationService external saga', () => {
         return { rows: [{ source_manifest: { tenantId: tenant, categories: ['BUSINESS_DATA'] },
           source_bundle_digest: sourceDigest, actor_user_id: requester }] };
       }
+      if (sql.includes('FROM saas_tenant_data_retention_policies')) {
+        return { rows: [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }] };
+      }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) {
         return { rows: legalHoldActivated ? [{ categories: ['BUSINESS_DATA'] }] : [] };
@@ -183,7 +195,10 @@ describe('SaasTenantPropagationService external saga', () => {
           attempt_no: p[5], status: p[6], planned_copies: p[7], deleted_copies: p[8],
           residual_copies: p[9], manifest_digest: p[10], verified_manifest_digest: p[11],
           verification_reference: p[12], residual_manifest: p[13], failure_code: p[14],
-          provider_receipt_reference: p[15],
+          provider_receipt_reference: p[15], outcome_code: p[16], manifest_kind: p[17],
+          resource_class: p[18], adapter_version: p[19], max_page_size: p[20], max_batch_size: p[21],
+          policy_versions: typeof p[22] === 'string' ? JSON.parse(p[22]) : p[22],
+          residual_reason: p[23], completed_at: p[24],
         });
         return { rows: [] };
       }
@@ -224,7 +239,7 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(adapterMocks).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.erase).not.toHaveBeenCalled();
+      expect(adapter.execute).not.toHaveBeenCalled();
     }
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
     expect(storedReceipts.every((receipt) => receipt.status === 'FAILED')).toBe(true);
@@ -241,26 +256,35 @@ describe('SaasTenantPropagationService external saga', () => {
     );
   });
 
-  it('fails closed before starting a run when a required provider adapter is not configured', async () => {
+  it('persists durable BLOCKED outcomes and starts no destructive provider calls when a required adapter is unconfigured', async () => {
     const missingAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
     if (!missingAdapter) throw new Error('OBJECT_STORAGE adapter fixture was not created');
     missingAdapter.isConfigured.mockResolvedValue(false);
 
-    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4,
       reason: 'Require every external store adapter before erasure',
       idempotency_key: 'missing-adapter-saga-v1',
-    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
 
-    expect(activeRun).toBeNull();
-    expect(storedReceipts).toHaveLength(0);
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.run.status).toBe('PARTIAL');
+    expect(activeRun).not.toBeNull();
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE')).toMatchObject({
+      status: 'FAILED', outcome_code: 'BLOCKED', manifest_kind: 'SCOPE_INTENT',
+      failure_code: 'ADAPTER_UNCONFIGURED',
+    });
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).not.toHaveBeenCalled();
-      expect(adapter.erase).not.toHaveBeenCalled();
+      expect(adapter.execute).not.toHaveBeenCalled();
       expect(adapter.verify).not.toHaveBeenCalled();
       expect(adapter.recover).not.toHaveBeenCalled();
     }
-    expect(audit.recordWithClient).not.toHaveBeenCalled();
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
+    );
   });
 
   it('keeps the request pending when a provider deletion receipt has a different manifest digest', async () => {
@@ -275,8 +299,11 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(result.wholeTenantErasureVerified).toBe(false);
     expect(result.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
     const mismatchedReceipt = storedReceipts.find((receipt) => receipt.target_id === mismatchedDeletionTarget);
-    expect(mismatchedReceipt).toMatchObject({ status: 'FAILED', failure_code: 'VERIFICATION_MISMATCH' });
-    expect(adapterMocks[0]?.erase).toHaveBeenCalledTimes(1);
+    expect(mismatchedReceipt).toMatchObject({
+      status: 'FAILED', failure_code: 'VERIFICATION_MISMATCH', outcome_code: 'FAILED_RETRYABLE',
+      manifest_kind: 'RESOURCE_IDENTITIES',
+    });
+    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
     expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
@@ -302,7 +329,9 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(first.run.status).toBe('PARTIAL');
     expect(first.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.find((receipt) => receipt.target_id === retryTarget)).toMatchObject({ status: 'RESIDUALS' });
+    expect(storedReceipts.find((receipt) => receipt.target_id === retryTarget)).toMatchObject({
+      status: 'RESIDUALS', outcome_code: 'FAILED_RETRYABLE', manifest_kind: 'RESOURCE_IDENTITIES',
+    });
 
     const second = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
     expect(second.wholeTenantErasureVerified).toBe(true);
@@ -313,10 +342,10 @@ describe('SaasTenantPropagationService external saga', () => {
     const recoveryAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
     expect(recoveryAdapter?.recover).toHaveBeenCalledTimes(1);
     expect(recoveryAdapter?.prepare).toHaveBeenCalledTimes(1);
-    expect(recoveryAdapter?.erase).toHaveBeenCalledTimes(2);
+    expect(recoveryAdapter?.execute).toHaveBeenCalledTimes(2);
     expect(recoveryAdapter?.verify).toHaveBeenCalledTimes(2);
     for (const adapter of adapterMocks.filter((candidate) => candidate.storeKind !== 'OBJECT_STORAGE')) {
-      expect(adapter.erase).toHaveBeenCalledTimes(1);
+      expect(adapter.execute).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -333,10 +362,13 @@ describe('SaasTenantPropagationService external saga', () => {
     });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
     for (const adapter of adapterMocks) {
+      expect(adapter.preflight).toHaveBeenCalledTimes(1);
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.erase).toHaveBeenCalledTimes(1);
+      expect(adapter.execute).toHaveBeenCalledTimes(1);
       expect(adapter.verify).toHaveBeenCalledTimes(1);
     }
+    expect(storedReceipts.every((receipt) => receipt.outcome_code === 'COMPLETED'
+      && receipt.manifest_kind === 'RESOURCE_IDENTITIES' && receipt.adapter_version === '1.0.0')).toBe(true);
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED',
@@ -364,7 +396,7 @@ describe('SaasTenantPropagationService external saga', () => {
     });
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.erase).toHaveBeenCalledTimes(1);
+      expect(adapter.execute).toHaveBeenCalledTimes(1);
       expect(adapter.verify).toHaveBeenCalledTimes(1);
       expect(adapter.recover).not.toHaveBeenCalled();
     }
