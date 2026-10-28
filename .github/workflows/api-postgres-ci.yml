@@ -173,9 +173,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/220_saas_legal_hold_propagation_fence.sql
 
-          echo "Rechecking external erasure and legal-hold race acceptance after migration replay"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-propagation-contract.sql
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
