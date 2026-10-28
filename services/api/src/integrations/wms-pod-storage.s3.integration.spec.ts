@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { UnprocessableEntityException } from '@nestjs/common';
-import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { deleteWmsPodObjectAndVerifyGone, uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 type TestStorageEnv = {
   endpoint: string;
