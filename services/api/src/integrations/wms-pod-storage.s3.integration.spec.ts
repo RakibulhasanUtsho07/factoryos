@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { UnprocessableEntityException } from '@nestjs/common';
-import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { deleteWmsPodObjectAndVerifyGone, uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 type TestStorageEnv = {
   endpoint: string;
@@ -164,5 +164,41 @@ storageDescribe('WMS POD upload against a real S3-compatible test server', () =>
     await expect(verifyWmsPodObjectDigest(
       testConfig(), objectKey, wrongDigest,
     )).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+
+storageDescribe('WMS POD scoped deletion against a real S3-compatible test server', () => {
+  it('verifies object bytes and confirms deletion by independent GET', async () => {
+    const tenantId = 'a1000000-0000-4000-8000-000000000001';
+    const factoryId = 'a1000000-0000-4000-8000-000000000002';
+    const shipmentId = 'a1000000-0000-4000-8000-000000000003';
+    const objectId = randomUUID();
+    const bytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x20, 0x21, 0x22, 0x23, 0x24,
+    ]);
+    const objectKey = 'pod/' + tenantId + '/' + factoryId + '/' + shipmentId + '/' + objectId;
+    const digest = sha256(bytes);
+    await uploadWmsPodObjectAndVerify(testConfig(), objectKey, bytes, 'image/png');
+
+    const removed = await deleteWmsPodObjectAndVerifyGone(testConfig(), tenantId, objectKey, digest);
+    expect(removed).toEqual({ sha256: digest, byteLength: bytes.byteLength, verifiedAbsent: true });
+    await expect(verifyWmsPodObjectDigest(testConfig(), objectKey, digest))
+      .rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('rejects a different tenant prefix before making any storage request', async () => {
+    const expectedTenantId = 'a2000000-0000-4000-8000-000000000001';
+    const otherTenantId = 'a3000000-0000-4000-8000-000000000001';
+    const objectKey = 'pod/' + otherTenantId
+      + '/a2000000-0000-4000-8000-000000000002'
+      + '/a2000000-0000-4000-8000-000000000003'
+      + '/a2000000-0000-4000-8000-000000000004';
+    const fetcher = jest.fn<typeof fetch>();
+    await expect(deleteWmsPodObjectAndVerifyGone(
+      testConfig(), expectedTenantId, objectKey, 'a'.repeat(64), fetcher,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
