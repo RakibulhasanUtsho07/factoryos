@@ -130,3 +130,16 @@ Targets are registered/reviewed separately for object storage/files, caches, sea
 Finance/usage ledger records remain excluded from generic business-data deletion. Their retention is represented by a separate reviewed policy and adapter execution receipt, requires distinct policy creator, reviewer and executor, has its own legal basis/cutoff/count/digest, and remains blocked by applicable legal holds. This separate class does not imply that a live finance provider integration is configured.
 
 Production note: migration 160 and service contracts implement the fail-closed orchestration and immutable evidence schema. Provider-specific integrations are deployment-owned; no live external service has been claimed deleted by CI. In this repository the provider adapter registry starts empty and finance adapter unset, so any erasure with missing target coverage or missing adapter fails closed and cannot be externally verified. Register and smoke-test provider adapters, secret/config references, inventory completeness, replica/version deletion, backup expiry SLAs and recovery behaviour before treating whole-tenant erasure as production-supported.
+
+## Durable external resource inventory and per-object recovery ledger (migration 219)
+
+Migration \`219_saas_external_erasure_resource_manifest_receipts.sql\` adds three tenant-isolated evidence relations for the next provider-adapter slice:
+
+- \`saas_tenant_external_propagation_manifests\` binds an exact inventory digest to the approved erasure request/version, propagation run, independently reviewed target, source-export digest, retention-policy version map, adapter version and bounded page/batch declarations. A manifest may be sealed only when every declared ordinal has a persisted item; sealed or aborted manifests are immutable.
+- \`saas_tenant_external_propagation_manifest_items\` stores each provider resource identity, its digest and a stable per-resource operation key. It rejects duplicate identities and unsafe URL/credential-like references and can only be appended while the parent manifest is in \`STAGING\`.
+- \`saas_tenant_external_propagation_resource_events\` is an append-only per-identity event log. It records \`PREPARED\` before \`DELETE_REQUESTED\`, then provider deletion and independent verification, with terminal \`BLOCKED\`, \`RETAINED\` or \`FAILED_RETRYABLE\` outcomes. Retryable failure requires a numbered new attempt; verified/blocked/retained outcomes cannot be extended.
+
+All three tables use forced RLS and restrictive tenant policies. The governance inventory marks these relations as protected control-plane evidence, excluded from generic export/erasure. Provider resource references must remain opaque identifiers, never URLs or credentials.
+
+This migration establishes the durable schema and transition guards only. The existing external propagation saga is **not yet wired** to populate and seal these manifests or append the per-object event stream, and the WMS POD delete primitive is not registered as an external erasure adapter. Do not interpret target-level receipts as proof that a complete resource inventory has been recorded. Keep AS-137 / NFR-PROD-14 Partial until the adapter-to-ledger integration, actual resource enumeration, uncertainty recovery, all required storage adapters and controlled staging evidence pass.
+
