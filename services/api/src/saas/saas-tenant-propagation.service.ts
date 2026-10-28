@@ -495,14 +495,16 @@ export class SaasTenantPropagationService {
         residualManifest = this.residualReferences(verification.residualReferences);
         const verified = verifiedDigest === plan.manifestDigest && deletedCopies === plannedCopies
           && residualCopies === '0' && residualManifest.length === 0;
-        receiptStatus = verified ? 'VERIFIED' : 'RESIDUALS';
         if (verified) {
+          receiptStatus = 'VERIFIED';
           outcomeCode = 'COMPLETED';
           residualReason = null;
         } else {
+          const hasKnownResiduals = residualCopies !== '0' || residualManifest.length > 0;
+          receiptStatus = hasKnownResiduals ? 'RESIDUALS' : 'FAILED';
           outcomeCode = 'FAILED_RETRYABLE';
-          failureCode = 'EXTERNAL_RESIDUALS_REMAIN';
-          residualReason = 'Provider deletion did not reconcile to the exact prepared manifest with zero residual copies.';
+          failureCode = hasKnownResiduals ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_MISMATCH';
+          residualReason = 'Provider deletion did not reconcile to the exact prepared manifest with zero verified residual copies.';
           if (residualCopies !== '0' && residualManifest.length === 0) {
             residualManifest = ['residual-count:' + residualCopies];
           }
@@ -780,12 +782,20 @@ export class SaasTenantPropagationService {
         const policy = livePolicies.get(category);
         const version = Number(policy?.version);
         if (!policy || policy.disposition !== 'DELETE' || !Number.isSafeInteger(version) || version < 1) {
-          throw new ConflictException('A current DELETE retention policy is no longer available for this category');
+          throw new ExternalPropagationDispositionError(
+            'BLOCKED',
+            'The current retention policy no longer authorizes deletion for this category.',
+            'RETENTION_POLICY_BLOCKED',
+          );
         }
         livePolicyVersions[category] = version;
       }
       if (JSON.stringify(this.parsePolicyVersions(livePolicyVersions)) !== JSON.stringify(this.parsePolicyVersions(policyVersions))) {
-        throw new ConflictException('Retention policy version changed before provider deletion');
+        throw new ExternalPropagationDispositionError(
+          'BLOCKED',
+          'The retention-policy version changed after the run was prepared; provider deletion was not attempted.',
+          'RETENTION_POLICY_VERSION_CHANGED',
+        );
       }
 
       const targetResult = await client.query<TargetRow>(
