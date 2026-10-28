@@ -129,7 +129,7 @@ test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage
   const workflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
 
   assert.ok(
-    manifest.split(/\\r?\\n/).map((entry) => entry.trim()).includes('migrations/222_saas_tenant_backup_writer_fence_ledger.sql'),
+    manifest.split(/\r?\n/).map((entry) => entry.trim()).includes('migrations/222_saas_tenant_backup_writer_fence_ledger.sql'),
     'writer-fence migration must be included in the canonical PostgreSQL replay',
   );
   assert.match(migration, /tenant_relation_ownership_reviews/i);
