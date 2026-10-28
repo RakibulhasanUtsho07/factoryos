@@ -31,6 +31,7 @@ INSERT INTO factoryos_governance.tenant_export_adapter_relation_registry (data_c
   ('BUSINESS_DATA','legal_entities'),
   ('BUSINESS_DATA','factories'),
   ('BUSINESS_DATA','inventory_locations'),
+  ('BUSINESS_DATA','traceability_settings'),
   ('BUSINESS_DATA','orders'),
   ('BUSINESS_DATA','order_lines'),
   ('BUSINESS_DATA','order_event_projections'),
@@ -138,6 +139,74 @@ BEGIN
   END IF;
 END
 $inventory_location_export$;
+
+-- traceability_settings is a direct tenant/factory composite-key configuration
+-- row auto-created with each factory. It is required to preserve the tenant's
+-- traceability-retention and FIFO/FEFO/LOT/SERIAL behavior during migration.
+-- It is exportable through a dedicated composite-key adapter; generic erasure
+-- remains blocked until a retention/dependency policy for traceability history
+-- is approved.
+DO $traceability_settings_export$
+DECLARE
+  changed integer;
+  primary_key_columns text[];
+BEGIN
+  IF to_regclass('public.traceability_settings') IS NULL THEN
+    RAISE EXCEPTION 'Expected traceability_settings relation is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = 'public.traceability_settings'::regclass
+      AND a.attname = 'tenant_id' AND a.atttypid = 'uuid'::regtype
+      AND a.attnum > 0 AND NOT a.attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = 'public.traceability_settings'::regclass
+      AND a.attname = 'factory_id' AND a.atttypid = 'uuid'::regtype
+      AND a.attnum > 0 AND NOT a.attisdropped
+  ) THEN
+    RAISE EXCEPTION 'traceability_settings does not satisfy the reviewed composite tenant/factory contract';
+  END IF;
+
+  SELECT array_agg(a.attname ORDER BY keys.ordinality)
+    INTO primary_key_columns
+  FROM pg_catalog.pg_constraint c
+  JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS keys(attnum, ordinality) ON TRUE
+  JOIN pg_catalog.pg_attribute a
+    ON a.attrelid = c.conrelid AND a.attnum = keys.attnum
+  WHERE c.conrelid = 'public.traceability_settings'::regclass
+    AND c.contype = 'p';
+  IF primary_key_columns IS DISTINCT FROM ARRAY['tenant_id','factory_id']::text[] THEN
+    RAISE EXCEPTION 'traceability_settings composite key is not the reviewed (tenant_id,factory_id) key';
+  END IF;
+
+  UPDATE factoryos_governance.tenant_relation_inventory
+  SET data_category = 'BUSINESS_DATA',
+      export_disposition = 'ALLOWLISTED',
+      erasure_disposition = 'BLOCKED_UNREVIEWED',
+      audit_requirement = 'DOMAIN_LEDGER_OR_AUDIT_REVIEW',
+      rationale = 'Factory-scoped traceability retention/allocation configuration is transferred through the reviewed composite-key adapter; generic erasure remains blocked pending traceability-history retention review.'
+  WHERE schema_name = 'public' AND relation_name = 'traceability_settings'
+    AND scope_model = 'DIRECT_TENANT_ID';
+  GET DIAGNOSTICS changed = ROW_COUNT;
+  IF changed <> 1 THEN
+    RAISE EXCEPTION 'traceability_settings privacy inventory classification could not be reviewed';
+  END IF;
+
+  UPDATE factoryos_governance.tenant_relation_ownership_reviews
+  SET export_disposition = 'ALLOWLISTED',
+      erasure_disposition = 'BLOCKED_UNREVIEWED',
+      evidence_detail = 'Composite tenant_id/factory_id key, FIFO/FEFO/LOT/SERIAL allocation policy and retention-years configuration verified. Exact-schema transfer uses a separate composite-key adapter; generic erasure remains blocked.',
+      review_status = 'VERIFIED',
+      reviewed_at = clock_timestamp()
+  WHERE schema_name = 'public' AND relation_name = 'traceability_settings'
+    AND ownership_class = 'DIRECT_TENANT';
+  GET DIAGNOSTICS changed = ROW_COUNT;
+  IF changed <> 1 THEN
+    RAISE EXCEPTION 'traceability_settings ownership review could not be verified';
+  END IF;
+END
+$traceability_settings_export$;
 
 -- Extend the category-completeness guard to include tenant-owned relations
 -- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
