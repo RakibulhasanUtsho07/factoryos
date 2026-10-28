@@ -14,8 +14,8 @@ import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import { REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS } from './saas-tenant-propagation.adapters';
 import type {
-  SaasExternalManifestKind, SaasExternalPropagationContext, SaasExternalPropagationOutcome,
-  SaasExternalPropagationPlan, SaasExternalPropagationPreflight,
+  SaasExternalManifestKind, SaasExternalPropagationContext, SaasExternalPropagationExecutionContext,
+  SaasExternalPropagationOutcome, SaasExternalPropagationPlan, SaasExternalPropagationPreflight,
   SaasTenantExternalDataPropagationAdapter, SaasTenantExternalDataTarget,
 } from './saas-tenant-propagation.adapters';
 
@@ -500,9 +500,10 @@ export class SaasTenantPropagationService {
             state.plan = plan;
             state.preexistingPlan = true;
           } else {
-            const nextPlan = await state.adapter.prepare(
+            const nextPlan = await state.adapter.prepare(this.executionContext(
               this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey),
-            );
+              state.preflight,
+            ));
             this.validatePlan(nextPlan);
             state.plan = nextPlan;
             state.preexistingPlan = false;
@@ -714,7 +715,7 @@ export class SaasTenantPropagationService {
       let failureCode: string | null = null;
       const adapter = state?.adapter;
       const configured = !!state?.preflight;
-      const context = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
+      const baseContext = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
 
       try {
         if (!adapter || !state?.preflight || !plan || state.outcome) {
@@ -723,6 +724,7 @@ export class SaasTenantPropagationService {
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
         manifestKind = 'RESOURCE_IDENTITIES';
+        const context = this.executionContext(baseContext, state.preflight);
         if (state.recoverPriorAttempt) {
           // Recover only when a prior provider mutation could have happened. A saved
           // dry-run plan alone is not evidence of a prior mutation: targets blocked
@@ -1221,6 +1223,21 @@ export class SaasTenantPropagationService {
       idempotencyKey: idempotencyKey + ':' + target.targetId, target,
     };
   }
+  private executionContext(
+    context: SaasExternalPropagationContext,
+    preflight: SaasExternalPropagationPreflight,
+  ): SaasExternalPropagationExecutionContext {
+    return {
+      ...context,
+      executionLimits: {
+        resourceClass: preflight.resourceClass,
+        adapterVersion: preflight.adapterVersion,
+        maxPageSize: preflight.maxPageSize,
+        maxBatchSize: preflight.maxBatchSize,
+      },
+    };
+  }
+
   private validateAdapterVersion(value: unknown): string {
     if (typeof value !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(value)) {
       throw new ConflictException('External adapter must declare an immutable semver-like version');
