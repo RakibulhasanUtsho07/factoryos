@@ -30,6 +30,7 @@ $revoke_runtime$;
 INSERT INTO factoryos_governance.tenant_export_adapter_relation_registry (data_category, relation_name) VALUES
   ('BUSINESS_DATA','legal_entities'),
   ('BUSINESS_DATA','factories'),
+  ('BUSINESS_DATA','inventory_locations'),
   ('BUSINESS_DATA','orders'),
   ('BUSINESS_DATA','order_lines'),
   ('BUSINESS_DATA','order_event_projections'),
@@ -85,6 +86,58 @@ INSERT INTO factoryos_governance.tenant_export_adapter_relation_registry (data_c
   ('IAM_ACCESS','user_roles'),
   ('IAM_ACCESS','role_permissions')
 ON CONFLICT (data_category, relation_name) DO NOTHING;
+
+-- inventory_locations is a direct, tenant-owned business relation. Factories
+-- create one default virtual location automatically; it is part of exportable
+-- BUSINESS_DATA. Generic erasure remains blocked until the retention/delete
+-- adapter has an explicit dependency-safe location mapping.
+DO $inventory_location_export$
+DECLARE
+  changed integer;
+BEGIN
+  IF to_regclass('public.inventory_locations') IS NULL THEN
+    RAISE EXCEPTION 'Expected inventory_locations relation is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = 'public.inventory_locations'::regclass
+      AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = 'public.inventory_locations'::regclass
+      AND a.attname = 'id' AND a.atttypid = 'uuid'::regtype
+      AND a.attnum > 0 AND NOT a.attisdropped
+  ) THEN
+    RAISE EXCEPTION 'inventory_locations does not satisfy the direct-tenant UUID source contract';
+  END IF;
+
+  UPDATE factoryos_governance.tenant_relation_inventory
+  SET data_category = 'BUSINESS_DATA',
+      export_disposition = 'ALLOWLISTED',
+      erasure_disposition = 'BLOCKED_UNREVIEWED',
+      audit_requirement = 'DOMAIN_LEDGER_OR_AUDIT_REVIEW',
+      rationale = 'Direct tenant UUID relation explicitly included in the BUSINESS_DATA source/target transfer adapter; erasure remains blocked until its dependency-safe retention adapter is reviewed.'
+  WHERE schema_name = 'public' AND relation_name = 'inventory_locations'
+    AND scope_model = 'DIRECT_TENANT_ID';
+  GET DIAGNOSTICS changed = ROW_COUNT;
+  IF changed <> 1 THEN
+    RAISE EXCEPTION 'inventory_locations privacy inventory classification could not be reviewed';
+  END IF;
+
+  UPDATE factoryos_governance.tenant_relation_ownership_reviews
+  SET export_disposition = 'ALLOWLISTED',
+      erasure_disposition = 'BLOCKED_UNREVIEWED',
+      evidence_detail = 'Direct tenant_id and UUID id verified. Included in the reviewed BUSINESS_DATA export/import adapter; generic erasure remains blocked pending dependency-safe location/balance/transfer retention review.',
+      review_status = 'VERIFIED',
+      reviewed_at = clock_timestamp()
+  WHERE schema_name = 'public' AND relation_name = 'inventory_locations'
+    AND ownership_class = 'DIRECT_TENANT';
+  GET DIAGNOSTICS changed = ROW_COUNT;
+  IF changed <> 1 THEN
+    RAISE EXCEPTION 'inventory_locations ownership review could not be verified';
+  END IF;
+END
+$inventory_location_export$;
 
 -- Extend the category-completeness guard to include tenant-owned relations
 -- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
