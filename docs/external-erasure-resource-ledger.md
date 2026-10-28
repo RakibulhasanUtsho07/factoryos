@@ -46,6 +46,8 @@ All three relations use forced row-level security and tenant policies and are cl
 
 Migration `220_saas_legal_hold_propagation_fence.sql` closes the window where a new active legal hold could be created after an external propagation run had started but before provider deletion finished. Legal-hold creation takes the same tenant-row lock used at propagation start, then rejects only categories overlapping a `RUNNING` external erasure run. The API checks this first to return a clear conflict; a PostgreSQL trigger enforces the same condition for direct SQL writes.
 
+Migration `221_saas_external_propagation_legal_hold_fence.sql` adds the reciprocal database trigger: direct SQL inserts and retry transitions cannot start or restart a `RUNNING` propagation when an overlapping active hold exists. The normal service path also checks active holds while holding the tenant row lock.
+
 This is deliberately fail-closed while a run remains `RUNNING`, including after a process interruption. An operator must use the supported run-recovery workflow to reconcile and move the run out of `RUNNING`; manually changing database status is not a safe recovery process. Non-overlapping categories remain eligible for independent legal holds, and a `PARTIAL` or `FAILED` run does not permanently block future holds.
 
 ## Acceptance status and remaining limits
