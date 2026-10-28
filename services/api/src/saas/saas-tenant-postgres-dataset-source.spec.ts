@@ -18,6 +18,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
       role_permission_count: '0',
     },
     excludedCategoryHasRows = false,
+    traceabilitySettingsRow?: Record<string, unknown>,
   ) {
     const calls: Array<{ sql: string; values?: unknown[] }> = [];
     const client = {
@@ -28,6 +29,9 @@ describe('SaasTenantPostgresDatasetSource', () => {
         }
         if (sql.includes('AS membership_count')) {
           return { rows: [iamCounts], rowCount: 1 };
+        }
+        if (sql.includes('FROM public.traceability_settings AS dataset_row')) {
+          return { rows: traceabilitySettingsRow ? [{ ...traceabilitySettingsRow }] : [] };
         }
         if (sql.includes('FROM public.orders AS dataset_row')) {
           return {
@@ -108,6 +112,45 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(calls.some((item) => item.sql === 'COMMIT')).toBe(true);
     expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(false);
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('pages traceability settings by factory_id because the reviewed table has a composite tenant/factory key and no id', async () => {
+    const factoryId = '2d6d3f4a-a5bb-4d70-9d5e-0ccf0fa7c11b';
+    const createdAt = new Date('2026-01-02T03:04:05.000Z');
+    const updatedAt = new Date('2026-02-03T04:05:06.000Z');
+    const { source, calls } = createSource(undefined, undefined, false, {
+      tenant_id: tenantId,
+      factory_id: factoryId,
+      retention_years: 7,
+      allocation_policy: 'FIFO',
+      version: '1',
+      updated_by_user_id: null,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    });
+    const rows: unknown[] = [];
+
+    await source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        if ((row as Record<string, unknown>).__factoryos_table === 'traceability_settings') rows.push(row);
+      }
+    });
+
+    expect(rows).toEqual([{
+      tenant_id: tenantId,
+      factory_id: factoryId,
+      retention_years: 7,
+      allocation_policy: 'FIFO',
+      version: '1',
+      updated_by_user_id: null,
+      created_at: createdAt,
+      updated_at: updatedAt,
+      __factoryos_table: 'traceability_settings',
+    }]);
+    const query = calls.find((item) => item.sql.includes('FROM public.traceability_settings AS dataset_row'));
+    expect(query?.sql).toContain('dataset_row.factory_id > $2::uuid');
+    expect(query?.sql).toContain('ORDER BY dataset_row.factory_id ASC');
+    expect(query?.values).toEqual([tenantId, null, 500]);
   });
 
   it('includes SaaS usage and budget governance records in the reviewed business-data allowlist', () => {
