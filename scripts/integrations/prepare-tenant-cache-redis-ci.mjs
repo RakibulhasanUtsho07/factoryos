@@ -20,6 +20,7 @@ client.on('error', () => undefined);
 try {
   await client.connect();
   if (await client.ping() !== 'PONG') throw new Error('Isolated Redis PING failed');
+  await client.sendCommand(['CONFIG', 'SET', 'save', '']);
   await client.sendCommand(['CONFIG', 'SET', 'appendonly', 'yes']);
   await client.sendCommand(['CONFIG', 'SET', 'appendfsync', 'always']);
 
@@ -37,6 +38,13 @@ try {
   if (String(found).toLowerCase() !== 'always') {
     throw new Error('Isolated Redis does not have appendfsync=always');
   }
+  const saveSetting = await client.sendCommand(['CONFIG', 'GET', 'save']);
+  const saveValue = saveSetting instanceof Map
+    ? [...saveSetting.entries()].find(([key]) => String(key).toLowerCase() === 'save')?.[1]
+    : Array.isArray(saveSetting)
+      ? saveSetting[saveSetting.findIndex((item) => String(item).toLowerCase() === 'save') + 1]
+      : null;
+  if (String(saveValue) !== '') throw new Error('Isolated Redis RDB snapshots must be disabled');
 
   console.log('Isolated Redis erasure-fence persistence checks passed');
 } finally {
