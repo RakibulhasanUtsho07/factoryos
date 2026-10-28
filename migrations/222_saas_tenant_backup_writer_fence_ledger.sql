@@ -313,6 +313,22 @@ ON CONFLICT(schema_name,relation_name) DO UPDATE SET
   export_disposition=EXCLUDED.export_disposition,erasure_disposition=EXCLUDED.erasure_disposition,
   audit_requirement=EXCLUDED.audit_requirement,rationale=EXCLUDED.rationale,classified_at=clock_timestamp();
 
+INSERT INTO factoryos_governance.tenant_relation_ownership_reviews
+  (schema_name,relation_name,ownership_class,evidence_type,evidence_detail,scope_predicate,
+   export_disposition,erasure_disposition,review_status)
+VALUES
+  ('public','saas_tenant_backup_writer_operations','DIRECT_TENANT','DIRECT_TENANT_COLUMN_AND_RLS',
+   'Direct tenant_id scope; retained writer intents and confirmed outcomes prevent backup-write/erasure races.',
+   'tenant_id = public.factoryos_current_tenant_id()','EXCLUDED','PROTECTED','VERIFIED'),
+  ('public','saas_tenant_backup_writer_fences','DIRECT_TENANT','DIRECT_TENANT_COLUMN_AND_RLS',
+   'Direct tenant_id scope; retained backup erasure fences bind provider enforcement and tombstone replay evidence.',
+   'tenant_id = public.factoryos_current_tenant_id()','EXCLUDED','PROTECTED','VERIFIED')
+ON CONFLICT (schema_name,relation_name) DO UPDATE SET
+  ownership_class=EXCLUDED.ownership_class,evidence_type=EXCLUDED.evidence_type,
+  evidence_detail=EXCLUDED.evidence_detail,scope_predicate=EXCLUDED.scope_predicate,
+  export_disposition=EXCLUDED.export_disposition,erasure_disposition=EXCLUDED.erasure_disposition,
+  review_status=EXCLUDED.review_status,reviewed_at=clock_timestamp();
+
 INSERT INTO schema_migrations(version,checksum)
 VALUES ('222_saas_tenant_backup_writer_fence_ledger',NULL)
 ON CONFLICT (version) DO NOTHING;
