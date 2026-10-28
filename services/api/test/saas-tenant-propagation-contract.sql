@@ -9,6 +9,9 @@ BEGIN
     'saas_tenant_external_data_targets',
     'saas_tenant_external_propagation_runs',
     'saas_tenant_external_propagation_receipts',
+    'saas_tenant_external_propagation_manifests',
+    'saas_tenant_external_propagation_manifest_items',
+    'saas_tenant_external_propagation_resource_events',
     'saas_tenant_finance_retention_policies',
     'saas_tenant_finance_retention_runs'
   ] LOOP
@@ -47,6 +50,51 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_receipt_immutable' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'external propagation receipts must be immutable'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_manifest_guard' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'resource manifest must have a seal/immutability guard'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_manifest_item_guard' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'manifest items must only be appended to staging manifests'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_resource_event_guard' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'per-resource intent/deletion/verification events must be append-only and sequential'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_manifests'::regclass
+      AND conname='chk_saas_external_manifest_state'
+      AND pg_get_constraintdef(oid) ILIKE '%STAGING%'
+      AND pg_get_constraintdef(oid) ILIKE '%SEALED%'
+      AND pg_get_constraintdef(oid) ILIKE '%ABORTED%'
+  ) THEN RAISE EXCEPTION 'resource manifest must have explicit staging/sealed/aborted states'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_manifests'::regclass
+      AND conname='chk_saas_external_manifest_limits'
+  ) THEN RAISE EXCEPTION 'resource manifest execution limits must be bounded'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_manifest_items'::regclass
+      AND conname='uq_saas_external_manifest_item_identity'
+  ) THEN RAISE EXCEPTION 'resource manifest must reject duplicate identities'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_resource_events'::regclass
+      AND conname='chk_saas_external_resource_event_result'
+      AND pg_get_constraintdef(oid) ILIKE '%VERIFIED%'
+      AND pg_get_constraintdef(oid) ILIKE '%verified_manifest_digest%'
+      AND pg_get_constraintdef(oid) ILIKE '%residual_count%'
+  ) THEN RAISE EXCEPTION 'verified resource events must bind the manifest digest and zero residual count'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='public' AND p.proname='factoryos_guard_saas_external_propagation_resource_event'
+      AND p.prosrc ILIKE '%DELETE_REQUESTED%'
+      AND p.prosrc ILIKE '%FAILED_RETRYABLE%'
+      AND p.prosrc ILIKE '%terminal resource outcomes%'
+  ) THEN RAISE EXCEPTION 'per-resource event log must enforce sequential recovery transitions'; END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_run_guard' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'external propagation run state/recovery guard is missing'; END IF;
