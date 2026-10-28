@@ -12,10 +12,14 @@ import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasu
 import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
 import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
-import { REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS } from './saas-tenant-propagation.adapters';
+import {
+  digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
+  SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
+} from './saas-tenant-propagation.adapters';
 import type {
-  SaasExternalPropagationContext, SaasExternalPropagationPlan,
-  SaasTenantExternalDataPropagationAdapter, SaasTenantExternalDataTarget,
+  SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
+  SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter,
+  SaasTenantExternalDataTarget,
 } from './saas-tenant-propagation.adapters';
 
 type ErasureRequestRow = QueryResultRow & {
@@ -49,6 +53,7 @@ type PropagationReceiptRow = QueryResultRow & {
 
 const CATEGORY_VALUES = Object.values(SaasTransferDatasetCategory);
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+const SAFE_RESOURCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 const NON_NEGATIVE_INTEGER = /^(0|[1-9][0-9]*)$/;
 
