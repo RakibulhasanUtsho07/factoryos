@@ -9,6 +9,7 @@ const RUNBOOK = 'docs/external-erasure-backup-copy-retention-runbook.md';
 const CACHE_ADAPTER_DOC = 'docs/tenant-cache-erasure-adapter.md';
 const RESOURCE_LEDGER_DOC = 'docs/external-erasure-resource-ledger.md';
 const BACKUP_ADAPTER_DOC = 'docs/s3-tenant-backup-erasure-adapter.md';
+const BACKUP_ADAPTER_SOURCE = 'services/api/src/saas/s3-tenant-backup-erasure.adapter.ts';
 
 async function readRepoFile(path) {
   return readFile(resolve(ROOT, path), 'utf8');
@@ -70,6 +71,14 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   assert.match(backupDoc, /does not cover|does not prove|out of scope/i);
   assert.match(backupDoc, /write-freeze mechanism/i);
   assert.match(runbook, /provider\/control-plane fence/i);
+});
+
+test('BACKUP target cannot activate until an erasure-lifecycle writer fence is implemented', async () => {
+  const source = await readRepoFile(BACKUP_ADAPTER_SOURCE);
+  assert.match(source, /Keep the BACKUP target inactive until that lifecycle integration exists/i);
+  assert.match(source, /return false;/);
+  const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
+  assert.match(doc, /`isConfigured\(\)` intentionally returns false/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
