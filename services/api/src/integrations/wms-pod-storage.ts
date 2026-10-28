@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
-interface ConfigReader {
+export interface WmsPodStorageConfigReader {
   get<T = string>(propertyPath: string): T | undefined;
 }
 
@@ -40,7 +40,7 @@ function hmac(key: string | Buffer, value: string): Buffer {
   return createHmac('sha256', key).update(value, 'utf8').digest();
 }
 
-function requiredConfig(config: ConfigReader, name: string): string {
+function requiredConfig(config: WmsPodStorageConfigReader, name: string): string {
   const value = config.get<string>(name);
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new ServiceUnavailableException(
@@ -51,7 +51,7 @@ function requiredConfig(config: ConfigReader, name: string): string {
 }
 
 function boundedInteger(
-  config: ConfigReader,
+  config: WmsPodStorageConfigReader,
   name: string,
   fallback: number,
   minimum: number,
@@ -65,7 +65,7 @@ function boundedInteger(
   return value;
 }
 
-function readConfiguration(config: ConfigReader): S3PodConfiguration {
+function readConfiguration(config: WmsPodStorageConfigReader): S3PodConfiguration {
   const endpointInput = requiredConfig(config, 'WMS_POD_STORAGE_ENDPOINT');
   const bucket = requiredConfig(config, 'WMS_POD_STORAGE_BUCKET');
   const region = requiredConfig(config, 'WMS_POD_STORAGE_REGION');
@@ -176,76 +176,26 @@ async function readBoundedResponse(
  * comes only from trusted server configuration plus a validated relative key;
  * carrier payloads cannot choose an arbitrary URL or cause redirect following.
  */
-export async function verifyWmsPodObjectDigest(
-  config: ConfigReader,
+/**
+ * Reads and hashes the current persisted bytes for one safe object key. A 404
+ * is exposed as null only by the explicit IfPresent variant, for idempotent
+ * erasure recovery after a previously-issued DELETE.
+ */
+export async function readWmsPodObjectDigestIfPresent(
+  config: WmsPodStorageConfigReader,
   objectKey: string,
-  expectedSha256: string,
   fetcher: typeof fetch = globalThis.fetch,
-): Promise<VerifiedPodObject> {
+): Promise<VerifiedPodObject | null> {
   assertSafeObjectKey(objectKey);
-  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
-    throw new BadRequestException('proof_sha256 must be SHA-256 hex');
-  }
-
   const storage = readConfiguration(config);
   const basePath = storage.endpoint.pathname === '/'
     ? ''
-    : storage.endpoint.pathname.replace(/\/+$/, '');
+    : storage.endpoint.pathname.replace(/\\/+$/, '');
   const encodedKey = objectKey.split('/').map((segment) => encodeURIComponent(segment)).join('/');
   const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
   const target = new URL(storage.endpoint.origin);
   target.pathname = canonicalUri;
-
-  const payloadHash = sha256Hex(Buffer.alloc(0));
-  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-  const dateStamp = amzDate.slice(0, 8);
-  const canonicalHeadersByName: Record<string, string> = {
-    host: target.host.toLowerCase(),
-    'x-amz-content-sha256': payloadHash,
-    'x-amz-date': amzDate,
-  };
-  if (storage.sessionToken) {
-    canonicalHeadersByName['x-amz-security-token'] = storage.sessionToken;
-  }
-  const signedHeaderNames = Object.keys(canonicalHeadersByName).sort();
-  const canonicalHeaders = signedHeaderNames
-    .map((name) => name + ':' + canonicalHeadersByName[name]!.trim().replace(/\s+/g, ' ') + '\n')
-    .join('');
-  const signedHeaders = signedHeaderNames.join(';');
-  const canonicalRequest = [
-    'GET',
-    canonicalUri,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join('\n');
-  const scope = dateStamp + '/' + storage.region + '/s3/aws4_request';
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    amzDate,
-    scope,
-    sha256Hex(canonicalRequest),
-  ].join('\n');
-  const dateKey = hmac('AWS4' + storage.secretAccessKey, dateStamp);
-  const regionKey = hmac(dateKey, storage.region);
-  const serviceKey = hmac(regionKey, 's3');
-  const signingKey = hmac(serviceKey, 'aws4_request');
-  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
-  const authorization = 'AWS4-HMAC-SHA256 Credential=' +
-    storage.accessKeyId + '/' + scope +
-    ', SignedHeaders=' + signedHeaders +
-    ', Signature=' + signature;
-
-  const headers: Record<string, string> = {
-    'x-amz-content-sha256': payloadHash,
-    'x-amz-date': amzDate,
-    'accept-encoding': 'identity',
-    Authorization: authorization,
-  };
-  if (storage.sessionToken) {
-    headers['x-amz-security-token'] = storage.sessionToken;
-  }
+  const headers = signedPodS3Headers(storage, 'GET', target, canonicalUri, '');
 
   let response: Response;
   try {
@@ -259,22 +209,49 @@ export async function verifyWmsPodObjectDigest(
     throw new ServiceUnavailableException('Unable to retrieve POD object from configured storage');
   }
   if (response.status === 404) {
-    throw new UnprocessableEntityException('POD object was not found in configured storage');
+    await response.body?.cancel().catch(() => undefined);
+    return null;
   }
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     throw new ServiceUnavailableException('POD storage rejected object retrieval; check storage access policy');
   }
-
   const bytes = await readBoundedResponse(response, storage.maxBytes);
-  const actualSha256 = sha256Hex(bytes);
+  return { sha256: sha256Hex(bytes), byteLength: bytes.byteLength };
+}
+
+export async function readWmsPodObjectDigest(
+  config: WmsPodStorageConfigReader,
+  objectKey: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject> {
+  const result = await readWmsPodObjectDigestIfPresent(config, objectKey, fetcher);
+  if (!result) throw new UnprocessableEntityException('POD object was not found in configured storage');
+  return result;
+}
+
+/**
+ * Independently hashes persisted bytes and compares them with the digest
+ * supplied by the trusted caller. The S3 ETag is never treated as a content hash.
+ */
+export async function verifyWmsPodObjectDigest(
+  config: WmsPodStorageConfigReader,
+  objectKey: string,
+  expectedSha256: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject> {
+  assertSafeObjectKey(objectKey);
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
+    throw new BadRequestException('proof_sha256 must be SHA-256 hex');
+  }
+  const result = await readWmsPodObjectDigest(config, objectKey, fetcher);
   const expected = Buffer.from(expectedSha256.toLowerCase(), 'hex');
-  const actual = Buffer.from(actualSha256, 'hex');
+  const actual = Buffer.from(result.sha256, 'hex');
   if (!timingSafeEqual(actual, expected)) {
     throw new UnprocessableEntityException('Stored POD object SHA-256 does not match the signed carrier digest');
   }
-  return { sha256: actualSha256, byteLength: bytes.byteLength };
+  return result;
 }
-
 
 function validatePodContentType(bytes: Buffer, declaredContentType: string): UploadedVerifiedPodObject['contentType'] {
   let detected: UploadedVerifiedPodObject['contentType'] | null = null;
@@ -302,7 +279,7 @@ function validatePodContentType(bytes: Buffer, declaredContentType: string): Upl
  * never accepts a caller-controlled URL or follows redirects.
  */
 export async function uploadWmsPodObjectAndVerify(
-  config: ConfigReader,
+  config: WmsPodStorageConfigReader,
   objectKey: string,
   bytes: Buffer,
   declaredContentType: string,
@@ -526,7 +503,7 @@ async function assertPodBucketUnversioned(
  * adapter or whole-tenant erasure receipt.
  */
 export async function deleteWmsPodObjectAndVerifyGone(
-  config: ConfigReader,
+  config: WmsPodStorageConfigReader,
   tenantId: string,
   objectKey: string,
   expectedSha256: string,
