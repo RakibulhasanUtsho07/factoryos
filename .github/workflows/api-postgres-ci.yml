@@ -467,6 +467,9 @@ jobs:
           echo "Reapplying guarded inventory-location transfer identity migration"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/216_saas_transfer_inventory_location_identity_rebind.sql
+          echo "Reapplying guarded traceability settings transfer migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/217_saas_transfer_traceability_settings_reconcile.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/tenant-export-category-completeness.sql
 
