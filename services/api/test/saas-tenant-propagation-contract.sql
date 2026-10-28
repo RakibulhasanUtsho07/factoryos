@@ -47,6 +47,55 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_receipt_immutable' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'external propagation receipts must be immutable'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_outcome_code'
+      AND pg_get_constraintdef(oid) ILIKE '%COMPLETED%'
+      AND pg_get_constraintdef(oid) ILIKE '%BLOCKED%'
+      AND pg_get_constraintdef(oid) ILIKE '%RETAINED%'
+      AND pg_get_constraintdef(oid) ILIKE '%FAILED_RETRYABLE%'
+  ) THEN RAISE EXCEPTION 'external receipt must declare the full typed outcome vocabulary'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_outcome_consistency'
+      AND pg_get_constraintdef(oid) ILIKE '%RESOURCE_IDENTITIES%'
+      AND pg_get_constraintdef(oid) ILIKE '%residual_reason%'
+  ) THEN RAISE EXCEPTION 'receipt outcome, evidence kind and residual reason must be cross-validated'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_manifest_kind'
+      AND pg_get_constraintdef(oid) ILIKE '%RESOURCE_IDENTITIES%'
+      AND pg_get_constraintdef(oid) ILIKE '%SCOPE_INTENT%'
+  ) THEN RAISE EXCEPTION 'resource-manifest and scope-intent digests must remain distinguishable'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_page_size'
+      AND pg_get_constraintdef(oid) ILIKE '%5000%'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_batch_size'
+      AND pg_get_constraintdef(oid) ILIKE '%1000%'
+  ) THEN RAISE EXCEPTION 'adapter page/batch bounds must be enforced by the database'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND attname='completed_at' AND attnotnull AND NOT attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND attname='policy_versions' AND attnotnull AND NOT attisdropped
+  ) THEN RAISE EXCEPTION 'receipts must persist completion time and the exact policy-version map'; END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_propagation_run_guard' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'external propagation run state/recovery guard is missing'; END IF;
