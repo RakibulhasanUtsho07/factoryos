@@ -272,6 +272,8 @@ BEGIN
     USING current_tenant_id;
 
     IF relation_has_rows THEN
+      RAISE LOG 'Tenant export completeness blocked category % by direct relation % outside its reviewed adapter',
+        p_category, relation.relation_name;
       RETURN TRUE;
     END IF;
   END LOOP;
@@ -315,6 +317,8 @@ BEGIN
     USING current_tenant_id;
 
     IF relation_has_rows THEN
+      RAISE LOG 'Tenant export completeness blocked category % by unreviewed direct relation %',
+        p_category, relation.relation_name;
       RETURN TRUE;
     END IF;
   END LOOP;
@@ -365,6 +369,8 @@ BEGIN
     INTO relation_has_rows;
 
     IF relation_has_rows THEN
+      RAISE LOG 'Tenant export completeness blocked category % by unmapped derived relation %',
+        p_category, relation.relation_name;
       RETURN TRUE;
     END IF;
   END LOOP;
