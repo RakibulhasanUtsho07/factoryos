@@ -1027,6 +1027,14 @@ export class SaasTenantPropagationService {
     if (providerReceiptReferences.length > 1) {
       throw new ConflictException('Per-resource ledger has conflicting provider receipt references');
     }
+    const decodedPolicyVersions = this.jsonObject(row.policy_versions);
+    const policyVersions: Record<string, string> = {};
+    for (const [key, value] of Object.entries(decodedPolicyVersions)) {
+      if (typeof value !== 'string') {
+        throw new ConflictException('Stored policy version labels are malformed');
+      }
+      policyVersions[key] = value;
+    }
     const plan: SaasExternalPropagationPlan = {
       manifestDigest: row.manifest_digest,
       plannedCopies: String(row.resource_count),
@@ -1035,7 +1043,7 @@ export class SaasTenantPropagationService {
       resourceClass: row.resource_class,
       maxPageSize: Number(row.max_page_size),
       maxBatchSize: Number(row.max_batch_size),
-      policyVersions: this.jsonObject(row.policy_versions) as Record<string, string>,
+      policyVersions,
       resources,
     };
     this.validatePlan(plan);
