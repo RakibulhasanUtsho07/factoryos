@@ -293,15 +293,10 @@ export class SaasTenantPropagationService {
       );
       const policyByCategory = new Map(policyResult.rows.map((row) => [row.category_code, row]));
       const policyVersions: Record<string, number> = {};
-      const heldCategorySet = new Set(activeLegalHoldCategories);
+      const policyBlockedCategories: SaasTransferDatasetCategory[] = [];
       for (const category of categories) {
         const policy = policyByCategory.get(category);
-        if (!policy && !heldCategorySet.has(category)) {
-          throw new ConflictException('A current DELETE retention policy is required for each requested erasure category');
-        }
-        if (policy && !heldCategorySet.has(category) && policy.disposition !== 'DELETE') {
-          throw new ConflictException('A current DELETE retention policy is required for each requested erasure category');
-        }
+        if (!policy || policy.disposition !== 'DELETE') policyBlockedCategories.push(category);
         if (policy) {
           const version = Number(policy.version);
           if (!Number.isSafeInteger(version) || version < 1) {
@@ -319,6 +314,7 @@ export class SaasTenantPropagationService {
           sourceExportDigest: request.export_bundle_digest,
           sourceManifestDigest: this.hash(sourceManifest), sourceManifest,
           policyVersions: this.parsePolicyVersions(policyVersions),
+          policyBlockedCategories,
           activeLegalHoldCategories,
           targetIds: targets.map((target) => target.targetId).sort(), plans: {},
         };
@@ -355,16 +351,22 @@ export class SaasTenantPropagationService {
           throw new ConflictException('Reviewed external target inventory changed during propagation');
         }
       }
-      const persistedPolicyVersions = this.parsePolicyVersions(this.jsonObject(run.external_manifest).policyVersions ?? {});
+      const existingManifest = this.jsonObject(run.external_manifest);
+      const persistedPolicyVersions = this.parsePolicyVersions(existingManifest.policyVersions ?? {});
       if (JSON.stringify(persistedPolicyVersions) !== JSON.stringify(this.parsePolicyVersions(policyVersions))) {
         throw new ConflictException('Retention policy version changed during an existing external propagation run; create a newly reviewed run');
+      }
+      const persistedPolicyBlockedCategories = Array.isArray(existingManifest.policyBlockedCategories)
+        ? existingManifest.policyBlockedCategories.map(String).sort() : [];
+      if (JSON.stringify(persistedPolicyBlockedCategories) !== JSON.stringify(policyBlockedCategories.slice().sort())) {
+        throw new ConflictException('Retention policy disposition changed during an existing external propagation run; create a newly reviewed run');
       }
       const receipts = await client.query<PropagationReceiptRow>(
         `SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 ORDER BY target_id,attempt_no DESC`,
         [tenantId, requestId, run.run_id],
       );
-      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, activeLegalHoldCategories };
+      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, activeLegalHoldCategories, policyBlockedCategories };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation:' + tenantId + ':' + requestId });
 
     if (prepared.replayed) {
@@ -397,6 +399,13 @@ export class SaasTenantPropagationService {
         state.outcome = 'RETAINED';
         state.failureCode = 'ACTIVE_LEGAL_HOLD';
         state.reason = 'An active legal hold retains this target/category scope; provider deletion was not attempted.';
+        globallyReady = false;
+        continue;
+      }
+      if (prepared.policyBlockedCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category))) {
+        state.outcome = 'BLOCKED';
+        state.failureCode = 'RETENTION_POLICY_BLOCKED';
+        state.reason = 'A current DELETE retention policy is missing or has a non-delete disposition for this category.';
         globallyReady = false;
         continue;
       }
