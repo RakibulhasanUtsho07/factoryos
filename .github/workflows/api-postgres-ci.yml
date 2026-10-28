@@ -165,6 +165,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/160_saas_external_erasure_propagation_and_finance_retention.sql
 
+          echo "Reapplying durable external resource identity manifests and per-resource receipts to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/219_saas_external_erasure_resource_manifest_receipts.sql
+
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/159_inventory_location_cycle_count_workflow.sql
