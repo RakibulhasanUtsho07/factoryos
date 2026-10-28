@@ -195,10 +195,11 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         'SELECT id::text AS id FROM inventory_locations WHERE tenant_id = $1::uuid AND factory_id = $2::uuid AND is_default = TRUE',
         [tenantId, factoryId],
       );
-      if (defaultLocationResult.rows.length !== 1 || !defaultLocationResult.rows[0]) {
+      const defaultLocation = defaultLocationResult.rows[0];
+      if (defaultLocationResult.rows.length !== 1 || !defaultLocation) {
         throw new Error('Expected exactly one source default inventory location');
       }
-      const defaultLocationId = defaultLocationResult.rows[0].id;
+      const defaultLocationId = defaultLocation.id;
 
       await adminPool.query(
         'INSERT INTO roles (tenant_id, code, name, description, is_system) VALUES ($1, $2, $3, $4, $5)',
