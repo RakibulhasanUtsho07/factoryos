@@ -23,6 +23,19 @@ BEGIN
     RAISE EXCEPTION 'Tenant export completeness guard must be SECURITY DEFINER with a fixed pg_catalog search path';
   END IF;
 
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_transfer_importer') THEN
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_app')
+      AND pg_catalog.pg_has_role('factoryos_app', 'factoryos_transfer_importer', 'member') THEN
+      RAISE EXCEPTION 'Runtime application role must not have default inventory-location identity-rebind authority';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos')
+      AND NOT pg_catalog.pg_has_role('factoryos', 'factoryos_transfer_importer', 'member') THEN
+      RAISE EXCEPTION 'Configured transfer-import role is missing its explicit identity-rebind capability';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'Dedicated tenant-transfer importer role is missing';
+  END IF;
+
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_app') THEN
     IF NOT has_schema_privilege('factoryos_app', 'factoryos_governance', 'USAGE')
       OR NOT has_function_privilege(
