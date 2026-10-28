@@ -796,10 +796,12 @@ export class SaasTenantPropagationService {
             plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
             planDigest = this.digestOrNull(plan.manifestDigest) ?? planDigest;
             manifestKind = 'RESOURCE_IDENTITIES';
-            if (deletedCopies === '0' && residualCopies === '0') {
-              // A timeout/recovery/verification exception leaves the exact plan
-              // unresolved; conservatively retain its count until provider read-back.
-              residualCopies = plannedCopies === '0' ? '1' : plannedCopies;
+            if (residualCopies === '0' && plannedCopies !== '0') {
+              // If execute or verify throws after a possible provider mutation, the
+              // provider state is unknown even when an execution receipt claimed all
+              // deletes. Conservatively keep the entire prepared scope unresolved
+              // until a later independent read-back proves otherwise.
+              residualCopies = plannedCopies;
               residualManifest = ['unverified-scope:' + target.targetId];
             }
           } catch {
