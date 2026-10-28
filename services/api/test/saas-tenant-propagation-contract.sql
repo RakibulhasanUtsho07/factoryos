@@ -41,6 +41,14 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname='saas_tenant_external_propagation_active_legal_hold_fence'
+      AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'external propagation start/retry must be blocked by overlapping active legal holds';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint c
     WHERE c.conrelid='public.saas_tenant_data_erasure_runs'::regclass
       AND c.conname='chk_saas_erasure_run_receipt_scope'
@@ -255,6 +263,35 @@ VALUES
   ('16000000-0000-4000-8000-000000000001','["BUSINESS_DATA"]'::jsonb,
    'CASE-AFTER-160','Preserve records after the propagation attempt is stopped',
    'hold-after-partial-v1',repeat('7',64),'16010000-0000-4000-8000-000000000001');
+
+-- The reciprocal trigger rejects both restart of a partial run and a new
+-- RUNNING run when the same tenant/category is covered by an active hold.
+DO $$
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_external_propagation_runs
+    SET status='RUNNING'
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+      AND run_id='16040000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'external propagation retry entered RUNNING despite active legal hold';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO saas_tenant_external_propagation_runs
+      (tenant_id,run_id,request_id,request_version,status,categories,source_export_digest,target_count,
+       reason,idempotency_key,request_hash,executor_user_id)
+    VALUES
+      ('16000000-0000-4000-8000-000000000001','16040000-0000-4000-8000-000000000002',
+       '16030000-0000-4000-8000-000000000001',1,'RUNNING','["BUSINESS_DATA"]'::jsonb,
+       repeat('f',64),1,'Negative fixture: active legal hold must block new propagation run',
+       'hold-fence-propagation-v2',repeat('8',64),'16010000-0000-4000-8000-000000000002');
+    RAISE EXCEPTION 'new external propagation run entered RUNNING despite active legal hold';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+END $$;
 
 SET LOCAL ROLE factoryos_app;
 SELECT set_config('app.tenant_id','16000000-0000-4000-8000-000000000001',true);
