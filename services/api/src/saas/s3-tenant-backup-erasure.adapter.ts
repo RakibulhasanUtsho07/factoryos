@@ -220,10 +220,15 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       const storage = readConfiguration(this.config);
       await this.assertVersioningEnabled(storage);
       await this.assertObjectLockEnabled(storage);
-      return true;
     } catch {
       return false;
     }
+    // Fail closed: S3 versioning/Object Lock do not fence new writes. This
+    // adapter has no runtime coordinator that can acquire a writer freeze and
+    // hold it until the erasure run is durably terminal. Keep the BACKUP target
+    // inactive until that lifecycle integration exists; unit tests can still
+    // exercise the version-specific mutation contract directly.
+    return false;
   }
 
   async prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan> {
