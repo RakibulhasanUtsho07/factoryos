@@ -287,8 +287,24 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     await this.assertObjectLockEnabled(storage);
     const current = await this.listAllVersions(storage, input.tenantId, input.categories);
     const currentIdentities = new Set(current.map((value) => this.identityKey(value)));
-    let accounted = 0;
 
+    // Preflight the complete sealed set before the first delete. If any object
+    // changed or any lock appeared after prepare(), no earlier resource in the
+    // same plan may already have been destructively removed.
+    for (const resource of input.plan.resources) {
+      const version: VersionIdentity = {
+        key: resource.resourceReference,
+        versionId: resource.resourceVersionReference!,
+        deleteMarker: resource.resourceKind === RESOURCE_DELETE_MARKER,
+      };
+      if (!currentIdentities.has(this.identityKey(version)) || version.deleteMarker) continue;
+      await this.assertVersionDeletable(storage, version);
+      if (await this.digestVersion(storage, version) !== resource.resourceContentDigest) {
+        throw new ConflictException('Backup object bytes changed after the sealed version inventory; deletion was blocked before mutation');
+      }
+    }
+
+    let accounted = 0;
     for (const resource of input.plan.resources) {
       const versionId = resource.resourceVersionReference!;
       const version: VersionIdentity = {
