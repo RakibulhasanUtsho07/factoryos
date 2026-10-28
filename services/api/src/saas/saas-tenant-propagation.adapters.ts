@@ -47,6 +47,8 @@ export interface SaasExternalPropagationResourceIdentity {
   resourceReference: string;
   /** Optional opaque immutable provider version/generation identity. */
   resourceVersionReference?: string | null;
+  /** Optional SHA-256 of the exact provider bytes captured before mutation. */
+  resourceContentDigest?: string | null;
 }
 
 /**
@@ -55,14 +57,20 @@ export interface SaasExternalPropagationResourceIdentity {
  */
 export function canonicalizeSaasExternalPropagationResources(
   resources: SaasExternalPropagationResourceIdentity[],
-): Array<{ resourceKind: string; resourceReference: string; resourceVersionReference: string | null }> {
+): Array<{
+  resourceKind: string;
+  resourceReference: string;
+  resourceVersionReference: string | null;
+  resourceContentDigest: string | null;
+}> {
   return resources.map((resource) => ({
     resourceKind: resource.resourceKind,
     resourceReference: resource.resourceReference,
     resourceVersionReference: resource.resourceVersionReference ?? null,
+    resourceContentDigest: resource.resourceContentDigest ?? null,
   })).sort((left, right) => {
     const fields: Array<keyof typeof left> = [
-      'resourceKind', 'resourceReference', 'resourceVersionReference',
+      'resourceKind', 'resourceReference', 'resourceVersionReference', 'resourceContentDigest',
     ];
     for (const field of fields) {
       const a = left[field] ?? '';
