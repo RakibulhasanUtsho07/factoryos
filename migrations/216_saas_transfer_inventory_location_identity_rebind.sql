@@ -6,10 +6,10 @@ BEGIN;
 DO $transfer_role$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_transfer_importer') THEN
-    CREATE ROLE factoryos_transfer_importer NOLOGIN;
+    EXECUTE 'CREATE ROLE factoryos_transfer_importer NOLOGIN';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos') THEN
-    GRANT factoryos_transfer_importer TO factoryos;
+    EXECUTE 'GRANT factoryos_transfer_importer TO factoryos';
   END IF;
 END
 $transfer_role$;
@@ -58,7 +58,9 @@ BEGIN
         OR NEW.location_code IS DISTINCT FROM OLD.location_code
         OR NEW.location_type IS DISTINCT FROM OLD.location_type
         OR NEW.is_default IS DISTINCT FROM OLD.is_default
-        OR NEW.parent_location_id IS DISTINCT FROM OLD.parent_location_id THEN
+        OR NEW.parent_location_id IS DISTINCT FROM OLD.parent_location_id
+        OR (pg_catalog.to_jsonb(NEW) - ARRAY['id','created_at','updated_at'])
+          IS DISTINCT FROM (pg_catalog.to_jsonb(OLD) - ARRAY['id','created_at','updated_at']) THEN
         RAISE EXCEPTION 'default inventory location identity is immutable outside the governed tenant-transfer rebind'
           USING ERRCODE = '55000';
       END IF;
@@ -97,7 +99,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.factoryos_validate_inventory_location_parent() IS
-  'Validates location parent scope and default-location identity; permits only a transaction-local exact-schema transfer to rebind a generated default location ID while preserving tenant/factory/default key.';
+  'Validates location parent scope and default-location identity; permits a session-role-authorized exact-schema transfer to rebind a generated default location ID and copy source timestamps while preserving every other location attribute.';
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('216_saas_transfer_inventory_location_identity_rebind', NULL)
