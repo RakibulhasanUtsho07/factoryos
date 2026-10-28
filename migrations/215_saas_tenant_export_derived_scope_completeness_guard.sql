@@ -83,10 +83,6 @@ ON CONFLICT (data_category, relation_name) DO NOTHING;
 -- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
 -- have not yet been assigned a supported export adapter/category, so a generic
 -- export must fail closed rather than silently omit them.
- to include tenant-owned relations
--- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
--- have not yet been assigned a supported export adapter/category, so a generic
--- export must fail closed rather than silently omit them.
 CREATE OR REPLACE FUNCTION factoryos_governance.tenant_export_category_has_excluded_rows(
   p_category text,
   p_adapter_relations text[]
