@@ -321,6 +321,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
       for (const table of this.dependencyOrder(allTables)) {
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
+        if (table === 'inventory_locations') {
+          await this.importInventoryLocations(client, input.tenantId, keys);
+          continue;
+        }
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
         const projectionSql = keys.map((key) =>
           table === 'business_blueprints' && key === 'current_version_id'
@@ -542,9 +546,106 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return columns;
   }
 
+  private async importInventoryLocations(
+    client: PoolClient,
+    tenantId: string,
+    keys: string[],
+  ): Promise<void> {
+    const table = 'inventory_locations';
+    const defaultCountResult = await client.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage " +
+        "WHERE table_name = $1 AND (row_payload->>'is_default')::boolean IS TRUE",
+      [table],
+    );
+    const defaultCount = Number(defaultCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(defaultCount) || defaultCount < 0) {
+      throw new ConflictException('Source inventory-location default count is invalid');
+    }
+
+    if (defaultCount > 0) {
+      const savepoint = 'factoryos_inventory_location_rebind';
+      await client.query('SAVEPOINT ' + savepoint);
+      try {
+        await client.query(
+          "SELECT set_config('app.saas_tenant_transfer_import', 'on', true)",
+        );
+        const setList = keys
+          .map((key) => 'target_row.' + this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
+          .join(', ');
+        const rebound = await client.query<{ id: string }>(
+          'UPDATE public.inventory_locations AS target_row SET ' + setList + ' ' +
+          'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+          'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.inventory_locations, staged.row_payload) AS source_row ' +
+          'WHERE staged.table_name = $1 ' +
+          'AND source_row.is_default IS TRUE ' +
+          'AND target_row.tenant_id = $2::uuid ' +
+          'AND target_row.factory_id = source_row.factory_id ' +
+          'AND target_row.is_default IS TRUE ' +
+          'AND target_row.location_code = source_row.location_code ' +
+          'RETURNING target_row.id::text AS id',
+          [table, tenantId],
+        );
+        if (rebound.rowCount !== defaultCount) {
+          throw new ConflictException(
+            'Target factory-created default locations do not match the source inventory-location manifest',
+          );
+        }
+        await client.query("SELECT set_config('app.saas_tenant_transfer_import', '', true)");
+        await client.query('RELEASE SAVEPOINT ' + savepoint);
+      } catch (error) {
+        await client.query('ROLLBACK TO SAVEPOINT ' + savepoint).catch(() => undefined);
+        await client.query('RELEASE SAVEPOINT ' + savepoint).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    const nonDefaultCountResult = await client.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage " +
+        "WHERE table_name = $1 AND (row_payload->>'is_default')::boolean IS DISTINCT FROM TRUE",
+      [table],
+    );
+    const nonDefaultCount = Number(nonDefaultCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(nonDefaultCount) || nonDefaultCount < 0) {
+      throw new ConflictException('Source inventory-location count is invalid');
+    }
+    if (nonDefaultCount === 0) return;
+
+    const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
+    const projectionSql = keys.map((key) => 'source_row.' + this.quoteIdentifier(key)).join(', ');
+    const inserted = await client.query(
+      'WITH RECURSIVE location_hierarchy(sequence, row_payload, location_id, parent_location_id, depth) AS (' +
+        'SELECT staged.sequence, staged.row_payload, (staged.row_payload->>\'id\')::uuid, ' +
+          'NULLIF(staged.row_payload->>\'parent_location_id\', \'\')::uuid, 0 ' +
+        'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+        'WHERE staged.table_name = $1 ' +
+          'AND (staged.row_payload->>\'parent_location_id\' IS NULL OR staged.row_payload->>\'parent_location_id\' = \'\') ' +
+        'UNION ALL ' +
+        'SELECT child.sequence, child.row_payload, (child.row_payload->>\'id\')::uuid, ' +
+          'NULLIF(child.row_payload->>\'parent_location_id\', \'\')::uuid, parent.depth + 1 ' +
+        'FROM pg_temp.factoryos_transfer_stage AS child ' +
+        'JOIN location_hierarchy AS parent ' +
+          'ON NULLIF(child.row_payload->>\'parent_location_id\', \'\')::uuid = parent.location_id ' +
+        'WHERE child.table_name = $1 ' +
+          'AND NULLIF(child.row_payload->>\'parent_location_id\', \'\') IS NOT NULL' +
+      ') ' +
+      'INSERT INTO public.inventory_locations (' + columnSql + ') ' +
+      'SELECT ' + projectionSql + ' ' +
+      'FROM location_hierarchy AS staged ' +
+      'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.inventory_locations, staged.row_payload) AS source_row ' +
+      'WHERE source_row.is_default IS DISTINCT FROM TRUE ' +
+      'ORDER BY staged.depth, staged.sequence',
+      [table],
+    );
+    if (inserted.rowCount !== nonDefaultCount) {
+      throw new ConflictException(
+        'Target inventory locations could not be imported in parent-before-child order',
+      );
+    }
+  }
+
   private dependencyOrder(tables: string[]): string[] {
     const preferred = [
-      'legal_entities', 'factories',
+      'legal_entities', 'factories', 'inventory_locations',
       'business_blueprints', 'business_blueprint_versions',
       'business_entities', 'business_relations',
       'business_processes', 'business_process_steps',
