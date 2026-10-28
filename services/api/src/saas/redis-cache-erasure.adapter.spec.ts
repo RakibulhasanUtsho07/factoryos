@@ -24,6 +24,7 @@ describe('RedisCacheErasureAdapter', () => {
     get: jest.Mock;
     set: jest.Mock;
     del: jest.Mock;
+    sendCommand: jest.Mock;
   };
   let redis: {
     getClient: jest.Mock;
@@ -113,6 +114,13 @@ describe('RedisCacheErasureAdapter', () => {
         return 'OK';
       }),
       del: jest.fn(async (key: string) => Number(values.delete(key) || fences.delete(key))),
+      sendCommand: jest.fn(async (args: string[]) => {
+        if (args[0] === 'BGREWRITEAOF') return 'Background append only file rewriting started';
+        if (args[0] === 'INFO' && args[1] === 'persistence') {
+          return 'aof_rewrite_in_progress:0\naof_rewrite_scheduled:0\naof_last_bgrewrite_status:ok\n';
+        }
+        throw new Error('unexpected Redis command in test: ' + args.join(' '));
+      }),
     };
 
     redis = {
