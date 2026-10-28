@@ -10,8 +10,8 @@ This is an orchestration and contract change. It is **not** proof that all exter
 
 Every `SaasTenantExternalDataPropagationAdapter.prepare()` result must include:
 
-- A complete `resources` identity list with resource kind, opaque resource reference and optional immutable version/generation reference.
-- `manifestDigest`, computed as SHA-256 of the JSON form of `canonicalizeSaasExternalPropagationResources(resources)`. The canonical form normalizes missing versions to `null` and bytewise sorts by resource kind, reference and version reference.
+- A complete `resources` identity list with resource kind, opaque resource reference, optional immutable version/generation reference, and optional SHA-256 content digest captured from persisted provider bytes.
+- `manifestDigest`, computed as SHA-256 of the JSON form of `canonicalizeSaasExternalPropagationResources(resources)`. The canonical form normalizes missing version/content digests to `null` and bytewise sorts by resource kind, reference, version reference and content digest.
 - A `plannedCopies` value exactly equal to the number of identities, a semantic `adapterVersion`, a `resourceClass`, bounded enumeration/batch limits, a non-secret `policyVersions` object and an opaque `planReference`.
 
 The service independently checks the count, digest, duplicates, reference formats, adapter metadata and policy limits. The adapter implementation exposes its own semantic `adapterVersion`; the plan version must match it on the first attempt and every retry, so a deployment cannot silently run a different adapter build against an already sealed identity set. A plan with a digest that does not match its identity array is rejected before mutation. Resources are capped at 100,000 per target and 32 MiB of serialized identity metadata in this execution path. Database item inserts are chunked at the adapter-declared maximum batch size (never above 1,000).
