@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
 import { SaasTransferDatasetCategory as Category } from './dto/create-saas-schema-compatibility-rule.dto';
