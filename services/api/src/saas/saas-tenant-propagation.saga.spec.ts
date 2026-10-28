@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
-import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
+import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
@@ -30,6 +30,12 @@ describe('SaasTenantPropagationService external saga', () => {
   const iam = { authorize: jest.fn<(...args: unknown[]) => Promise<void>>() };
   const audit = { recordWithClient: jest.fn<(...args: unknown[]) => Promise<string>>() };
   const storedReceipts: Record<string, unknown>[] = [];
+  const storedResourceManifests: Record<string, unknown>[] = [];
+  const storedResourceItems: Record<string, unknown>[] = [];
+  const storedResourceEvents: Record<string, unknown>[] = [];
+  let operationSequence = 0;
+  let firstDeleteIntentOrder = 0;
+  let firstEraseOrder = 0;
   const adapterMocks: ReturnType<typeof createAdapter>[] = [];
   let service: SaasTenantPropagationService;
 
@@ -46,9 +52,25 @@ describe('SaasTenantPropagationService external saga', () => {
     adapter.isConfigured.mockResolvedValue(true);
     adapter.prepare.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
-      return { manifestDigest: 'a'.repeat(64), plannedCopies: '2', planReference: 'plan.' + input.target.targetId };
+      const resources = [
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.1', resourceVersionReference: null },
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.2', resourceVersionReference: null },
+      ];
+      return {
+        manifestDigest: digestSaasExternalPropagationResources(resources),
+        plannedCopies: String(resources.length),
+        planReference: 'plan.' + input.target.targetId,
+        adapterVersion: '1.0.0',
+        resourceClass: 'OBJECT_COPY',
+        maxPageSize: 500,
+        maxBatchSize: 500,
+        policyVersions: { deletionPolicy: '1.0.0' },
+        resources,
+      };
     });
     adapter.erase.mockImplementation(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstEraseOrder === 0) firstEraseOrder = operationSequence;
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
       return { deletedCopies: input.plan.plannedCopies, manifestDigest: input.plan.manifestDigest,
         providerReceiptReference: 'receipt.' + input.target.targetId };
@@ -65,6 +87,12 @@ describe('SaasTenantPropagationService external saga', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     storedReceipts.length = 0;
+    storedResourceManifests.length = 0;
+    storedResourceItems.length = 0;
+    storedResourceEvents.length = 0;
+    operationSequence = 0;
+    firstDeleteIntentOrder = 0;
+    firstEraseOrder = 0;
     adapterMocks.length = 0;
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
@@ -105,6 +133,47 @@ describe('SaasTenantPropagationService external saga', () => {
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifests')) {
+        storedResourceManifests.push({
+          tenant_id: p[0], id: p[1], request_id: p[2], run_id: p[3], request_version: p[4],
+          target_id: p[5], store_kind: p[6], adapter_key: p[7], adapter_version: p[8],
+          resource_class: p[9], max_page_size: p[10], max_batch_size: p[11],
+          source_export_digest: p[12], manifest_digest: p[13], resource_count: p[14],
+          policy_versions: JSON.parse(String(p[15])), created_by_user_id: p[16],
+        });
+        return { rows: [{ id: p[1] }] };
+      }
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifest_items')) {
+        const manifestId = String(p[1]);
+        const rows = JSON.parse(String(p[2])) as Record<string, unknown>[];
+        storedResourceItems.push(...rows.map((row) => ({ ...row, tenant_id: p[0], manifest_id: manifestId })));
+        return { rows: [] };
+      }
+      if (sql.includes("UPDATE saas_tenant_external_propagation_manifests SET state='SEALED'")) {
+        return { rows: [{ id: p[1] }] };
+      }
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_resource_events')) {
+        const manifestId = String(p[1]);
+        const outcomeCode = String(p[2]);
+        if (outcomeCode === 'DELETE_REQUESTED') {
+          operationSequence += 1;
+          if (firstDeleteIntentOrder === 0) firstDeleteIntentOrder = operationSequence;
+        }
+        const items = storedResourceItems.filter((item) => item.manifest_id === manifestId);
+        storedResourceEvents.push(...items.map((item) => ({
+          manifest_id: manifestId,
+          resource_ordinal: item.resource_ordinal,
+          resource_identity_digest: item.resource_identity_digest,
+          outcome_code: outcomeCode,
+          provider_receipt_reference: p[3],
+          verification_reference: p[4],
+          verified_manifest_digest: p[5],
+          residual_count: p[6],
+          failure_code: p[7],
+          residual_reason: p[8],
+        })));
+        return { rows: [{ inserted_count: items.length }] };
+      }
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_runs')) {
         const manifest = JSON.parse(String(p[6])) as Record<string, unknown>;
         return { rows: [{
@@ -116,7 +185,7 @@ describe('SaasTenantPropagationService external saga', () => {
         }] };
       }
       if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: [...storedReceipts] };
-      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) return { rows: [] };
+      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) return { rows: [{ run_id: p[2] }] };
       if (sql.includes('SELECT COALESCE(MAX(attempt_no),0)+1 AS attempt_no')) {
         const targetId = String(p[3]);
         return { rows: [{ attempt_no: storedReceipts.filter((row) => row.target_id === targetId).length + 1 }] };
@@ -163,6 +232,14 @@ describe('SaasTenantPropagationService external saga', () => {
         verifiedTargets: REQUIRED_EXTERNAL_STORE_KINDS.length, plannedCopies: '16', deletedCopies: '16', residualCopies: '0' },
     });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedResourceManifests).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedResourceItems).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'PREPARED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETE_REQUESTED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'VERIFIED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(firstDeleteIntentOrder).toBeGreaterThan(0);
+    expect(firstEraseOrder).toBeGreaterThan(firstDeleteIntentOrder);
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
       expect(adapter.erase).toHaveBeenCalledTimes(1);
