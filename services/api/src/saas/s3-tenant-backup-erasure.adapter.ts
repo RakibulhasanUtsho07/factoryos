@@ -29,6 +29,10 @@ const MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/;
 const SAFE_VERSION = /^(?:null|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$/;
+function isSafeVersionReference(value: string): boolean {
+  return SAFE_VERSION.test(value) && !value.includes('://')
+    && !/(secret|password|credential|access[-_]?key|token)/i.test(value);
+}
 const CATEGORY_VALUES = new Set(Object.values(SaasTransferDatasetCategory));
 
 interface BackupS3Config {
@@ -237,7 +241,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       const batch = versions.slice(offset, offset + 4);
       const identities = await Promise.all(batch.map(async (version) => {
         assertSafeBackupKey(input.tenantId, input.categories, version.key);
-        if (!SAFE_VERSION.test(version.versionId)) {
+        if (!isSafeVersionReference(version.versionId)) {
           throw new ConflictException('Backup inventory contains an unsupported version identifier');
         }
         if (version.deleteMarker) {
@@ -408,7 +412,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     const seen = new Set<string>();
     for (const resource of plan.resources) {
       assertSafeBackupKey(tenantId, categories, resource.resourceReference);
-      if (!SAFE_VERSION.test(resource.resourceVersionReference ?? '')
+      if (!isSafeVersionReference(resource.resourceVersionReference ?? '')
         || ![RESOURCE_VERSION, RESOURCE_DELETE_MARKER].includes(resource.resourceKind)) {
         throw new ConflictException('Backup erasure plan contains an unsupported version identity');
       }
@@ -478,7 +482,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
           }
           const identity: VersionIdentity = { key, versionId, deleteMarker: match[1]!.toLowerCase() === 'deletemarker' };
           assertSafeBackupKey(tenantId, categories, identity.key);
-          if (!identity.key.startsWith(prefix) || !SAFE_VERSION.test(identity.versionId)) {
+          if (!identity.key.startsWith(prefix) || !isSafeVersionReference(identity.versionId)) {
             throw new ServiceUnavailableException('Backup provider returned a version outside the approved tenant scope');
           }
           const keyForSet = this.identityKey(identity);
@@ -569,7 +573,8 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
         }
         hash.update(next.value);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
       throw new ServiceUnavailableException('Backup object version could not be streamed to completion');
     } finally {
       reader.releaseLock();
