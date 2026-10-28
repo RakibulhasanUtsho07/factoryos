@@ -207,8 +207,9 @@ CREATE POLICY saas_tenant_external_propagation_manifest_items_tenant_enforce
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_external_propagation_manifest_item()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
-DECLARE manifest_state varchar(12);
-DECLARE expected_count bigint;
+DECLARE
+  manifest_state varchar(12);
+  expected_count bigint;
 BEGIN
   IF TG_OP<>'INSERT' THEN
     RAISE EXCEPTION 'external resource manifest items are immutable' USING ERRCODE='55000';
