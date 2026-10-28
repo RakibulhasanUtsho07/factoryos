@@ -13,13 +13,13 @@ import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-
 import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import {
-  digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
-  SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
+  canonicalizeSaasExternalPropagationResources, digestSaasExternalPropagationResources,
+  REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
 } from './saas-tenant-propagation.adapters';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
-  SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter,
-  SaasTenantExternalDataTarget,
+  SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
+  SaasTenantExternalDataPropagationAdapter, SaasTenantExternalDataTarget,
 } from './saas-tenant-propagation.adapters';
 
 type ErasureRequestRow = QueryResultRow & {
@@ -617,15 +617,192 @@ export class SaasTenantPropagationService {
     return { items: result.rows.map((row) => this.mapRun(row)), count: result.rows.length, limit };
   }
 
-  private async persistRunManifest(tenantId: string, actorUserId: string, requestId: string, runId: string, manifest: Record<string, unknown>) {
+  private async persistResourceManifestAndRunPlan(input: {
+    tenantId: string;
+    actorUserId: string;
+    requestId: string;
+    requestVersion: number;
+    runId: string;
+    target: SaasTenantExternalDataTarget;
+    plan: SaasExternalPropagationPlan;
+    sourceExportDigest: string;
+    currentManifest: Record<string, unknown>;
+  }): Promise<{ manifestId: string; externalManifest: Record<string, unknown> }> {
+    const manifestId = randomUUID();
+    const canonicalResources = canonicalizeSaasExternalPropagationResources(input.plan.resources);
+    const resourceRows = canonicalResources.map((resource, index) => {
+      const identityDigest = this.hash({
+        resourceKind: resource.resourceKind,
+        resourceReference: resource.resourceReference,
+        resourceVersionReference: resource.resourceVersionReference,
+      });
+      return {
+        resource_ordinal: index + 1,
+        resource_kind: resource.resourceKind,
+        resource_identity_digest: identityDigest,
+        resource_reference: resource.resourceReference,
+        resource_version_reference: resource.resourceVersionReference,
+        operation_key: 'op.' + this.hash({
+          tenantId: input.tenantId, requestId: input.requestId, runId: input.runId,
+          targetId: input.target.targetId, sourceExportDigest: input.sourceExportDigest,
+          resourceIdentityDigest: identityDigest,
+        }),
+      };
+    });
+    const planEntry = {
+      resourceManifestId: manifestId,
+      manifestDigest: input.plan.manifestDigest,
+      plannedCopies: input.plan.plannedCopies,
+      planReference: input.plan.planReference,
+      storeKind: input.target.storeKind,
+      adapterKey: input.target.adapterKey,
+      configReference: input.target.configReference,
+      adapterVersion: input.plan.adapterVersion,
+      resourceClass: input.plan.resourceClass,
+    };
+    const externalManifest = {
+      ...input.currentManifest,
+      plans: {
+        ...this.jsonObject(input.currentManifest.plans ?? {}),
+        [input.target.targetId]: planEntry,
+      },
+    };
+
     await this.database.transaction(async (client) => {
-      await this.lockTenant(client, tenantId);
-      await client.query(
-        `UPDATE saas_tenant_external_propagation_runs SET external_manifest=$4::jsonb
-         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 AND status='RUNNING'`,
-        [tenantId, requestId, runId, JSON.stringify(manifest)],
+      await this.lockTenant(client, input.tenantId);
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO saas_tenant_external_propagation_manifests
+         (tenant_id,id,request_id,run_id,request_version,target_id,store_kind,adapter_key,adapter_version,
+          resource_class,max_page_size,max_batch_size,source_export_digest,manifest_digest,resource_count,
+          policy_versions,created_by_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)
+         RETURNING id::text AS id`,
+        [input.tenantId, manifestId, input.requestId, input.runId, input.requestVersion,
+          input.target.targetId, input.target.storeKind, input.target.adapterKey, input.plan.adapterVersion,
+          input.plan.resourceClass, input.plan.maxPageSize, input.plan.maxBatchSize,
+          input.sourceExportDigest, input.plan.manifestDigest, resourceRows.length,
+          JSON.stringify(input.plan.policyVersions), input.actorUserId],
       );
-    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-plan:' + tenantId + ':' + requestId + ':' + runId });
+      if (!inserted.rows[0]) throw new ServiceUnavailableException('Resource manifest creation was not acknowledged');
+
+      for (let offset = 0; offset < resourceRows.length; offset += input.plan.maxBatchSize) {
+        const batch = resourceRows.slice(offset, offset + input.plan.maxBatchSize);
+        await client.query(
+          `INSERT INTO saas_tenant_external_propagation_manifest_items
+           (tenant_id,manifest_id,resource_ordinal,resource_kind,resource_identity_digest,
+            resource_reference,resource_version_reference,operation_key)
+           SELECT $1,$2,x.resource_ordinal,x.resource_kind,x.resource_identity_digest,
+                  x.resource_reference,x.resource_version_reference,x.operation_key
+           FROM jsonb_to_recordset($3::jsonb) AS x(
+             resource_ordinal integer,resource_kind text,resource_identity_digest text,
+             resource_reference text,resource_version_reference text,operation_key text
+           )
+           ORDER BY x.resource_ordinal`,
+          [input.tenantId, manifestId, JSON.stringify(batch)],
+        );
+      }
+
+      const sealed = await client.query<{ id: string }>(
+        `UPDATE saas_tenant_external_propagation_manifests SET state='SEALED'
+         WHERE tenant_id=$1 AND id=$2 AND state='STAGING' RETURNING id::text AS id`,
+        [input.tenantId, manifestId],
+      );
+      if (!sealed.rows[0]) throw new ServiceUnavailableException('Resource manifest could not be durably sealed');
+
+      if (resourceRows.length > 0) {
+        await this.insertResourceEventsWithClient(client, {
+          tenantId: input.tenantId, manifestId, expectedResourceCount: resourceRows.length,
+          outcomeCode: 'PREPARED', providerReceiptReference: null, verificationReference: null,
+          verifiedManifestDigest: null, residualCount: '0', failureCode: null, residualReason: null,
+        });
+      }
+
+      const runUpdated = await client.query<{ run_id: string }>(
+        `UPDATE saas_tenant_external_propagation_runs SET external_manifest=$4::jsonb
+         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 AND status='RUNNING'
+         RETURNING run_id::text AS run_id`,
+        [input.tenantId, input.requestId, input.runId, JSON.stringify(externalManifest)],
+      );
+      if (!runUpdated.rows[0]) {
+        throw new ConflictException('Propagation run stopped before its sealed resource manifest could be attached');
+      }
+    }, { tenantId: input.tenantId, userId: input.actorUserId,
+      advisoryLockKey: 'saas-resource-manifest:' + input.tenantId + ':' + input.runId + ':' + input.target.targetId });
+
+    return { manifestId, externalManifest };
+  }
+
+  private async appendResourceEvents(input: {
+    tenantId: string;
+    actorUserId: string;
+    manifestId: string;
+    expectedResourceCount: number;
+    outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE';
+    providerReceiptReference: string | null;
+    verificationReference: string | null;
+    verifiedManifestDigest: string | null;
+    residualCount: string;
+    failureCode: string | null;
+    residualReason: string | null;
+  }) {
+    await this.database.transaction(async (client) => {
+      await this.lockTenant(client, input.tenantId);
+      await this.insertResourceEventsWithClient(client, input);
+    }, { tenantId: input.tenantId, userId: input.actorUserId,
+      advisoryLockKey: 'saas-resource-events:' + input.tenantId + ':' + input.manifestId });
+  }
+
+  private async insertResourceEventsWithClient(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      manifestId: string;
+      expectedResourceCount: number;
+      outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE';
+      providerReceiptReference: string | null;
+      verificationReference: string | null;
+      verifiedManifestDigest: string | null;
+      residualCount: string;
+      failureCode: string | null;
+      residualReason: string | null;
+    },
+  ) {
+    const result = await client.query<{ inserted_count: string | number }>(
+      `WITH latest AS (
+         SELECT DISTINCT ON (e.resource_id) e.resource_id,e.attempt_no,e.event_no,e.outcome_code
+         FROM saas_tenant_external_propagation_resource_events e
+         WHERE e.tenant_id=$1 AND e.manifest_id=$2
+         ORDER BY e.resource_id,e.attempt_no DESC,e.event_no DESC
+       ), inserted AS (
+         INSERT INTO saas_tenant_external_propagation_resource_events
+           (tenant_id,manifest_id,resource_id,resource_identity_digest,manifest_digest,
+            attempt_no,event_no,outcome_code,provider_receipt_reference,verification_reference,
+            verified_manifest_digest,residual_count,failure_code,residual_reason)
+         SELECT i.tenant_id,i.manifest_id,i.id,i.resource_identity_digest,m.manifest_digest,
+           CASE WHEN latest.resource_id IS NULL THEN 1
+                WHEN $3='PREPARED' AND latest.outcome_code='FAILED_RETRYABLE' THEN latest.attempt_no+1
+                ELSE latest.attempt_no END,
+           CASE WHEN latest.resource_id IS NULL
+                  OR ($3='PREPARED' AND latest.outcome_code='FAILED_RETRYABLE') THEN 1
+                ELSE latest.event_no+1 END,
+           $3,$4,$5,$6,$7,$8,$9
+         FROM saas_tenant_external_propagation_manifest_items i
+         JOIN saas_tenant_external_propagation_manifests m
+           ON m.tenant_id=i.tenant_id AND m.id=i.manifest_id AND m.state='SEALED'
+         LEFT JOIN latest ON latest.resource_id=i.id
+         WHERE i.tenant_id=$1 AND i.manifest_id=$2
+         ORDER BY i.resource_ordinal
+         RETURNING id
+       )
+       SELECT count(*)::integer AS inserted_count FROM inserted`,
+      [input.tenantId, input.manifestId, input.outcomeCode, input.providerReceiptReference,
+        input.verificationReference, input.verifiedManifestDigest, input.residualCount,
+        input.failureCode, input.residualReason],
+    );
+    const insertedCount = Number(result.rows[0]?.inserted_count ?? 0);
+    if (insertedCount !== input.expectedResourceCount) {
+      throw new ServiceUnavailableException('Per-resource erasure event was not appended for every manifest identity');
+    }
   }
 
   private async insertReceipt(input: {
