@@ -27,6 +27,55 @@ WHERE outcome_code IS NULL
    OR resource_class IS NULL
    OR policy_versions IS NULL
    OR completed_at IS NULL;
+
+-- Classify historical failures using their persisted per-target plan when present.
+-- Older versions also wrote pseudo-markers such as "unverified-scope:..." or
+-- "residual-count:..." into residual_manifest. Those are not provider resource IDs:
+-- preserve the conservative counts/reason, but remove fabricated identifiers.
+UPDATE public.saas_tenant_external_propagation_receipts AS receipt
+SET manifest_kind = CASE
+      WHEN jsonb_typeof(run.external_manifest->'plans'->receipt.target_id) = 'object'
+       AND run.external_manifest #>> ARRAY['plans',receipt.target_id,'manifestDigest'] = receipt.manifest_digest
+       AND run.external_manifest #>> ARRAY['plans',receipt.target_id,'plannedCopies'] = receipt.planned_copies::text
+        THEN 'RESOURCE_IDENTITIES'
+      ELSE 'SCOPE_INTENT'
+    END,
+    residual_manifest = COALESCE((
+      SELECT jsonb_agg(item.reference ORDER BY item.ordinality)
+      FROM jsonb_array_elements_text(receipt.residual_manifest) WITH ORDINALITY AS item(reference, ordinality)
+      WHERE item.reference !~ '^(unverified-scope|residual-count|not-executed|unexecuted-count):'
+    ), '[]'::jsonb),
+    status = CASE
+      WHEN receipt.status = 'RESIDUALS' AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(receipt.residual_manifest) AS item(reference)
+        WHERE item.reference !~ '^(unverified-scope|residual-count|not-executed|unexecuted-count):'
+      ) THEN 'FAILED'
+      ELSE receipt.status
+    END,
+    failure_code = CASE
+      WHEN receipt.status = 'RESIDUALS' AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(receipt.residual_manifest) AS item(reference)
+        WHERE item.reference !~ '^(unverified-scope|residual-count|not-executed|unexecuted-count):'
+      ) THEN COALESCE(receipt.failure_code, 'LEGACY_RESIDUAL_SCOPE_UNVERIFIED')
+      ELSE receipt.failure_code
+    END,
+    residual_reason = CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(receipt.residual_manifest) AS item(reference)
+        WHERE item.reference ~ '^(unverified-scope|residual-count|not-executed|unexecuted-count):'
+      ) THEN COALESCE(receipt.residual_reason,
+        'Legacy receipt contained a synthetic scope marker rather than provider resource identifiers; independent read-back is required.')
+      ELSE receipt.residual_reason
+    END
+FROM public.saas_tenant_external_propagation_runs AS run
+WHERE run.tenant_id = receipt.tenant_id
+  AND run.request_id = receipt.request_id
+  AND run.run_id = receipt.run_id
+  AND receipt.status <> 'VERIFIED';
+
 ALTER TABLE public.saas_tenant_external_propagation_receipts ENABLE TRIGGER USER;
 
 ALTER TABLE public.saas_tenant_external_propagation_receipts
