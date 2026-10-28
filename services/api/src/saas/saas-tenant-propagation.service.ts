@@ -68,6 +68,16 @@ class ExternalPropagationDispositionError extends Error {
   }
 }
 
+type ExternalTargetReadiness = {
+  adapter?: SaasTenantExternalDataPropagationAdapter;
+  preflight?: SaasExternalPropagationPreflight;
+  plan?: SaasExternalPropagationPlan;
+  outcome?: Exclude<SaasExternalPropagationOutcome, 'COMPLETED'>;
+  failureCode?: string;
+  reason?: string;
+  preexistingPlan: boolean;
+};
+
 const CATEGORY_VALUES = Object.values(SaasTransferDatasetCategory);
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
