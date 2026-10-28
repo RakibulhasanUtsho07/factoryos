@@ -64,22 +64,31 @@ export interface SaasExternalPropagationVerification {
 export interface SaasTenantExternalDataPropagationAdapter {
   readonly storeKind: SaasExternalStoreKind;
   readonly adapterKey: string;
+  /** Semver-like immutable implementation version; written into every receipt. */
+  readonly adapterVersion: string;
 
   /** Resolves the opaque config reference through deployment secret/config management. */
   isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean>;
 
   /**
-   * Enumerate every known copy for the tenant/category scope and snapshot the exact identity set.
-   * Adapters must include replicas, versioned objects, tombstones, vector metadata and delayed-delete
-   * queues applicable to their store; incomplete enumeration must reject the request.
+   * Non-destructive capability/policy preflight. Page and batch sizes are hard upper bounds;
+   * the orchestrator rejects unbounded, missing, or out-of-range declarations.
+   */
+  preflight(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPreflight>;
+
+  /**
+   * Dry-run: enumerate every known copy for the tenant/category scope and snapshot exact identities.
+   * This operation must be non-destructive and use bounded pages/batches. Include applicable
+   * replicas, object versions, tombstones, vector metadata and delayed-delete queues; incomplete
+   * enumeration must reject the request.
    */
   prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan>;
 
   /**
-   * Idempotently delete exactly the prepared identities. Retrying the same run/target key must
-   * reconcile the prior attempt instead of widening scope or double-counting removals.
+   * Execute only the prepared identities. Retrying the same run/target key must reconcile the
+   * prior attempt instead of widening scope or double-counting removals.
    */
-  erase(input: SaasExternalPropagationContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
+  execute(input: SaasExternalPropagationContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
 
   /**
    * Independently read back the scope after deletion, reconcile provider receipts and report residuals.
