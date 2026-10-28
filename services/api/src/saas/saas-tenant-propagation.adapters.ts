@@ -38,12 +38,73 @@ export interface SaasExternalPropagationContext {
   target: SaasTenantExternalDataTarget;
 }
 
+import { createHash } from 'node:crypto';
+
+export interface SaasExternalPropagationResourceIdentity {
+  /** Provider-specific resource class within one store target, never a payload. */
+  resourceKind: string;
+  /** Opaque stable provider identity; URLs, paths to credentials and secrets are forbidden. */
+  resourceReference: string;
+  /** Optional opaque immutable provider version/generation identity. */
+  resourceVersionReference?: string | null;
+}
+
+/**
+ * Canonical digest shared by adapters and the erasure ledger. Fields are normalized
+ * to an explicit nullable version reference and sorted bytewise, not locale-wise.
+ */
+export function canonicalizeSaasExternalPropagationResources(
+  resources: SaasExternalPropagationResourceIdentity[],
+): Array<{ resourceKind: string; resourceReference: string; resourceVersionReference: string | null }> {
+  return resources.map((resource) => ({
+    resourceKind: resource.resourceKind,
+    resourceReference: resource.resourceReference,
+    resourceVersionReference: resource.resourceVersionReference ?? null,
+  })).sort((left, right) => {
+    const fields: Array<keyof typeof left> = [
+      'resourceKind', 'resourceReference', 'resourceVersionReference',
+    ];
+    for (const field of fields) {
+      const a = left[field] ?? '';
+      const b = right[field] ?? '';
+      if (a < b) return -1;
+      if (a > b) return 1;
+    }
+    return 0;
+  });
+}
+
+export function digestSaasExternalPropagationResources(
+  resources: SaasExternalPropagationResourceIdentity[],
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeSaasExternalPropagationResources(resources)), 'utf8')
+    .digest('hex');
+}
+
 export interface SaasExternalPropagationPlan {
-  /** SHA-256 of the exact sorted external object/record identity manifest. */
+  /** SHA-256 of canonicalizeSaasExternalPropagationResources(resources). */
   manifestDigest: string;
+  /** Must equal resources.length; the service independently checks both values. */
   plannedCopies: string;
   /** Opaque provider-side snapshot/cursor reference; never a raw URL or credential. */
   planReference: string;
+  /** Semantic version of the exact adapter implementation/policy contract. */
+  adapterVersion: string;
+  /** Kind of resource represented in this provider's bounded identity list. */
+  resourceClass: string;
+  /** Provider's maximum identity enumeration page size. */
+  maxPageSize: number;
+  /** Maximum number of ledger identities inserted per database batch. */
+  maxBatchSize: number;
+  /** Small object of non-secret policy/version labels used for the delete decision. */
+  policyVersions: Record<string, string>;
+  /**
+   * Complete, duplicate-free identity set covered by manifestDigest. The adapter
+   * must refuse preparation if provider enumeration is incomplete; the service
+   * seals these identities before it issues any destructive operation.
+   */
+  resources: SaasExternalPropagationResourceIdentity[];
 }
 
 export interface SaasExternalPropagationDeleteReceipt {
