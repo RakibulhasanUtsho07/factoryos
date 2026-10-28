@@ -437,6 +437,7 @@ describe('SaasTenantPropagationService external saga', () => {
       status: 'FAILED', outcome_code: 'FAILED_RETRYABLE',
       manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2', residual_copies: '2',
     });
+    expect(JSON.parse(String(uncertain?.residual_manifest))).toEqual([]);
 
     const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
     expect(skipped).toMatchObject({
@@ -444,6 +445,7 @@ describe('SaasTenantPropagationService external saga', () => {
       failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', manifest_kind: 'RESOURCE_IDENTITIES',
       planned_copies: '2', residual_copies: '2',
     });
+    expect(JSON.parse(String(skipped?.residual_manifest))).toEqual([]);
     expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
     expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
     for (const adapter of adapterMocks.slice(1)) {
@@ -473,11 +475,13 @@ describe('SaasTenantPropagationService external saga', () => {
       manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2',
       deleted_copies: '2', residual_copies: '2',
     });
+    expect(JSON.parse(String(uncertain?.residual_manifest))).toEqual([]);
     const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
     expect(skipped).toMatchObject({
       status: 'FAILED', outcome_code: 'BLOCKED',
       failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', residual_copies: '2',
     });
+    expect(JSON.parse(String(skipped?.residual_manifest))).toEqual([]);
     expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
     expect(adapterMocks[0]?.verify).toHaveBeenCalledTimes(1);
     for (const adapter of adapterMocks.slice(1)) {
