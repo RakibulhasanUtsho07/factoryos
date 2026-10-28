@@ -29,21 +29,27 @@ try {
     || !/(?:^|\r?\n)aof_last_write_status:ok(?:\r?\n|$)/.test(persistence)) {
     throw new Error('Isolated Redis AOF did not become healthy');
   }
+  const configValue = (reply, expectedKey) => {
+    if (reply instanceof Map) {
+      return [...reply.entries()].find(([key]) => String(key).toLowerCase() === expectedKey)?.[1] ?? null;
+    }
+    if (Array.isArray(reply)) {
+      const index = reply.findIndex((item) => String(item).toLowerCase() === expectedKey);
+      return index >= 0 ? reply[index + 1] ?? null : null;
+    }
+    if (reply && typeof reply === 'object') {
+      const entry = Object.entries(reply).find(([key]) => key.toLowerCase() === expectedKey);
+      return entry?.[1] ?? null;
+    }
+    return null;
+  };
   const setting = await client.sendCommand(['CONFIG', 'GET', 'appendfsync']);
-  const found = setting instanceof Map
-    ? [...setting.entries()].find(([key]) => String(key).toLowerCase() === 'appendfsync')?.[1]
-    : Array.isArray(setting)
-      ? setting[setting.findIndex((item) => String(item).toLowerCase() === 'appendfsync') + 1]
-      : null;
+  const found = configValue(setting, 'appendfsync');
   if (String(found).toLowerCase() !== 'always') {
     throw new Error('Isolated Redis does not have appendfsync=always');
   }
   const saveSetting = await client.sendCommand(['CONFIG', 'GET', 'save']);
-  const saveValue = saveSetting instanceof Map
-    ? [...saveSetting.entries()].find(([key]) => String(key).toLowerCase() === 'save')?.[1]
-    : Array.isArray(saveSetting)
-      ? saveSetting[saveSetting.findIndex((item) => String(item).toLowerCase() === 'save') + 1]
-      : null;
+  const saveValue = configValue(saveSetting, 'save');
   if (String(saveValue) !== '') throw new Error('Isolated Redis RDB snapshots must be disabled');
 
   console.log('Isolated Redis erasure-fence persistence checks passed');
