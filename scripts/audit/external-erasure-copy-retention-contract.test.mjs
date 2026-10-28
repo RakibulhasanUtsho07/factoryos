@@ -8,6 +8,7 @@ const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const RUNBOOK = 'docs/external-erasure-backup-copy-retention-runbook.md';
 const CACHE_ADAPTER_DOC = 'docs/tenant-cache-erasure-adapter.md';
 const RESOURCE_LEDGER_DOC = 'docs/external-erasure-resource-ledger.md';
+const BACKUP_ADAPTER_DOC = 'docs/s3-tenant-backup-erasure-adapter.md';
 
 async function readRepoFile(path) {
   return readFile(resolve(ROOT, path), 'utf8');
@@ -59,10 +60,14 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   const runbook = await readRepoFile(RUNBOOK);
   const cacheDoc = await readRepoFile(CACHE_ADAPTER_DOC);
   const ledgerDoc = await readRepoFile(RESOURCE_LEDGER_DOC);
+  const backupDoc = await readRepoFile(BACKUP_ADAPTER_DOC);
 
   assert.match(cacheDoc, /\[external erasure backup-copy retention runbook\]\(external-erasure-backup-copy-retention-runbook\.md\)/i);
   assert.match(runbook, /\[the external-erasure resource ledger\]\(external-erasure-resource-ledger\.md\)/i);
   assert.match(ledgerDoc, /backups lack complete reviewed adapters|backups? require evidence|backup expiry\/immutability/i);
+  assert.match(runbook, /\[the S3 tenant backup adapter contract\]\(s3-tenant-backup-erasure-adapter\.md\)/i);
+  assert.match(backupDoc, /Object Lock/i);
+  assert.match(backupDoc, /does not cover|does not prove|out of scope/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
