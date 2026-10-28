@@ -1,7 +1,7 @@
 import { BadRequestException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
+import { deleteWmsPodObjectAndVerifyGone, uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 type ConfigValues = Record<string, string | undefined>;
 
@@ -149,6 +149,44 @@ describe('WMS proof-of-delivery object verification', () => {
       'pod/tenant/factory/shipment/object-4', bytes, 'image/png', fetcher as never,
     )).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+
+  it.each(['Enabled', 'Suspended'])(
+    'blocks object deletion when bucket versioning is %s',
+    async (versioningStatus) => {
+      const tenantId = 'a4000000-0000-4000-8000-000000000001';
+      const objectKey = 'pod/' + tenantId
+        + '/a4000000-0000-4000-8000-000000000002'
+        + '/a4000000-0000-4000-8000-000000000003'
+        + '/a4000000-0000-4000-8000-000000000004';
+      const fetcher = jest.fn(async () => new Response(
+        '<VersioningConfiguration><Status>' + versioningStatus + '</Status></VersioningConfiguration>',
+        { status: 200, headers: { 'content-type': 'application/xml' } },
+      ));
+
+      await expect(deleteWmsPodObjectAndVerifyGone(
+        testConfig(), tenantId, objectKey, 'a'.repeat(64), fetcher as never,
+      )).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const [url, init] = fetcher.mock.calls[0] as unknown as [URL, RequestInit];
+      expect(String(url)).toContain('?versioning=');
+      expect(init.method).toBe('GET');
+    },
+  );
+
+  it('blocks deletion when bucket versioning cannot be independently read', async () => {
+    const tenantId = 'a5000000-0000-4000-8000-000000000001';
+    const objectKey = 'pod/' + tenantId
+      + '/a5000000-0000-4000-8000-000000000002'
+      + '/a5000000-0000-4000-8000-000000000003'
+      + '/a5000000-0000-4000-8000-000000000004';
+    const fetcher = jest.fn(async () => new Response(null, { status: 403 }));
+
+    await expect(deleteWmsPodObjectAndVerifyGone(
+      testConfig(), tenantId, objectKey, 'a'.repeat(64), fetcher as never,
+    )).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
 });
