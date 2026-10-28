@@ -34,9 +34,11 @@ import { SaasPhysicalProvisioningService } from './saas-physical-provisioning.se
 import { SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS } from './saas-physical-infrastructure.adapters';
 import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-physical-infrastructure.adapter';
 import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
+import { RedisCacheErasureAdapter } from './redis-cache-erasure.adapter';
+import { TenantCacheModule } from './tenant-cache.module';
 
 @Module({
-  imports: [DatabaseModule, AuditModule, IamModule],
+  imports: [DatabaseModule, AuditModule, IamModule, TenantCacheModule],
   controllers: [
     SaasUsageController,
     SaasBillingController,
@@ -71,8 +73,11 @@ import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
     WmsPodS3ErasureAdapter,
     {
       provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
-      useFactory: (adapter: WmsPodS3ErasureAdapter) => [adapter],
-      inject: [WmsPodS3ErasureAdapter],
+      useFactory: (podAdapter: WmsPodS3ErasureAdapter, cacheAdapter: RedisCacheErasureAdapter) => [
+        podAdapter,
+        cacheAdapter,
+      ],
+      inject: [WmsPodS3ErasureAdapter, RedisCacheErasureAdapter],
     },
     { provide: SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null },
     SaasTenantPostgresDatasetSource,
