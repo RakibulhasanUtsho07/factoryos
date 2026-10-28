@@ -1,6 +1,89 @@
 BEGIN;
 
+-- Pin the API source adapter's exact table sets in a migration-owned ledger.
+-- Runtime roles receive no SELECT/INSERT/UPDATE/DELETE grants on this table;
+-- the SECURITY DEFINER guard compares the submitted source map to this ledger.
+CREATE TABLE IF NOT EXISTS factoryos_governance.tenant_export_adapter_relation_registry (
+  data_category varchar(40) NOT NULL,
+  relation_name text NOT NULL,
+  PRIMARY KEY (data_category, relation_name),
+  CONSTRAINT chk_tenant_export_adapter_registry_category CHECK (
+    data_category IN (
+      'BUSINESS_DATA', 'AUDIT_LOG', 'EVIDENCE', 'APPROVALS',
+      'EFFECTIVE_DATED_MASTER_DATA', 'AI_CONTEXT', 'LEARNING_EVALUATION',
+      'IAM_ACCESS'
+    )
+  ),
+  CONSTRAINT chk_tenant_export_adapter_registry_relation CHECK (
+    length(btrim(relation_name)) > 0
+  )
+);
+REVOKE ALL ON TABLE factoryos_governance.tenant_export_adapter_relation_registry FROM PUBLIC;
+
+INSERT INTO factoryos_governance.tenant_export_adapter_relation_registry (data_category, relation_name) VALUES
+  ('BUSINESS_DATA','legal_entities'),
+  ('BUSINESS_DATA','factories'),
+  ('BUSINESS_DATA','orders'),
+  ('BUSINESS_DATA','order_lines'),
+  ('BUSINESS_DATA','order_event_projections'),
+  ('BUSINESS_DATA','inventory_items'),
+  ('BUSINESS_DATA','inventory_stock_balances'),
+  ('BUSINESS_DATA','inventory_movements'),
+  ('BUSINESS_DATA','business_blueprints'),
+  ('BUSINESS_DATA','business_blueprint_versions'),
+  ('BUSINESS_DATA','business_entities'),
+  ('BUSINESS_DATA','business_relations'),
+  ('BUSINESS_DATA','business_processes'),
+  ('BUSINESS_DATA','business_process_steps'),
+  ('BUSINESS_DATA','business_rules'),
+  ('BUSINESS_DATA','business_terms'),
+  ('BUSINESS_DATA','business_exceptions'),
+  ('BUSINESS_DATA','business_change_proposals'),
+  ('BUSINESS_DATA','business_conflicts'),
+  ('BUSINESS_DATA','business_feedback'),
+  ('BUSINESS_DATA','growth_opportunities'),
+  ('BUSINESS_DATA','growth_scenarios'),
+  ('BUSINESS_DATA','growth_experiments'),
+  ('BUSINESS_DATA','saas_usage_events'),
+  ('BUSINESS_DATA','saas_usage_adjustments'),
+  ('BUSINESS_DATA','saas_usage_reconciliations'),
+  ('BUSINESS_DATA','saas_budget_evaluations'),
+  ('BUSINESS_DATA','saas_workload_control_events'),
+  ('BUSINESS_DATA','saas_budget_alerts'),
+  ('BUSINESS_DATA','saas_budget_alert_acknowledgements'),
+  ('BUSINESS_DATA','saas_provider_cost_events'),
+  ('BUSINESS_DATA','saas_provider_cost_reconciliations'),
+  ('AUDIT_LOG','audit_events'),
+  ('EVIDENCE','business_evidence'),
+  ('EVIDENCE','business_evidence_links'),
+  ('EVIDENCE','growth_opportunity_evidence'),
+  ('APPROVALS','approvals'),
+  ('EFFECTIVE_DATED_MASTER_DATA','risk_classes'),
+  ('EFFECTIVE_DATED_MASTER_DATA','policies'),
+  ('EFFECTIVE_DATED_MASTER_DATA','saas_usage_rate_cards'),
+  ('EFFECTIVE_DATED_MASTER_DATA','saas_usage_budgets'),
+  ('AI_CONTEXT','ai_decision_envelopes'),
+  ('AI_CONTEXT','ai_context_packages'),
+  ('AI_CONTEXT','ai_verification_runs'),
+  ('AI_CONTEXT','research_sources'),
+  ('AI_CONTEXT','research_claims'),
+  ('AI_CONTEXT','research_claim_links'),
+  ('AI_CONTEXT','research_knowledge_releases'),
+  ('AI_CONTEXT','research_relevance_mappings'),
+  ('LEARNING_EVALUATION','research_release_evaluations'),
+  ('LEARNING_EVALUATION','growth_experiment_results'),
+  ('LEARNING_EVALUATION','growth_opportunity_outcomes'),
+  ('IAM_ACCESS','tenant_memberships'),
+  ('IAM_ACCESS','roles'),
+  ('IAM_ACCESS','user_roles'),
+  ('IAM_ACCESS','role_permissions')
+ON CONFLICT (data_category, relation_name) DO NOTHING;
+
 -- Extend the category-completeness guard to include tenant-owned relations
+-- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
+-- have not yet been assigned a supported export adapter/category, so a generic
+-- export must fail closed rather than silently omit them.
+ to include tenant-owned relations
 -- whose tenant scope is derived by reviewed foreign-key lineage. Such rows
 -- have not yet been assigned a supported export adapter/category, so a generic
 -- export must fail closed rather than silently omit them.
@@ -42,6 +125,27 @@ BEGIN
     FROM pg_catalog.unnest(p_adapter_relations) AS supplied(relation_name)
   ) THEN
     RAISE EXCEPTION 'Tenant export category adapter relation set contains duplicates'
+      USING ERRCODE = '22023';
+  END IF;
+
+  -- The submitted application mapping must equal the migration-owned adapter
+  -- registry exactly; an arbitrary array cannot claim omitted rows were covered.
+  IF EXISTS (
+    SELECT supplied.relation_name
+    FROM pg_catalog.unnest(p_adapter_relations) AS supplied(relation_name)
+    EXCEPT
+    SELECT r.relation_name
+    FROM factoryos_governance.tenant_export_adapter_relation_registry r
+    WHERE r.data_category = p_category
+  ) OR EXISTS (
+    SELECT r.relation_name
+    FROM factoryos_governance.tenant_export_adapter_relation_registry r
+    WHERE r.data_category = p_category
+    EXCEPT
+    SELECT supplied.relation_name
+    FROM pg_catalog.unnest(p_adapter_relations) AS supplied(relation_name)
+  ) THEN
+    RAISE EXCEPTION 'Tenant export source adapter map differs from the reviewed database registry'
       USING ERRCODE = '22023';
   END IF;
 
