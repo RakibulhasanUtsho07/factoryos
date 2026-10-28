@@ -87,3 +87,33 @@ test('runbook explicitly distinguishes an operational contract from production d
   assert.match(source, /does not assert that production secrets, provider backups, customer copies, or controlled staging have already been tested or erased/i);
   assert.match(source, /Adapter-generated correlation identifiers are not provider-issued receipts/i);
 });
+
+const BACKUP_WRITER_FENCE_SERVICE = 'services/api/src/saas/saas-tenant-backup-writer-fence.service.ts';
+const BACKUP_WRITER_FENCE_MIGRATION = 'migrations/222_saas_tenant_backup_writer_fence_ledger.sql';
+const BACKUP_WRITER_FENCE_DOC = 'docs/s3-tenant-backup-writer-fence.md';
+
+test('backup writer-fence ledger provides crash-safe drain and database guardrails', async () => {
+  const source = await readRepoFile(BACKUP_WRITER_FENCE_SERVICE);
+  const migration = await readRepoFile(BACKUP_WRITER_FENCE_MIGRATION);
+  const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
+  for (const name of ['beginWriteOperation','finalizeWriteOperation','beginErasureFence','advanceAfterDrain',
+    'recordProviderFenceInstalled','markErasureStarted','markErasureVerified','requireRecovery',
+    'resumeAfterRecovery','releaseAfterTombstoneReplay']) {
+    assert.match(source, new RegExp('\\b' + name + '\\s*\\('), 'missing lifecycle method: ' + name);
+  }
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS saas_tenant_backup_writer_operations/i);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS saas_tenant_backup_writer_fences/i);
+  assert.match(migration, /FORCE ROW LEVEL SECURITY/i);
+  assert.match(migration, /backup writer operations are retained/i);
+  assert.match(migration, /invalid backup writer-fence lifecycle transition/i);
+  assert.match(migration, /state<>'RELEASED'/i);
+  assert.match(doc, /Provider-wide enforcement and producer integration remain release blockers/i);
+  assert.match(doc, /AS-137 \/ NFR-PROD-14 remain PARTIAL/i);
+});
+
+test('backup provider adapter remains fail-closed until the provider controller is integrated', async () => {
+  const adapter = await readRepoFile(BACKUP_ADAPTER_SOURCE);
+  const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
+  assert.match(adapter, /S3 versioning\/Object Lock do not fence new writes[\s\S]*?return false;/i);
+  assert.match(doc, /no provider control-plane adapter that applies and independently reads back the S3 write freeze is integrated/i);
+});
