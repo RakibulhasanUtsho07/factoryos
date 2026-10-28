@@ -26,16 +26,48 @@ export interface SaasTenantExternalDataTarget {
   required: boolean;
 }
 
+export type SaasExternalPropagationOutcome =
+  | 'COMPLETED'
+  | 'BLOCKED'
+  | 'RETAINED'
+  | 'FAILED_RETRYABLE';
+
+export type SaasExternalManifestKind = 'RESOURCE_IDENTITIES' | 'SCOPE_INTENT';
+
 export interface SaasExternalPropagationContext {
   tenantId: string;
   requestId: string;
   requestVersion: number;
   runId: string;
   categories: SaasTransferDatasetCategory[];
+  /** Immutable, latest DELETE retention-policy version captured for every category. */
+  policyVersions: Record<string, number>;
   sourceExportDigest: string;
   sourceManifest: Record<string, unknown>;
   idempotencyKey: string;
   target: SaasTenantExternalDataTarget;
+}
+
+/** A non-destructive capability/policy probe; it never authorizes mutation by itself. */
+export interface SaasExternalPropagationPreflight {
+  outcome: 'READY' | 'BLOCKED' | 'RETAINED';
+  resourceClass: string;
+  adapterVersion: string;
+  maxPageSize: number;
+  maxBatchSize: number;
+  reason?: string;
+}
+
+/** The exact, validated bounds that every destructive-capable adapter call must honor. */
+export interface SaasExternalPropagationExecutionLimits {
+  resourceClass: string;
+  adapterVersion: string;
+  maxPageSize: number;
+  maxBatchSize: number;
+}
+
+export interface SaasExternalPropagationExecutionContext extends SaasExternalPropagationContext {
+  executionLimits: SaasExternalPropagationExecutionLimits;
 }
 
 export interface SaasExternalPropagationPlan {
@@ -64,28 +96,37 @@ export interface SaasExternalPropagationVerification {
 export interface SaasTenantExternalDataPropagationAdapter {
   readonly storeKind: SaasExternalStoreKind;
   readonly adapterKey: string;
+  /** Semver-like immutable implementation version; written into every receipt. */
+  readonly adapterVersion: string;
 
   /** Resolves the opaque config reference through deployment secret/config management. */
   isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean>;
 
   /**
-   * Enumerate every known copy for the tenant/category scope and snapshot the exact identity set.
-   * Adapters must include replicas, versioned objects, tombstones, vector metadata and delayed-delete
-   * queues applicable to their store; incomplete enumeration must reject the request.
+   * Non-destructive capability/policy preflight. Page and batch sizes are hard upper bounds;
+   * the orchestrator rejects unbounded, missing, or out-of-range declarations.
    */
-  prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan>;
+  preflight(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPreflight>;
 
   /**
-   * Idempotently delete exactly the prepared identities. Retrying the same run/target key must
-   * reconcile the prior attempt instead of widening scope or double-counting removals.
+   * Dry-run: enumerate every known copy for the tenant/category scope and snapshot exact identities.
+   * This operation must be non-destructive and use bounded pages/batches. Include applicable
+   * replicas, object versions, tombstones, vector metadata and delayed-delete queues; incomplete
+   * enumeration must reject the request.
    */
-  erase(input: SaasExternalPropagationContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
+  prepare(input: SaasExternalPropagationExecutionContext): Promise<SaasExternalPropagationPlan>;
+
+  /**
+   * Execute only the prepared identities. Retrying the same run/target key must reconcile the
+   * prior attempt instead of widening scope or double-counting removals.
+   */
+  execute(input: SaasExternalPropagationExecutionContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
 
   /**
    * Independently read back the scope after deletion, reconcile provider receipts and report residuals.
    * VERIFIED is allowed only when the digest matches and residualCopies is exactly zero.
    */
-  verify(input: SaasExternalPropagationContext & {
+  verify(input: SaasExternalPropagationExecutionContext & {
     plan: SaasExternalPropagationPlan;
     deletion: SaasExternalPropagationDeleteReceipt;
   }): Promise<SaasExternalPropagationVerification>;
@@ -94,7 +135,7 @@ export interface SaasTenantExternalDataPropagationAdapter {
    * Recover an uncertain previous attempt using the stable idempotency key and provider-side receipt.
    * This runs before re-issuing erase after a timeout or process crash.
    */
-  recover(input: SaasExternalPropagationContext & { plan?: SaasExternalPropagationPlan }): Promise<void>;
+  recover(input: SaasExternalPropagationExecutionContext & { plan?: SaasExternalPropagationPlan }): Promise<void>;
 }
 
 export interface SaasFinanceRetentionContext {
