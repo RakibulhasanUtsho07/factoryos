@@ -127,11 +127,12 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
     if (!raw) return null;
     try {
       const url = new URL(raw);
+      const production = this.config.get<string>('NODE_ENV') === 'production';
       if (!['redis:', 'rediss:'].includes(url.protocol)
         || !url.hostname
         || url.search || url.hash
         || (url.pathname !== '' && url.pathname !== '/' && url.pathname !== '/0')
-        || (this.config.get<string>('NODE_ENV') === 'production' && url.protocol !== 'rediss:')) {
+        || (production && (url.protocol !== 'rediss:' || !url.username || !url.password))) {
         return null;
       }
       return url;
