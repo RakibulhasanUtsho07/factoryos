@@ -499,12 +499,11 @@ async function assertPodBucketUnversioned(
   }
   let xml: string;
   try {
-    xml = await response.text();
+    // Stream with a hard byte ceiling; do not buffer an untrusted provider response
+    // and then check its size after allocating the complete body.
+    xml = (await readBoundedResponse(response, 16384)).toString('utf8');
   } catch {
-    throw new ServiceUnavailableException('POD bucket versioning response could not be read');
-  }
-  if (xml.length > 16384) {
-    throw new ServiceUnavailableException('POD bucket versioning response exceeded its safety limit');
+    throw new ServiceUnavailableException('POD bucket versioning response could not be read within its safety limit');
   }
   // S3 returns an empty VersioningConfiguration when bucket versioning is off.
   // Enabled, suspended, unknown or provider-specific configurations are blocked:
