@@ -437,7 +437,7 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
           || attempt === 2) {
           throw new ConflictException('Redis cache deletion could not compact its active AOF persistence log');
         }
-        await this.waitForAofIdle(client, deadline);
+        await this.waitForAofIdle(client, deadline, false);
       }
     }
     if (!started) {
