@@ -161,9 +161,9 @@ describe('S3TenantBackupErasureAdapter', () => {
 
   afterEach(() => fetchMock.mockRestore());
 
-  it('enumerates and removes every exact object version and delete marker across same-key pagination, then verifies the scope is empty', async () => {
+  it('keeps target activation fail-closed without a runtime writer fence while testing exact version deletion directly', async () => {
     maxPageItems = 1;
-    expect(await adapter.isConfigured(target)).toBe(true);
+    expect(await adapter.isConfigured(target)).toBe(false);
     const plan = await adapter.prepare(context());
     expect(plan).toMatchObject({
       plannedCopies: '3',
