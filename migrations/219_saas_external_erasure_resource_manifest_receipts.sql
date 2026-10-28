@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_manifest_items (
   CONSTRAINT uq_saas_external_manifest_item_tenant_id UNIQUE (tenant_id,manifest_id,id),
   CONSTRAINT uq_saas_external_manifest_item_ordinal UNIQUE (tenant_id,manifest_id,resource_ordinal),
   CONSTRAINT uq_saas_external_manifest_item_identity UNIQUE (tenant_id,manifest_id,resource_identity_digest),
-  CONSTRAINT uq_saas_external_manifest_item_reference UNIQUE
+  CONSTRAINT uq_saas_external_manifest_item_reference UNIQUE NULLS NOT DISTINCT
     (tenant_id,manifest_id,resource_reference,resource_version_reference),
   CONSTRAINT uq_saas_external_manifest_item_operation_key UNIQUE (tenant_id,operation_key),
   CONSTRAINT fk_saas_external_manifest_item_manifest FOREIGN KEY (tenant_id,manifest_id)
@@ -280,16 +280,244 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_resource_events (
     AND (
       (outcome_code IN ('PREPARED','DELETE_REQUESTED')
         AND provider_receipt_reference IS NULL AND verification_reference IS NULL
-        AND verified_manifest_digest IS NULL AND failure_code IS NULL)
+        AND verified_manifest_digest IS NULL AND failure_code IS NULL
+        AND residual_reason IS NULL AND residual_count=0)
       OR (outcome_code='DELETED' AND provider_receipt_reference IS NOT NULL
         AND verification_reference IS NULL AND verified_manifest_digest IS NULL
-        AND failure_code IS NULL AND residual_count=0)
+        AND failure_code IS NULL AND residual_reason IS NULL AND residual_count=0)
       OR (outcome_code='VERIFIED' AND provider_receipt_reference IS NOT NULL
-        AND verification_reference IS NOT NULL AND verified_manifest_digest=manifest_digest
+        AND verification_reference IS NOT NULL AND verified_manifest_digest IS NOT NULL
+        AND verified_manifest_digest=manifest_digest
         AND failure_code IS NULL AND residual_count=0 AND residual_reason IS NULL)
-      OR (outcome_code IN ('BLOCKED','RETAINED') AND failure_code ~ '^[A-Z0-9_]{1,64}$'
-        AND length(btrim(residual_reason)) BETWEEN 3 AND 1000)
-      OR (outcome_code='FAILED_RETRYABLE' AND failure_code ~ '^[A-Z0-9_]{1,64}$'
+      OR (outcome_code IN ('BLOCKED','RETAINED') AND failure_code IS NOT NULL
+        AND failure_code ~ '^[A-Z0-9_]{1,64}
+    )
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_saas_external_resource_event_latest
+  ON saas_tenant_external_propagation_resource_events
+    (tenant_id,manifest_id,resource_id,attempt_no DESC,event_no DESC);
+
+ALTER TABLE saas_tenant_external_propagation_resource_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE saas_tenant_external_propagation_resource_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS saas_tenant_external_propagation_resource_events_tenant_allow
+  ON saas_tenant_external_propagation_resource_events;
+DROP POLICY IF EXISTS saas_tenant_external_propagation_resource_events_tenant_enforce
+  ON saas_tenant_external_propagation_resource_events;
+CREATE POLICY saas_tenant_external_propagation_resource_events_tenant_allow
+  ON saas_tenant_external_propagation_resource_events AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_external_propagation_resource_events_tenant_enforce
+  ON saas_tenant_external_propagation_resource_events AS RESTRICTIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+
+CREATE OR REPLACE FUNCTION factoryos_guard_saas_external_propagation_resource_event()
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
+DECLARE
+  manifest_row public.saas_tenant_external_propagation_manifests%ROWTYPE;
+  item_row public.saas_tenant_external_propagation_manifest_items%ROWTYPE;
+  previous_row public.saas_tenant_external_propagation_resource_events%ROWTYPE;
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'per-resource execution events are append-only evidence' USING ERRCODE='55000';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    NEW.tenant_id::text || ':' || NEW.manifest_id::text || ':' || NEW.resource_id::text,0));
+
+  SELECT * INTO manifest_row
+  FROM public.saas_tenant_external_propagation_manifests m
+  WHERE m.tenant_id=NEW.tenant_id AND m.id=NEW.manifest_id
+  FOR KEY SHARE;
+  SELECT * INTO item_row
+  FROM public.saas_tenant_external_propagation_manifest_items i
+  WHERE i.tenant_id=NEW.tenant_id AND i.manifest_id=NEW.manifest_id AND i.id=NEW.resource_id
+  FOR KEY SHARE;
+  IF NOT FOUND OR manifest_row.id IS NULL OR manifest_row.state<>'SEALED'
+     OR NEW.manifest_digest<>manifest_row.manifest_digest
+     OR NEW.resource_identity_digest<>item_row.resource_identity_digest THEN
+    RAISE EXCEPTION 'resource execution event must bind to one identity in an exact SEALED manifest' USING ERRCODE='55000';
+  END IF;
+
+  SELECT * INTO previous_row
+  FROM public.saas_tenant_external_propagation_resource_events e
+  WHERE e.tenant_id=NEW.tenant_id AND e.manifest_id=NEW.manifest_id
+    AND e.resource_id=NEW.resource_id
+  ORDER BY e.attempt_no DESC,e.event_no DESC
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    IF NEW.attempt_no<>1 OR NEW.event_no<>1 OR NEW.outcome_code<>'PREPARED' THEN
+      RAISE EXCEPTION 'each resource must first record attempt 1 PREPARED' USING ERRCODE='55000';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF previous_row.outcome_code IN ('VERIFIED','BLOCKED','RETAINED') THEN
+    RAISE EXCEPTION 'terminal resource outcomes cannot be extended' USING ERRCODE='55000';
+  ELSIF previous_row.outcome_code='FAILED_RETRYABLE' THEN
+    IF NEW.attempt_no<>previous_row.attempt_no+1 OR NEW.event_no<>1 OR NEW.outcome_code<>'PREPARED' THEN
+      RAISE EXCEPTION 'retryable outcomes require a new numbered PREPARED attempt for the same sealed identity' USING ERRCODE='55000';
+    END IF;
+  ELSE
+    IF NEW.attempt_no<>previous_row.attempt_no OR NEW.event_no<>previous_row.event_no+1 THEN
+      RAISE EXCEPTION 'resource events must be sequential within the current attempt' USING ERRCODE='55000';
+    END IF;
+    IF NOT (
+      previous_row.outcome_code='PREPARED' AND NEW.outcome_code IN ('DELETE_REQUESTED','BLOCKED','RETAINED','FAILED_RETRYABLE')
+      OR previous_row.outcome_code='DELETE_REQUESTED' AND NEW.outcome_code IN ('DELETED','FAILED_RETRYABLE')
+      OR previous_row.outcome_code='DELETED' AND NEW.outcome_code IN ('VERIFIED','FAILED_RETRYABLE')
+    ) THEN
+      RAISE EXCEPTION 'invalid per-resource erasure event transition: % -> %',
+        previous_row.outcome_code,NEW.outcome_code USING ERRCODE='40001';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS saas_tenant_external_propagation_resource_event_guard
+  ON saas_tenant_external_propagation_resource_events;
+CREATE TRIGGER saas_tenant_external_propagation_resource_event_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON saas_tenant_external_propagation_resource_events
+  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_external_propagation_resource_event();
+
+-- Governance evidence is protected from generic export/erasure; it must survive
+-- the data lifecycle it is intended to prove.
+INSERT INTO factoryos_governance.tenant_relation_inventory
+  (schema_name,relation_name,scope_model,data_category,export_disposition,erasure_disposition,audit_requirement,rationale)
+VALUES
+  ('public','saas_tenant_external_propagation_manifests','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Sealed exact-resource identity manifests bound to the approved erasure request, run, target, source export and policy versions.'),
+  ('public','saas_tenant_external_propagation_manifest_items','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Immutable resource identities and stable per-resource idempotency keys for external erasure.'),
+  ('public','saas_tenant_external_propagation_resource_events','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Append-only intent, provider outcome, verification, residual and recovery events for every external resource identity.')
+ON CONFLICT(schema_name,relation_name) DO UPDATE SET
+  scope_model=EXCLUDED.scope_model,data_category=EXCLUDED.data_category,
+  export_disposition=EXCLUDED.export_disposition,erasure_disposition=EXCLUDED.erasure_disposition,
+  audit_requirement=EXCLUDED.audit_requirement,rationale=EXCLUDED.rationale,
+  classified_at=clock_timestamp();
+
+INSERT INTO schema_migrations(version,checksum)
+VALUES ('219_saas_external_erasure_resource_manifest_receipts',NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+ AND residual_reason IS NOT NULL
+        AND length(btrim(residual_reason)) BETWEEN 3 AND 1000
+        AND provider_receipt_reference IS NULL AND verification_reference IS NULL
+        AND verified_manifest_digest IS NULL AND residual_count=0)
+      OR (outcome_code='FAILED_RETRYABLE' AND failure_code IS NOT NULL
+        AND failure_code ~ '^[A-Z0-9_]{1,64}
+    )
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_saas_external_resource_event_latest
+  ON saas_tenant_external_propagation_resource_events
+    (tenant_id,manifest_id,resource_id,attempt_no DESC,event_no DESC);
+
+ALTER TABLE saas_tenant_external_propagation_resource_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE saas_tenant_external_propagation_resource_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS saas_tenant_external_propagation_resource_events_tenant_allow
+  ON saas_tenant_external_propagation_resource_events;
+DROP POLICY IF EXISTS saas_tenant_external_propagation_resource_events_tenant_enforce
+  ON saas_tenant_external_propagation_resource_events;
+CREATE POLICY saas_tenant_external_propagation_resource_events_tenant_allow
+  ON saas_tenant_external_propagation_resource_events AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_external_propagation_resource_events_tenant_enforce
+  ON saas_tenant_external_propagation_resource_events AS RESTRICTIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+
+CREATE OR REPLACE FUNCTION factoryos_guard_saas_external_propagation_resource_event()
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
+DECLARE
+  manifest_row public.saas_tenant_external_propagation_manifests%ROWTYPE;
+  item_row public.saas_tenant_external_propagation_manifest_items%ROWTYPE;
+  previous_row public.saas_tenant_external_propagation_resource_events%ROWTYPE;
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'per-resource execution events are append-only evidence' USING ERRCODE='55000';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    NEW.tenant_id::text || ':' || NEW.manifest_id::text || ':' || NEW.resource_id::text,0));
+
+  SELECT * INTO manifest_row
+  FROM public.saas_tenant_external_propagation_manifests m
+  WHERE m.tenant_id=NEW.tenant_id AND m.id=NEW.manifest_id
+  FOR KEY SHARE;
+  SELECT * INTO item_row
+  FROM public.saas_tenant_external_propagation_manifest_items i
+  WHERE i.tenant_id=NEW.tenant_id AND i.manifest_id=NEW.manifest_id AND i.id=NEW.resource_id
+  FOR KEY SHARE;
+  IF NOT FOUND OR manifest_row.id IS NULL OR manifest_row.state<>'SEALED'
+     OR NEW.manifest_digest<>manifest_row.manifest_digest
+     OR NEW.resource_identity_digest<>item_row.resource_identity_digest THEN
+    RAISE EXCEPTION 'resource execution event must bind to one identity in an exact SEALED manifest' USING ERRCODE='55000';
+  END IF;
+
+  SELECT * INTO previous_row
+  FROM public.saas_tenant_external_propagation_resource_events e
+  WHERE e.tenant_id=NEW.tenant_id AND e.manifest_id=NEW.manifest_id
+    AND e.resource_id=NEW.resource_id
+  ORDER BY e.attempt_no DESC,e.event_no DESC
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    IF NEW.attempt_no<>1 OR NEW.event_no<>1 OR NEW.outcome_code<>'PREPARED' THEN
+      RAISE EXCEPTION 'each resource must first record attempt 1 PREPARED' USING ERRCODE='55000';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF previous_row.outcome_code IN ('VERIFIED','BLOCKED','RETAINED') THEN
+    RAISE EXCEPTION 'terminal resource outcomes cannot be extended' USING ERRCODE='55000';
+  ELSIF previous_row.outcome_code='FAILED_RETRYABLE' THEN
+    IF NEW.attempt_no<>previous_row.attempt_no+1 OR NEW.event_no<>1 OR NEW.outcome_code<>'PREPARED' THEN
+      RAISE EXCEPTION 'retryable outcomes require a new numbered PREPARED attempt for the same sealed identity' USING ERRCODE='55000';
+    END IF;
+  ELSE
+    IF NEW.attempt_no<>previous_row.attempt_no OR NEW.event_no<>previous_row.event_no+1 THEN
+      RAISE EXCEPTION 'resource events must be sequential within the current attempt' USING ERRCODE='55000';
+    END IF;
+    IF NOT (
+      previous_row.outcome_code='PREPARED' AND NEW.outcome_code IN ('DELETE_REQUESTED','BLOCKED','RETAINED','FAILED_RETRYABLE')
+      OR previous_row.outcome_code='DELETE_REQUESTED' AND NEW.outcome_code IN ('DELETED','FAILED_RETRYABLE')
+      OR previous_row.outcome_code='DELETED' AND NEW.outcome_code IN ('VERIFIED','FAILED_RETRYABLE')
+    ) THEN
+      RAISE EXCEPTION 'invalid per-resource erasure event transition: % -> %',
+        previous_row.outcome_code,NEW.outcome_code USING ERRCODE='40001';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS saas_tenant_external_propagation_resource_event_guard
+  ON saas_tenant_external_propagation_resource_events;
+CREATE TRIGGER saas_tenant_external_propagation_resource_event_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON saas_tenant_external_propagation_resource_events
+  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_external_propagation_resource_event();
+
+-- Governance evidence is protected from generic export/erasure; it must survive
+-- the data lifecycle it is intended to prove.
+INSERT INTO factoryos_governance.tenant_relation_inventory
+  (schema_name,relation_name,scope_model,data_category,export_disposition,erasure_disposition,audit_requirement,rationale)
+VALUES
+  ('public','saas_tenant_external_propagation_manifests','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Sealed exact-resource identity manifests bound to the approved erasure request, run, target, source export and policy versions.'),
+  ('public','saas_tenant_external_propagation_manifest_items','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Immutable resource identities and stable per-resource idempotency keys for external erasure.'),
+  ('public','saas_tenant_external_propagation_resource_events','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Append-only intent, provider outcome, verification, residual and recovery events for every external resource identity.')
+ON CONFLICT(schema_name,relation_name) DO UPDATE SET
+  scope_model=EXCLUDED.scope_model,data_category=EXCLUDED.data_category,
+  export_disposition=EXCLUDED.export_disposition,erasure_disposition=EXCLUDED.erasure_disposition,
+  audit_requirement=EXCLUDED.audit_requirement,rationale=EXCLUDED.rationale,
+  classified_at=clock_timestamp();
+
+INSERT INTO schema_migrations(version,checksum)
+VALUES ('219_saas_external_erasure_resource_manifest_receipts',NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+ AND residual_reason IS NOT NULL
         AND length(btrim(residual_reason)) BETWEEN 3 AND 1000)
     )
   )
