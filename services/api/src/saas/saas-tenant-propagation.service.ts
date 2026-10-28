@@ -164,6 +164,17 @@ export class SaasTenantPropagationService {
       const current = found.rows[0];
       if (!current) throw new NotFoundException('External data target not found');
       if (current.status !== expectedStatus) throw new ConflictException('External target status changed; reload before reviewing');
+      if (activationBinding && (
+        current.id !== activationBinding.id
+        || current.store_kind !== activationBinding.target.storeKind
+        || current.adapter_key !== activationBinding.target.adapterKey
+        || current.config_reference !== activationBinding.target.configReference
+        || current.required !== activationBinding.target.required
+        || JSON.stringify(this.parseCategories(current.categories).slice().sort())
+          !== JSON.stringify(activationBinding.target.categories.slice().sort())
+      )) {
+        throw new ConflictException('External target binding changed during adapter readiness check; reload and review again');
+      }
       if (current.registered_by_user_id === actorUserId) throw new ConflictException('Target registration and review require different actors');
       const updated = await client.query<TargetRow>(
         `UPDATE saas_tenant_external_data_targets
