@@ -30,13 +30,17 @@ services:
       - --save
       - ""
       - --appendonly
-      - "no"
+      - "yes"
+      - --appendfsync
+      - always
       - --maxmemory
       - 128mb
       - --maxmemory-policy
       - noeviction
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - factoryos_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -45,3 +49,4 @@ services:
 
 volumes:
   factoryos_postgres_data:
+  factoryos_redis_data:
