@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { S3TenantBackupErasureAdapter } from './s3-tenant-backup-erasure.adapter';
 import type { SaasExternalPropagationContext } from './saas-tenant-propagation.adapters';
 import { SaasTransferDatasetCategory as Category } from './dto/create-saas-schema-compatibility-rule.dto';
@@ -250,7 +250,7 @@ describe('S3TenantBackupErasureAdapter', () => {
 
   it('rejects version identifiers that violate the durable resource-ledger reference contract', async () => {
     versions.push({ key, versionId: 'token-version', kind: 'version', bytes: Buffer.from('must not be sealed') });
-    await expect(adapter.prepare(context())).rejects.toBeInstanceOf(ConflictException);
+    await expect(adapter.prepare(context())).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(deleted).toHaveLength(0);
   });
 
