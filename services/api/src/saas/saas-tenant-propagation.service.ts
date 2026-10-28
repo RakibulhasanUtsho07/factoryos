@@ -909,9 +909,8 @@ export class SaasTenantPropagationService {
         throw new ConflictException('Adapter plan policyVersions may contain only bounded non-secret labels');
       }
     }
-    if (!Array.isArray(plan.resources) || plan.resources.length > 1000000
-      || Buffer.byteLength(JSON.stringify(plan.resources), 'utf8') > 32 * 1024 * 1024) {
-      throw new ConflictException('Adapter plan resources must be a bounded complete identity array');
+    if (!Array.isArray(plan.resources) || plan.resources.length > 100000) {
+      throw new ConflictException('Adapter plan resources must contain at most 100,000 identities per target');
     }
     if (BigInt(this.count(plan.plannedCopies, 'plannedCopies')) !== BigInt(plan.resources.length)) {
       throw new ConflictException('Adapter plannedCopies must exactly equal the enumerable resource identity count');
@@ -936,6 +935,9 @@ export class SaasTenantPropagationService {
         throw new ConflictException('Adapter resource manifest contains duplicate provider identities');
       }
       seenIdentityDigests.add(identityDigest);
+    }
+    if (Buffer.byteLength(JSON.stringify(plan.resources), 'utf8') > 32 * 1024 * 1024) {
+      throw new ConflictException('Adapter plan resource identities must not exceed 32 MiB');
     }
     if (digestSaasExternalPropagationResources(plan.resources) !== plan.manifestDigest) {
       throw new ConflictException('Adapter manifest digest does not match the canonical resource identity set');
