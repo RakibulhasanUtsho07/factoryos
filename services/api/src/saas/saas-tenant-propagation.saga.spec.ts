@@ -43,6 +43,7 @@ describe('SaasTenantPropagationService external saga', () => {
     const adapter = {
       storeKind: kind,
       adapterKey: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      adapterVersion: '1.0.0',
       isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
       prepare: jest.fn<(...args: unknown[]) => Promise<SaasExternalPropagationPlan>>(),
       erase: jest.fn<(...args: unknown[]) => Promise<{ deletedCopies: string; manifestDigest: string; providerReceiptReference: string }>>(),
