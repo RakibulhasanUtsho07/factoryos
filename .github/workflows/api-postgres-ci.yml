@@ -177,6 +177,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/221_saas_external_propagation_legal_hold_fence.sql
 
+          echo "Reapplying the tenant backup writer-fence ledger to verify epoch, policy and lifecycle idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/222_saas_tenant_backup_writer_fence_ledger.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
