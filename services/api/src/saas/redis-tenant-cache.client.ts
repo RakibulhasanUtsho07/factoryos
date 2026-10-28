@@ -39,6 +39,7 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
       disableOfflineQueue: true,
       socket: {
         connectTimeout: timeout,
+        socketTimeout: timeout,
         reconnectStrategy: (retries) => retries < 2
           ? Math.min(250 * (retries + 1), 1000)
           : new Error('tenant cache reconnect limit reached'),
@@ -46,12 +47,12 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
       commandOptions: {
         typeMapping: { [RESP_TYPES.BLOB_STRING]: Buffer },
       },
-    });
+    }) as unknown as RedisClient;
     // node-redis requires an error listener. Deliberately do not log error objects:
     // their messages can contain provider host/config details.
     client.on('error', () => undefined);
 
-    this.connecting = (async () => {
+    const connecting = (async (): Promise<RedisClient> => {
       try {
         await client.connect();
         this.client = client;
@@ -63,8 +64,8 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
         this.connecting = null;
       }
     })();
-
-    return this.connecting;
+    this.connecting = connecting;
+    return connecting;
   }
 
   /**
