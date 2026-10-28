@@ -50,6 +50,8 @@ type PropagationReceiptRow = QueryResultRow & {
   manifest_kind: SaasExternalManifestKind;
   resource_class: string;
   adapter_version: string | null;
+  max_page_size: number | null;
+  max_batch_size: number | null;
   policy_versions: Record<string, number> | string;
   residual_reason: string | null;
   completed_at: string;
@@ -542,7 +544,7 @@ export class SaasTenantPropagationService {
         plannedCopies, deletedCopies, residualCopies, manifestDigest: planDigest,
         verifiedManifestDigest: verifiedDigest, verificationReference, providerReceiptReference,
         residualManifest, status: receiptStatus, failureCode, outcomeCode, manifestKind,
-        resourceClass, adapterVersion, policyVersions, residualReason,
+        resourceClass, adapterVersion, maxPageSize, maxBatchSize, policyVersions, residualReason,
       });
       latestReceiptByTarget.set(target.targetId, {
         target_id: target.targetId, store_kind: target.storeKind, status: receiptStatus,
@@ -551,7 +553,8 @@ export class SaasTenantPropagationService {
         verification_reference: verificationReference, provider_receipt_reference: providerReceiptReference,
         residual_manifest: residualManifest, failure_code: failureCode, attempt_no: 1,
         outcome_code: outcomeCode, manifest_kind: manifestKind, resource_class: resourceClass,
-        adapter_version: adapterVersion, policy_versions: policyVersions, residual_reason: residualReason,
+        adapter_version: adapterVersion, max_page_size: maxPageSize, max_batch_size: maxBatchSize,
+        policy_versions: policyVersions, residual_reason: residualReason,
         completed_at: new Date().toISOString(),
       } as PropagationReceiptRow);
     }
@@ -584,6 +587,7 @@ export class SaasTenantPropagationService {
         status: receipt.status, outcomeCode: receipt.outcome_code, manifestKind: receipt.manifest_kind,
         resourceClass: receipt.resource_class, adapterVersion: receipt.adapter_version,
         policyVersions: this.parsePolicyVersions(receipt.policy_versions),
+        maxPageSize: receipt.max_page_size, maxBatchSize: receipt.max_batch_size,
         plannedCopies: String(receipt.planned_copies), deletedCopies: String(receipt.deleted_copies),
         residualCopies: String(receipt.residual_copies), manifestDigest: receipt.manifest_digest,
         verifiedManifestDigest: receipt.verified_manifest_digest,
@@ -844,8 +848,8 @@ export class SaasTenantPropagationService {
     verifiedManifestDigest: string | null; verificationReference: string | null; providerReceiptReference: string | null;
     residualManifest: string[]; status: 'VERIFIED' | 'RESIDUALS' | 'FAILED'; failureCode: string | null;
     outcomeCode: SaasExternalPropagationOutcome; manifestKind: SaasExternalManifestKind;
-    resourceClass: string; adapterVersion: string | null; policyVersions: Record<string, number>;
-    residualReason: string | null;
+    resourceClass: string; adapterVersion: string | null; maxPageSize: number | null; maxBatchSize: number | null;
+    policyVersions: Record<string, number>; residualReason: string | null;
   }) {
     await this.database.transaction(async (client) => {
       await this.lockTenant(client, input.tenantId);
@@ -859,14 +863,14 @@ export class SaasTenantPropagationService {
          (tenant_id,request_id,run_id,target_id,store_kind,attempt_no,status,planned_copies,deleted_copies,
           residual_copies,manifest_digest,verified_manifest_digest,verification_reference,residual_manifest,
           failure_code,provider_receipt_reference,outcome_code,manifest_kind,resource_class,adapter_version,
-          policy_versions,residual_reason,completed_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23)`,
+          max_page_size,max_batch_size,policy_versions,residual_reason,completed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb,$24,$25)`,
         [input.tenantId, input.requestId, input.runId, input.target.targetId, input.target.storeKind,
           Number(attempt.rows[0]?.attempt_no ?? 1), input.status, input.plannedCopies, input.deletedCopies,
           input.residualCopies, input.manifestDigest, input.verifiedManifestDigest, input.verificationReference,
           JSON.stringify(input.residualManifest), input.failureCode, input.providerReceiptReference,
           input.outcomeCode, input.manifestKind, input.resourceClass, input.adapterVersion,
-          JSON.stringify(input.policyVersions), input.residualReason, new Date()],
+          input.maxPageSize, input.maxBatchSize, JSON.stringify(input.policyVersions), input.residualReason, new Date()],
       );
     }, { tenantId: input.tenantId, userId: input.actorUserId,
       advisoryLockKey: 'saas-external-receipt:' + input.tenantId + ':' + input.runId + ':' + input.target.targetId });
