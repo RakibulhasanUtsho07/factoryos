@@ -506,7 +506,11 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
   }
 
   private cursor(value: unknown): string {
-    const cursor = typeof value === 'number' ? String(value)
+    // The Redis client maps RESP bulk strings to Buffer globally so cache
+    // payload bytes remain lossless. SCAN's cursor is also a bulk string on
+    // the wire; accept only ASCII decimal bytes before normalizing it.
+    const cursor = Buffer.isBuffer(value) ? value.toString('ascii')
+      : typeof value === 'number' ? String(value)
       : typeof value === 'string' ? value : '';
     if (!/^(0|[1-9][0-9]*)$/.test(cursor)) {
       throw new ConflictException('Redis cache SCAN returned an invalid cursor');
