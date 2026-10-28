@@ -570,7 +570,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
           "SELECT set_config('app.saas_tenant_transfer_import', 'on', true)",
         );
         const setList = keys
-          .map((key) => 'target_row.' + this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
+          .map((key) => this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
           .join(', ');
         const rebound = await client.query<{ id: string }>(
           'UPDATE public.inventory_locations AS target_row SET ' + setList + ' ' +
