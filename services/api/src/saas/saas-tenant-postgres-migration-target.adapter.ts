@@ -165,9 +165,12 @@ export class SaasTenantPostgresMigrationTargetAdapter
       const columns = await this.readTargetColumns(client, allTables);
       for (const table of allTables) {
         const tableColumns = columns.get(table);
-        if (!tableColumns?.has('id') || !tableColumns.has('tenant_id')) {
+        const compositeTraceabilitySettings = table === 'traceability_settings';
+        if (compositeTraceabilitySettings
+          ? (!tableColumns?.has('tenant_id') || !tableColumns.has('factory_id') || tableColumns.has('id'))
+          : (!tableColumns?.has('id') || !tableColumns.has('tenant_id'))) {
           throw new ServiceUnavailableException(
-            'Target schema does not expose the reviewed id/tenant_id contract for ' + table,
+            'Target schema does not expose the reviewed primary-key/tenant contract for ' + table,
           );
         }
         const existing = await client.query(
@@ -279,7 +282,11 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'No reviewed target importer is registered for ' + event.category + '/' + event.table,
           );
         }
-        if (typeof row.id !== 'string' || !UUID_PATTERN.test(row.id)) {
+        if (event.table === 'traceability_settings') {
+          if (typeof row.factory_id !== 'string' || !UUID_PATTERN.test(row.factory_id)) {
+            throw new BadRequestException('Traceability settings row must include its reviewed factory UUID key');
+          }
+        } else if (typeof row.id !== 'string' || !UUID_PATTERN.test(row.id)) {
           throw new BadRequestException('Source bundle contains a row without a valid logical row ID');
         }
         for (const key of keys) {
@@ -323,6 +330,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
         if (!keys) continue;
         if (table === 'inventory_locations') {
           await this.importInventoryLocations(client, input.tenantId, keys);
+          continue;
+        }
+        if (table === 'traceability_settings') {
+          await this.importTraceabilitySettings(client, input.tenantId, keys);
           continue;
         }
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
@@ -546,6 +557,62 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return columns;
   }
 
+  private async importTraceabilitySettings(
+    client: PoolClient,
+    tenantId: string,
+    keys: string[],
+  ): Promise<void> {
+    const table = 'traceability_settings';
+    const stagedCountResult = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage WHERE table_name = $1',
+      [table],
+    );
+    const stagedCount = Number(stagedCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(stagedCount) || stagedCount < 0) {
+      throw new ConflictException('Source traceability settings count is invalid');
+    }
+    if (stagedCount === 0) return;
+
+    // Factories seed default settings during import. Reconcile only those new
+    // tenant/factory rows under the dedicated transfer role; never insert/update
+    // arbitrary settings or widen the selected tenant scope.
+    const mutableColumns = keys.filter((key) => key !== 'tenant_id' && key !== 'factory_id');
+    if (!mutableColumns.includes('retention_years')
+      || !mutableColumns.includes('allocation_policy')
+      || !mutableColumns.includes('version')) {
+      throw new ConflictException('Traceability settings bundle omits required reviewed policy fields');
+    }
+    const savepoint = 'factoryos_traceability_settings_import';
+    await client.query('SAVEPOINT ' + savepoint);
+    try {
+      await client.query("SELECT set_config('app.saas_tenant_transfer_import', 'on', true)");
+      const setList = mutableColumns
+        .map((key) => this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
+        .join(', ');
+      const updated = await client.query<{ factory_id: string }>(
+        'UPDATE public.traceability_settings AS target_row SET ' + setList + ' ' +
+        'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+        'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.traceability_settings, staged.row_payload) AS source_row ' +
+        'WHERE staged.table_name = $1 ' +
+        'AND target_row.tenant_id = $2::uuid ' +
+        'AND target_row.factory_id = source_row.factory_id ' +
+        'RETURNING target_row.factory_id::text AS factory_id',
+        [table, tenantId],
+      );
+      if (updated.rowCount !== stagedCount) {
+        throw new ConflictException(
+          'Target factory-seeded traceability settings do not match the source composite-key manifest',
+        );
+      }
+      await client.query("SELECT set_config('app.saas_tenant_transfer_import', '', true)");
+      await client.query('RELEASE SAVEPOINT ' + savepoint);
+    } catch (error) {
+      await client.query('ROLLBACK TO SAVEPOINT ' + savepoint).catch(() => undefined);
+      await client.query('RELEASE SAVEPOINT ' + savepoint).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async importInventoryLocations(
     client: PoolClient,
     tenantId: string,
@@ -645,7 +712,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
 
   private dependencyOrder(tables: string[]): string[] {
     const preferred = [
-      'legal_entities', 'factories', 'inventory_locations',
+      'legal_entities', 'factories', 'inventory_locations', 'traceability_settings',
       'business_blueprints', 'business_blueprint_versions',
       'business_entities', 'business_relations',
       'business_processes', 'business_process_steps',
@@ -857,6 +924,26 @@ export class SaasTenantPostgresMigrationTargetAdapter
       const hash = createHash('sha256');
       let count = 0;
       for (const table of entry.tables) {
+        if (table === 'traceability_settings') {
+          let afterFactoryId: string | null = null;
+          while (true) {
+            const result: QueryResult<QueryResultRow> = await client.query(
+              'SELECT * FROM public.traceability_settings ' +
+                'WHERE tenant_id = $1::uuid AND ($2::uuid IS NULL OR factory_id > $2::uuid) ' +
+                'ORDER BY factory_id ASC LIMIT $3',
+              [tenantId, afterFactoryId, PAGE_SIZE],
+            );
+            for (const row of result.rows as Array<Record<string, unknown>>) {
+              const canonical = this.canonicalJson({ ...row, __factoryos_table: table });
+              hash.update(canonical, 'utf8');
+              hash.update('\n', 'utf8');
+              afterFactoryId = String(row.factory_id);
+              count += 1;
+            }
+            if (result.rows.length < PAGE_SIZE) break;
+          }
+          continue;
+        }
         let afterId: string | null = null;
         while (true) {
           const result: QueryResult<QueryResultRow> = await client.query(
