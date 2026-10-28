@@ -592,10 +592,9 @@ export class SaasTenantPropagationService {
           manifestKind = 'RESOURCE_IDENTITIES';
           manifestDigest = plan.manifestDigest;
           plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
-          // The run-wide barrier prevented execution, so all exact identities remain
-          // unresolved (unless an earlier immutable receipt provides better counts).
+          // The run-wide barrier prevented execution, so the planned count remains
+          // unresolved. Do not invent provider resource identifiers for this scope.
           residualCopies = plannedCopies;
-          if (residualCopies !== '0') residualManifest = ['unexecuted-count:' + residualCopies];
         }
         // Preserve the last known counts if this is a retry after a prior uncertain
         // provider attempt; a new blocked attempt must not erase prior residual evidence.
@@ -606,9 +605,6 @@ export class SaasTenantPropagationService {
           if (previous.manifest_digest) manifestDigest = previous.manifest_digest;
           if (previous.manifest_kind) manifestKind = previous.manifest_kind;
           residualManifest = this.residualReferences(this.jsonArray(previous.residual_manifest));
-        }
-        if (residualCopies !== '0' && residualManifest.length === 0) {
-          residualManifest = ['unverified-scope:' + target.targetId];
         }
         const preflight = state?.preflight;
         await this.insertReceipt({
@@ -669,8 +665,7 @@ export class SaasTenantPropagationService {
           verifiedManifestDigest: prior?.verified_manifest_digest ?? null,
           verificationReference: prior?.verification_reference ?? null,
           providerReceiptReference: prior?.provider_receipt_reference ?? null,
-          residualManifest: this.residualReferences(prior ? this.jsonArray(prior.residual_manifest)
-            : (plan && plannedCopies !== '0' ? ['not-executed:' + target.targetId] : [])),
+          residualManifest: this.residualReferences(prior ? this.jsonArray(prior.residual_manifest) : []),
           status: 'FAILED', failureCode: 'RUN_ABORTED_AFTER_TARGET_FAILURE',
           outcomeCode: 'BLOCKED', manifestKind,
           resourceClass: state?.preflight?.resourceClass ?? target.storeKind,
@@ -751,14 +746,16 @@ export class SaasTenantPropagationService {
           outcomeCode = 'COMPLETED';
           residualReason = null;
         } else {
+          // Only actual opaque provider references belong in residual_manifest.
+          // A positive count without references remains a count-only FAILED receipt.
+          if (residualCopies === '0' && residualManifest.length > 0) {
+            residualCopies = String(residualManifest.length);
+          }
           const hasKnownResiduals = residualCopies !== '0' || residualManifest.length > 0;
-          receiptStatus = hasKnownResiduals ? 'RESIDUALS' : 'FAILED';
+          receiptStatus = residualManifest.length > 0 ? 'RESIDUALS' : 'FAILED';
           outcomeCode = 'FAILED_RETRYABLE';
           failureCode = hasKnownResiduals ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_MISMATCH';
           residualReason = 'Provider deletion did not reconcile to the exact prepared manifest with zero verified residual copies.';
-          if (residualCopies !== '0' && residualManifest.length === 0) {
-            residualManifest = ['residual-count:' + residualCopies];
-          }
           globallyReady = false;
         }
       } catch (error) {
@@ -802,7 +799,7 @@ export class SaasTenantPropagationService {
               // deletes. Conservatively keep the entire prepared scope unresolved
               // until a later independent read-back proves otherwise.
               residualCopies = plannedCopies;
-              residualManifest = ['unverified-scope:' + target.targetId];
+              residualManifest = [];
             }
           } catch {
             plannedCopies = '0';
