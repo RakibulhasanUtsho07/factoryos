@@ -11,6 +11,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/audit/**'
       - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'deploy/event-bus/**'
@@ -35,6 +36,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/audit/**'
       - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
@@ -88,6 +90,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Enforce tenant-cache application access boundary
+        run: node --test scripts/audit/tenant-cache-access-contract.test.mjs
       - name: Test durable Edge agent spool and package-control sync contracts
         run: node --test services/edge-agent/test/durable-observation-spool.test.mjs services/edge-agent/test/package-control-sync.test.mjs
       - name: Prepare AI Tool Registry RLS integration database

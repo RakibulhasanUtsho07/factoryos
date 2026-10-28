@@ -11,7 +11,6 @@ import { TenantCacheService } from './tenant-cache.service';
     RedisCacheErasureAdapter,
   ],
   exports: [
-    RedisTenantCacheClient,
     TenantCacheService,
     RedisCacheErasureAdapter,
   ],
