@@ -1,6 +1,6 @@
 # S3 Tenant Backup Version Erasure Adapter
 
-**Status:** Implemented adapter contract with unit-level provider simulation; production/staging acceptance is not yet demonstrated.  
+**Status:** Version-level deletion primitive implemented and unit-tested; target activation is deliberately disabled until runtime writer-fence integration exists. Production/staging acceptance is not yet demonstrated.  
 **Adapter:** \`BACKUP / s3.tenant-backup.v1\`  
 **Release gate:** This adapter does not by itself close AS-137 / NFR-PROD-14.
 
@@ -50,4 +50,4 @@ Do not activate a required production BACKUP target until the exact provider and
 
 S3 Object Lock protects already-written object versions; it does not stop an authorized backup producer from creating a new version while or after an erasure is running. The adapter's fresh post-delete inventory catches versions created before that inventory, but cannot prevent a write made after the final scan and before the request's terminal state is committed.
 
-Therefore, **this adapter is not production-accepted until a provider/control-plane write-freeze mechanism is enforced for every writer to the selected tenant/category prefixes**. The freeze must be acquired before the authoritative inventory, remain held through delete/independent verification and durable completion, and have a reviewed recovery path for process crashes. A manual pause or a configuration flag is not a machine-verifiable fence by itself. If the deployment cannot prove this control for every producer identity, do not activate or use this adapter for a production whole-tenant erasure. The missing runtime fence integration remains a release gap and AS-137 / NFR-PROD-14 remain PARTIAL.
+Therefore, **the adapter's `isConfigured()` intentionally returns false, so the API cannot activate the BACKUP target until a provider/control-plane write-freeze mechanism is implemented and verified for every writer to the selected tenant/category prefixes**. The freeze must be acquired before the authoritative inventory, remain held through delete/independent verification and durable completion, and have a reviewed recovery path for process crashes. A manual pause or a configuration flag is not a machine-verifiable fence by itself. If the deployment cannot prove this control for every producer identity, do not activate or use this adapter for a production whole-tenant erasure. The missing runtime fence integration remains a release gap and AS-137 / NFR-PROD-14 remain PARTIAL.
