@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { createHash } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
