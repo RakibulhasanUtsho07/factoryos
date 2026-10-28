@@ -189,6 +189,17 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         [factoryId, tenantId, legalEntityId, 'XFER-' + factoryId.slice(0, 8), 'Transfer Test Factory', 'ACTIVE', 'Asia/Dhaka'],
       );
 
+      // The factory trigger seeds a default virtual location. Its source identity
+      // must survive export/import because inventory movements may bind to it.
+      const defaultLocationResult = await adminPool.query<{ id: string }>(
+        'SELECT id::text AS id FROM inventory_locations WHERE tenant_id = $1::uuid AND factory_id = $2::uuid AND is_default = TRUE',
+        [tenantId, factoryId],
+      );
+      if (defaultLocationResult.rows.length !== 1 || !defaultLocationResult.rows[0]) {
+        throw new Error('Expected exactly one source default inventory location');
+      }
+      const defaultLocationId = defaultLocationResult.rows[0].id;
+
       await adminPool.query(
         'INSERT INTO roles (tenant_id, code, name, description, is_system) VALUES ($1, $2, $3, $4, $5)',
         [tenantId, 'transfer.integration.operator', 'Transfer Integration Operator', null, false],
@@ -353,6 +364,10 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       const payload = JSON.parse(Buffer.concat(plaintextChunks).toString('utf8')) as ParsedExportBundle;
       expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'factories' && row.id === factoryId)).toBe(true);
       expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'legal_entities' && row.id === legalEntityId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) =>
+        row.__factoryos_table === 'inventory_locations' && row.id === defaultLocationId
+          && row.is_default === true && row.location_code === 'UNASSIGNED',
+      )).toBe(true);
       expect(payload.datasets.AUDIT_LOG.some((row) => row.action === 'EXPORT_PIPELINE_INTEGRATION')).toBe(true);
       expect(payload.datasets.EVIDENCE.some((row) => row.__factoryos_table === 'business_evidence')).toBe(true);
       expect(payload.datasets.EFFECTIVE_DATED_MASTER_DATA.some((row) => row.__factoryos_table === 'saas_usage_rate_cards')).toBe(true);
@@ -373,6 +388,16 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(imported.transfer.status).toBe('COMPLETED');
       expect(imported.transfer.preservationVerified).toBe(true);
       expect(imported.transfer.targetBundleReference).toMatch(/^pgimport:/);
+
+      const importedDefaultLocation = await targetAdminPool.query<{ id: string; location_code: string }>(
+        'SELECT id::text AS id, location_code FROM inventory_locations WHERE tenant_id = $1::uuid AND factory_id = $2::uuid AND is_default = TRUE',
+        [tenantId, factoryId],
+      );
+      expect(importedDefaultLocation.rows).toHaveLength(1);
+      expect(importedDefaultLocation.rows[0]).toMatchObject({
+        id: defaultLocationId,
+        location_code: 'UNASSIGNED',
+      });
       const mappedAccess = await targetAdminPool.query<{
         membership_status: string; role_code: string; permission_code: string; factory_code: string | null;
       }>(
