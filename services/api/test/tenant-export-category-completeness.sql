@@ -34,7 +34,8 @@ BEGIN
     END IF;
 
     IF has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_inventory', 'SELECT')
-      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'SELECT') THEN
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'SELECT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'SELECT') THEN
       RAISE EXCEPTION 'Runtime role must not read governance ledgers directly';
     END IF;
   END IF;
@@ -76,7 +77,7 @@ INSERT INTO factoryos_governance.tenant_relation_inventory (
   'Temporary SQL contract probe for allowlisted relation missing from adapter map'
 ),
 (
-  'public', 'tenant_export_completeness_parent_probe', 'DIRECT_TENANT_ID', 'AI_CONTEXT',
+  'public', 'tenant_export_completeness_parent_probe', 'DIRECT_TENANT_ID', 'BUSINESS_DATA',
   'ALLOWLISTED', 'BOUNDED_ADAPTER', 'REVIEW_REQUIRED',
   'Temporary parent table for derived-scope completeness probe'
 ),
@@ -132,8 +133,7 @@ DECLARE
     'research_claims',
     'research_claim_links',
     'research_knowledge_releases',
-    'research_relevance_mappings',
-    'tenant_export_completeness_parent_probe'
+    'research_relevance_mappings'
   ]::text[];
   iam_adapter_relations text[] := ARRAY[
     'tenant_memberships', 'roles', 'user_roles', 'role_permissions'
