@@ -106,3 +106,27 @@ describe('SaasTenantBackupWriterFenceService', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 });
+
+  it('blocks replay of a still-active operation after a fence starts', async () => {
+    const operation = {
+      operation_id: 'c5000000-0000-4000-8000-000000000005',
+      category_code: Category.BUSINESS_DATA,
+      producer_id: 'backup-worker',
+      writer_epoch: 1,
+      status: 'ACTIVE',
+      provider_operation_reference: null,
+      failure_code: null,
+    };
+    const { database, client } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('FROM saas_tenant_backup_writer_operations WHERE tenant_id=$1 AND operation_id=$2')) return [operation];
+      if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [{ fence_id: runId }];
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation({
+      tenantId: tenant, category: Category.BUSINESS_DATA, operationId: operation.operation_id,
+      producerId: operation.producer_id, writerEpoch: 1,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO saas_tenant_backup_writer_operations'))).toBe(false);
+  });
