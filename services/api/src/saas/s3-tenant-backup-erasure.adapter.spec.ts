@@ -49,6 +49,7 @@ describe('S3TenantBackupErasureAdapter', () => {
   let failVersionList: boolean;
   let versioningEnabled: boolean;
   let objectLockEnabled: boolean;
+  let maxPageItems: number;
   let deleted: Array<{ key: string; versionId: string }>;
 
   const target = {
@@ -85,6 +86,7 @@ describe('S3TenantBackupErasureAdapter', () => {
     failVersionList = false;
     versioningEnabled = true;
     objectLockEnabled = true;
+    maxPageItems = 1000;
     deleted = [];
     adapter = new S3TenantBackupErasureAdapter(createConfig());
 
@@ -113,7 +115,7 @@ describe('S3TenantBackupErasureAdapter', () => {
             if (keyMarker === null) return true;
             return item.key > keyMarker || (item.key === keyMarker && item.versionId > (versionMarker ?? ''));
           });
-        const page = selected.slice(0, 1000);
+        const page = selected.slice(0, maxPageItems);
         const entries = page.map((item) => {
           const tag = item.kind === 'delete-marker' ? 'DeleteMarker' : 'Version';
           return '<' + tag + '><Key>' + item.key + '</Key><VersionId>' + item.versionId
@@ -159,7 +161,8 @@ describe('S3TenantBackupErasureAdapter', () => {
 
   afterEach(() => fetchMock.mockRestore());
 
-  it('enumerates and removes every exact object version and delete marker, then verifies the full tenant/category scope is empty', async () => {
+  it('enumerates and removes every exact object version and delete marker across same-key pagination, then verifies the scope is empty', async () => {
+    maxPageItems = 1;
     expect(await adapter.isConfigured(target)).toBe(true);
     const plan = await adapter.prepare(context());
     expect(plan).toMatchObject({
@@ -221,6 +224,12 @@ describe('S3TenantBackupErasureAdapter', () => {
     await expect(adapter.prepare(context({
       target: { ...target, categories: [Category.BUSINESS_DATA, Category.AUDIT_LOG] },
     }))).rejects.toBeInstanceOf(ConflictException);
+    expect(deleted).toHaveLength(0);
+  });
+
+  it('rejects version identifiers that violate the durable resource-ledger reference contract', async () => {
+    versions.push({ key, versionId: 'token-version', kind: 'version', bytes: Buffer.from('must not be sealed') });
+    await expect(adapter.prepare(context())).rejects.toBeInstanceOf(ConflictException);
     expect(deleted).toHaveLength(0);
   });
 
