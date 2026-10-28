@@ -353,7 +353,8 @@ export class SaasTenantPropagationService {
         if (!resourceManifestId || !plan || plan.resources.length === 0) return;
         try {
           await this.appendResourceEvents({
-            tenantId, actorUserId, manifestId: resourceManifestId, outcomeCode,
+            tenantId, actorUserId, manifestId: resourceManifestId,
+            expectedResourceCount: plan.resources.length, outcomeCode,
             providerReceiptReference: details.providerReceiptReference ?? null,
             verificationReference: details.verificationReference ?? null,
             verifiedManifestDigest: details.verifiedManifestDigest ?? null,
