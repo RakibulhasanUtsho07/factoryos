@@ -221,6 +221,37 @@ describe('SaasTenantPropagationService external saga', () => {
     service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never);
   });
 
+  it('fails closed when a prepared plan was produced by a different adapter version', async () => {
+    adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { target: { targetId: string } };
+      const resources = [
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.1', resourceVersionReference: null },
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.2', resourceVersionReference: null },
+      ];
+      return {
+        manifestDigest: digestSaasExternalPropagationResources(resources),
+        plannedCopies: String(resources.length),
+        planReference: 'plan.' + input.target.targetId,
+        adapterVersion: '2.0.0',
+        resourceClass: 'OBJECT_COPY',
+        maxPageSize: 500,
+        maxBatchSize: 500,
+        policyVersions: { deletionPolicy: '1.0.0' },
+        resources,
+      };
+    });
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Reject stale adapter execution contract', idempotency_key: 'external-propagation-version-mismatch',
+    });
+
+    expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL', residualCopies: '2' } });
+    expect(adapterMocks[0]!.erase).not.toHaveBeenCalled();
+    expect(adapterMocks[0]!.verify).not.toHaveBeenCalled();
+    expect(storedResourceManifests.some((manifest) => manifest.target_id === 'target-OBJECT_STORAGE')).toBe(false);
+  });
+
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Verify every external copy', idempotency_key: 'external-propagation-saga-v1',
