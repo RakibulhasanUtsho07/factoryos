@@ -50,6 +50,7 @@ describe('S3TenantBackupErasureAdapter', () => {
   let versioningEnabled: boolean;
   let objectLockEnabled: boolean;
   let maxPageItems: number;
+  let addVersionDuringRead: boolean;
   let deleted: Array<{ key: string; versionId: string }>;
 
   const target = {
@@ -87,6 +88,7 @@ describe('S3TenantBackupErasureAdapter', () => {
     versioningEnabled = true;
     objectLockEnabled = true;
     maxPageItems = 1000;
+    addVersionDuringRead = false;
     deleted = [];
     adapter = new S3TenantBackupErasureAdapter(createConfig());
 
@@ -153,6 +155,10 @@ describe('S3TenantBackupErasureAdapter', () => {
       }
       if (method === 'GET' && versionId !== null) {
         if (!stored || stored.kind === 'delete-marker' || !stored.bytes) return new Response(null, { status: 404 });
+        if (addVersionDuringRead) {
+          addVersionDuringRead = false;
+          versions.push({ key, versionId: 'late-during-preflight', kind: 'version', bytes: Buffer.from('late preflight copy') });
+        }
         return new Response(Buffer.from(stored.bytes), { status: 200, headers: { 'content-length': String(stored.bytes.length) } });
       }
       return xmlResponse('<Error><Code>UnsupportedTestRequest</Code></Error>', 400);
@@ -203,6 +209,21 @@ describe('S3TenantBackupErasureAdapter', () => {
   it('rechecks the content digest immediately before deleting a sealed version', async () => {
     const plan = await adapter.prepare(context());
     versions.find((item) => item.versionId === 'version-b')!.bytes = Buffer.from('mutated archive bytes');
+    await expect(adapter.erase({ ...context(), plan })).rejects.toBeInstanceOf(ConflictException);
+    expect(deleted).toHaveLength(0);
+  });
+
+  it('blocks before the first delete if a new version appears while digest/retention preflight is running', async () => {
+    const plan = await adapter.prepare(context());
+    addVersionDuringRead = true;
+    await expect(adapter.erase({ ...context(), plan })).rejects.toBeInstanceOf(ConflictException);
+    expect(deleted).toHaveLength(0);
+    expect(versions.some((item) => item.versionId === 'late-during-preflight')).toBe(true);
+  });
+
+  it('rejects versions already added after prepare before starting deletion', async () => {
+    const plan = await adapter.prepare(context());
+    versions.push({ key, versionId: 'late-before-erase', kind: 'version', bytes: Buffer.from('late archive') });
     await expect(adapter.erase({ ...context(), plan })).rejects.toBeInstanceOf(ConflictException);
     expect(deleted).toHaveLength(0);
   });
