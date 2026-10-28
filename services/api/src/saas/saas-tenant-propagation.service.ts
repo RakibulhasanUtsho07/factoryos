@@ -894,7 +894,7 @@ export class SaasTenantPropagationService {
       throw new ConflictException('Adapter plan must pin a semantic adapter version');
     }
     if (adapter && (typeof adapter.adapterVersion !== 'string'
-      || !/^[0-9]+\\.[0-9]+\\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(adapter.adapterVersion)
+      || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(adapter.adapterVersion)
       || plan.adapterVersion !== adapter.adapterVersion)) {
       throw new ConflictException('Sealed resource manifest adapter version differs from the running adapter implementation');
     }
