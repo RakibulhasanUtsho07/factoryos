@@ -108,7 +108,7 @@ test('backup writer-fence ledger provides crash-safe drain and database guardrai
   assert.match(migration, /invalid backup writer-fence lifecycle transition/i);
   assert.match(migration, /backup writer operation uses a stale writer epoch/i);
   assert.match(migration, /backup writer fence uses a stale writer epoch/i);
-  assert.match(migration, /recovery_attestation_reference !~\* '\/\/'/i);
+  assert.ok(migration.includes("recovery_attestation_reference !~* '://'"));
   assert.match(migration, /state<>'RELEASED'/i);
   assert.match(doc, /Provider-wide enforcement and producer integration remain release blockers/i);
   assert.match(doc, /AS-137 \/ NFR-PROD-14 remain PARTIAL/i);
