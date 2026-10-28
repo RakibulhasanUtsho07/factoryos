@@ -5,7 +5,7 @@
 
 ## Purpose and boundary
 
-The live-keyspace erasure adapters do not prove that historical or secondary copies have been removed. In particular, Redis \`BGREWRITEAOF\` only addresses the current AOF file after the adapter deletes its planned keys; it is not evidence that AOF backups, RDB files, volume snapshots, replicas, point-in-time recovery archives, or exported copies have been purged. Likewise, deleting an object from the configured WMS POD bucket does not by itself prove that provider-managed snapshots or other systems no longer contain it.
+The live-keyspace erasure adapters do not prove that historical or secondary copies have been removed. In particular, Redis `BGREWRITEAOF` only addresses the current AOF file after the adapter deletes its planned keys; it is not evidence that AOF backups, RDB files, volume snapshots, replicas, point-in-time recovery archives, or exported copies have been purged. Likewise, deleting an object from the configured WMS POD bucket does not by itself prove that provider-managed snapshots or other systems no longer contain it.
 
 This runbook governs discovery, retention decisions, deletion, verification, and evidence for historical and secondary copies. It does not authorize changing legal retention policy, bypassing a legal hold, or claiming provider behavior that has not been independently established.
 
@@ -83,9 +83,9 @@ Keep the manifest and audit trail protected from generic tenant-data erasure in 
 
 ## Supported adapter boundary
 
-At the current PR scope, the registered S3-compatible adapter covers only WMS POD evidence objects in the configured unversioned bucket. The Redis adapter covers only the new \`TenantCacheService\` namespace on a standalone primary with no replicas/cluster and reviewed AOF/noeviction settings. Its post-delete AOF rewrite is not a purge of separately retained AOF backups, filesystem or volume snapshots, backup vaults, or media copies.
+At the current PR scope, the registered S3-compatible adapter covers only WMS POD evidence objects in the configured unversioned bucket. The Redis adapter covers only the new `TenantCacheService` namespace on a standalone primary with no replicas/cluster and reviewed AOF/noeviction settings. Its post-delete AOF rewrite is not a purge of separately retained AOF backups, filesystem or volume snapshots, backup vaults, or media copies.
 
-The following required classes still need reviewed, configured adapter/provider procedures and acceptance evidence before closure: \`SEARCH_INDEX\`, \`VECTOR_STORE\`, \`LEARNING_ARTIFACT\`, \`EXTERNAL_PROVIDER\`, \`REPLICA\`, and \`BACKUP\`, plus any legacy/external cache not proven to use the reviewed tenant-cache namespace. Do not register a required target as production-ready simply because a generic interface or synthetic test exists.
+The following required classes still need reviewed, configured adapter/provider procedures and acceptance evidence before closure: `SEARCH_INDEX`, `VECTOR_STORE`, `LEARNING_ARTIFACT`, `EXTERNAL_PROVIDER`, `REPLICA`, and `BACKUP`, plus any legacy/external cache not proven to use the reviewed tenant-cache namespace. Do not register a required target as production-ready simply because a generic interface or synthetic test exists.
 
 ## Go-live checklist
 
