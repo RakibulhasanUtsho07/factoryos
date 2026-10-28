@@ -104,3 +104,10 @@ Until these criteria and all required external-store adapters pass, AS-137 / NFR
 ### Additional release block: concurrent backup writers
 
 The S3 tenant backup adapter does not itself pause external writers. Object Lock does not prevent a new object version from being created, and a post-delete inventory cannot prevent a write after its final scan. Before production acceptance, integrate and test a provider/control-plane fence that excludes **all** backup writer identities for the selected tenant/category scope from before enumeration through durable completion. The fence must survive process failure and have a reviewed recovery flow. A manual pause or static environment flag is not equivalent to a runtime fence. Until this exists, the S3 BACKUP adapter remains a tested primitive, not a production whole-tenant erasure capability.
+
+
+### Durable application-side backup writer-fence ledger
+
+Migration 222 and SaasTenantBackupWriterFenceService define tenant/category-scoped operation intents and a persistent lifecycle (DRAINING → FENCING → FENCED → ERASING → ERASURE_VERIFIED → RELEASED, with RECOVERY_REQUIRED for uncertainty). An ambiguous provider write remains active; no TTL automatically lets erasure overtake it. SQL triggers and RLS protect the fence and operation ledgers, and release evidence must include an independently reviewed tombstone-reconciled next writer epoch.
+
+This completes only the application-side ledger/state-machine contract. It does not fence direct S3 credentials, scheduled jobs or external backup systems by itself. Provider bucket-policy freeze/read-back, a complete writer-principal inventory, enforced use by every producer, provider-backed recovery, and stale-generation prevention remain open. Keep the S3 BACKUP target inactive until those integrations have staging evidence.
