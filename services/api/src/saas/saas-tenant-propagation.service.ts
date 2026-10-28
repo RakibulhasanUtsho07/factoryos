@@ -580,7 +580,7 @@ export class SaasTenantPropagationService {
         continue;
       }
       targetManifest[target.targetId] = {
-        storeKind: target.storeKind, adapterKey: target.adapter_key ?? target.adapterKey,
+        storeKind: target.storeKind, adapterKey: target.adapterKey,
         status: receipt.status, outcomeCode: receipt.outcome_code, manifestKind: receipt.manifest_kind,
         resourceClass: receipt.resource_class, adapterVersion: receipt.adapter_version,
         policyVersions: this.parsePolicyVersions(receipt.policy_versions),
