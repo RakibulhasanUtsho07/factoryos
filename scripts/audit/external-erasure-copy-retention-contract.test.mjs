@@ -68,6 +68,8 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   assert.match(runbook, /\[the S3 tenant backup adapter contract\]\(s3-tenant-backup-erasure-adapter\.md\)/i);
   assert.match(backupDoc, /Object Lock/i);
   assert.match(backupDoc, /does not cover|does not prove|out of scope/i);
+  assert.match(backupDoc, /write-freeze mechanism/i);
+  assert.match(runbook, /provider\/control-plane fence/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
