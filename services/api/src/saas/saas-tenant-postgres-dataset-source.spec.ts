@@ -113,6 +113,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
   it('includes SaaS usage and budget governance records in the reviewed business-data allowlist', () => {
     expect(SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.BUSINESS_DATA]).toEqual(
       expect.arrayContaining([
+        'inventory_locations',
         'saas_usage_events',
         'saas_usage_adjustments',
         'saas_usage_reconciliations',
