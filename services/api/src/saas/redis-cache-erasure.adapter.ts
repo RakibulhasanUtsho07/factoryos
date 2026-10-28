@@ -34,6 +34,8 @@ const DB_BATCH_SIZE = 500;
 const MAX_PLAN_KEYS = 100000;
 const MAX_SCAN_PAGES = 100000;
 const READ_CONCURRENCY = 8;
+const AOF_REWRITE_TIMEOUT_MS = 30000;
+const AOF_REWRITE_POLL_MS = 100;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 
 const ACQUIRE_FENCES = `
@@ -218,6 +220,12 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
       }
       accounted += 1;
     }
+
+    // DEL appends tombstones to Redis AOF. Compact the active AOF after all
+    // planned keys have been removed so historical SET records are not retained
+    // in the current persistence log. AOF backups and media sanitization remain
+    // separate BACKUP/provider duties.
+    await this.rewriteAofAfterDeletion(client);
 
     return {
       // This is the number of sealed identities accounted for, including
@@ -404,6 +412,67 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
       resourceVersionReference: null,
       resourceContentDigest: this.digest(bytes),
     };
+  }
+
+  private async rewriteAofAfterDeletion(
+    client: Awaited<ReturnType<RedisTenantCacheClient['getClient']>>,
+  ): Promise<void> {
+    const deadline = Date.now() + AOF_REWRITE_TIMEOUT_MS;
+
+    // If a rewrite was already in progress, let it finish, then start another
+    // one after deletion. A rewrite started before our DEL could leave a prior
+    // SET in the base file and a DEL only in the tail.
+    await this.waitForAofIdle(client, deadline);
+    let started = false;
+    for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
+      try {
+        const response: unknown = await client.sendCommand(['BGREWRITEAOF']);
+        const text = this.redisText(response);
+        if (!/started|scheduled/i.test(text)) {
+          throw new ConflictException('Redis did not acknowledge an AOF rewrite after cache deletion');
+        }
+        started = true;
+      } catch (error) {
+        if (!/already in progress/i.test(error instanceof Error ? error.message : String(error))
+          || attempt === 2) {
+          throw new ConflictException('Redis cache deletion could not compact its active AOF persistence log');
+        }
+        await this.waitForAofIdle(client, deadline);
+      }
+    }
+    if (!started) {
+      throw new ConflictException('Redis did not start an AOF rewrite after cache deletion');
+    }
+    await this.waitForAofIdle(client, deadline);
+  }
+
+  private async waitForAofIdle(
+    client: Awaited<ReturnType<RedisTenantCacheClient['getClient']>>,
+    deadline: number,
+  ): Promise<void> {
+    while (Date.now() < deadline) {
+      const info = this.redisText(await client.sendCommand(['INFO', 'persistence']));
+      const rewriteActive = this.infoValue(info, 'aof_rewrite_in_progress');
+      const rewriteScheduled = this.infoValue(info, 'aof_rewrite_scheduled');
+      if (rewriteActive === '0' && rewriteScheduled === '0') {
+        if (this.infoValue(info, 'aof_last_bgrewrite_status') !== 'ok') {
+          throw new ConflictException('Redis AOF rewrite did not complete successfully after cache deletion');
+        }
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, AOF_REWRITE_POLL_MS));
+    }
+    throw new ConflictException('Timed out waiting for Redis AOF rewrite; cache erasure remains unverified');
+  }
+
+  private infoValue(info: string, field: string): string | null {
+    for (const line of info.split(/\r?\n/)) {
+      const separator = line.indexOf(':');
+      if (separator >= 0 && line.slice(0, separator) === field) {
+        return line.slice(separator + 1).trim();
+      }
+    }
+    return null;
   }
 
   private async acquireFences(
