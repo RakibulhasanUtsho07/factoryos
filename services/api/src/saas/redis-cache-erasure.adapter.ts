@@ -422,7 +422,7 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
     // If a rewrite was already in progress, let it finish, then start another
     // one after deletion. A rewrite started before our DEL could leave a prior
     // SET in the base file and a DEL only in the tail.
-    await this.waitForAofIdle(client, deadline);
+    await this.waitForAofIdle(client, deadline, false);
     let started = false;
     for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
       try {
@@ -449,13 +449,14 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
   private async waitForAofIdle(
     client: Awaited<ReturnType<RedisTenantCacheClient['getClient']>>,
     deadline: number,
+    requireSuccessfulRewrite = true,
   ): Promise<void> {
     while (Date.now() < deadline) {
       const info = this.redisText(await client.sendCommand(['INFO', 'persistence']));
       const rewriteActive = this.infoValue(info, 'aof_rewrite_in_progress');
       const rewriteScheduled = this.infoValue(info, 'aof_rewrite_scheduled');
       if (rewriteActive === '0' && rewriteScheduled === '0') {
-        if (this.infoValue(info, 'aof_last_bgrewrite_status') !== 'ok') {
+        if (requireSuccessfulRewrite && this.infoValue(info, 'aof_last_bgrewrite_status') !== 'ok') {
           throw new ConflictException('Redis AOF rewrite did not complete successfully after cache deletion');
         }
         return;
