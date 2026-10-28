@@ -495,6 +495,149 @@ async function assertPodBucketUnversioned(
   }
 }
 
+const POD_LIST_PAGE_SIZE = 1000;
+const POD_ERASURE_MAX_OBJECTS = 100000;
+const POD_LIST_RESPONSE_MAX_BYTES = 1024 * 1024;
+
+function awsQueryEncode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    '%' + character.charCodeAt(0).toString(16).toUpperCase());
+}
+
+function canonicalS3Query(parameters: Array<[string, string]>): string {
+  return parameters
+    .map(([name, value]) => [awsQueryEncode(name), awsQueryEncode(value)] as const)
+    .sort(([leftName, leftValue], [rightName, rightValue]) =>
+      leftName < rightName ? -1 : leftName > rightName ? 1
+        : leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0)
+    .map(([name, value]) => name + '=' + value)
+    .join('&');
+}
+
+function decodeS3XmlText(value: string): string {
+  const decoded = value
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_match, decimal: string) => String.fromCodePoint(Number(decimal)));
+  if (/&(?:#|[A-Za-z])/.test(decoded)) {
+    throw new ServiceUnavailableException('POD storage returned malformed XML entity encoding');
+  }
+  return decoded;
+}
+
+function xmlText(xml: string, tagName: string): string | null {
+  const match = xml.match(new RegExp('<' + tagName + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + tagName + '>','i'));
+  return match ? decodeS3XmlText(match[1]!.trim()) : null;
+}
+
+/**
+ * Lists every key in this tenant's POD namespace using signed ListObjectsV2.
+ * Unknown key shapes, repeated continuation tokens, oversized pages and failed
+ * pagination are errors, never silently treated as an empty/incomplete inventory.
+ */
+export async function listWmsPodTenantObjects(
+  config: WmsPodStorageConfigReader,
+  tenantId: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<string[]> {
+  const normalizedTenantId = tenantId.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalizedTenantId)) {
+    throw new BadRequestException('tenantId must be a UUID');
+  }
+  const storage = readConfiguration(config);
+  await assertPodBucketUnversioned(storage, fetcher);
+
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\\/+$/, '');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket);
+  const prefix = 'pod/' + normalizedTenantId + '/';
+  const objects: string[] = [];
+  const knownKeys = new Set<string>();
+  const seenTokens = new Set<string>();
+  let continuationToken: string | null = null;
+  let pageCount = 0;
+
+  do {
+    pageCount += 1;
+    if (pageCount > Math.ceil(POD_ERASURE_MAX_OBJECTS / POD_LIST_PAGE_SIZE)) {
+      throw new ServiceUnavailableException('POD inventory exceeded the configured page limit; erasure is blocked');
+    }
+    const parameters: Array<[string, string]> = [
+      ['list-type', '2'],
+      ['max-keys', String(POD_LIST_PAGE_SIZE)],
+      ['prefix', prefix],
+    ];
+    if (continuationToken !== null) parameters.push(['continuation-token', continuationToken]);
+    const canonicalQuery = canonicalS3Query(parameters);
+    const target = new URL(storage.endpoint.origin);
+    target.pathname = canonicalUri;
+    target.search = '?' + canonicalQuery;
+
+    let response: Response;
+    try {
+      response = await fetcher(target, {
+        method: 'GET',
+        headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, canonicalQuery),
+        redirect: 'error',
+        signal: AbortSignal.timeout(storage.timeoutMs),
+      });
+    } catch {
+      throw new ServiceUnavailableException('POD tenant inventory could not be enumerated');
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ServiceUnavailableException('POD storage rejected tenant inventory enumeration');
+    }
+    let xml: string;
+    try {
+      xml = (await readBoundedResponse(response, POD_LIST_RESPONSE_MAX_BYTES)).toString('utf8');
+    } catch {
+      throw new ServiceUnavailableException('POD tenant inventory page exceeded its safety limit or was incomplete');
+    }
+
+    const contents = [...xml.matchAll(/<Contents(?:\\s[^>]*)?>([\\s\\S]*?)</Contents>/gi)];
+    for (const content of contents) {
+      const key = xmlText(content[1]!, 'Key');
+      if (!key || !key.startsWith(prefix)) {
+        throw new ServiceUnavailableException('POD inventory returned an invalid key outside the tenant prefix');
+      }
+      try {
+        assertTenantPodObjectKey(normalizedTenantId, key);
+      } catch {
+        throw new ServiceUnavailableException('POD inventory contains an unsupported tenant object key; erasure is blocked');
+      }
+      if (knownKeys.has(key)) {
+        throw new ServiceUnavailableException('POD inventory pagination returned a duplicate object identity');
+      }
+      knownKeys.add(key);
+      objects.push(key);
+      if (objects.length > POD_ERASURE_MAX_OBJECTS) {
+        throw new ServiceUnavailableException('POD tenant inventory exceeds the 100,000-object erasure limit');
+      }
+    }
+
+    const isTruncated = xmlText(xml, 'IsTruncated');
+    if (isTruncated !== 'true' && isTruncated !== 'false') {
+      throw new ServiceUnavailableException('POD inventory page has no valid IsTruncated marker');
+    }
+    if (isTruncated === 'true') {
+      const token = xmlText(xml, 'NextContinuationToken');
+      if (!token || seenTokens.has(token) || token === continuationToken) {
+        throw new ServiceUnavailableException('POD inventory pagination token is missing or repeated');
+      }
+      seenTokens.add(token);
+      continuationToken = token;
+    } else {
+      continuationToken = null;
+    }
+  } while (continuationToken !== null);
+
+  return objects.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+}
+
 /**
  * Deletes one previously identified tenant-scoped POD object from an
  * independently verified unversioned S3-compatible bucket. It verifies the
