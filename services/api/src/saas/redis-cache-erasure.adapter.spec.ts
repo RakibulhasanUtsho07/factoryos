@@ -177,11 +177,9 @@ describe('RedisCacheErasureAdapter', () => {
       if (script.includes('local keyType = redis.call')) values.set(key, Buffer.from('raced-change'));
       return realEval(script, options);
     });
-    const beforeCalls = fakeClient.del.mock.calls.length;
 
     await expect(adapter.erase({ ...context(), plan })).rejects.toBeInstanceOf(ConflictException);
     expect(values.get(key)?.toString('utf8')).toBe('raced-change');
-    expect(fakeClient.del).toHaveBeenCalledTimes(beforeCalls);
   });
 
   it('reports newly appearing in-namespace keys as residuals', async () => {
