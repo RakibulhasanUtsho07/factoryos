@@ -28,7 +28,7 @@ const RESOURCE_KIND = 'WMS_POD_OBJECT';
 const PAGE_SIZE = 1000;
 const DB_BATCH_SIZE = 500;
 const MAX_PLAN_OBJECTS = 100000;
-const READ_CONCURRENCY = 8;
+const READ_CONCURRENCY = 4;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 
 @Injectable()
