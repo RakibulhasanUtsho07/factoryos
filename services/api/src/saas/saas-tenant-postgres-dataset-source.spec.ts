@@ -114,6 +114,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.BUSINESS_DATA]).toEqual(
       expect.arrayContaining([
         'inventory_locations',
+        'traceability_settings',
         'saas_usage_events',
         'saas_usage_adjustments',
         'saas_usage_reconciliations',
