@@ -513,6 +513,16 @@ describe('SaasTenantPropagationService external saga', () => {
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
       expect(adapter.execute).toHaveBeenCalledTimes(1);
       expect(adapter.verify).toHaveBeenCalledTimes(1);
+      const prepareInput = adapter.prepare.mock.calls[0]?.[0] as {
+        executionLimits?: Record<string, unknown>;
+      } | undefined;
+      const executeInput = adapter.execute.mock.calls[0]?.[0] as {
+        executionLimits?: Record<string, unknown>;
+      } | undefined;
+      expect(prepareInput?.executionLimits).toEqual({
+        resourceClass: adapter.storeKind, adapterVersion: '1.0.0', maxPageSize: 500, maxBatchSize: 100,
+      });
+      expect(executeInput?.executionLimits).toEqual(prepareInput?.executionLimits);
     }
     expect(storedReceipts.every((receipt) => receipt.outcome_code === 'COMPLETED'
       && receipt.manifest_kind === 'RESOURCE_IDENTITIES' && receipt.adapter_version === '1.0.0')).toBe(true);
