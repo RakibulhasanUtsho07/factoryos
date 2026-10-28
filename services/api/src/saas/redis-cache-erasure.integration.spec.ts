@@ -59,7 +59,7 @@ cacheDescribe('Redis tenant-cache erasure against an isolated Redis server', () 
   async function cleanupTenant(tenantId: string): Promise<void> {
     const keys = new Set<string>();
     for (const category of Object.values(Category)) {
-      let cursor = '0';
+      let cursor = 0;
       do {
         const result = await client.scan(cursor, {
           MATCH: tenantCacheCategoryPrefix(tenantId, category as Category) + '*',
@@ -67,7 +67,7 @@ cacheDescribe('Redis tenant-cache erasure against an isolated Redis server', () 
         });
         cursor = String(result.cursor);
         for (const key of result.keys) keys.add(Buffer.isBuffer(key) ? key.toString('utf8') : String(key));
-      } while (cursor !== '0');
+      } while (cursor !== 0);
       await client.del(tenantCacheFenceKey(tenantId, category as Category));
     }
     if (keys.size) await client.del([...keys]);
