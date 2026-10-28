@@ -84,7 +84,7 @@ describe('SaasTenantPropagationService', () => {
 
     expect(iam.authorize).toHaveBeenCalledWith(propagationExecutor, tenant, 'saas.data_retention.propagate');
     expect(adapter.prepare).not.toHaveBeenCalled();
-    expect(adapter.erase).not.toHaveBeenCalled();
+    expect(adapter.execute).not.toHaveBeenCalled();
     expect(adapter.verify).not.toHaveBeenCalled();
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='VERIFIED'"))).toBe(false);
