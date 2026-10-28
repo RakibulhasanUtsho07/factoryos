@@ -342,9 +342,9 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
     category: SaasTransferDatasetCategory,
   ): Promise<string[]> {
     const prefix = tenantCacheCategoryPrefix(tenantId, category);
-    let cursor = 0;
+    let cursor = '0';
     let pages = 0;
-    const seenCursors = new Set<number>();
+    const seenCursors = new Set<string>();
     const keys = new Set<string>();
 
     do {
@@ -377,14 +377,14 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
         }
       }
 
-      if (nextCursor !== 0) {
+      if (nextCursor !== '0') {
         if (seenCursors.has(nextCursor)) {
           throw new ConflictException('Redis cache SCAN repeated a non-terminal cursor');
         }
         seenCursors.add(nextCursor);
       }
       cursor = nextCursor;
-    } while (cursor !== 0);
+    } while (cursor !== '0');
 
     return [...keys].sort();
   }
@@ -435,15 +435,11 @@ export class RedisCacheErasureAdapter implements SaasTenantExternalDataPropagati
     });
   }
 
-  private cursor(value: unknown): number {
-    const raw = typeof value === 'number' ? String(value)
+  private cursor(value: unknown): string {
+    const cursor = typeof value === 'number' ? String(value)
       : typeof value === 'string' ? value : '';
-    if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    if (!/^(0|[1-9][0-9]*)$/.test(cursor)) {
       throw new ConflictException('Redis cache SCAN returned an invalid cursor');
-    }
-    const cursor = Number(raw);
-    if (!Number.isSafeInteger(cursor)) {
-      throw new ConflictException('Redis cache SCAN cursor exceeds supported numeric bounds');
     }
     return cursor;
   }
