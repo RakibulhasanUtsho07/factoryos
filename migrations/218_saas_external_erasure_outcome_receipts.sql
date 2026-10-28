@@ -90,4 +90,8 @@ ALTER TABLE public.saas_tenant_external_propagation_receipts
 CREATE INDEX IF NOT EXISTS idx_saas_external_receipt_outcome
   ON public.saas_tenant_external_propagation_receipts(tenant_id, request_id, outcome_code, created_at DESC);
 
+INSERT INTO schema_migrations(version, checksum)
+VALUES ('218_saas_external_erasure_outcome_receipts', NULL)
+ON CONFLICT (version) DO NOTHING;
+
 COMMIT;
