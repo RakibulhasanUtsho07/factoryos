@@ -334,6 +334,14 @@ BEGIN
       AND r.ownership_class = 'DERIVED_TENANT'
       AND r.export_disposition = 'EXCLUDED'
       AND r.erasure_disposition = 'BLOCKED_UNREVIEWED'
+      -- A derived relation already covered by an exact reviewed adapter (for
+      -- example user_roles/role_permissions in IAM_ACCESS) is not unmapped
+      -- export data. Its category-specific adapter guard remains authoritative.
+      AND NOT EXISTS (
+        SELECT 1
+        FROM factoryos_governance.tenant_export_adapter_relation_registry mapped
+        WHERE mapped.relation_name = r.relation_name
+      )
     ORDER BY r.relation_name
   LOOP
     IF relation.relation_oid IS NULL
