@@ -36,6 +36,7 @@ describe('SaasTenantPropagationService external saga', () => {
   let legalHoldActivated = false;
   let residualOnFirstVerificationTarget: string | null = null;
   let mismatchedDeletionTarget: string | null = null;
+  let executionFailureTarget: string | null = null;
   const verifyCallsByTarget = new Map<string, number>();
   let retentionPolicyRows: Array<{ category_code: string; version: number; disposition: string }>;
   let activeRequest: ReturnType<typeof requestRow>;
@@ -78,6 +79,9 @@ describe('SaasTenantPropagationService external saga', () => {
     });
     adapter.execute.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
+      if (executionFailureTarget === input.target.targetId) {
+        throw new Error('simulated provider timeout after deletion dispatch');
+      }
       return {
         deletedCopies: input.plan.plannedCopies,
         manifestDigest: mismatchedDeletionTarget === input.target.targetId ? 'f'.repeat(64) : input.plan.manifestDigest,
@@ -111,6 +115,7 @@ describe('SaasTenantPropagationService external saga', () => {
     activeRequest = requestRow();
     residualOnFirstVerificationTarget = null;
     mismatchedDeletionTarget = null;
+    executionFailureTarget = null;
     retentionPolicyRows = [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }];
     verifyCallsByTarget.clear();
     iam.authorize.mockResolvedValue(undefined);
@@ -396,7 +401,7 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(second.wholeTenantErasureVerified).toBe(true);
     expect(second.run.status).toBe('VERIFIED');
     expect(second.request).toMatchObject({ requestId, status: 'VERIFIED', version: 5 });
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length + 1);
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
 
     const recoveryAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
     expect(recoveryAdapter?.recover).toHaveBeenCalledTimes(1);
@@ -406,6 +411,44 @@ describe('SaasTenantPropagationService external saga', () => {
     for (const adapter of adapterMocks.filter((candidate) => candidate.storeKind !== 'OBJECT_STORAGE')) {
       expect(adapter.execute).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it('stops later provider deletions and records BLOCKED receipts after an uncertain provider outcome', async () => {
+    executionFailureTarget = 'target-OBJECT_STORAGE';
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Stop cross-store deletes after an uncertain provider result',
+      idempotency_key: 'abort-after-uncertain-provider-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.run.status).toBe('PARTIAL');
+    expect(result.request.status).toBe('PROPAGATION_PENDING');
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+
+    const uncertain = storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE');
+    expect(uncertain).toMatchObject({
+      status: 'FAILED', outcome_code: 'FAILED_RETRYABLE',
+      manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2', residual_copies: '2',
+    });
+
+    const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
+    expect(skipped).toMatchObject({
+      status: 'FAILED', outcome_code: 'BLOCKED',
+      failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', manifest_kind: 'RESOURCE_IDENTITIES',
+      planned_copies: '2', residual_copies: '2',
+    });
+    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
+    expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
+    for (const adapter of adapterMocks.slice(1)) {
+      expect(adapter.execute).not.toHaveBeenCalled();
+      expect(adapter.verify).not.toHaveBeenCalled();
+    }
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
+    );
   });
 
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
