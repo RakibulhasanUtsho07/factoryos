@@ -401,3 +401,191 @@ export class WmsPodStorageVerifier {
     return verifyWmsPodObjectDigest(this.config, objectKey, expectedSha256);
   }
 }
+
+
+/**
+ * Signs a bounded S3 request using the same path-style endpoint and credential
+ * contract as the POD read/write helpers. Host is signed but supplied by fetch.
+ */
+function signedPodS3Headers(
+  storage: S3PodConfiguration,
+  method: 'GET' | 'DELETE',
+  target: URL,
+  canonicalUri: string,
+  canonicalQuery: string,
+): Record<string, string> {
+  const payloadHash = sha256Hex(Buffer.alloc(0));
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const canonicalHeadersByName: Record<string, string> = {
+    host: target.host.toLowerCase(),
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  if (storage.sessionToken) {
+    canonicalHeadersByName['x-amz-security-token'] = storage.sessionToken;
+  }
+  const signedHeaderNames = Object.keys(canonicalHeadersByName).sort();
+  const canonicalHeaders = signedHeaderNames
+    .map((name) => name + ':' + canonicalHeadersByName[name]!.trim().replace(/\s+/g, ' ') + '\n')
+    .join('');
+  const signedHeaders = signedHeaderNames.join(';');
+  const canonicalRequest = [
+    method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
+  ].join('\n');
+  const scope = dateStamp + '/' + storage.region + '/s3/aws4_request';
+  const stringToSign = [
+    'AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest),
+  ].join('\n');
+  const dateKey = hmac('AWS4' + storage.secretAccessKey, dateStamp);
+  const regionKey = hmac(dateKey, storage.region);
+  const serviceKey = hmac(regionKey, 's3');
+  const signingKey = hmac(serviceKey, 'aws4_request');
+  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+  const headers: Record<string, string> = {
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    'accept-encoding': 'identity',
+    Authorization: 'AWS4-HMAC-SHA256 Credential=' + storage.accessKeyId + '/' + scope
+      + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature,
+  };
+  if (storage.sessionToken) headers['x-amz-security-token'] = storage.sessionToken;
+  return headers;
+}
+
+function assertTenantPodObjectKey(tenantId: string, objectKey: string): void {
+  const normalizedTenantId = tenantId.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalizedTenantId)) {
+    throw new BadRequestException('tenantId must be a UUID');
+  }
+  assertSafeObjectKey(objectKey);
+  const tenantPrefix = 'pod/' + normalizedTenantId + '/';
+  if (!objectKey.startsWith(tenantPrefix)) {
+    throw new BadRequestException('POD object key is outside the requested tenant prefix');
+  }
+  const parts = objectKey.split('/');
+  if (parts.length !== 5 || parts[0] !== 'pod' || parts.slice(1).some((part) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part))) {
+    throw new BadRequestException('POD object key must use the tenant/factory/shipment/object UUID hierarchy');
+  }
+}
+
+async function assertPodBucketUnversioned(
+  storage: S3PodConfiguration,
+  fetcher: typeof fetch,
+): Promise<void> {
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket);
+  const canonicalQuery = 'versioning=';
+  const target = new URL(storage.endpoint.origin);
+  target.pathname = canonicalUri;
+  target.search = '?' + canonicalQuery;
+
+  let response: Response;
+  try {
+    response = await fetcher(target, {
+      method: 'GET',
+      headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, canonicalQuery),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('Unable to verify POD bucket versioning state');
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException('POD bucket versioning state could not be verified; deletion is blocked');
+  }
+  let xml: string;
+  try {
+    xml = await response.text();
+  } catch {
+    throw new ServiceUnavailableException('POD bucket versioning response could not be read');
+  }
+  if (xml.length > 16384) {
+    throw new ServiceUnavailableException('POD bucket versioning response exceeded its safety limit');
+  }
+  // S3 returns an empty VersioningConfiguration when bucket versioning is off.
+  // Enabled, suspended, unknown or provider-specific configurations are blocked:
+  // DELETE without versionId would only create a marker and leave old bytes behind.
+  const emptyConfiguration =
+    /<VersioningConfiguration\b[^>]*\/>/i.test(xml)
+    || /<VersioningConfiguration\b[^>]*>\s*<\/VersioningConfiguration>/i.test(xml);
+  if (!emptyConfiguration || /<Status>\s*(Enabled|Suspended)\s*<\/Status>/i.test(xml)) {
+    throw new ServiceUnavailableException(
+      'POD bucket must have independently verified, disabled object versioning before erasure',
+    );
+  }
+}
+
+/**
+ * Deletes one previously identified tenant-scoped POD object from an
+ * independently verified unversioned S3-compatible bucket. It verifies the
+ * stored bytes before mutation and performs a separate GET after DELETE; this
+ * primitive does not enumerate tenant data or by itself constitute an erasure
+ * adapter or whole-tenant erasure receipt.
+ */
+export async function deleteWmsPodObjectAndVerifyGone(
+  config: ConfigReader,
+  tenantId: string,
+  objectKey: string,
+  expectedSha256: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject & { verifiedAbsent: true }> {
+  assertTenantPodObjectKey(tenantId, objectKey);
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
+    throw new BadRequestException('expectedSha256 must be SHA-256 hex');
+  }
+
+  const storage = readConfiguration(config);
+  await assertPodBucketUnversioned(storage, fetcher);
+  const before = await verifyWmsPodObjectDigest(config, objectKey, expectedSha256, fetcher);
+
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const encodedKey = objectKey.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
+  const target = new URL(storage.endpoint.origin);
+  target.pathname = canonicalUri;
+
+  let deletion: Response;
+  try {
+    deletion = await fetcher(target, {
+      method: 'DELETE',
+      headers: signedPodS3Headers(storage, 'DELETE', target, canonicalUri, ''),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('POD object deletion outcome is uncertain; provider reconciliation is required');
+  }
+  if (!deletion.ok) {
+    await deletion.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException('POD storage did not accept the object deletion request');
+  }
+  await deletion.body?.cancel().catch(() => undefined);
+
+  let readBack: Response;
+  try {
+    readBack = await fetcher(target, {
+      method: 'GET',
+      headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, ''),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('POD deletion read-back failed; deletion is not verified');
+  }
+  if (readBack.status !== 404) {
+    await readBack.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException(
+      readBack.ok
+        ? 'POD object is still readable after deletion; deletion is not verified'
+        : 'POD deletion read-back returned an indeterminate provider status',
+    );
+  }
+  await readBack.body?.cancel().catch(() => undefined);
+  return { ...before, verifiedAbsent: true };
+}
