@@ -37,6 +37,7 @@ describe('SaasTenantPropagationService external saga', () => {
   let residualOnFirstVerificationTarget: string | null = null;
   let mismatchedDeletionTarget: string | null = null;
   let executionFailureTarget: string | null = null;
+  let verificationFailureTarget: string | null = null;
   const verifyCallsByTarget = new Map<string, number>();
   let retentionPolicyRows: Array<{ category_code: string; version: number; disposition: string }>;
   let activeRequest: ReturnType<typeof requestRow>;
@@ -91,6 +92,9 @@ describe('SaasTenantPropagationService external saga', () => {
     adapter.verify.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
       const targetId = input.target.targetId;
+      if (verificationFailureTarget === targetId) {
+        throw new Error('simulated provider verification timeout');
+      }
       const verifyCount = (verifyCallsByTarget.get(targetId) ?? 0) + 1;
       verifyCallsByTarget.set(targetId, verifyCount);
       const leaveResidual = residualOnFirstVerificationTarget === targetId && verifyCount === 1;
@@ -116,6 +120,7 @@ describe('SaasTenantPropagationService external saga', () => {
     residualOnFirstVerificationTarget = null;
     mismatchedDeletionTarget = null;
     executionFailureTarget = null;
+    verificationFailureTarget = null;
     retentionPolicyRows = [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }];
     verifyCallsByTarget.clear();
     iam.authorize.mockResolvedValue(undefined);
@@ -449,6 +454,36 @@ describe('SaasTenantPropagationService external saga', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
     );
+  });
+
+  it('retains the full prepared scope as unresolved when post-delete verification throws', async () => {
+    verificationFailureTarget = 'target-OBJECT_STORAGE';
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Do not infer zero residual copies when provider read-back fails',
+      idempotency_key: 'verification-timeout-unresolved-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.run.status).toBe('PARTIAL');
+    const uncertain = storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE');
+    expect(uncertain).toMatchObject({
+      status: 'FAILED', outcome_code: 'FAILED_RETRYABLE',
+      manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2',
+      deleted_copies: '2', residual_copies: '2',
+    });
+    const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
+    expect(skipped).toMatchObject({
+      status: 'FAILED', outcome_code: 'BLOCKED',
+      failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', residual_copies: '2',
+    });
+    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
+    expect(adapterMocks[0]?.verify).toHaveBeenCalledTimes(1);
+    for (const adapter of adapterMocks.slice(1)) {
+      expect(adapter.execute).not.toHaveBeenCalled();
+      expect(adapter.verify).not.toHaveBeenCalled();
+    }
   });
 
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
