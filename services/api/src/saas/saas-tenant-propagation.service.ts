@@ -379,7 +379,9 @@ export class SaasTenantPropagationService {
     }
 
     let currentManifest = this.jsonObject(prepared.run.external_manifest);
-    currentManifest.activeLegalHoldCategories = prepared.activeLegalHoldCategories;
+    const activeLegalHoldCategories = prepared.activeLegalHoldCategories ?? [];
+    const policyBlockedCategories = prepared.policyBlockedCategories ?? [];
+    currentManifest.activeLegalHoldCategories = activeLegalHoldCategories;
     const policyVersions = this.parsePolicyVersions(currentManifest.policyVersions ?? {});
     const latestReceiptByTarget = new Map(prepared.latestReceipts.map((receipt) => [receipt.target_id, receipt]));
     const readinessByTarget = new Map<string, ExternalTargetReadiness>();
@@ -394,7 +396,7 @@ export class SaasTenantPropagationService {
       const preexistingPlan = Object.prototype.hasOwnProperty.call(initialPlans, target.targetId);
       const state: ExternalTargetReadiness = { preexistingPlan };
       readinessByTarget.set(target.targetId, state);
-      const held = prepared.activeLegalHoldCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category));
+      const held = activeLegalHoldCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category));
       if (held) {
         state.outcome = 'RETAINED';
         state.failureCode = 'ACTIVE_LEGAL_HOLD';
@@ -402,7 +404,7 @@ export class SaasTenantPropagationService {
         globallyReady = false;
         continue;
       }
-      if (prepared.policyBlockedCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category))) {
+      if (policyBlockedCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category))) {
         state.outcome = 'BLOCKED';
         state.failureCode = 'RETENTION_POLICY_BLOCKED';
         state.reason = 'A current DELETE retention policy is missing or has a non-delete disposition for this category.';
@@ -429,7 +431,7 @@ export class SaasTenantPropagationService {
           state.reason = this.safeReason(state.preflight.reason, 'Adapter preflight returned ' + state.preflight.outcome.toLowerCase());
           globallyReady = false;
         }
-      } catch (error) {
+      } catch {
         state.outcome = !state.adapter
           ? 'BLOCKED'
           : 'FAILED_RETRYABLE';
@@ -633,8 +635,7 @@ export class SaasTenantPropagationService {
       if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
       if (!globallyReady) continue;
       const state = readinessByTarget.get(target.targetId);
-      let plan = state?.plan;
-      const planEntry = this.jsonObject(currentManifest.plans ?? {})[target.targetId];
+      const plan = state?.plan;
       let plannedCopies = '0';
       let deletedCopies = '0';
       let residualCopies = '0';
