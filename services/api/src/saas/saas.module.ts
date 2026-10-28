@@ -33,6 +33,7 @@ import { SaasPhysicalProvisioningController } from './saas-physical-provisioning
 import { SaasPhysicalProvisioningService } from './saas-physical-provisioning.service';
 import { SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS } from './saas-physical-infrastructure.adapters';
 import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-physical-infrastructure.adapter';
+import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
@@ -67,7 +68,12 @@ import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-p
     SaasTenantGovernanceExecutionService,
     SaasTenantPropagationService,
     SaasTenantFinanceRetentionService,
-    { provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS, useValue: [] },
+    WmsPodS3ErasureAdapter,
+    {
+      provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
+      useFactory: (adapter: WmsPodS3ErasureAdapter) => [adapter],
+      inject: [WmsPodS3ErasureAdapter],
+    },
     { provide: SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null },
     SaasTenantPostgresDatasetSource,
     { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
