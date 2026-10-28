@@ -36,6 +36,7 @@ import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-p
 import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
 import { RedisCacheErasureAdapter } from './redis-cache-erasure.adapter';
 import { S3TenantBackupErasureAdapter } from './s3-tenant-backup-erasure.adapter';
+import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
 import { TenantCacheModule } from './tenant-cache.module';
 
 @Module({
@@ -73,6 +74,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantFinanceRetentionService,
     WmsPodS3ErasureAdapter,
     S3TenantBackupErasureAdapter,
+    SaasTenantBackupWriterFenceService,
     {
       provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
       useFactory: (podAdapter: WmsPodS3ErasureAdapter, cacheAdapter: RedisCacheErasureAdapter, backupAdapter: S3TenantBackupErasureAdapter) => [
@@ -104,6 +106,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantPropagationService,
     SaasTenantFinanceRetentionService,
     SaasTenantDataTransferWorkerService,
+    SaasTenantBackupWriterFenceService,
   ],
 })
 export class SaasModule {}
