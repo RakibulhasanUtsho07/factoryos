@@ -81,6 +81,13 @@ BEGIN
   ) THEN RAISE EXCEPTION 'resource manifest must reject duplicate identities'; END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_manifest_items'::regclass
+      AND conname='chk_saas_external_manifest_item_content_digest'
+      AND pg_get_constraintdef(oid) ILIKE '%resource_content_digest%'
+      AND pg_get_constraintdef(oid) ILIKE '%64%'
+  ) THEN RAISE EXCEPTION 'resource manifest content digests must be optional SHA-256 values when available'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
     WHERE conrelid='public.saas_tenant_external_propagation_resource_events'::regclass
       AND conname='chk_saas_external_resource_event_result'
       AND pg_get_constraintdef(oid) ILIKE '%VERIFIED%'
