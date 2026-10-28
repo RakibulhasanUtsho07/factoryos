@@ -323,7 +323,10 @@ export class SaasTenantPropagationService {
       if (previous?.status === 'VERIFIED') continue;
       const adapter = this.adapterFor(target);
       const planEntry = (currentManifest.plans as Record<string, unknown> | undefined)?.[target.targetId];
-      let plan = this.decodePlan(planEntry);
+      let plan: SaasExternalPropagationPlan | undefined;
+      let resourceManifestId: string | null = null;
+      let resourceEventState: string | null = null;
+      let lastProviderReceiptReference: string | null = null;
       let plannedCopies = '0';
       let deletedCopies = '0';
       let residualCopies = '0';
@@ -334,35 +337,114 @@ export class SaasTenantPropagationService {
       let residualManifest: string[] = [];
       let receiptStatus: 'VERIFIED' | 'RESIDUALS' | 'FAILED' = 'FAILED';
       let failureCode: string | null = null;
+      let ledgerWriteFailed = false;
       const context = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
+      const recordResourceEvent = async (
+        outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE',
+        details: {
+          providerReceiptReference?: string | null;
+          verificationReference?: string | null;
+          verifiedManifestDigest?: string | null;
+          residualCount?: string;
+          failureCode?: string | null;
+          residualReason?: string | null;
+        } = {},
+      ) => {
+        if (!resourceManifestId || !plan || plan.resources.length === 0) return;
+        try {
+          await this.appendResourceEvents({
+            tenantId, actorUserId, manifestId: resourceManifestId, outcomeCode,
+            providerReceiptReference: details.providerReceiptReference ?? null,
+            verificationReference: details.verificationReference ?? null,
+            verifiedManifestDigest: details.verifiedManifestDigest ?? null,
+            residualCount: details.residualCount ?? '0',
+            failureCode: details.failureCode ?? null,
+            residualReason: details.residualReason ?? null,
+          });
+        } catch (error) {
+          ledgerWriteFailed = true;
+          throw error;
+        }
+      };
 
       try {
-        if (planEntry && !plan) throw new ConflictException('Persisted external deletion plan is malformed; recovery must be reviewed');
-        if (plan) await adapter.recover({ ...context, plan });
-        else {
+        if (planEntry) {
+          const loaded = await this.loadPlanFromManifest({
+            tenantId, actorUserId, requestId, runId: prepared.run.run_id, target, planEntry,
+          });
+          plan = loaded.plan;
+          resourceManifestId = loaded.manifestId;
+          resourceEventState = loaded.latestOutcome;
+          lastProviderReceiptReference = loaded.providerReceiptReference;
+          if (plan.resources.length > 0 && !resourceEventState) {
+            throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
+          }
+          if (resourceEventState === 'FAILED_RETRYABLE') {
+            await recordResourceEvent('PREPARED');
+            resourceEventState = 'PREPARED';
+          }
+          if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState ?? '')) {
+            throw new ConflictException('The per-resource manifest has terminal outcomes and cannot be silently re-executed');
+          }
+          if (plan.resources.length > 0
+            && !['PREPARED', 'DELETE_REQUESTED', 'DELETED'].includes(resourceEventState ?? '')) {
+            throw new ConflictException('Per-resource recovery state is not resumable');
+          }
+          await adapter.recover({ ...context, plan });
+        } else {
           plan = await adapter.prepare(context);
           this.validatePlan(plan);
-          currentManifest = {
-            ...currentManifest,
-            plans: {
-              ...this.jsonObject(currentManifest.plans ?? {}),
-              [target.targetId]: {
-                manifestDigest: plan.manifestDigest, plannedCopies: plan.plannedCopies,
-                planReference: plan.planReference, storeKind: target.storeKind,
-                adapterKey: target.adapterKey, configReference: target.configReference,
-              },
-            },
-          };
-          await this.persistRunManifest(tenantId, actorUserId, requestId, prepared.run.run_id, currentManifest);
+          let persisted: { manifestId: string; externalManifest: Record<string, unknown> };
+          try {
+            persisted = await this.persistResourceManifestAndRunPlan({
+              tenantId, actorUserId, requestId, requestVersion: Number(prepared.request.version),
+              runId: prepared.run.run_id, target, plan,
+              sourceExportDigest: prepared.request.export_bundle_digest,
+              currentManifest,
+            });
+          } catch (error) {
+            ledgerWriteFailed = true;
+            throw error;
+          }
+          resourceManifestId = persisted.manifestId;
+          currentManifest = persisted.externalManifest;
+          resourceEventState = plan.resources.length > 0 ? 'PREPARED' : null;
         }
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
-        const deletion = await adapter.erase({ ...context, plan });
-        deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
-        providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
-        if (deletion.manifestDigest !== plan.manifestDigest) {
-          throw new ConflictException('External adapter deletion receipt digest differs from the exact prepared manifest');
+
+        let deletion: SaasExternalPropagationDeleteReceipt;
+        if (resourceEventState === 'DELETED' && plan.resources.length > 0) {
+          if (!lastProviderReceiptReference) {
+            throw new ConflictException('Per-resource DELETED state has no durable provider receipt reference');
+          }
+          providerReceiptReference = this.reference(lastProviderReceiptReference, 'providerReceiptReference');
+          deletedCopies = plannedCopies;
+          deletion = {
+            deletedCopies,
+            manifestDigest: plan.manifestDigest,
+            providerReceiptReference,
+          };
+        } else {
+          if (resourceEventState === 'PREPARED') {
+            await recordResourceEvent('DELETE_REQUESTED');
+            resourceEventState = 'DELETE_REQUESTED';
+          }
+          deletion = await adapter.erase({ ...context, plan });
+          deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
+          providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
+          if (deletion.manifestDigest !== plan.manifestDigest) {
+            throw new ConflictException('External adapter deletion receipt digest differs from the exact prepared manifest');
+          }
+          if (deletedCopies === plannedCopies && resourceEventState === 'DELETE_REQUESTED') {
+            await recordResourceEvent('DELETED', { providerReceiptReference });
+            resourceEventState = 'DELETED';
+          }
         }
+        if (deletion.manifestDigest !== plan.manifestDigest) {
+          throw new ConflictException('Recovered deletion receipt digest differs from the sealed resource manifest');
+        }
+
         const verification = await adapter.verify({ ...context, plan, deletion });
         residualCopies = this.count(verification.residualCopies, 'residualCopies');
         verifiedDigest = this.digestOrNull(verification.verifiedManifestDigest);
@@ -378,6 +460,9 @@ export class SaasTenantPropagationService {
           }
         }
       } catch (error) {
+        if (ledgerWriteFailed) {
+          throw new ServiceUnavailableException('Durable per-resource erasure ledger write failed; propagation is halted before further provider mutations');
+        }
         failureCode = this.failureCode(error);
         if (plan) {
           try {
@@ -392,6 +477,23 @@ export class SaasTenantPropagationService {
         } else residualCopies = '1';
         residualManifest = ['unverified-scope:' + target.targetId];
         receiptStatus = 'FAILED';
+      }
+
+      if (plan && resourceManifestId && plan.resources.length > 0) {
+        if (receiptStatus === 'VERIFIED') {
+          await recordResourceEvent('VERIFIED', {
+            providerReceiptReference, verificationReference,
+            verifiedManifestDigest: verifiedDigest, residualCount: '0',
+          });
+          resourceEventState = 'VERIFIED';
+        } else if (resourceEventState && !['FAILED_RETRYABLE', 'VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState)) {
+          await recordResourceEvent('FAILED_RETRYABLE', {
+            providerReceiptReference, residualCount: residualCopies,
+            failureCode: failureCode ?? 'ADAPTER_OPERATION_FAILED',
+            residualReason: 'Provider outcome requires reconciliation before this resource may be retried',
+          });
+          resourceEventState = 'FAILED_RETRYABLE';
+        }
       }
 
       await this.insertReceipt({
