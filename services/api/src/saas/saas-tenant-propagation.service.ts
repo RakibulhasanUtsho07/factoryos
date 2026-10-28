@@ -578,6 +578,7 @@ export class SaasTenantPropagationService {
         let plannedCopies = '0';
         let deletedCopies = '0';
         let residualCopies = '0';
+        let residualManifest: string[] = [];
         let manifestKind: SaasExternalManifestKind = 'SCOPE_INTENT';
         let manifestDigest = this.hash({
           manifestKind: 'SCOPE_INTENT', tenantId, requestId, runId: prepared.run.run_id,
@@ -602,6 +603,10 @@ export class SaasTenantPropagationService {
           residualCopies = String(previous.residual_copies);
           if (previous.manifest_digest) manifestDigest = previous.manifest_digest;
           if (previous.manifest_kind) manifestKind = previous.manifest_kind;
+          residualManifest = this.residualReferences(this.jsonArray(previous.residual_manifest));
+        }
+        if (residualCopies !== '0' && residualManifest.length === 0) {
+          residualManifest = ['unverified-scope:' + target.targetId];
         }
         const preflight = state?.preflight;
         await this.insertReceipt({
@@ -610,7 +615,7 @@ export class SaasTenantPropagationService {
           verifiedManifestDigest: previous?.verified_manifest_digest ?? null,
           verificationReference: previous?.verification_reference ?? null,
           providerReceiptReference: previous?.provider_receipt_reference ?? null,
-          residualManifest: this.residualReferences(previous ? this.jsonArray(previous.residual_manifest) : []),
+          residualManifest: this.residualReferences(residualManifest),
           status: 'FAILED', failureCode, outcomeCode, manifestKind,
           resourceClass: preflight?.resourceClass ?? target.storeKind,
           adapterVersion: preflight?.adapterVersion ?? state?.adapter?.adapterVersion ?? null,
