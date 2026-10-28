@@ -63,9 +63,16 @@ BEGIN
     WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
       AND conname='chk_saas_external_receipt_outcome_consistency'
       AND pg_get_constraintdef(oid) ILIKE '%RESOURCE_IDENTITIES%'
-      AND pg_get_constraintdef(oid) ILIKE '%SCOPE_INTENT%'
       AND pg_get_constraintdef(oid) ILIKE '%residual_reason%'
   ) THEN RAISE EXCEPTION 'receipt outcome, evidence kind and residual reason must be cross-validated'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.saas_tenant_external_propagation_receipts'::regclass
+      AND conname='chk_saas_external_receipt_manifest_kind'
+      AND pg_get_constraintdef(oid) ILIKE '%RESOURCE_IDENTITIES%'
+      AND pg_get_constraintdef(oid) ILIKE '%SCOPE_INTENT%'
+  ) THEN RAISE EXCEPTION 'resource-manifest and scope-intent digests must remain distinguishable'; END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
