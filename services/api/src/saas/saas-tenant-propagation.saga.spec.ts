@@ -415,6 +415,8 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(recoveryAdapter?.verify).toHaveBeenCalledTimes(2);
     for (const adapter of adapterMocks.filter((candidate) => candidate.storeKind !== 'OBJECT_STORAGE')) {
       expect(adapter.execute).toHaveBeenCalledTimes(1);
+      // A persisted plan from a blocked target does not prove a prior provider mutation.
+      expect(adapter.recover).not.toHaveBeenCalled();
     }
   });
 
