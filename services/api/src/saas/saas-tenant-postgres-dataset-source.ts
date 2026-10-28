@@ -87,6 +87,13 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
   ]),
 });
 
+const SAAS_TENANT_IAM_ACCESS_RELATIONS = Object.freeze([
+  'tenant_memberships',
+  'roles',
+  'user_roles',
+  'role_permissions',
+]);
+
 const PAGE_SIZE = 500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SCHEMA_VERSION_PATTERN = /^[0-9]{1,8}\.[0-9]{1,8}\.[0-9]{1,8}$/;
@@ -294,6 +301,38 @@ export class SaasTenantPostgresDatasetSource {
     }
   }
 
+  private async assertCategoryCompleteOnClient(
+    client: Awaited<ReturnType<DatabaseService['getClient']>>,
+    category: SaasTransferDatasetCategory,
+    adapterRelations: readonly string[],
+  ): Promise<void> {
+    let result: QueryResult<{ has_excluded_rows: boolean }>;
+    try {
+      result = await client.query<{ has_excluded_rows: boolean }>(
+        'SELECT factoryos_governance.tenant_export_category_has_excluded_rows($1::text, $2::text[]) AS has_excluded_rows',
+        [category, [...adapterRelations]],
+      );
+    } catch {
+      // The function intentionally hides relation details. Missing grants,
+      // stale inventory or any query error blocks export rather than emitting
+      // a category count/digest that could be mistaken for complete coverage.
+      throw new ServiceUnavailableException(
+        'Tenant export category completeness could not be verified; export was blocked',
+      );
+    }
+
+    if (result.rows.length !== 1 || typeof result.rows[0]?.has_excluded_rows !== 'boolean') {
+      throw new ServiceUnavailableException(
+        'Tenant export category completeness could not be verified; export was blocked',
+      );
+    }
+    if (result.rows[0].has_excluded_rows) {
+      throw new ServiceUnavailableException(
+        'Tenant transfer category ' + category + ' contains tenant-owned rows outside the reviewed export allowlist',
+      );
+    }
+  }
+
   private async *readDatasetOnClient(
     client: Awaited<ReturnType<DatabaseService['getClient']>>,
     tenantId: string,
@@ -304,6 +343,7 @@ export class SaasTenantPostgresDatasetSource {
       throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
     }
     if (category === SaasTransferDatasetCategory.IAM_ACCESS) {
+      await this.assertCategoryCompleteOnClient(client, category, SAAS_TENANT_IAM_ACCESS_RELATIONS);
       yield* this.readIamDatasetOnClient(client, tenantId, isActive);
       return;
     }
@@ -314,6 +354,8 @@ export class SaasTenantPostgresDatasetSource {
         'Tenant transfer category ' + category + ' has no reviewed PostgreSQL source adapter',
       );
     }
+
+    await this.assertCategoryCompleteOnClient(client, category, tables);
 
     for (const table of tables) {
       let afterId: string | null = null;

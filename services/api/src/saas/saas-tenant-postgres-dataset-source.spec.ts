@@ -17,11 +17,15 @@ describe('SaasTenantPostgresDatasetSource', () => {
       user_role_count: '0',
       role_permission_count: '0',
     },
+    excludedCategoryHasRows = false,
   ) {
     const calls: Array<{ sql: string; values?: unknown[] }> = [];
     const client = {
       query: jest.fn(async (sql: string, values?: unknown[]) => {
         calls.push({ sql, values });
+        if (sql.includes('tenant_export_category_has_excluded_rows')) {
+          return { rows: [{ has_excluded_rows: excludedCategoryHasRows }], rowCount: 1 };
+        }
         if (sql.includes('AS membership_count')) {
           return { rows: [iamCounts], rowCount: 1 };
         }
@@ -122,6 +126,38 @@ describe('SaasTenantPostgresDatasetSource', () => {
     );
     expect(SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.EFFECTIVE_DATED_MASTER_DATA])
       .toEqual(expect.arrayContaining(['saas_usage_rate_cards', 'saas_usage_budgets']));
+  });
+
+  it('blocks a category export when tenant rows exist in an excluded direct-tenant relation', async () => {
+    const { source, client, calls, database } = createSource(undefined, undefined, true);
+
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.AI_CONTEXT)) {
+        // This loop must never receive records from a partial category.
+      }
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    const coverageCheck = calls.findIndex((item) => item.sql.includes('tenant_export_category_has_excluded_rows'));
+    const categoryRead = calls.findIndex((item) => item.sql.includes('FROM public.ai_decision_envelopes AS dataset_row'));
+    expect(coverageCheck).toBeGreaterThan(-1);
+    expect(categoryRead).toBe(-1);
+    expect(calls[coverageCheck]?.values).toEqual([
+      SaasTransferDatasetCategory.AI_CONTEXT,
+      [
+        'ai_decision_envelopes',
+        'ai_context_packages',
+        'ai_verification_runs',
+        'research_sources',
+        'research_claims',
+        'research_claim_links',
+        'research_knowledge_releases',
+        'research_relevance_mappings',
+      ],
+    ]);
+    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(true);
+    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(false);
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(database.getClient).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {
