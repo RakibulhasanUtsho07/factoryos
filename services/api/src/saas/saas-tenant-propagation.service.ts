@@ -372,7 +372,7 @@ export class SaasTenantPropagationService {
         if (planEntry) {
           const loaded = await this.loadPlanFromManifest({
             tenantId, actorUserId, requestId, runId: prepared.run.run_id,
-            sourceExportDigest: prepared.request.export_bundle_digest, target, planEntry,
+            sourceExportDigest: prepared.request.export_bundle_digest, target, adapter, planEntry,
           });
           plan = loaded.plan;
           resourceManifestId = loaded.manifestId;
@@ -395,7 +395,7 @@ export class SaasTenantPropagationService {
           await adapter.recover({ ...context, plan });
         } else {
           plan = await adapter.prepare(context);
-          this.validatePlan(plan);
+          this.validatePlan(plan, adapter);
           let persisted: { manifestId: string; externalManifest: Record<string, unknown> };
           try {
             persisted = await this.persistResourceManifestAndRunPlan({
@@ -880,7 +880,10 @@ export class SaasTenantPropagationService {
       idempotencyKey: idempotencyKey + ':' + target.targetId, target,
     };
   }
-  private validatePlan(plan: SaasExternalPropagationPlan) {
+  private validatePlan(
+    plan: SaasExternalPropagationPlan,
+    adapter?: SaasTenantExternalDataPropagationAdapter,
+  ) {
     if (!plan || typeof plan !== 'object' || !HEX_DIGEST.test(plan.manifestDigest)) {
       throw new ConflictException('Adapter plan must include a SHA-256 resource identity manifest digest');
     }
@@ -889,6 +892,11 @@ export class SaasTenantPropagationService {
     if (typeof plan.adapterVersion !== 'string'
       || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(plan.adapterVersion)) {
       throw new ConflictException('Adapter plan must pin a semantic adapter version');
+    }
+    if (adapter && (typeof adapter.adapterVersion !== 'string'
+      || !/^[0-9]+\\.[0-9]+\\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(adapter.adapterVersion)
+      || plan.adapterVersion !== adapter.adapterVersion)) {
+      throw new ConflictException('Sealed resource manifest adapter version differs from the running adapter implementation');
     }
     if (typeof plan.resourceClass !== 'string'
       || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(plan.resourceClass)) {
@@ -951,6 +959,7 @@ export class SaasTenantPropagationService {
     runId: string;
     sourceExportDigest: string;
     target: SaasTenantExternalDataTarget;
+    adapter: SaasTenantExternalDataPropagationAdapter;
     planEntry: unknown;
   }): Promise<{
     plan: SaasExternalPropagationPlan;
@@ -1046,7 +1055,7 @@ export class SaasTenantPropagationService {
       policyVersions,
       resources,
     };
-    this.validatePlan(plan);
+    this.validatePlan(plan, input.adapter);
     if (entry.adapterVersion !== undefined && String(entry.adapterVersion) !== plan.adapterVersion) {
       throw new ConflictException('Stored adapter version does not match the sealed resource manifest');
     }
