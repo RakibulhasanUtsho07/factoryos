@@ -22,6 +22,7 @@ describe('SaasTenantPropagationService', () => {
   const adapter = {
     storeKind: 'OBJECT_STORAGE' as const,
     adapterKey: 'object-store.v1',
+    adapterVersion: '1.0.0',
     isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
     prepare: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     erase: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
