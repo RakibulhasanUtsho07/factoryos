@@ -37,6 +37,7 @@ describe('SaasTenantPropagationService external saga', () => {
   let residualOnFirstVerificationTarget: string | null = null;
   let mismatchedDeletionTarget: string | null = null;
   const verifyCallsByTarget = new Map<string, number>();
+  let retentionPolicyRows: Array<{ category_code: string; version: number; disposition: string }>;
   let activeRequest: ReturnType<typeof requestRow>;
   let service: SaasTenantPropagationService;
 
@@ -110,6 +111,7 @@ describe('SaasTenantPropagationService external saga', () => {
     activeRequest = requestRow();
     residualOnFirstVerificationTarget = null;
     mismatchedDeletionTarget = null;
+    retentionPolicyRows = [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }];
     verifyCallsByTarget.clear();
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
@@ -153,7 +155,7 @@ describe('SaasTenantPropagationService external saga', () => {
           source_bundle_digest: sourceDigest, actor_user_id: requester }] };
       }
       if (sql.includes('FROM saas_tenant_data_retention_policies')) {
-        return { rows: [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }] };
+        return { rows: retentionPolicyRows };
       }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) {
@@ -319,6 +321,29 @@ describe('SaasTenantPropagationService external saga', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
     );
+  });
+
+  it('persists a BLOCKED outcome when no current DELETE retention policy exists', async () => {
+    retentionPolicyRows = [];
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Require a current retention policy before any provider deletion',
+      idempotency_key: 'missing-retention-policy-barrier-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.request.status).toBe('PROPAGATION_PENDING');
+    expect(result.run.status).toBe('PARTIAL');
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.every((receipt) => receipt.outcome_code === 'BLOCKED'
+      && receipt.failure_code === 'RETENTION_POLICY_BLOCKED'
+      && receipt.manifest_kind === 'SCOPE_INTENT')).toBe(true);
+    for (const adapter of adapterMocks) {
+      expect(adapter.preflight).not.toHaveBeenCalled();
+      expect(adapter.prepare).not.toHaveBeenCalled();
+      expect(adapter.execute).not.toHaveBeenCalled();
+    }
   });
 
   it('keeps the request pending when a provider deletion receipt has a different manifest digest', async () => {
