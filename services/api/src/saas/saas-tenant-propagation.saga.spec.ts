@@ -241,7 +241,8 @@ describe('SaasTenantPropagationService external saga', () => {
       expect(adapter.execute).not.toHaveBeenCalled();
     }
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED')).toBe(true);
+    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED' && receipt.outcome_code === 'RETAINED'
+      && receipt.residual_copies === '2' && receipt.manifest_kind === 'RESOURCE_IDENTITIES')).toBe(true);
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
@@ -279,6 +280,40 @@ describe('SaasTenantPropagationService external saga', () => {
       expect(adapter.execute).not.toHaveBeenCalled();
       expect(adapter.verify).not.toHaveBeenCalled();
       expect(adapter.recover).not.toHaveBeenCalled();
+    }
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
+    );
+  });
+
+  it('records a blocked preflight for one target and aborts the run-wide deletion barrier', async () => {
+    const blockedAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
+    if (!blockedAdapter) throw new Error('OBJECT_STORAGE adapter fixture was not created');
+    blockedAdapter.preflight.mockResolvedValue({
+      outcome: 'BLOCKED', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
+      maxPageSize: 500, maxBatchSize: 100, reason: 'Provider namespace is not approved',
+    });
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Block the run when any provider target fails preflight',
+      idempotency_key: 'blocked-preflight-barrier-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.request.status).toBe('PROPAGATION_PENDING');
+    expect(result.run.status).toBe('PARTIAL');
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE')).toMatchObject({
+      status: 'FAILED', outcome_code: 'BLOCKED', failure_code: 'PREFLIGHT_BLOCKED',
+      manifest_kind: 'SCOPE_INTENT',
+    });
+    for (const adapter of adapterMocks) {
+      expect(adapter.preflight).toHaveBeenCalledTimes(1);
+      expect(adapter.prepare).not.toHaveBeenCalled();
+      expect(adapter.execute).not.toHaveBeenCalled();
+      expect(adapter.verify).not.toHaveBeenCalled();
     }
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
