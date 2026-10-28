@@ -1,0 +1,108 @@
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
+import { SaasTransferDatasetCategory as Category } from './dto/create-saas-schema-compatibility-rule.dto';
+
+const tenant = 'c1000000-0000-4000-8000-000000000001';
+const requestId = 'c2000000-0000-4000-8000-000000000002';
+const runId = 'c3000000-0000-4000-8000-000000000003';
+const actor = 'c4000000-0000-4000-8000-000000000004';
+const digest = 'a'.repeat(64);
+
+function mockDatabase(handler: (sql: string, values: unknown[]) => unknown) {
+  const client = {
+    query: jest.fn(async (sql: string, values: unknown[] = []) => ({ rows: handler(sql, values) as never[], rowCount: 0 })),
+  };
+  const database = {
+    transaction: jest.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(client)),
+    query: jest.fn(async (sql: string, values: unknown[] = []) => ({ rows: handler(sql, values) as never[], rowCount: 0 })),
+  };
+  return { database, client };
+}
+
+describe('SaasTenantBackupWriterFenceService', () => {
+  it('rejects malformed operation identity before touching the database', async () => {
+    const { database } = mockDatabase(() => []);
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation({
+      tenantId: tenant, category: 'NOT_A_CATEGORY' as Category, operationId: 'bad-uuid',
+      producerId: 'backup-worker', writerEpoch: 1,
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses new writer permits while a non-released fence exists', async () => {
+    const { database, client } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('FROM saas_tenant_backup_writer_operations')) return [];
+      if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [{ fence_id: runId }];
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation({
+      tenantId: tenant, category: Category.BUSINESS_DATA,
+      operationId: 'c5000000-0000-4000-8000-000000000005', producerId: 'backup-worker', writerEpoch: 1,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO saas_tenant_backup_writer_operations'))).toBe(false);
+  });
+
+  it('rejects stale writer epochs after a previous erasure release', async () => {
+    const { database } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('FROM saas_tenant_backup_writer_operations')) return [];
+      if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [];
+      if (sql.includes('SELECT next_writer_epoch')) return [{ next_writer_epoch: 3 }];
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation({
+      tenantId: tenant, category: Category.BUSINESS_DATA,
+      operationId: 'c5000000-0000-4000-8000-000000000005', producerId: 'backup-worker', writerEpoch: 2,
+    })).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('does not leave DRAINING while a provider write outcome remains unresolved', async () => {
+    const fence = {
+      fence_id: runId, tenant_id: tenant, category_code: Category.BUSINESS_DATA, request_id: requestId,
+      request_version: 1, run_id: runId, source_export_digest: digest, state: 'DRAINING', writer_epoch: 1,
+      created_by_user_id: actor, provider_fence_reference: null, provider_policy_digest: null,
+      writer_inventory_digest: null, fenced_writer_count: null, erasure_manifest_digest: null,
+      verification_reference: null, verified_residual_count: null, tombstone_replay_reference: null,
+      release_policy_digest: null, release_reference: null, release_writer_inventory_digest: null,
+      release_writer_count: null, next_writer_epoch: null, reviewed_by_user_id: null,
+      recovery_from_state: null, recovery_reason: null, recovery_attestation_reference: null,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(), released_at: null,
+    };
+    const { database } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND fence_id=$2')) return [fence];
+      if (sql.includes('count(*)::integer AS active_count')) return [{ active_count: 1 }];
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const result = await service.advanceAfterDrain(tenant, runId);
+    expect(result.readyForProviderFence).toBe(false);
+    expect(result.activeWriterOperations).toBe(1);
+    expect(result.fence.state).toBe('DRAINING');
+  });
+
+  it('rejects zero-residual verification when one copy remains', async () => {
+    const { database } = mockDatabase(() => []);
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.markErasureVerified({
+      tenantId: tenant, fenceId: runId, manifestDigest: digest,
+      verificationReference: 'backup-verify-001', residualCopies: 1,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires a safe provider reference before release can begin', async () => {
+    const { database } = mockDatabase(() => []);
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.releaseAfterTombstoneReplay({
+      tenantId: tenant, fenceId: runId, reviewedByUserId: actor, providerReleaseReference: '',
+      releasePolicyDigest: digest, releaseWriterInventoryDigest: digest, releaseWriterCount: 1,
+      tombstoneReplayReference: 'tombstone-replay-01', nextWriterEpoch: 2,
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+});
