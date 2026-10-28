@@ -598,7 +598,7 @@ export async function listWmsPodTenantObjects(
       throw new ServiceUnavailableException('POD tenant inventory page exceeded its safety limit or was incomplete');
     }
 
-    const contents = [...xml.matchAll(/<Contents(?:\\s[^>]*)?>([\\s\\S]*?)</Contents>/gi)];
+    const contents = [...xml.matchAll(/<Contents(?:\\s[^>]*)?>([\\s\\S]*?)<\\/Contents>/gi)];
     for (const content of contents) {
       const key = xmlText(content[1]!, 'Key');
       if (!key || !key.startsWith(prefix)) {
