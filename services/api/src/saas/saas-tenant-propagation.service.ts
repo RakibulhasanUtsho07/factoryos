@@ -367,6 +367,7 @@ export class SaasTenantPropagationService {
     }
 
     let currentManifest = this.jsonObject(prepared.run.external_manifest);
+    currentManifest.activeLegalHoldCategories = prepared.activeLegalHoldCategories;
     const policyVersions = this.parsePolicyVersions(currentManifest.policyVersions ?? {});
     const latestReceiptByTarget = new Map(prepared.latestReceipts.map((receipt) => [receipt.target_id, receipt]));
     for (const target of prepared.targets) {
@@ -976,7 +977,8 @@ export class SaasTenantPropagationService {
   }
   private safeReason(value: unknown, fallback: string): string {
     const reason = typeof value === 'string' ? value.trim() : fallback;
-    if (reason.length < 3 || reason.length > 1000 || /:\/\/|(?:secret|password|credential|access[-_]?key|bearer|token)/i.test(reason)) {
+    if (reason.length < 3 || reason.length > 1000 || reason.includes('://')
+      || /(?:secret|password|credential|access[-_]?key|bearer|token)/i.test(reason)) {
       throw new ConflictException('External adapter reason must be bounded and must not contain URLs or credential-like data');
     }
     return reason;
