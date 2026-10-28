@@ -128,6 +128,33 @@ export class SaasTenantPropagationService {
       || decision === 'RESUME' && expectedStatus === 'PAUSED';
     if (!nextStatus || !validPair) throw new BadRequestException('decision and expected_status do not form a supported target lifecycle transition');
 
+    // Do not let a target become ACTIVE unless the exact provider adapter exists
+    // and its deployment configuration is ready. Do this before opening the row-
+    // locking transaction because config resolution may itself involve a secret
+    // manager; recheck the immutable binding after locking the current row below.
+    let activationBinding: { id: string; target: SaasTenantExternalDataTarget } | undefined;
+    if (nextStatus === 'ACTIVE') {
+      const candidateResult = await this.database.query<TargetRow>(
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND target_id=$2',
+        [tenantId, targetId],
+        { tenantId, userId: actorUserId },
+      );
+      const candidate = candidateResult.rows[0];
+      if (!candidate) throw new NotFoundException('External data target not found');
+      const candidateTarget = this.mapTarget(candidate);
+      const adapter = this.adapterFor(candidateTarget);
+      let configured = false;
+      try {
+        configured = await adapter.isConfigured(candidateTarget);
+      } catch {
+        configured = false;
+      }
+      if (!configured) {
+        throw new ServiceUnavailableException('External target cannot be activated because its registered provider adapter is not configured');
+      }
+      activationBinding = { id: candidate.id, target: candidateTarget };
+    }
+
     const result = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
       const found = await client.query<TargetRow>(
