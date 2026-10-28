@@ -1,8 +1,7 @@
 import { jest } from '@jest/globals';
-import { ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
-import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
+import type { SaasExternalPropagationPlan } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
 const requester = '16010000-0000-4000-8000-000000000001';
