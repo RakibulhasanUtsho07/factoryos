@@ -91,6 +91,24 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
         throw new Error('Non-evicting cache topology is required to preserve erasure fences');
       }
 
+      // Request-bound fences must survive a Redis process restart. A noeviction
+      // policy alone does not provide durability; require AOF with synchronous
+      // fsync so a crash cannot silently drop an erasure fence while cached
+      // values survive.
+      const persistenceInfo = await client.sendCommand(['INFO', 'persistence']);
+      const persistenceText = this.redisText(persistenceInfo);
+      if (!/(?:^|\r?\n)aof_enabled:1(?:\r?\n|$)/.test(persistenceText)
+        || !/(?:^|\r?\n)aof_last_write_status:ok(?:\r?\n|$)/.test(persistenceText)) {
+        throw new Error('Tenant cache must have healthy append-only persistence enabled');
+      }
+      const fsyncSetting = this.redisConfigValue(
+        await client.sendCommand(['CONFIG', 'GET', 'appendfsync']),
+        'appendfsync',
+      );
+      if (fsyncSetting !== 'always') {
+        throw new Error('Synchronous AOF fsync is required to preserve erasure fences across crashes');
+      }
+
       // Confirm that the atomic scripts used by cache writers/fence checks are
       // permitted by the provider ACL without mutating any keyspace.
       const scriptProbe: unknown = await client.eval('return 1', { keys: [], arguments: [] });
@@ -149,6 +167,31 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
       return DEFAULT_CONNECT_TIMEOUT_MS;
     }
     return parsed;
+  }
+
+  private redisConfigValue(value: unknown, expectedKey: string): string | null {
+    if (value instanceof Map) {
+      for (const [key, item] of value.entries()) {
+        if (this.redisText(key).toLowerCase() === expectedKey.toLowerCase()) {
+          return this.redisText(item).toLowerCase();
+        }
+      }
+      return null;
+    }
+    if (Array.isArray(value)) {
+      for (let index = 0; index + 1 < value.length; index += 2) {
+        if (this.redisText(value[index]).toLowerCase() === expectedKey.toLowerCase()) {
+          return this.redisText(value[index + 1]).toLowerCase();
+        }
+      }
+      return null;
+    }
+    if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        if (key.toLowerCase() === expectedKey.toLowerCase()) return this.redisText(item).toLowerCase();
+      }
+    }
+    return null;
   }
 
   private redisText(value: unknown): string {
