@@ -13,7 +13,9 @@ BEGIN
     'saas_tenant_external_propagation_manifest_items',
     'saas_tenant_external_propagation_resource_events',
     'saas_tenant_finance_retention_policies',
-    'saas_tenant_finance_retention_runs'
+    'saas_tenant_finance_retention_runs',
+    'saas_tenant_backup_writer_operations',
+    'saas_tenant_backup_writer_fences'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c WHERE c.oid=format('public.%I',t)::regclass
@@ -228,6 +230,145 @@ VALUES
   repeat('f',64),1,'Synthetic in-flight run for legal-hold race contract',
   'hold-fence-propagation-v1',repeat('4',64),'16010000-0000-4000-8000-000000000002');
 
+
+-- Backup writer-fence SQL lifecycle acceptance. This is synthetic data only.
+INSERT INTO saas_tenant_backup_writer_operations
+  (tenant_id,operation_id,category_code,producer_id,writer_epoch)
+VALUES
+  ('16000000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000001',
+   'BUSINESS_DATA','backup-worker-ci',1);
+
+INSERT INTO saas_tenant_backup_writer_fences
+  (tenant_id,category_code,request_id,request_version,run_id,source_export_digest,state,writer_epoch,created_by_user_id)
+VALUES
+  ('16000000-0000-4000-8000-000000000001','BUSINESS_DATA',
+   '16030000-0000-4000-8000-000000000001',1,'16040000-0000-4000-8000-000000000001',
+   repeat('f',64),'DRAINING',1,'16010000-0000-4000-8000-000000000001');
+
+DO $$
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_backup_writer_fences SET state='FENCING'
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+      AND run_id='16040000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'writer fence advanced while upload outcome remained ACTIVE';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  BEGIN
+    INSERT INTO saas_tenant_backup_writer_operations (tenant_id,operation_id,category_code,producer_id,writer_epoch)
+    VALUES ('16000000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000002',
+            'BUSINESS_DATA','backup-worker-late-ci',1);
+    RAISE EXCEPTION 'writer permit was accepted after DRAINING fence began';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  BEGIN
+    UPDATE saas_tenant_backup_writer_operations SET producer_id='tampered-worker'
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+      AND operation_id='16050000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'writer operation identity was mutable';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  BEGIN
+    DELETE FROM saas_tenant_backup_writer_operations
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+      AND operation_id='16050000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'writer operation evidence was deletable';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+END $$;
+
+UPDATE saas_tenant_backup_writer_operations
+SET status='COMPLETED',provider_operation_reference='s3-upload-fixture-160',completed_at=clock_timestamp()
+WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+  AND operation_id='16050000-0000-4000-8000-000000000001';
+
+UPDATE saas_tenant_backup_writer_fences SET state='FENCING'
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_backup_writer_fences SET state='FENCED'
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+      AND run_id='16040000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'FENCED accepted without provider policy/inventory evidence';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+END $$;
+
+UPDATE saas_tenant_backup_writer_fences
+SET state='FENCED',provider_fence_reference='s3-fence-policy-160',
+    provider_policy_digest=repeat('a',64),writer_inventory_digest=repeat('b',64),fenced_writer_count=1
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+
+UPDATE saas_tenant_backup_writer_fences SET state='ERASING'
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_backup_writer_fences
+    SET state='ERASURE_VERIFIED',erasure_manifest_digest=repeat('c',64),
+        verification_reference='backup-verify-160',verified_residual_count=1
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+      AND run_id='16040000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'backup erasure was verified while residual copies remained';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+END $$;
+
+UPDATE saas_tenant_backup_writer_fences
+SET state='ERASURE_VERIFIED',erasure_manifest_digest=repeat('c',64),
+    verification_reference='backup-verify-160',verified_residual_count=0
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_backup_writer_fences SET state='RELEASED',released_at=clock_timestamp()
+    WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+      AND run_id='16040000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'writer fence was released without independent review and tombstone replay';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+END $$;
+
+UPDATE saas_tenant_backup_writer_fences
+SET state='RELEASED',tombstone_replay_reference='restore-tombstone-replay-160',
+    release_policy_digest=repeat('d',64),release_reference='s3-release-policy-160',
+    release_writer_inventory_digest=repeat('e',64),release_writer_count=1,next_writer_epoch=2,
+    reviewed_by_user_id='16010000-0000-4000-8000-000000000002',released_at=clock_timestamp()
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO saas_tenant_backup_writer_operations (tenant_id,operation_id,category_code,producer_id,writer_epoch)
+    VALUES ('16000000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000003',
+            'BUSINESS_DATA','backup-worker-stale-epoch-ci',1);
+    RAISE EXCEPTION 'stale writer epoch was accepted after release';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+END $$;
+
+INSERT INTO saas_tenant_backup_writer_operations
+  (tenant_id,operation_id,category_code,producer_id,writer_epoch)
+VALUES
+  ('16000000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000004',
+   'BUSINESS_DATA','backup-worker-current-epoch-ci',2);
+UPDATE saas_tenant_backup_writer_operations
+SET status='COMPLETED',provider_operation_reference='s3-upload-after-erase-160',completed_at=clock_timestamp()
+WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+  AND operation_id='16050000-0000-4000-8000-000000000004';
+
 DO $$
 BEGIN
   BEGIN
@@ -299,6 +440,8 @@ DO $$
 DECLARE
   visible_targets integer;
   visible_policies integer;
+  visible_writer_operations integer;
+  visible_writer_fences integer;
   attempted integer;
 BEGIN
   SELECT count(*) INTO visible_targets FROM saas_tenant_external_data_targets
@@ -307,6 +450,12 @@ BEGIN
   SELECT count(*) INTO visible_policies FROM saas_tenant_finance_retention_policies
    WHERE version=1 AND tenant_id IN ('16000000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000002');
   IF visible_policies<>1 THEN RAISE EXCEPTION 'Tenant A must see only its own finance retention policy; saw %',visible_policies; END IF;
+  SELECT count(*) INTO visible_writer_operations FROM saas_tenant_backup_writer_operations
+    WHERE operation_id IN ('16050000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000004');
+  IF visible_writer_operations<>2 THEN RAISE EXCEPTION 'Tenant A must see both of its backup writer operations; saw %',visible_writer_operations; END IF;
+  SELECT count(*) INTO visible_writer_fences FROM saas_tenant_backup_writer_fences
+    WHERE run_id='16040000-0000-4000-8000-000000000001';
+  IF visible_writer_fences<>1 THEN RAISE EXCEPTION 'Tenant A must see its own backup writer fence; saw %',visible_writer_fences; END IF;
 
   UPDATE saas_tenant_external_data_targets SET status='PAUSED'
    WHERE tenant_id='16000000-0000-4000-8000-000000000002' AND target_id='sql-target-b-160';
@@ -334,6 +483,8 @@ DO $$
 DECLARE
   visible_targets integer;
   visible_policies integer;
+  visible_writer_operations integer;
+  visible_writer_fences integer;
 BEGIN
   SELECT count(*) INTO visible_targets FROM saas_tenant_external_data_targets
    WHERE target_id IN ('sql-target-a-160','sql-target-b-160');
@@ -341,6 +492,12 @@ BEGIN
   SELECT count(*) INTO visible_policies FROM saas_tenant_finance_retention_policies
    WHERE version=1 AND tenant_id IN ('16000000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000002');
   IF visible_policies<>1 THEN RAISE EXCEPTION 'Tenant B must see only its own finance retention policy'; END IF;
+  SELECT count(*) INTO visible_writer_operations FROM saas_tenant_backup_writer_operations
+    WHERE operation_id IN ('16050000-0000-4000-8000-000000000001','16050000-0000-4000-8000-000000000004');
+  IF visible_writer_operations<>0 THEN RAISE EXCEPTION 'Tenant B must not see tenant A backup writer operations'; END IF;
+  SELECT count(*) INTO visible_writer_fences FROM saas_tenant_backup_writer_fences
+    WHERE run_id='16040000-0000-4000-8000-000000000001';
+  IF visible_writer_fences<>0 THEN RAISE EXCEPTION 'Tenant B must not see tenant A backup writer fence'; END IF;
 END $$;
 RESET ROLE;
 ROLLBACK;
