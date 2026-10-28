@@ -636,14 +636,16 @@ export class SaasTenantPropagationService {
       const identityDigest = this.hash({
         resourceKind: resource.resourceKind,
         resourceReference: resource.resourceReference,
-        resourceVersionReference: resource.resourceVersionReference,
+        resourceVersionReference: resource.resourceVersionReference ?? null,
+        resourceContentDigest: resource.resourceContentDigest ?? null,
       });
       return {
         resource_ordinal: index + 1,
         resource_kind: resource.resourceKind,
         resource_identity_digest: identityDigest,
         resource_reference: resource.resourceReference,
-        resource_version_reference: resource.resourceVersionReference,
+        resource_version_reference: resource.resourceVersionReference ?? null,
+        resource_content_digest: resource.resourceContentDigest ?? null,
         operation_key: 'op.' + this.hash({
           tenantId: input.tenantId, requestId: input.requestId, runId: input.runId,
           targetId: input.target.targetId, sourceExportDigest: input.sourceExportDigest,
@@ -692,12 +694,12 @@ export class SaasTenantPropagationService {
         await client.query(
           `INSERT INTO saas_tenant_external_propagation_manifest_items
            (tenant_id,manifest_id,resource_ordinal,resource_kind,resource_identity_digest,
-            resource_reference,resource_version_reference,operation_key)
+            resource_reference,resource_version_reference,resource_content_digest,operation_key)
            SELECT $1,$2,x.resource_ordinal,x.resource_kind,x.resource_identity_digest,
-                  x.resource_reference,x.resource_version_reference,x.operation_key
+                  x.resource_reference,x.resource_version_reference,x.resource_content_digest,x.operation_key
            FROM jsonb_to_recordset($3::jsonb) AS x(
              resource_ordinal integer,resource_kind text,resource_identity_digest text,
-             resource_reference text,resource_version_reference text,operation_key text
+             resource_reference text,resource_version_reference text,resource_content_digest text,operation_key text
            )
            ORDER BY x.resource_ordinal`,
           [input.tenantId, manifestId, JSON.stringify(batch)],
@@ -934,10 +936,15 @@ export class SaasTenantPropagationService {
       if (resource.resourceVersionReference !== undefined && resource.resourceVersionReference !== null) {
         this.resourceReference(resource.resourceVersionReference, 'resourceVersionReference', 200);
       }
+      if (resource.resourceContentDigest !== undefined && resource.resourceContentDigest !== null
+        && !HEX_DIGEST.test(resource.resourceContentDigest)) {
+        throw new ConflictException('Adapter resourceContentDigest must be a SHA-256 hex digest');
+      }
       const identityDigest = this.hash({
         resourceKind: resource.resourceKind,
         resourceReference: resource.resourceReference,
         resourceVersionReference: resource.resourceVersionReference ?? null,
+        resourceContentDigest: resource.resourceContentDigest ?? null,
       });
       if (seenIdentityDigests.has(identityDigest)) {
         throw new ConflictException('Adapter resource manifest contains duplicate provider identities');
@@ -976,14 +983,15 @@ export class SaasTenantPropagationService {
       resource_class: string; max_page_size: number; max_batch_size: number;
       policy_versions: Record<string, unknown> | string;
       resource_id: string | null; resource_kind: string | null; resource_reference: string | null;
-      resource_version_reference: string | null; latest_outcome: string | null;
+      resource_version_reference: string | null; resource_content_digest: string | null;
+      latest_outcome: string | null;
       provider_receipt_reference: string | null;
     }>(
       `SELECT m.id::text AS manifest_id,m.manifest_digest,m.resource_count,m.source_export_digest,
               m.store_kind,m.adapter_key,m.adapter_version,m.resource_class,m.max_page_size,m.max_batch_size,
               m.policy_versions,
               i.id::text AS resource_id,i.resource_kind,i.resource_reference,i.resource_version_reference,
-              latest.outcome_code AS latest_outcome,latest.provider_receipt_reference
+              i.resource_content_digest,latest.outcome_code AS latest_outcome,latest.provider_receipt_reference
        FROM saas_tenant_external_propagation_manifests m
        LEFT JOIN saas_tenant_external_propagation_manifest_items i
          ON i.tenant_id=m.tenant_id AND i.manifest_id=m.id
@@ -1019,6 +1027,8 @@ export class SaasTenantPropagationService {
         resourceReference: String(resource.resource_reference),
         resourceVersionReference: resource.resource_version_reference === null
           ? null : String(resource.resource_version_reference),
+        resourceContentDigest: resource.resource_content_digest === null
+          ? null : String(resource.resource_content_digest),
       }));
     const resourceEventStates = result.rows
       .filter((resource) => resource.resource_id !== null)
