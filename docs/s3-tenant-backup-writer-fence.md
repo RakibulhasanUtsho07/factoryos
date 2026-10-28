@@ -14,13 +14,13 @@ This ledger protects one (tenant UUID, DATASET_CATEGORY) backup prefix. Each bac
 - RECOVERY_REQUIRED: preserve the deny gate through ambiguous process/provider/ledger outcomes.
 - RELEASED: after independent review, provider release evidence, restore/tombstone replay and next writer epoch are recorded.
 
-The PostgreSQL tenant-row lock serializes writer-operation registration against fence creation. Triggers repeat the core checks for direct SQL writes; RLS scopes both ledgers to the active tenant; governance relation inventory protects this evidence from generic tenant erasure.
+The PostgreSQL tenant-row lock serializes writer-operation registration against fence creation. Triggers repeat the core checks for direct SQL writes, including rejecting a writer epoch that differs from the latest released fence generation. Migration 222 records both relations in the ownership-review ledger; the canonical PostgreSQL migration manifest and SQL contract cover drain blocking, provider evidence, zero-residual verification, independent release, epoch advancement, RLS and cross-tenant invisibility. Governance inventory and ownership-review records protect this evidence from generic tenant erasure.
 
 ## Crash and ambiguity behavior
 
 An upload with an unknown provider result stays ACTIVE. There is no TTL or automatic expiry that could let an erasure run overtake an object write that might still commit. DRAINING cannot advance while any operation is ACTIVE. Recovery requires a provider-backed attestation and a new inventory; the coordinator never removes a provider deny policy itself.
 
-The provider controller must modify only its reviewed scope, read the policy back, inventory all principals and automated jobs that can write backup objects, and prove that stale writer generations cannot recreate erased data. This service accepts evidence records but does not independently authenticate a provider's policy response.
+The provider controller must modify only its reviewed scope, read the policy back, inventory all principals and automated jobs that can write backup objects, and prove that stale writer generations cannot recreate erased data. This service accepts evidence records but does not independently authenticate a provider's policy response. Therefore, the S3 BACKUP adapter remains fail-closed until the provider controller and every producer are integrated and independently accepted.
 
 ## Explicit blockers
 
