@@ -58,6 +58,9 @@ export interface BackupWriterFenceView {
   erasureManifestDigest: string | null; verificationReference: string | null;
   verifiedResidualCount: number | null; tombstoneReplayReference: string | null;
   nextWriterEpoch: number | null; recoveryReason: string | null;
+  releasePolicyDigest: string | null; releaseReference: string | null;
+  releaseWriterInventoryDigest: string | null; releaseWriterCount: number | null;
+  reviewedByUserId: string | null; releasedAt: string | null;
 }
 
 /**
@@ -450,6 +453,10 @@ export class SaasTenantBackupWriterFenceService {
       verifiedResidualCount: row.verified_residual_count === null ? null : Number(row.verified_residual_count),
       tombstoneReplayReference: row.tombstone_replay_reference,
       nextWriterEpoch: row.next_writer_epoch === null ? null : Number(row.next_writer_epoch), recoveryReason: row.recovery_reason,
+      releasePolicyDigest: row.release_policy_digest, releaseReference: row.release_reference,
+      releaseWriterInventoryDigest: row.release_writer_inventory_digest,
+      releaseWriterCount: row.release_writer_count === null ? null : Number(row.release_writer_count),
+      reviewedByUserId: row.reviewed_by_user_id, releasedAt: row.released_at,
     };
   }
   private parseCategories(value: SaasTransferDatasetCategory[] | string): SaasTransferDatasetCategory[] {
