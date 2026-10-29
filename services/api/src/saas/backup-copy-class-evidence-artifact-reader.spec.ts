@@ -1,4 +1,3 @@
-import { jest } from '@jest/globals';
 import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -68,6 +67,7 @@ describe('BackupCopyClassEvidenceArtifactReader', () => {
 
   it('rejects oversized artifacts before reading their contents', async () => {
     const reference = 'evidence-pack-oversized-v1';
+    writeFileSync(join(root, reference), '');
     truncateSync(join(root, reference), 16 * 1024 * 1024 + 1);
     await expect(reader.verifyArtifact(reference, 'a'.repeat(64))).rejects.toBeInstanceOf(ConflictException);
   });
