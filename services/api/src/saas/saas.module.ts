@@ -37,6 +37,8 @@ import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
 import { RedisCacheErasureAdapter } from './redis-cache-erasure.adapter';
 import { S3TenantBackupErasureAdapter } from './s3-tenant-backup-erasure.adapter';
 import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
+import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
+import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { TenantCacheModule } from './tenant-cache.module';
 
 @Module({
@@ -75,6 +77,8 @@ import { TenantCacheModule } from './tenant-cache.module';
     WmsPodS3ErasureAdapter,
     S3TenantBackupErasureAdapter,
     SaasTenantBackupWriterFenceService,
+    S3TenantBackupWriterFenceProvider,
+    S3TenantBackupWriterFenceCoordinator,
     {
       provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
       useFactory: (podAdapter: WmsPodS3ErasureAdapter, cacheAdapter: RedisCacheErasureAdapter, backupAdapter: S3TenantBackupErasureAdapter) => [
@@ -107,6 +111,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantFinanceRetentionService,
     SaasTenantDataTransferWorkerService,
     SaasTenantBackupWriterFenceService,
+    S3TenantBackupWriterFenceCoordinator,
   ],
 })
 export class SaasModule {}
