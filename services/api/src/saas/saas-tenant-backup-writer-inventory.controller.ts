@@ -22,6 +22,14 @@ export class SaasTenantBackupWriterInventoryController {
     return this.inventory.createSnapshot(context.tenantId, context.userId, body);
   }
 
+  @Get(':categoryCode/latest')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  latestSnapshot(@Req() request: InventoryRequest, @Param('categoryCode') categoryCode: string) {
+    const context = this.context(request);
+    return this.inventory.latestSnapshot(context.tenantId, context.userId, categoryCode);
+  }
+
   @Get(':categoryCode/current')
   @UseGuards(PermissionGuard)
   @RequirePermission('saas.data_retention.read')
