@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantBackupWriterFenceService, BackupWriterFenceView, BeginBackupWriterFenceInput } from './saas-tenant-backup-writer-fence.service';
+import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
 import {
   S3TenantBackupWriterFenceProvider,
   S3TenantBackupWriterFenceRemovalEvidence,
@@ -16,6 +17,7 @@ export class S3TenantBackupWriterFenceCoordinator {
   constructor(
     private readonly lifecycle: SaasTenantBackupWriterFenceService,
     private readonly provider: S3TenantBackupWriterFenceProvider,
+    private readonly writerInventory: SaasTenantBackupWriterInventoryService,
   ) {}
 
   /**
@@ -23,7 +25,7 @@ export class S3TenantBackupWriterFenceCoordinator {
    * This method must complete before a BACKUP adapter performs its inventory.
    */
   async beginPropagationFence(input: BeginBackupWriterFenceInput): Promise<BackupWriterFenceView[]> {
-    const inventory = this.provider.getReviewedWriterInventoryEvidence();
+    this.provider.getProviderAcceptanceReferences();
     const fences = await this.lifecycle.beginErasureFence(input);
     const active: BackupWriterFenceView[] = [];
     for (const original of fences) {
@@ -34,11 +36,6 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (fence.state === 'DRAINING' || fence.state === 'FENCING') {
         fence = await this.installAndRecordFence({
           tenantId: input.tenantId, category: fence.category, fenceId: fence.fenceId,
-          writerInventoryDigest: inventory.digest, fencedWriterCount: inventory.count,
-          writerInventoryReference: inventory.reference,
-          policyOwnershipReviewReference: inventory.policyOwnershipReviewReference,
-          stagingAcceptanceReference: inventory.stagingAcceptanceReference,
-          restoreReplayReference: inventory.restoreReplayReference,
         });
       }
       if (fence.state === 'FENCED') {
@@ -78,14 +75,21 @@ export class S3TenantBackupWriterFenceCoordinator {
     tenantId: string;
     category: SaasTransferDatasetCategory;
     fenceId: string;
-    writerInventoryDigest: string;
-    fencedWriterCount: number;
-    writerInventoryReference: string;
-    policyOwnershipReviewReference: string;
-    stagingAcceptanceReference: string;
-    restoreReplayReference: string;
   }): Promise<BackupWriterFenceView> {
     const current = await this.requireMatchingFence(input.tenantId, input.category, input.fenceId);
+    const inventory = await this.writerInventory.requireCurrentAcceptedSnapshot(input.tenantId, input.category);
+    const providerAcceptance = this.provider.getProviderAcceptanceReferences();
+    if (inventory.reviewedByUserId === current.createdByUserId) {
+      throw new ConflictException('Writer inventory reviewer must be independent of the propagation/fence creator');
+    }
+    if (current.writerInventorySnapshotId && (
+      current.writerInventorySnapshotId !== inventory.snapshotId
+      || current.writerInventoryDigest !== inventory.manifestDigest
+      || current.fencedWriterCount !== inventory.entryCount
+    )) {
+      await this.lifecycle.requireRecovery(input.tenantId, input.fenceId, 'WRITER_INVENTORY_CHANGED');
+      throw new ConflictException('The writer inventory changed after the fence was sealed; recovery is required while the provider deny remains');
+    }
     if (current.state !== 'DRAINING' && current.state !== 'FENCING' && current.state !== 'FENCED') {
       throw new ConflictException('Provider writer fencing cannot run from the current lifecycle state');
     }
@@ -111,17 +115,33 @@ export class S3TenantBackupWriterFenceCoordinator {
       throw new ConflictException('S3 write-deny policy is installed and read back, but unfinished multipart uploads remain; keep the fence closed and reconcile those uploads');
     }
 
+    let confirmedInventory: Awaited<ReturnType<SaasTenantBackupWriterInventoryService['requireCurrentAcceptedSnapshot']>>;
+    try {
+      confirmedInventory = await this.writerInventory.requireCurrentAcceptedSnapshot(input.tenantId, input.category);
+    } catch {
+      await this.lifecycle.requireRecovery(input.tenantId, input.fenceId, 'WRITER_INVENTORY_CHANGED');
+      throw new ServiceUnavailableException('Writer inventory could not be re-confirmed after provider fencing; the deny policy remains installed and recovery is required');
+    }
+    if (confirmedInventory.snapshotId !== inventory.snapshotId
+      || confirmedInventory.manifestDigest !== inventory.manifestDigest
+      || confirmedInventory.entryCount !== inventory.entryCount
+      || confirmedInventory.reviewedByUserId !== inventory.reviewedByUserId) {
+      await this.lifecycle.requireRecovery(input.tenantId, input.fenceId, 'WRITER_INVENTORY_CHANGED');
+      throw new ConflictException('Writer inventory changed during provider fencing; the deny policy remains installed and recovery is required');
+    }
+
     return this.lifecycle.recordProviderFenceInstalled({
       tenantId: input.tenantId,
       fenceId: input.fenceId,
       providerFenceReference: evidence.providerFenceReference,
       providerPolicyDigest: evidence.providerPolicyDigest,
-      writerInventoryDigest: input.writerInventoryDigest,
-      fencedWriterCount: input.fencedWriterCount,
-      writerInventoryReference: input.writerInventoryReference,
-      policyOwnershipReviewReference: input.policyOwnershipReviewReference,
-      stagingAcceptanceReference: input.stagingAcceptanceReference,
-      restoreReplayReference: input.restoreReplayReference,
+      writerInventoryDigest: inventory.manifestDigest,
+      fencedWriterCount: inventory.entryCount,
+      writerInventoryReference: inventory.inventoryReference,
+      writerInventorySnapshotId: inventory.snapshotId,
+      policyOwnershipReviewReference: providerAcceptance.policyOwnershipReviewReference,
+      stagingAcceptanceReference: providerAcceptance.stagingAcceptanceReference,
+      restoreReplayReference: providerAcceptance.restoreReplayReference,
     });
   }
 
