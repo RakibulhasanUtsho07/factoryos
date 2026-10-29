@@ -113,11 +113,11 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     expect(provider.installFence.mock.invocationCallOrder[0]).toBeLessThan(lifecycle.markErasureStarted.mock.invocationCallOrder[0]!);
   });
 
-  it('requires recovery when provider policy drifts before inventory begins', async () => {
+  it('requires recovery when the exact provider fence statement is missing before inventory begins', async () => {
     const { coordinator, lifecycle, provider } = setup();
     provider.inspectFence.mockResolvedValueOnce({
-      providerFenceReference: reference, providerPolicyDigest: 'b'.repeat(64), scopePrefixDigest: digest,
-      multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: true,
+      providerFenceReference: reference, providerPolicyDigest: digest, scopePrefixDigest: digest,
+      multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: false,
     } as never);
     await expect(coordinator.beginPropagationFence({
       tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
