@@ -195,7 +195,17 @@ test('propagation runner acquires the backup fence before any target inventory',
   assert.match(runner, /beginPropagationFence/);
   assert.match(runner, /beginPropagationFence[\s\S]*?for \(const target of prepared\.targets\)/);
   assert.match(runner, /recordPropagationVerification/);
+  const runStart = runner.indexOf('beginPropagationFence');
+  const targetLoop = runner.indexOf('for (const target of prepared.targets)');
+  const firstPrepare = runner.indexOf('plan = await adapter.prepare(context)');
+  const firstDelete = runner.indexOf('deletion = await adapter.erase({ ...context, plan })');
+  const prepareFenceCheck = runner.indexOf('await this.backupWriterFenceCoordinator.assertFenceHeld', targetLoop);
+  const deleteFenceCheck = runner.indexOf('await this.backupWriterFenceCoordinator!.assertFenceHeld', targetLoop);
+  assert.ok(runStart >= 0 && runStart < targetLoop && targetLoop < prepareFenceCheck && prepareFenceCheck < firstPrepare);
+  assert.ok(deleteFenceCheck > firstPrepare && deleteFenceCheck < firstDelete);
   assert.match(coordinator, /getProviderAcceptanceReferences/);
+  assert.match(coordinator, /requireCurrentAcceptedProviderAcceptance/);
+  assert.match(coordinator, /PROVIDER_ACCEPTANCE_REVOKED/);
   assert.match(coordinator, /installAndRecordFence[\s\S]*?markErasureStarted/);
   assert.match(migration, /chk_saas_backup_writer_fence_acceptance_references/);
   assert.match(migration, /staging_acceptance_reference IS NOT NULL/);
