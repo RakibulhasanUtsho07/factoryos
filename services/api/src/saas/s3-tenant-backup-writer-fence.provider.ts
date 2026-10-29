@@ -38,10 +38,7 @@ interface MultipartInventory {
   count: number;
   digest: string;
 }
-export interface S3TenantBackupWriterInventoryEvidence {
-  reference: string;
-  digest: string;
-  count: number;
+export interface S3TenantBackupProviderAcceptanceReferences {
   policyOwnershipReviewReference: string;
   stagingAcceptanceReference: string;
   restoreReplayReference: string;
@@ -158,36 +155,24 @@ export class S3TenantBackupWriterFenceProvider {
   constructor(private readonly config: ConfigService) {}
 
   /**
-   * Return the independently reviewed writer identity inventory and controlled
-   * staging references required by the propagation runner. This is configuration
-   * evidence, not proof of provider behavior; deployment review must validate each
-   * reference before setting the corresponding acceptance gate.
+   * Return provider-control-plane acceptance references. The actual writer
+   * identity inventory is stored and independently reviewed in the tenant DB;
+   * these deployment references cannot substitute for that snapshot.
    */
-  getReviewedWriterInventoryEvidence(): S3TenantBackupWriterInventoryEvidence {
+  getProviderAcceptanceReferences(): S3TenantBackupProviderAcceptanceReferences {
     this.readConfiguration();
+    if (this.config.get<string>('FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED') !== 'true') {
+      throw new ServiceUnavailableException('S3 erasure runner is disabled until provider ownership and staging gates are accepted');
+    }
     const required = (name: string): string => {
       const value = this.config.get<string>(name)?.trim();
       if (!value || !SAFE_EVIDENCE_REFERENCE.test(value) || value.includes('://')
         || /(secret|password|credential|access[-_]?key|token)/i.test(value)) {
-        throw new ServiceUnavailableException('S3 erasure acceptance evidence reference is incomplete or unsafe');
+        throw new ServiceUnavailableException('S3 provider acceptance evidence reference is incomplete or unsafe');
       }
       return value;
     };
-    if (this.config.get<string>('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED') !== 'true'
-      || this.config.get<string>('FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED') !== 'true') {
-      throw new ServiceUnavailableException('S3 erasure runner is disabled until writer inventory and runner acceptance are reviewed');
-    }
-    const digest = required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_DIGEST');
-    if (!DIGEST.test(digest)) throw new ServiceUnavailableException('S3 writer inventory digest is invalid');
-    const countText = required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_COUNT');
-    const count = Number(countText);
-    if (!Number.isSafeInteger(count) || count < 1 || count > 100000 || String(count) !== countText) {
-      throw new ServiceUnavailableException('S3 writer inventory count is outside the supported safety bounds');
-    }
     return {
-      reference: required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REFERENCE'),
-      digest,
-      count,
       policyOwnershipReviewReference: required('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE'),
       stagingAcceptanceReference: required('FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE'),
       restoreReplayReference: required('FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE'),
