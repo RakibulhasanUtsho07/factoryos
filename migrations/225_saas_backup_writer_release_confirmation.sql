@@ -32,12 +32,14 @@ BEGIN
     IF NEW.provider_release_confirmed_at IS NOT NULL THEN
       RAISE EXCEPTION 'provider release confirmation cannot be supplied when a fence is inserted' USING ERRCODE='55000';
     END IF;
-  ELSIF TG_OP='UPDATE' AND NEW.provider_release_confirmed_at IS DISTINCT FROM OLD.provider_release_confirmed_at THEN
-    IF OLD.state<>'RELEASED' OR OLD.provider_release_confirmed_at IS NOT NULL
-       OR NEW.provider_release_confirmed_at IS NULL
-       OR NEW.release_reference IS NULL OR NEW.release_policy_digest IS NULL
-       OR NEW.released_at IS NULL OR NEW.next_writer_epoch IS NULL THEN
-      RAISE EXCEPTION 'provider release confirmation is a one-way fact for a durably released fence' USING ERRCODE='55000';
+  ELSIF TG_OP='UPDATE' THEN
+    IF NEW.provider_release_confirmed_at IS DISTINCT FROM OLD.provider_release_confirmed_at THEN
+      IF OLD.state<>'RELEASED' OR OLD.provider_release_confirmed_at IS NOT NULL
+         OR NEW.provider_release_confirmed_at IS NULL
+         OR NEW.release_reference IS NULL OR NEW.release_policy_digest IS NULL
+         OR NEW.released_at IS NULL OR NEW.next_writer_epoch IS NULL THEN
+        RAISE EXCEPTION 'provider release confirmation is a one-way fact for a durably released fence' USING ERRCODE='55000';
+      END IF;
     END IF;
   END IF;
   RETURN NEW;
