@@ -2,7 +2,7 @@
 
 **Purpose:** prevent a caller from inventing or altering a backup-copy-class evidence claim without a signature from an owner key explicitly trusted by the API deployment.
 
-**Boundary:** this proves a trusted key signed a canonical statement. It is not automatic evidence discovery, independent provider read-back, or proof that a remote reference contains the claimed bytes. The signer utility checks a local evidence-pack digest before signing; reviewers must still inspect the source evidence independently.
+**Boundary:** this proves a trusted key signed a canonical statement. It does not replace independent reviewer approval, automatic evidence discovery, independent provider read-back, or proof that a remote reference contains the claimed bytes. The signer utility checks a local evidence-pack digest before signing; reviewers must still inspect the source evidence independently.
 
 ## Trust configuration
 
