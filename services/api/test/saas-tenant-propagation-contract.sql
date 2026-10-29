@@ -15,7 +15,8 @@ BEGIN
     'saas_tenant_finance_retention_policies',
     'saas_tenant_finance_retention_runs',
     'saas_tenant_backup_writer_operations',
-    'saas_tenant_backup_writer_fences'
+    'saas_tenant_backup_writer_fences',
+    'saas_tenant_external_copy_coverage_decisions'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c WHERE c.oid=format('public.%I',t)::regclass
@@ -41,6 +42,13 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'active legal holds must fence overlapping RUNNING external erasure';
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_copy_coverage_run_fence' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'external copy-class decisions must be frozen during RUNNING propagation'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_data_targets_run_fence' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'required target inventory must be frozen during RUNNING propagation'; END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
@@ -172,6 +180,17 @@ INSERT INTO users (id,external_subject,email,display_name,status) VALUES
  ('16010000-0000-4000-8000-000000000001','propagation-user-a-160','propagation-a-160@factoryos.test','Propagation User A','ACTIVE'),
  ('16010000-0000-4000-8000-000000000002','propagation-user-b-160','propagation-b-160@factoryos.test','Propagation User B','ACTIVE');
 
+INSERT INTO saas_tenant_external_copy_coverage_decisions
+ (decision_id,tenant_id,category_code,store_kind,revision,disposition,evidence_reference,evidence_sha256,evidence_at,
+  data_owner_reference,infrastructure_owner_reference,policy_reference,reason,status,idempotency_key,request_hash,submitted_by_user_id)
+VALUES
+ ('16060000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000001','BUSINESS_DATA','OBJECT_STORAGE',1,
+  'SUPPORTED','evidence-copycoverage-a-160',repeat('a',64),clock_timestamp(),'owner-data-a-160','owner-infra-a-160',
+  'policy-retention-a-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-a-160',repeat('e',64),'16010000-0000-4000-8000-000000000001'),
+ ('16060000-0000-4000-8000-000000000002','16000000-0000-4000-8000-000000000002','BUSINESS_DATA','OBJECT_STORAGE',1,
+  'SUPPORTED','evidence-copycoverage-b-160',repeat('b',64),clock_timestamp(),'owner-data-b-160','owner-infra-b-160',
+  'policy-retention-b-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-b-160',repeat('f',64),'16010000-0000-4000-8000-000000000002');
+
 INSERT INTO saas_tenant_external_data_targets
  (tenant_id,target_id,store_kind,adapter_key,config_reference,registration_reason,categories,required,
   registered_by_user_id,idempotency_key,request_hash)
@@ -229,6 +248,39 @@ VALUES
   '16030000-0000-4000-8000-000000000001',1,'RUNNING','["BUSINESS_DATA"]'::jsonb,
   repeat('f',64),1,'Synthetic in-flight run for legal-hold race contract',
   'hold-fence-propagation-v1',repeat('4',64),'16010000-0000-4000-8000-000000000002');
+
+-- The database must close the check-to-provider-mutation race, not just the API preflight.
+DO $
+DECLARE
+  guard_message text;
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_external_copy_coverage_decisions
+       SET status='ACCEPTED',reviewed_by_user_id='16010000-0000-4000-8000-000000000002',
+           review_reason='Independent SQL run-fence review',reviewed_at=clock_timestamp(),
+           valid_until=clock_timestamp()+interval '89 days'
+     WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+       AND decision_id='16060000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'coverage review changed while an erasure run was RUNNING';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
+    IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    INSERT INTO saas_tenant_external_data_targets
+      (tenant_id,target_id,store_kind,adapter_key,config_reference,registration_reason,categories,required,
+       registered_by_user_id,idempotency_key,request_hash)
+    VALUES
+      ('16000000-0000-4000-8000-000000000001','sql-target-running-160','OBJECT_STORAGE','object-store.v1',
+       'factoryos.data.external.running','Run fence SQL negative test','["BUSINESS_DATA"]',true,
+       '16010000-0000-4000-8000-000000000001','sql-target-running-160',repeat('1',64));
+    RAISE EXCEPTION 'required target inventory changed while an erasure run was RUNNING';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
+    IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;
+  END;
+END $;
 
 
 -- Backup writer-fence SQL lifecycle acceptance. This is synthetic data only.
@@ -487,6 +539,7 @@ DECLARE
   visible_policies integer;
   visible_writer_operations integer;
   visible_writer_fences integer;
+  visible_copy_coverage integer;
   attempted integer;
 BEGIN
   SELECT count(*) INTO visible_targets FROM saas_tenant_external_data_targets
@@ -501,6 +554,9 @@ BEGIN
   SELECT count(*) INTO visible_writer_fences FROM saas_tenant_backup_writer_fences
     WHERE run_id='16040000-0000-4000-8000-000000000001';
   IF visible_writer_fences<>1 THEN RAISE EXCEPTION 'Tenant A must see its own backup writer fence; saw %',visible_writer_fences; END IF;
+  SELECT count(*) INTO visible_copy_coverage FROM saas_tenant_external_copy_coverage_decisions
+    WHERE decision_id IN ('16060000-0000-4000-8000-000000000001','16060000-0000-4000-8000-000000000002');
+  IF visible_copy_coverage<>1 THEN RAISE EXCEPTION 'Tenant A must see only its own copy-class coverage row; saw %',visible_copy_coverage; END IF;
 
   UPDATE saas_tenant_external_data_targets SET status='PAUSED'
    WHERE tenant_id='16000000-0000-4000-8000-000000000002' AND target_id='sql-target-b-160';
@@ -530,6 +586,7 @@ DECLARE
   visible_policies integer;
   visible_writer_operations integer;
   visible_writer_fences integer;
+  visible_copy_coverage integer;
 BEGIN
   SELECT count(*) INTO visible_targets FROM saas_tenant_external_data_targets
    WHERE target_id IN ('sql-target-a-160','sql-target-b-160');
@@ -543,6 +600,9 @@ BEGIN
   SELECT count(*) INTO visible_writer_fences FROM saas_tenant_backup_writer_fences
     WHERE run_id='16040000-0000-4000-8000-000000000001';
   IF visible_writer_fences<>0 THEN RAISE EXCEPTION 'Tenant B must not see tenant A backup writer fence'; END IF;
+  SELECT count(*) INTO visible_copy_coverage FROM saas_tenant_external_copy_coverage_decisions
+    WHERE decision_id IN ('16060000-0000-4000-8000-000000000001','16060000-0000-4000-8000-000000000002');
+  IF visible_copy_coverage<>1 THEN RAISE EXCEPTION 'Tenant B must see only its own copy-class coverage row; saw %',visible_copy_coverage; END IF;
 END $$;
 RESET ROLE;
 ROLLBACK;

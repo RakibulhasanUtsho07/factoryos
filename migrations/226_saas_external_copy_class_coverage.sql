@@ -52,6 +52,9 @@ CREATE POLICY saas_tenant_external_copy_coverage_decisions_tenant_allow ON publi
 CREATE POLICY saas_tenant_external_copy_coverage_decisions_tenant_enforce ON public.saas_tenant_external_copy_coverage_decisions AS RESTRICTIVE FOR ALL
  USING (tenant_id=public.factoryos_current_tenant_id()) WITH CHECK (tenant_id=public.factoryos_current_tenant_id());
 
+-- The application can submit and review rows but cannot delete governance evidence.
+GRANT SELECT, INSERT, UPDATE ON public.saas_tenant_external_copy_coverage_decisions TO factoryos_app;
+
 CREATE OR REPLACE FUNCTION public.factoryos_guard_saas_external_copy_coverage_decision()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
 BEGIN

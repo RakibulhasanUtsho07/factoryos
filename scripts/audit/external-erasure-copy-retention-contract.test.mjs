@@ -320,6 +320,7 @@ test('whole-tenant erasure requires current reviewed evidence for every copy cla
  const runbook=await readRepoFile(RUNBOOK);
  assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS public.saas_tenant_external_copy_coverage_decisions'));
  assert.ok(migration.includes('FORCE ROW LEVEL SECURITY'));
+ assert.ok(migration.includes('GRANT SELECT, INSERT, UPDATE ON public.saas_tenant_external_copy_coverage_decisions TO factoryos_app;'));
  assert.ok(migration.includes('external copy-class coverage decisions are immutable'));
  assert.ok(migration.includes('separate reviewer and reason'));
  assert.ok(migration.includes('evidence expired before approval'));
