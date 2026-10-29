@@ -78,10 +78,10 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
   const provider = await readRepoFile(S3_WRITER_FENCE_PROVIDER);
   const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
 
-  assert.match(adapter, /S3 versioning\/Object Lock alone do not[\s\S]*?fence new writes/i);
+  assert.match(adapter, /await this\.assertVersioningEnabled\(storage\);[\s\S]*?await this\.assertObjectLockEnabled\(storage\);/);
   assert.match(adapter, /if \(!this\.supportsTarget\(target\) \|\| !this\.writerFenceProvider\) return false/);
-  assert.match(adapter, /this\.writerFenceProvider\.getReviewedWriterInventoryEvidence\(\);[\s\S]*?return true/);
-  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED/);
+  assert.match(adapter, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\);[\s\S]*?return true/);
+  assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
   assert.match(doc, /isConfigured\(\) remains false by default/i);
 });
@@ -130,7 +130,7 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
   const env = await readRepoFile('services/api/.env.example');
 
-  assert.match(adapter, /S3 versioning\/Object Lock alone do not[\s\S]*?fence new writes/);
+  assert.match(adapter, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\)/);
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED'));
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED'));
   assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("'s3:PutObject'") && provider.includes("'s3:ReplicateObject'") && provider.includes("'s3:ReplicateDelete'"));
@@ -182,13 +182,13 @@ test('propagation runner acquires the backup fence before any target inventory',
   assert.match(runner, /beginPropagationFence/);
   assert.match(runner, /beginPropagationFence[\s\S]*?for \(const target of prepared\.targets\)/);
   assert.match(runner, /recordPropagationVerification/);
-  assert.match(coordinator, /getReviewedWriterInventoryEvidence/);
+  assert.match(coordinator, /getProviderAcceptanceReferences/);
   assert.match(coordinator, /installAndRecordFence[\s\S]*?markErasureStarted/);
   assert.match(migration, /chk_saas_backup_writer_fence_acceptance_references/);
   assert.match(migration, /staging_acceptance_reference IS NOT NULL/);
   assert.ok(migration.trimEnd().endsWith('COMMIT;'), 'writer-fence migration must be one closed transaction');
   assert.match(env, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED=false/);
-  assert.match(env, /FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED=false/);
+  assert.match(env, /FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE=/);
 });
 
 
