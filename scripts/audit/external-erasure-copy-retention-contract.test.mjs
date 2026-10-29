@@ -87,7 +87,8 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
   assert.doesNotMatch(activation, /return true/);
   assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
-  assert.match(doc, /isConfigured\(\)[\s\S]*?returns false/i);
+  assert.match(doc, /durable, independently reviewed provider-acceptance record/i);
+  assert.match(activation, /requireCurrentAcceptedProviderAcceptance/);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
@@ -219,4 +220,28 @@ test('backup writer fences are bound to the latest independently reviewed invent
   assert.match(coordinator, /getProviderAcceptanceReferences/);
   assert.match(coordinator, /requireCurrentAcceptedSnapshot/);
   assert.match(coordinator, /WRITER_INVENTORY_CHANGED/);
+});
+
+
+test('backup provider activation requires durable, independently reviewed, revocable staging evidence', async () => {
+  const adapter = await readRepoFile(BACKUP_ADAPTER_SOURCE);
+  const service = await readRepoFile('services/api/src/saas/saas-tenant-backup-provider-acceptance.service.ts');
+  const migration = await readRepoFile('migrations/224_saas_backup_provider_acceptance_registry.sql');
+  const docs = await readRepoFile('docs/s3-backup-provider-acceptance.md');
+  const requiredScenarios = [
+    'POLICY_DENY_READBACK', 'COPY_OBJECT_DURING_FENCE', 'MULTIPART_COMPLETION_DURING_FENCE',
+    'REPLICATION_DELETE_MARKER', 'POLICY_DRIFT_DETECTED', 'CRASH_RECOVERY_DENY_PRESERVED',
+    'DELAYED_WRITER_REJECTED', 'TOMBSTONE_REPLAY_BEFORE_RELEASE',
+    'INDEPENDENT_RESIDUAL_LISTING', 'RESTORE_AFTER_TOMBSTONE_REPLAY',
+  ];
+  for (const scenario of requiredScenarios) {
+    assert.ok(service.includes("'" + scenario + "'"), 'missing provider staging scenario: ' + scenario);
+    assert.ok(migration.includes("'" + scenario + "'"), 'database constraint lacks scenario: ' + scenario);
+    assert.ok(docs.includes(scenario), 'provider acceptance doc lacks scenario: ' + scenario);
+  }
+  assert.match(adapter, /requireCurrentAcceptedProviderAcceptance/);
+  assert.match(service, /valid_until/);
+  assert.match(service, /BACKUP_PROVIDER_ACCEPTANCE_REVOKED/);
+  assert.match(migration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(migration, /provider acceptance revocations are append-only/);
 });

@@ -11,6 +11,7 @@ import { SaasSandboxService } from './saas-sandbox.service';
 import { SaasTenantDataTransferController } from './saas-tenant-data-transfer.controller';
 import { SaasTenantRetentionController } from './saas-tenant-retention.controller';
 import { SaasTenantBackupWriterInventoryController } from './saas-tenant-backup-writer-inventory.controller';
+import { SaasTenantBackupProviderAcceptanceController } from './saas-tenant-backup-provider-acceptance.controller';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
 import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
@@ -39,6 +40,7 @@ import { RedisCacheErasureAdapter } from './redis-cache-erasure.adapter';
 import { S3TenantBackupErasureAdapter } from './s3-tenant-backup-erasure.adapter';
 import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
 import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
+import { SaasTenantBackupProviderAcceptanceService } from './saas-tenant-backup-provider-acceptance.service';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { TenantCacheModule } from './tenant-cache.module';
@@ -56,6 +58,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantDataTransferController,
     SaasTenantRetentionController,
     SaasTenantBackupWriterInventoryController,
+    SaasTenantBackupProviderAcceptanceController,
   ],
   providers: [
     SaasUsageService,
@@ -81,6 +84,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     S3TenantBackupErasureAdapter,
     SaasTenantBackupWriterFenceService,
     SaasTenantBackupWriterInventoryService,
+    SaasTenantBackupProviderAcceptanceService,
     S3TenantBackupWriterFenceProvider,
     S3TenantBackupWriterFenceCoordinator,
     {
@@ -116,6 +120,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantDataTransferWorkerService,
     SaasTenantBackupWriterFenceService,
     SaasTenantBackupWriterInventoryService,
+    SaasTenantBackupProviderAcceptanceService,
     S3TenantBackupWriterFenceCoordinator,
   ],
 })

@@ -90,7 +90,12 @@ describe('S3TenantBackupErasureAdapter', () => {
     maxPageItems = 1000;
     addVersionDuringRead = false;
     deleted = [];
-    adapter = new S3TenantBackupErasureAdapter(createConfig());
+    const providerAcceptance = {
+      requireCurrentAcceptedProviderAcceptance: jest.fn(async () => ({
+        acceptanceId: 'c5000000-0000-4000-8000-000000000001', status: 'ACCEPTED',
+      })),
+    };
+    adapter = new S3TenantBackupErasureAdapter(createConfig(), undefined, undefined, providerAcceptance as never);
 
     fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (...args: Parameters<typeof fetch>) => {
       const input = args[0];

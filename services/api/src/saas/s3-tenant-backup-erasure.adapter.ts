@@ -3,6 +3,7 @@ import { ConflictException, Inject, Injectable, Optional, ServiceUnavailableExce
 import { ConfigService } from '@nestjs/config';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
+import { SaasTenantBackupProviderAcceptanceService } from './saas-tenant-backup-provider-acceptance.service';
 import type {
   SaasExternalPropagationContext,
   SaasExternalPropagationDeleteReceipt,
@@ -218,27 +219,27 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     private readonly writerFenceProvider?: S3TenantBackupWriterFenceProvider,
     @Optional() @Inject(SaasTenantBackupWriterInventoryService)
     private readonly writerInventory?: SaasTenantBackupWriterInventoryService,
+    @Optional() @Inject(SaasTenantBackupProviderAcceptanceService)
+    private readonly providerAcceptance?: SaasTenantBackupProviderAcceptanceService,
   ) {}
 
   async isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean> {
-    if (!this.supportsTarget(target) || !this.writerFenceProvider || !this.writerInventory) return false;
+    if (!this.supportsTarget(target) || !this.writerFenceProvider || !this.writerInventory || !this.providerAcceptance) return false;
     const expectedReference = this.config.get<string>(CONFIG_REFERENCE)?.trim();
     if (!expectedReference || target.configReference.trim() !== expectedReference) return false;
     try {
       const storage = readConfiguration(this.config);
       await this.assertVersioningEnabled(storage);
       await this.assertObjectLockEnabled(storage);
-      // These deployment-controlled evidence references and the reviewed inventory
-      // are necessary preflight data, not independent proof of actual provider behavior.
+      // Deployment references never substitute for durable acceptance evidence bound to this exact scope.
       this.writerFenceProvider.getProviderAcceptanceReferences();
       for (const category of target.categories) {
         await this.writerInventory.requireCurrentAcceptedSnapshot(target.tenantId, category);
+        await this.providerAcceptance.requireCurrentAcceptedProviderAcceptance(
+          target.tenantId, category, target.configReference, ADAPTER_KEY, ADAPTER_VERSION,
+        );
       }
-      // Deliberately stay inactive until durable, independently reviewed provider
-      // acceptance (including real staging evidence, IAM/access-point completeness,
-      // policy ownership and restore replay) is represented and checked in the DB.
-      // A set of environment flags/reference strings is not sufficient to enable erasure.
-      return false;
+      return true;
     } catch {
       return false;
     }
@@ -246,6 +247,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
 
   async prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan> {
     this.assertContext(input);
+    await this.assertProviderAcceptance(input);
     const storage = readConfiguration(this.config);
     await this.assertVersioningEnabled(storage);
     await this.assertObjectLockEnabled(storage);
@@ -303,6 +305,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
 
   async erase(input: SaasExternalPropagationContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt> {
     this.assertContext(input);
+    await this.assertProviderAcceptance(input);
     this.assertPlan(input.tenantId, input.categories, input.plan);
     const storage = readConfiguration(this.config);
     await this.assertVersioningEnabled(storage);
@@ -378,6 +381,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     deletion: SaasExternalPropagationDeleteReceipt;
   }): Promise<SaasExternalPropagationVerification> {
     this.assertContext(input);
+    await this.assertProviderAcceptance(input);
     this.assertPlan(input.tenantId, input.categories, input.plan);
     if (input.deletion.manifestDigest !== input.plan.manifestDigest
       || input.deletion.deletedCopies !== input.plan.plannedCopies) {
@@ -422,6 +426,17 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     return target.storeKind === STORE_KIND && target.adapterKey === ADAPTER_KEY && target.required
       && Array.isArray(target.categories) && target.categories.length > 0
       && target.categories.every((category) => CATEGORY_VALUES.has(category));
+  }
+
+  private async assertProviderAcceptance(input: SaasExternalPropagationContext): Promise<void> {
+    if (!this.providerAcceptance) {
+      throw new ServiceUnavailableException('S3 backup erasure requires the durable provider acceptance registry');
+    }
+    for (const category of input.categories) {
+      await this.providerAcceptance.requireCurrentAcceptedProviderAcceptance(
+        input.tenantId, category, input.target.configReference, ADAPTER_KEY, ADAPTER_VERSION,
+      );
+    }
   }
 
   private assertContext(input: SaasExternalPropagationContext & { plan?: SaasExternalPropagationPlan }): void {
