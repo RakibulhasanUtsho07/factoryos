@@ -43,6 +43,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       } else if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence cannot enter propagation from its current lifecycle state');
       }
+      await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
       active.push(fence);
     }
@@ -59,7 +60,30 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence is not held in an erasure lifecycle state');
       }
+      await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
+    }
+  }
+
+  private async assertInventoryMatchesFence(fence: BackupWriterFenceView): Promise<void> {
+    if (!fence.writerInventorySnapshotId || !fence.writerInventoryDigest
+      || !Number.isSafeInteger(fence.fencedWriterCount) || (fence.fencedWriterCount ?? 0) < 1) {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'WRITER_INVENTORY_EVIDENCE_MISSING');
+      throw new ConflictException('A durable reviewed writer inventory binding is required before backup copies can be touched');
+    }
+    let latest: Awaited<ReturnType<SaasTenantBackupWriterInventoryService['requireCurrentAcceptedSnapshot']>>;
+    try {
+      latest = await this.writerInventory.requireCurrentAcceptedSnapshot(fence.tenantId, fence.category);
+    } catch {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'WRITER_INVENTORY_CHANGED');
+      throw new ServiceUnavailableException('The latest reviewed writer inventory is unavailable; backup mutation/release is blocked and the provider deny remains');
+    }
+    if (latest.snapshotId !== fence.writerInventorySnapshotId
+      || latest.manifestDigest !== fence.writerInventoryDigest
+      || latest.entryCount !== fence.fencedWriterCount
+      || latest.reviewedByUserId === fence.createdByUserId) {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'WRITER_INVENTORY_CHANGED');
+      throw new ConflictException('The reviewed writer inventory no longer matches the durable provider fence; recovery is required while the deny remains');
     }
   }
 
@@ -101,6 +125,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (current.state !== 'ERASING' && current.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence must be ERASING before verification can be persisted');
       }
+      await this.assertInventoryMatchesFence(current);
       await this.assertProviderFenceMatches(current);
       results.push(await this.lifecycle.markErasureVerified({
         tenantId: input.tenantId, fenceId: current.fenceId, manifestDigest: input.manifestDigest,
@@ -205,6 +230,7 @@ export class S3TenantBackupWriterFenceCoordinator {
     if (current.state !== 'ERASURE_VERIFIED' && current.state !== 'RELEASED') {
       throw new ConflictException('Provider write-deny policy cannot be released before zero-residual erasure verification');
     }
+    if (current.state === 'ERASURE_VERIFIED') await this.assertInventoryMatchesFence(current);
 
     const plan = await this.provider.planFenceRemoval({
       tenantId: input.tenantId,
