@@ -203,6 +203,22 @@ export class SaasTenantBackupWriterInventoryService {
     return this.mapSnapshot(result.row, result.entries);
   }
 
+  async latestSnapshot(tenantValue: string, actorValue: string, categoryValue: string) {
+    const tenantId = this.uuid(tenantValue, 'tenantId');
+    const actorUserId = this.uuid(actorValue, 'actorUserId');
+    await this.iamService.authorize(actorUserId, tenantId, 'saas.data_retention.read');
+    const category = this.category(categoryValue);
+    const result = await this.database.query<InventorySnapshotRow>(
+      'SELECT * FROM saas_tenant_backup_writer_inventory_snapshots WHERE tenant_id=$1 AND category_code=$2 ORDER BY revision DESC LIMIT 1',
+      [tenantId, category], { tenantId, userId: actorUserId },
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('No backup writer inventory snapshot exists for this category');
+    const entries = await this.readEntriesOutsideTransaction(tenantId, row.snapshot_id);
+    this.assertSnapshotIntegrity(row, entries);
+    return this.mapSnapshot(row, entries);
+  }
+
   async currentSnapshot(tenantValue: string, actorValue: string, categoryValue: string) {
     const tenantId = this.uuid(tenantValue, 'tenantId');
     const actorUserId = this.uuid(actorValue, 'actorUserId');
