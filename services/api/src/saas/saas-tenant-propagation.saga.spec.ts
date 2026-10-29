@@ -299,11 +299,11 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
     expect(storedResourceEvents.filter((event) => event.outcome_code === 'VERIFIED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
     expect(backupFenceCoordinator.beginPropagationFence).toHaveBeenCalledWith(expect.objectContaining({
-      tenantId, requestId, requestVersion: 1, sourceExportDigest: sourceDigest,
+      tenantId: tenant, requestId, requestVersion: 1, sourceExportDigest: sourceDigest,
       categories: ['BUSINESS_DATA'], actorUserId: propagationExecutor,
     }));
     expect(backupFenceCoordinator.recordPropagationVerification).toHaveBeenCalledWith(expect.objectContaining({
-      tenantId, categories: ['BUSINESS_DATA'], residualCopies: 0,
+      tenantId: tenant, categories: ['BUSINESS_DATA'], residualCopies: 0,
     }));
     expect(firstFenceOrder).toBeGreaterThan(0);
     expect(firstPrepareOrder).toBeGreaterThan(firstFenceOrder);
