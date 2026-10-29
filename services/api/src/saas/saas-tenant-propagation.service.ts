@@ -17,6 +17,7 @@ import {
   canonicalizeSaasExternalPropagationResources, digestSaasExternalPropagationResources,
   REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
 } from './saas-tenant-propagation.adapters';
+import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
   SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
@@ -46,6 +47,16 @@ type CopyCoverageRow = QueryResultRow & {
   data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
   reviewed_by_user_id: string | null; valid_until: string | null;
+};
+
+type BackupCopyClassCoverageRow = QueryResultRow & {
+  decision_id: string; tenant_id: string; category_code: SaasTransferDatasetCategory;
+  copy_class_code: (typeof REQUIRED_BACKUP_COPY_CLASSES)[number]; revision: string | number;
+  disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
+  evidence_reference: string; evidence_sha256: string; evidence_at: string | Date;
+  data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
+  reviewed_by_user_id: string | null; valid_until: string | Date | null;
 };
 
 type PropagationRunRow = QueryResultRow & {
@@ -243,7 +254,7 @@ export class SaasTenantPropagationService {
         throw new ConflictException('Idempotency-Key was used for another external propagation request');
       }
       if (run?.status === 'VERIFIED') {
-        return { replayed: true, request, run, targets: [] as SaasTenantExternalDataTarget[], latestReceipts: [] as PropagationReceiptRow[], copyCoverageRows: [] as CopyCoverageRow[], copyCoverageManifest: [] as Array<Record<string, unknown>>, copyCoverageDigest: '' };
+        return { replayed: true, request, run, targets: [] as SaasTenantExternalDataTarget[], latestReceipts: [] as PropagationReceiptRow[], copyCoverageRows: [] as CopyCoverageRow[], copyCoverageManifest: [] as Array<Record<string, unknown>>, copyCoverageDigest: '', backupCopyClassRows: [] as BackupCopyClassCoverageRow[], backupCopyClassCoverageManifest: [] as Array<Record<string, unknown>>, backupCopyClassCoverageDigest: '' };
       }
       if (request.status !== 'PROPAGATION_PENDING') {
         if (request.status === 'VERIFIED') throw new ConflictException('Tenant erasure has already been externally verified');
@@ -313,6 +324,16 @@ export class SaasTenantPropagationService {
       this.assertTargetCoverage(categories, targets, coverageResult.rows);
       const copyCoverageManifest = this.copyCoverageManifest(coverageResult.rows);
       const copyCoverageDigest = this.hash(copyCoverageManifest);
+      const backupCopyClassResult = await client.query<BackupCopyClassCoverageRow>(
+        `SELECT DISTINCT ON (category_code,copy_class_code) *
+         FROM public.saas_tenant_backup_copy_class_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,copy_class_code,revision DESC`,
+        [tenantId, categories],
+      );
+      this.assertBackupCopyClassCoverage(categories, targets, backupCopyClassResult.rows);
+      const backupCopyClassCoverageManifest = this.backupCopyClassCoverageManifest(backupCopyClassResult.rows);
+      const backupCopyClassCoverageDigest = this.hash(backupCopyClassCoverageManifest);
       // One fence lifecycle represents one sealed backup inventory per category.
       // Until cross-target aggregate manifests are supported, reject overlapping
       // BACKUP targets rather than letting one target verify a shared fence early.
@@ -342,7 +363,9 @@ export class SaasTenantPropagationService {
           sourceExportDigest: request.export_bundle_digest,
           sourceManifestDigest: this.hash(sourceManifest), sourceManifest,
           targetIds: targets.map((target) => target.targetId).sort(), copyClassCoverage: copyCoverageManifest,
-          copyClassCoverageDigest: copyCoverageDigest, plans: {},
+          copyClassCoverageDigest: copyCoverageDigest,
+          backupCopyClassCoverage: backupCopyClassCoverageManifest,
+          backupCopyClassCoverageDigest, plans: {},
         };
         const inserted = await client.query<PropagationRunRow>(
           `INSERT INTO saas_tenant_external_propagation_runs
@@ -360,6 +383,9 @@ export class SaasTenantPropagationService {
         const newTargets = targets.map((target) => target.targetId).sort();
         if (String(currentManifest.copyClassCoverageDigest ?? '') !== copyCoverageDigest) {
           throw new ConflictException('Reviewed copy-class coverage changed; start a separately reviewed propagation run');
+        }
+        if (String(currentManifest.backupCopyClassCoverageDigest ?? '') !== backupCopyClassCoverageDigest) {
+          throw new ConflictException('Reviewed backup copy-class inventory changed; start a separately reviewed propagation run');
         }
         if (JSON.stringify(previousTargets) !== JSON.stringify(newTargets)) {
           throw new ConflictException('Reviewed external target inventory changed; start a separately reviewed propagation run');
@@ -379,6 +405,9 @@ export class SaasTenantPropagationService {
         if (String(currentManifest.copyClassCoverageDigest ?? '') !== copyCoverageDigest) {
           throw new ConflictException('Reviewed copy-class coverage changed; start a separately reviewed propagation run');
         }
+        if (String(currentManifest.backupCopyClassCoverageDigest ?? '') !== backupCopyClassCoverageDigest) {
+          throw new ConflictException('Reviewed backup copy-class inventory changed; start a separately reviewed propagation run');
+        }
         if (JSON.stringify(previousTargets) !== JSON.stringify(newTargets)) {
           throw new ConflictException('Reviewed external target inventory changed during propagation');
         }
@@ -388,7 +417,7 @@ export class SaasTenantPropagationService {
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 ORDER BY target_id,attempt_no DESC`,
         [tenantId, requestId, run.run_id],
       );
-      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, copyCoverageRows: coverageResult.rows, copyCoverageManifest, copyCoverageDigest };
+      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, copyCoverageRows: coverageResult.rows, copyCoverageManifest, copyCoverageDigest, backupCopyClassRows: backupCopyClassResult.rows, backupCopyClassCoverageManifest, backupCopyClassCoverageDigest };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation:' + tenantId + ':' + requestId });
 
     if (prepared.replayed) {
@@ -487,7 +516,7 @@ export class SaasTenantPropagationService {
             configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
           });
         }
-        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest);
+        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest);
         if (planEntry) {
           const loaded = await this.loadPlanFromManifest({
             tenantId, actorUserId, requestId, runId: prepared.run.run_id,
@@ -557,7 +586,7 @@ export class SaasTenantPropagationService {
               configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
             });
           }
-          await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest);
+          await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest);
           deletion = await adapter.erase({ ...context, plan });
           deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
           providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
@@ -573,7 +602,7 @@ export class SaasTenantPropagationService {
           throw new ConflictException('Recovered deletion receipt digest differs from the sealed resource manifest');
         }
 
-        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest);
+        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets, prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest);
         const verification = await adapter.verify({ ...context, plan, deletion });
         residualCopies = this.count(verification.residualCopies, 'residualCopies');
         verifiedDigest = this.digestOrNull(verification.verifiedManifestDigest);
@@ -686,6 +715,8 @@ export class SaasTenantPropagationService {
       runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
       postgresqlErasureRunId: prepared.request.execution_run_id, postgresqlReceiptScope: 'POSTGRESQL_ONLY',
       copyClassCoverage: prepared.copyCoverageManifest, copyClassCoverageDigest: prepared.copyCoverageDigest,
+      backupCopyClassCoverage: prepared.backupCopyClassCoverageManifest,
+      backupCopyClassCoverageDigest: prepared.backupCopyClassCoverageDigest,
       targetManifest, plannedCopies: planned.toString(), deletedCopies: deleted.toString(), residualCopies: residual.toString(),
       status: allVerified ? 'VERIFIED' : 'PARTIAL',
       failureCode: allVerified ? null : residual > 0n ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_INCOMPLETE',
@@ -712,13 +743,22 @@ export class SaasTenantPropagationService {
          ORDER BY category_code,store_kind,revision DESC`,
         [tenantId, finalCategories],
       );
+      const finalBackupCopyClassResult = await client.query<BackupCopyClassCoverageRow>(
+        `SELECT DISTINCT ON (category_code,copy_class_code) *
+         FROM public.saas_tenant_backup_copy_class_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,copy_class_code,revision DESC`,
+        [tenantId, finalCategories],
+      );
       let coverageSnapshotValid = finalTargetsActive;
       try {
         this.assertTargetCoverage(finalCategories, finalTargets, finalCoverageResult.rows);
+        this.assertBackupCopyClassCoverage(finalCategories, finalTargets, finalBackupCopyClassResult.rows);
       } catch {
         coverageSnapshotValid = false;
       }
       if (this.hash(this.copyCoverageManifest(finalCoverageResult.rows)) !== prepared.copyCoverageDigest
+        || this.hash(this.backupCopyClassCoverageManifest(finalBackupCopyClassResult.rows)) !== prepared.backupCopyClassCoverageDigest
         || this.hash(this.targetBindingManifest(finalTargets, finalCategories))
           !== this.hash(this.targetBindingManifest(prepared.targets, finalCategories))) coverageSnapshotValid = false;
       const canFinalizeVerified = allVerified && coverageSnapshotValid;
@@ -758,6 +798,7 @@ export class SaasTenantPropagationService {
           verifiedTargets: verifiedTargets.length, plannedCopies: planned.toString(), deletedCopies: deleted.toString(),
           residualCopies: residual.toString(), manifestDigest: canFinalizeVerified ? manifestDigest : null,
           failureCode: finalFailureCode, copyClassCoverageDigest: prepared.copyCoverageDigest,
+          backupCopyClassCoverageDigest: prepared.backupCopyClassCoverageDigest,
         });
       return { run, request, wholeTenantErasureVerified: canFinalizeVerified };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation-finalize:' + tenantId + ':' + requestId });
@@ -1080,8 +1121,72 @@ export class SaasTenantPropagationService {
     })).sort((a, b) => a.targetId < b.targetId ? -1 : a.targetId > b.targetId ? 1 : 0);
   }
 
+  private assertBackupCopyClassCoverage(
+    categories: SaasTransferDatasetCategory[],
+    targets: SaasTenantExternalDataTarget[],
+    decisions: BackupCopyClassCoverageRow[],
+  ) {
+    const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.copy_class_code, decision]));
+    for (const category of categories) {
+      for (const copyClass of REQUIRED_BACKUP_COPY_CLASSES) {
+        const decision = latest.get(category + ':' + copyClass);
+        const evidenceAge = decision ? Date.now() - new Date(decision.evidence_at).getTime() : Number.POSITIVE_INFINITY;
+        if (!decision || decision.status !== 'ACCEPTED' || !decision.reviewed_by_user_id
+          || decision.reviewed_by_user_id === decision.submitted_by_user_id || !decision.valid_until
+          || new Date(decision.valid_until).getTime() <= Date.now()
+          || evidenceAge < -5 * 60 * 1000 || evidenceAge > 30 * 24 * 60 * 60 * 1000
+          || !HEX_DIGEST.test(decision.evidence_sha256)
+          || !SAFE_REFERENCE.test(decision.evidence_reference)
+          || !SAFE_REFERENCE.test(decision.data_owner_reference)
+          || !SAFE_REFERENCE.test(decision.infrastructure_owner_reference)
+          || !SAFE_REFERENCE.test(decision.policy_reference)) {
+          throw new ConflictException('Backup propagation requires current independently reviewed evidence for ' + category + '/' + copyClass);
+        }
+        if (decision.disposition === 'UNRESOLVED') {
+          throw new ConflictException('Unresolved backup copy class blocks whole-tenant erasure: ' + category + '/' + copyClass);
+        }
+        if (copyClass === 'S3_OBJECT_VERSIONS') {
+          const s3Targets = targets.filter((target) => target.storeKind === 'BACKUP'
+            && target.categories.includes(category)
+            && target.adapterKey === S3_BACKUP_COPY_CLASS_ADAPTER_KEY);
+          if (decision.disposition !== 'SUPPORTED' || s3Targets.length === 0) {
+            throw new ConflictException('S3 object-version coverage must bind the active S3 tenant-backup adapter for ' + category);
+          }
+        } else if (decision.disposition === 'SUPPORTED') {
+          throw new ConflictException('No reviewed erasure adapter is registered for backup copy class ' + copyClass
+            + '; keep it unresolved or prove it is not applicable until a class-specific adapter is accepted');
+        }
+      }
+    }
+  }
+
+  private backupCopyClassCoverageManifest(decisions: BackupCopyClassCoverageRow[]): Array<Record<string, unknown>> {
+    return decisions.map((decision) => ({
+      decisionId: decision.decision_id,
+      categoryCode: decision.category_code,
+      copyClassCode: decision.copy_class_code,
+      revision: String(decision.revision),
+      disposition: decision.disposition,
+      status: decision.status,
+      evidenceReference: decision.evidence_reference,
+      evidenceSha256: decision.evidence_sha256,
+      evidenceAt: new Date(decision.evidence_at).toISOString(),
+      dataOwnerReference: decision.data_owner_reference,
+      infrastructureOwnerReference: decision.infrastructure_owner_reference,
+      policyReference: decision.policy_reference,
+      submittedByUserId: decision.submitted_by_user_id,
+      reviewedByUserId: decision.reviewed_by_user_id,
+      validUntil: decision.valid_until ? new Date(decision.valid_until).toISOString() : null,
+    })).sort((left, right) => {
+      const a = String(left.categoryCode) + ':' + String(left.copyClassCode);
+      const b = String(right.categoryCode) + ':' + String(right.copyClassCode);
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  }
+
   private async assertCurrentCopyCoverage(tenantId: string, actorUserId: string,
-    categories: SaasTransferDatasetCategory[], expectedTargets: SaasTenantExternalDataTarget[], expectedCoverageDigest: string) {
+    categories: SaasTransferDatasetCategory[], expectedTargets: SaasTenantExternalDataTarget[],
+    expectedCoverageDigest: string, expectedBackupCopyClassCoverageDigest: string) {
     const current = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
       const targetResult = await client.query<TargetRow>(
@@ -1096,10 +1201,19 @@ export class SaasTenantPropagationService {
         [tenantId, categories],
       );
       this.assertTargetCoverage(categories, targets, result.rows);
-      return { coverageDigest: this.hash(this.copyCoverageManifest(result.rows)),
-        targetsDigest: this.hash(this.targetBindingManifest(targets, categories)) };
+      const backupCopyClasses = await client.query<BackupCopyClassCoverageRow>(
+        'SELECT DISTINCT ON (category_code,copy_class_code) * FROM public.saas_tenant_backup_copy_class_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,copy_class_code,revision DESC',
+        [tenantId, categories],
+      );
+      this.assertBackupCopyClassCoverage(categories, targets, backupCopyClasses.rows);
+      return {
+        coverageDigest: this.hash(this.copyCoverageManifest(result.rows)),
+        backupCopyClassCoverageDigest: this.hash(this.backupCopyClassCoverageManifest(backupCopyClasses.rows)),
+        targetsDigest: this.hash(this.targetBindingManifest(targets, categories)),
+      };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-copy-class-coverage-check:' + tenantId });
     if (current.coverageDigest !== expectedCoverageDigest
+      || current.backupCopyClassCoverageDigest !== expectedBackupCopyClassCoverageDigest
       || current.targetsDigest !== this.hash(this.targetBindingManifest(expectedTargets, categories))) {
       throw new ConflictException('Copy-class coverage or required target inventory changed during propagation; provider mutation is blocked');
     }

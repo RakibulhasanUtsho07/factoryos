@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
+import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
@@ -33,6 +34,7 @@ describe('SaasTenantPropagationService external saga', () => {
   const storedResourceManifests: Record<string, unknown>[] = [];
   const storedResourceItems: Record<string, unknown>[] = [];
   const storedResourceEvents: Record<string, unknown>[] = [];
+  let backupCopyClassRows: Record<string, unknown>[] = [];
   let operationSequence = 0;
   let firstFenceOrder = 0;
   let firstPrepareOrder = 0;
@@ -45,7 +47,7 @@ describe('SaasTenantPropagationService external saga', () => {
   function createAdapter(kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]) {
     const adapter = {
       storeKind: kind,
-      adapterKey: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      adapterKey: kind === 'BACKUP' ? 's3.tenant-backup.v1' : kind.toLowerCase().replaceAll('_', '.') + '.v1',
       adapterVersion: '1.0.0',
       isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
       prepare: jest.fn<(...args: unknown[]) => Promise<SaasExternalPropagationPlan>>(),
@@ -96,6 +98,7 @@ describe('SaasTenantPropagationService external saga', () => {
     storedResourceManifests.length = 0;
     storedResourceItems.length = 0;
     storedResourceEvents.length = 0;
+    backupCopyClassRows = [];
     operationSequence = 0;
     firstFenceOrder = 0;
     firstPrepareOrder = 0;
@@ -106,7 +109,7 @@ describe('SaasTenantPropagationService external saga', () => {
     audit.recordWithClient.mockResolvedValue('audit-event');
     const targets = REQUIRED_EXTERNAL_STORE_KINDS.map((kind) => ({
       id: 'target-' + kind, tenant_id: tenant, target_id: 'target-' + kind,
-      store_kind: kind, adapter_key: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      store_kind: kind, adapter_key: kind === 'BACKUP' ? 's3.tenant-backup.v1' : kind.toLowerCase().replaceAll('_', '.') + '.v1',
       config_reference: 'config.' + kind.toLowerCase().replaceAll('_', '.'),
       registration_reason: 'Reviewed fake adapter target', categories: ['BUSINESS_DATA'], required: true,
       status: 'ACTIVE', registered_by_user_id: requester, reviewed_by_user_id: reviewer,
@@ -130,6 +133,16 @@ describe('SaasTenantPropagationService external saga', () => {
       submitted_by_user_id: requester,
       reviewed_by_user_id: reviewer,
       valid_until: '2099-01-01T00:00:00.000Z',
+    }));
+    backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => ({
+      decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
+      disposition: copyClass === 'S3_OBJECT_VERSIONS' ? 'SUPPORTED' : 'NOT_APPLICABLE',
+      evidence_reference: `evidence.backup-copy-class.${copyClass.toLowerCase()}`, evidence_sha256: 'b'.repeat(64),
+      evidence_at: new Date().toISOString(), data_owner_reference: `owner.data.${copyClass.toLowerCase()}`,
+      infrastructure_owner_reference: `owner.infra.${copyClass.toLowerCase()}`,
+      policy_reference: `policy.backup.${copyClass.toLowerCase()}`, status: 'ACCEPTED',
+      submitted_by_user_id: requester, reviewed_by_user_id: reviewer, valid_until: '2099-01-01T00:00:00.000Z',
     }));
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
     backupFenceCoordinator = {
@@ -168,6 +181,7 @@ describe('SaasTenantPropagationService external saga', () => {
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
       if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: copyCoverageRows };
+      if (sql.includes('FROM public.saas_tenant_backup_copy_class_coverage_decisions')) return { rows: backupCopyClassRows };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifests')) {
         storedResourceManifests.push({
@@ -254,6 +268,19 @@ describe('SaasTenantPropagationService external saga', () => {
       throw new Error('unexpected transaction SQL: ' + sql);
     });
     service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never, backupFenceCoordinator as never);
+  });
+
+  it('fails closed when a backup copy class is unresolved', async () => {
+    const wal = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
+    if (!wal) throw new Error('WAL/PITR copy-class fixture is missing');
+    wal.disposition = 'UNRESOLVED';
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Unresolved WAL/PITR must block whole-tenant erasure',
+      idempotency_key: 'external-propagation-wal-unresolved',
+    })).rejects.toThrow('Unresolved backup copy class blocks whole-tenant erasure');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
   });
 
   it('fails closed when a prepared plan was produced by a different adapter version', async () => {
