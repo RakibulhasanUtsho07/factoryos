@@ -16,6 +16,12 @@ This ledger protects one (tenant UUID, DATASET_CATEGORY) backup prefix. Each bac
 
 The PostgreSQL tenant-row lock serializes writer-operation registration against fence creation. Triggers repeat the core checks for direct SQL writes, including rejecting a writer epoch that differs from the latest released fence generation. Migration 222 records both relations in the ownership-review ledger; the canonical PostgreSQL migration manifest and SQL contract cover drain blocking, provider evidence, zero-residual verification, independent release, epoch advancement, RLS and cross-tenant invisibility. Governance inventory and ownership-review records protect this evidence from generic tenant erasure.
 
+### Application writer registration gate
+
+The application-side `beginWriteOperation` gate requires the current independently accepted writer-principal inventory and rejects a producer ID that is absent from that snapshot. It then rechecks the exact snapshot revision/status under the tenant lock before recording the operation, preventing a stale snapshot check from authorizing a registration after the inventory changes. Regression tests cover missing inventory registration, an unreviewed producer, and a changed snapshot.
+
+This check is an application allowlist, **not workload-identity authentication**. A caller that can impersonate an approved producer ID is not cryptographically bound to the provider principal here, and it does not stop external jobs or direct S3 credentials from bypassing the service. Complete real producer adoption, workload-identity binding and provider IAM coverage remain separate release blockers.
+
 ## Crash and ambiguity behavior
 
 An upload with an unknown provider result stays ACTIVE. There is no TTL or automatic expiry that could let an erasure run overtake an object write that might still commit. DRAINING cannot advance while any operation is ACTIVE. Recovery requires a provider-backed attestation and a new inventory; the coordinator never removes a provider deny policy itself.

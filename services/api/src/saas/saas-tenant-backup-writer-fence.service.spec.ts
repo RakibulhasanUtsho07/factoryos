@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
 import { SaasTransferDatasetCategory as Category } from './dto/create-saas-schema-compatibility-rule.dto';
 
@@ -8,22 +8,39 @@ const requestId = 'c2000000-0000-4000-8000-000000000002';
 const runId = 'c3000000-0000-4000-8000-000000000003';
 const actor = 'c4000000-0000-4000-8000-000000000004';
 const digest = 'a'.repeat(64);
+const inventorySnapshotId = 'c7000000-0000-4000-8000-000000000007';
 
-function mockDatabase(handler: (sql: string, values: unknown[]) => unknown) {
-  const client = {
-    query: jest.fn(async (sql: string, values: unknown[] = []) => ({ rows: handler(sql, values) as never[], rowCount: 0 })),
-  };
+function mockDatabase(
+  handler: (sql: string, values: unknown[]) => unknown,
+  inventorySnapshot: { snapshot_id: string; status: string } = { snapshot_id: inventorySnapshotId, status: 'ACCEPTED' },
+) {
+  const query = async (sql: string, values: unknown[] = []) => ({
+    rows: (sql.includes('FROM saas_tenant_backup_writer_inventory_snapshots')
+      ? [inventorySnapshot]
+      : handler(sql, values)) as never[],
+    rowCount: 0,
+  });
+  const client = { query: jest.fn(query) };
   const database = {
     transaction: jest.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(client)),
-    query: jest.fn(async (sql: string, values: unknown[] = []) => ({ rows: handler(sql, values) as never[], rowCount: 0 })),
+    query: jest.fn(query),
   };
   return { database, client };
+}
+
+function acceptedWriterInventory(producerIds: string[] = ['backup-worker'], snapshotId = inventorySnapshotId) {
+  return {
+    requireCurrentAcceptedSnapshot: jest.fn(async () => ({
+      snapshotId,
+      entries: producerIds.map((producerId) => ({ producerId })),
+    })),
+  } as never;
 }
 
 describe('SaasTenantBackupWriterFenceService', () => {
   it('rejects malformed operation identity before touching the database', async () => {
     const { database } = mockDatabase(() => []);
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.beginWriteOperation({
       tenantId: tenant, category: 'NOT_A_CATEGORY' as Category, operationId: 'bad-uuid',
       producerId: 'backup-worker', writerEpoch: 1,
@@ -38,7 +55,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
       if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [{ fence_id: runId }];
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.beginWriteOperation({
       tenantId: tenant, category: Category.BUSINESS_DATA,
       operationId: 'c5000000-0000-4000-8000-000000000005', producerId: 'backup-worker', writerEpoch: 1,
@@ -54,7 +71,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
       if (sql.includes('SELECT next_writer_epoch')) return [{ next_writer_epoch: 3 }];
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.beginWriteOperation({
       tenantId: tenant, category: Category.BUSINESS_DATA,
       operationId: 'c5000000-0000-4000-8000-000000000005', producerId: 'backup-worker', writerEpoch: 2,
@@ -79,7 +96,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
       if (sql.includes('count(*)::integer AS active_count')) return [{ active_count: 1 }];
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     const result = await service.advanceAfterDrain(tenant, runId);
     expect(result.readyForProviderFence).toBe(false);
     expect(result.activeWriterOperations).toBe(1);
@@ -88,7 +105,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
 
   it('rejects zero-residual verification when one copy remains', async () => {
     const { database } = mockDatabase(() => []);
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.markErasureVerified({
       tenantId: tenant, fenceId: runId, manifestDigest: digest,
       verificationReference: 'backup-verify-001', residualCopies: 1,
@@ -98,7 +115,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
 
   it('requires a safe provider reference before release can begin', async () => {
     const { database } = mockDatabase(() => []);
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.releaseAfterTombstoneReplay({
       tenantId: tenant, fenceId: runId, reviewedByUserId: actor, providerReleaseReference: '',
       releasePolicyDigest: digest, releaseWriterInventoryDigest: digest, releaseWriterCount: 1,
@@ -116,7 +133,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
       }
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.beginWriteOperation({
       tenantId: tenant, category: Category.BUSINESS_DATA,
       operationId: 'c5000000-0000-4000-8000-000000000006', producerId: 'backup-worker', writerEpoch: 2,
@@ -151,7 +168,7 @@ describe('SaasTenantBackupWriterFenceService', () => {
       }
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     const result = await service.confirmProviderFenceReleased({
       tenantId: tenant, fenceId: runId, providerReleaseReference: 's3-release-policy-160', providerPolicyDigest: digest,
     });
@@ -177,10 +194,53 @@ describe('SaasTenantBackupWriterFenceService', () => {
       if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [{ fence_id: runId }];
       return [];
     });
-    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const service = new SaasTenantBackupWriterFenceService(database as never, acceptedWriterInventory());
     await expect(service.beginWriteOperation({
       tenantId: tenant, category: Category.BUSINESS_DATA, operationId: operation.operation_id,
       producerId: operation.producer_id, writerEpoch: 1,
     })).rejects.toBeInstanceOf(ConflictException);
     expect(client.query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO saas_tenant_backup_writer_operations'))).toBe(false);
   });
+
+describe('accepted backup writer inventory enforcement', () => {
+  const operation = {
+    tenantId: tenant,
+    category: Category.BUSINESS_DATA,
+    operationId: 'c5000000-0000-4000-8000-000000000015',
+    producerId: 'backup-worker',
+    writerEpoch: 1,
+  };
+
+  it('fails closed when the inventory registry is not injected', async () => {
+    const { database } = mockDatabase(() => []);
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation(operation)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a producer that is absent from the current accepted inventory', async () => {
+    const { database } = mockDatabase(() => []);
+    const service = new SaasTenantBackupWriterFenceService(
+      database as never,
+      acceptedWriterInventory(['approved-backup-worker']),
+    );
+    await expect(service.beginWriteOperation({ ...operation, producerId: 'unreviewed-backup-worker' }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the exact accepted snapshot under the tenant lock before registering a writer', async () => {
+    const changedSnapshot = 'c8000000-0000-4000-8000-000000000008';
+    const { database, client } = mockDatabase(
+      (sql) => sql.includes('FROM tenants') ? [{ id: tenant }] : [],
+      { snapshot_id: changedSnapshot, status: 'ACCEPTED' },
+    );
+    const service = new SaasTenantBackupWriterFenceService(
+      database as never,
+      acceptedWriterInventory(['backup-worker'], inventorySnapshotId),
+    );
+    await expect(service.beginWriteOperation(operation)).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query.mock.calls.some(([sql]) =>
+      String(sql).startsWith('INSERT INTO saas_tenant_backup_writer_operations'))).toBe(false);
+  });
+});

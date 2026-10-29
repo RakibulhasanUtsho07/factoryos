@@ -298,3 +298,12 @@ test('backup provider activation requires durable, independently reviewed, revoc
   assert.match(migration, /FORCE ROW LEVEL SECURITY/);
   assert.match(migration, /provider acceptance revocations are append-only/);
 });
+
+test('backup writer operation registration is bound to the current accepted producer inventory', async () => {
+  const source = await readRepoFile('services/api/src/saas/saas-tenant-backup-writer-fence.service.ts');
+  assert.match(source, /requireCurrentAcceptedSnapshot\(tenantId, category\)/);
+  assert.match(source, /acceptedInventory\.entries\.some\(\(entry\) => entry\.producerId === producerId\)/);
+  assert.match(source, /FROM saas_tenant_backup_writer_inventory_snapshots/);
+  assert.match(source, /ORDER BY revision DESC LIMIT 1 FOR SHARE/);
+  assert.match(source, /Backup writer operations require an independently accepted writer-principal inventory/);
+});

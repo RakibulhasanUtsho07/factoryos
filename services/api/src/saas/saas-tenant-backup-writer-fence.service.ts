@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
+import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 
 const CATEGORIES = new Set(Object.values(SaasTransferDatasetCategory));
@@ -80,7 +81,11 @@ export interface BackupWriterFenceView {
  */
 @Injectable()
 export class SaasTenantBackupWriterFenceService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Optional() @Inject(SaasTenantBackupWriterInventoryService)
+    private readonly writerInventory?: SaasTenantBackupWriterInventoryService,
+  ) {}
 
   async beginWriteOperation(input: BeginBackupWriterOperationInput) {
     const tenantId = this.uuid(input?.tenantId, 'tenantId');
@@ -88,8 +93,25 @@ export class SaasTenantBackupWriterFenceService {
     const category = this.category(input?.category);
     const producerId = this.producer(input?.producerId);
     const writerEpoch = this.integer(input?.writerEpoch, 'writerEpoch', 1, Number.MAX_SAFE_INTEGER);
+    const inventoryService = this.writerInventory;
+    if (!inventoryService) {
+      throw new ServiceUnavailableException('Backup writer operations require an independently accepted writer-principal inventory');
+    }
+    const acceptedInventory = await inventoryService.requireCurrentAcceptedSnapshot(tenantId, category);
+    if (!acceptedInventory.entries.some((entry) => entry.producerId === producerId)) {
+      throw new ConflictException('Backup producer is absent from the latest independently accepted writer-principal inventory');
+    }
     const row = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
+      const currentInventory = await client.query<{ snapshot_id: string; status: string }>(
+        'SELECT snapshot_id::text AS snapshot_id,status FROM saas_tenant_backup_writer_inventory_snapshots WHERE tenant_id=$1 AND category_code=$2 ORDER BY revision DESC LIMIT 1 FOR SHARE',
+        [tenantId, category],
+      );
+      if (!currentInventory.rows[0]
+        || currentInventory.rows[0].snapshot_id !== acceptedInventory.snapshotId
+        || currentInventory.rows[0].status !== 'ACCEPTED') {
+        throw new ConflictException('Backup writer inventory changed before operation registration; reload the latest accepted snapshot');
+      }
       const previous = await client.query<WriterOperationRow>(
         'SELECT * FROM saas_tenant_backup_writer_operations WHERE tenant_id=$1 AND operation_id=$2 FOR UPDATE',
         [tenantId, operationId],
