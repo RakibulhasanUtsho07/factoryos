@@ -106,7 +106,6 @@ describe('S3TenantBackupWriterFenceProvider', () => {
     provider = new S3TenantBackupWriterFenceProvider(createConfig({
       FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED: 'true',
       FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE: 'https://evidence.invalid/policy',
-      FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE: 'policy-owner-review.v1',
       FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE: 'staging-s3-fence-acceptance.v1',
       FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE: 'restore-tombstone-replay.v1',
     }));
