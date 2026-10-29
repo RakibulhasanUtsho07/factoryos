@@ -337,9 +337,21 @@ export class S3TenantBackupWriterFenceCoordinator {
         expectedCurrentPolicyDigest: plan.currentPolicyDigest,
         expectedReleasePolicyDigest: plan.releasePolicyDigest,
       });
-      return { fence: released, providerRelease };
+      if (!providerRelease.policyAbsent
+        || providerRelease.providerFenceReference !== released.releaseReference
+        || providerRelease.providerPolicyDigest !== released.releasePolicyDigest) {
+        throw new ServiceUnavailableException('S3 release read-back does not match durable evidence; the next writer epoch remains gated');
+      }
+      // Provider policy removal is not enough on its own: only this durable
+      // confirmation opens the application writer gate for the next epoch.
+      const confirmedFence = await this.lifecycle.confirmProviderFenceReleased({
+        tenantId: input.tenantId, fenceId: input.fenceId,
+        providerReleaseReference: providerRelease.providerFenceReference,
+        providerPolicyDigest: providerRelease.providerPolicyDigest,
+      });
+      return { fence: confirmedFence, providerRelease };
     } catch {
-      throw new ServiceUnavailableException('Writer epoch and reviewed release are durable, but S3 policy removal is not yet confirmed; retry release reconciliation while keeping producer activation gated');
+      throw new ServiceUnavailableException('Provider release is not durably confirmed; the next writer epoch remains gated until policy removal/read-back reconciliation succeeds');
     }
   }
 
