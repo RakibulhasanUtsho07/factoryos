@@ -8,6 +8,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
+import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasure.dto';
 import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
 import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
@@ -65,6 +66,8 @@ export class SaasTenantPropagationService {
     private readonly auditService: AuditService,
     @Optional() @Inject(SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS)
     private readonly adapters: SaasTenantExternalDataPropagationAdapter[] = [],
+    @Optional() @Inject(S3TenantBackupWriterFenceCoordinator)
+    private readonly backupWriterFenceCoordinator?: S3TenantBackupWriterFenceCoordinator,
   ) {}
 
   async registerTarget(tenantValue: string, actorValue: string, input: RegisterSaasExternalDataTargetDto) {
@@ -354,6 +357,24 @@ export class SaasTenantPropagationService {
       };
     }
 
+    // Acquire every BACKUP category fence after the RUNNING run is durable,
+    // but before any adapter inventories or mutates an external store. The
+    // coordinator installs/read-backs the provider deny before returning.
+    const backupTargets = prepared.targets.filter((target) => target.storeKind === 'BACKUP');
+    const backupFenceCategories = [...new Set(backupTargets.flatMap((target) =>
+      target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
+    ))].sort();
+    if (backupTargets.length > 0) {
+      if (!this.backupWriterFenceCoordinator) {
+        throw new ServiceUnavailableException('Required backup writer-fence coordinator is not registered; external propagation is halted before provider inventory');
+      }
+      await this.backupWriterFenceCoordinator.beginPropagationFence({
+        tenantId, requestId, requestVersion: Number(prepared.request.version),
+        runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
+        categories: backupFenceCategories, actorUserId,
+      });
+    }
+
     let currentManifest = this.jsonObject(prepared.run.external_manifest);
     const latestReceiptByTarget = new Map(prepared.latestReceipts.map((receipt) => [receipt.target_id, receipt]));
     for (const target of prepared.targets) {
@@ -492,6 +513,17 @@ export class SaasTenantPropagationService {
         residualManifest = this.residualReferences(verification.residualReferences);
         const verified = verifiedDigest === plan.manifestDigest && deletedCopies === plannedCopies
           && residualCopies === '0' && residualManifest.length === 0;
+        if (verified && target.storeKind === 'BACKUP') {
+          if (!this.backupWriterFenceCoordinator) {
+            throw new ServiceUnavailableException('Backup fence coordinator disappeared after provider verification; the writer gate remains closed');
+          }
+          const verifiedBackupCategories = target.categories.filter((category) => context.categories.includes(category));
+          await this.backupWriterFenceCoordinator.recordPropagationVerification({
+            tenantId, categories: verifiedBackupCategories,
+            manifestDigest: verifiedDigest!, verificationReference: verificationReference!,
+            residualCopies: Number(residualCopies),
+          });
+        }
         receiptStatus = verified ? 'VERIFIED' : 'RESIDUALS';
         if (!verified) {
           failureCode = 'EXTERNAL_RESIDUALS_REMAIN';
