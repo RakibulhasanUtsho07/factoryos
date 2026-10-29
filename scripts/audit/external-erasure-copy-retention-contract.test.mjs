@@ -332,6 +332,8 @@ test('whole-tenant erasure requires current reviewed evidence for every copy cla
  assert.ok(source.includes('assertCurrentCopyCoverage') && source.includes('adapter.erase'));
  assert.ok(source.includes('assertCurrentCopyCoverage') && source.includes('adapter.verify'));
  assert.ok(source.includes('copyClassCoverageDigest'));
+ assert.ok(source.includes('row.required !== true'));
+ assert.ok(source.includes('const finalTargetsActive = finalRelevantRows.every((row) => row.status === \'ACTIVE\' && row.required === true)'));
  assert.ok(coverageService.includes('Idempotency-Key was reused for a different copy-class coverage decision'));
  assert.ok(coverageService.includes('submission and review require different actors'));
  assert.ok(controller.includes("RequirePermission('saas.data_retention.approve')"));

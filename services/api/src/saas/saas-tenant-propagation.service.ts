@@ -294,12 +294,12 @@ export class SaasTenantPropagationService {
 
       const targetResult = await client.query<TargetRow>(
         `SELECT * FROM saas_tenant_external_data_targets
-         WHERE tenant_id=$1 AND required=true ORDER BY store_kind,target_id FOR SHARE`,
+         WHERE tenant_id=$1 ORDER BY store_kind,target_id FOR SHARE`,
         [tenantId],
       );
       const relevantTargetRows = targetResult.rows.filter((row) =>
         this.parseCategories(row.categories).some((category) => categories.includes(category)));
-      if (relevantTargetRows.some((row) => row.status !== 'ACTIVE')) {
+      if (relevantTargetRows.some((row) => row.status !== 'ACTIVE' || row.required !== true)) {
         throw new ConflictException('A required external target is pending, blocked or inactive; copy-class coverage cannot be accepted from a partial target inventory');
       }
       const targets = relevantTargetRows.map((row) => this.mapTarget(row));
@@ -698,13 +698,13 @@ export class SaasTenantPropagationService {
       await this.lockTenant(client, tenantId);
       const finalCategories = this.parseCategories(prepared.request.categories);
       const finalTargetResult = await client.query<TargetRow>(
-        `SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND required=true ORDER BY store_kind,target_id`,
+        `SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 ORDER BY store_kind,target_id`,
         [tenantId],
       );
       const finalRelevantRows = finalTargetResult.rows.filter((row) =>
         this.parseCategories(row.categories).some((category) => finalCategories.includes(category)));
-      const finalTargetsActive = finalRelevantRows.every((row) => row.status === 'ACTIVE');
-      const finalTargets = finalRelevantRows.filter((row) => row.status === 'ACTIVE').map((row) => this.mapTarget(row));
+      const finalTargetsActive = finalRelevantRows.every((row) => row.status === 'ACTIVE' && row.required === true);
+      const finalTargets = finalRelevantRows.filter((row) => row.status === 'ACTIVE' && row.required === true).map((row) => this.mapTarget(row));
       const finalCoverageResult = await client.query<CopyCoverageRow>(
         `SELECT DISTINCT ON (category_code,store_kind) *
          FROM public.saas_tenant_external_copy_coverage_decisions
@@ -1085,11 +1085,11 @@ export class SaasTenantPropagationService {
     const current = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
       const targetResult = await client.query<TargetRow>(
-        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND required=true ORDER BY store_kind,target_id',
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 ORDER BY store_kind,target_id',
         [tenantId],
       );
       const relevant = targetResult.rows.filter((row) => this.parseCategories(row.categories).some((c) => categories.includes(c)));
-      if (relevant.some((row) => row.status !== 'ACTIVE')) throw new ConflictException('A required external target changed state during propagation');
+      if (relevant.some((row) => row.status !== 'ACTIVE' || row.required !== true)) throw new ConflictException('A required external target changed state during propagation');
       const targets = relevant.map((row) => this.mapTarget(row));
       const result = await client.query<CopyCoverageRow>(
         'SELECT DISTINCT ON (category_code,store_kind) * FROM public.saas_tenant_external_copy_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,store_kind,revision DESC',
