@@ -250,7 +250,7 @@ VALUES
   'hold-fence-propagation-v1',repeat('4',64),'16010000-0000-4000-8000-000000000002');
 
 -- The database must close the check-to-provider-mutation race, not just the API preflight.
-DO $
+DO $$
 DECLARE
   guard_message text;
 BEGIN
@@ -280,7 +280,7 @@ BEGIN
     GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
     IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;
   END;
-END $;
+END $$;
 
 
 -- Backup writer-fence SQL lifecycle acceptance. This is synthetic data only.
