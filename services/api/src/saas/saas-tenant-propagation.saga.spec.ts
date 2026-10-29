@@ -23,7 +23,10 @@ const priorBackupEvidenceTrust = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUS
 const priorBackupEvidenceRoot = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
 const backupEvidenceRoot = mkdtempSync(join(tmpdir(), 'factoryos-saga-evidence-'));
 process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
-afterAll(() => {
+// Keep the synthetic artifact root alive for the whole Jest process: async teardown
+// work from the Nest service may still perform a final checkpoint after this suite completes.
+// Cleanup happens only when the test process exits, never while a service callback can read it.
+process.on('exit', () => {
   if (priorBackupEvidenceTrust === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
   else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = priorBackupEvidenceTrust;
   if (priorBackupEvidenceRoot === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
