@@ -13,6 +13,7 @@ const MAX_MULTIPART_UPLOADS = 10000;
 const MAX_MULTIPART_PAGES = 100;
 const MULTIPART_PAGE_SIZE = 1000;
 const CATEGORIES = new Set(Object.values(SaasTransferDatasetCategory));
+const SAFE_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 interface PolicyConfig {
   endpoint: URL;
@@ -37,6 +38,15 @@ interface MultipartInventory {
   count: number;
   digest: string;
 }
+export interface S3TenantBackupWriterInventoryEvidence {
+  reference: string;
+  digest: string;
+  count: number;
+  policyOwnershipReviewReference: string;
+  stagingAcceptanceReference: string;
+  restoreReplayReference: string;
+}
+
 export interface S3TenantBackupWriterFenceEvidence {
   providerFenceReference: string;
   providerPolicyDigest: string;
@@ -146,6 +156,43 @@ function emptyPolicy(): BucketPolicy {
 @Injectable()
 export class S3TenantBackupWriterFenceProvider {
   constructor(private readonly config: ConfigService) {}
+
+  /**
+   * Return the independently reviewed writer identity inventory and controlled
+   * staging references required by the propagation runner. This is configuration
+   * evidence, not proof of provider behavior; deployment review must validate each
+   * reference before setting the corresponding acceptance gate.
+   */
+  getReviewedWriterInventoryEvidence(): S3TenantBackupWriterInventoryEvidence {
+    this.readConfiguration();
+    const required = (name: string): string => {
+      const value = this.config.get<string>(name)?.trim();
+      if (!value || !SAFE_EVIDENCE_REFERENCE.test(value) || value.includes('://')
+        || /(secret|password|credential|access[-_]?key|token)/i.test(value)) {
+        throw new ServiceUnavailableException('S3 erasure acceptance evidence reference is incomplete or unsafe');
+      }
+      return value;
+    };
+    if (this.config.get<string>('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED') !== 'true'
+      || this.config.get<string>('FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED') !== 'true') {
+      throw new ServiceUnavailableException('S3 erasure runner is disabled until writer inventory and runner acceptance are reviewed');
+    }
+    const digest = required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_DIGEST');
+    if (!DIGEST.test(digest)) throw new ServiceUnavailableException('S3 writer inventory digest is invalid');
+    const countText = required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_COUNT');
+    const count = Number(countText);
+    if (!Number.isSafeInteger(count) || count < 1 || count > 100000 || String(count) !== countText) {
+      throw new ServiceUnavailableException('S3 writer inventory count is outside the supported safety bounds');
+    }
+    return {
+      reference: required('FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REFERENCE'),
+      digest,
+      count,
+      policyOwnershipReviewReference: required('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE'),
+      stagingAcceptanceReference: required('FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE'),
+      restoreReplayReference: required('FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE'),
+    };
+  }
 
   /**
    * Installs a bucket-policy Deny for PutObject on exactly one tenant/category
