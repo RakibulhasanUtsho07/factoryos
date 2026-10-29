@@ -83,12 +83,11 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
   const activation = adapter.slice(adapter.indexOf('async isConfigured'), adapter.indexOf('async prepare'));
   assert.match(activation, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\)/);
   assert.match(activation, /requireCurrentAcceptedProviderAcceptance/);
-  assert.match(activation, /requireCurrentAcceptedProviderAcceptance[\\s\\S]*?return true;/);
-  assert.match(activation, /catch \\{\\s*return false/);
+  assert.match(activation, /requireCurrentAcceptedProviderAcceptance[\s\S]*?return true;/);
+  assert.match(activation, /catch\s*\{\s*return false/);
   assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
   assert.match(doc, /durable, independently reviewed provider-acceptance record/i);
-  assert.match(activation, /requireCurrentAcceptedProviderAcceptance/);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
@@ -236,7 +235,7 @@ test('backup provider activation requires durable, independently reviewed, revoc
     'INDEPENDENT_RESIDUAL_LISTING', 'RESTORE_AFTER_TOMBSTONE_REPLAY',
   ];
   assert.match(service, /SAAS_BACKUP_PROVIDER_ACCEPTANCE_SCENARIOS/);
-  assert.match(service, /for \\(const required of SAAS_BACKUP_PROVIDER_ACCEPTANCE_SCENARIOS\\)/);
+  assert.match(service, /for \(const required of SAAS_BACKUP_PROVIDER_ACCEPTANCE_SCENARIOS\)/);
   for (const scenario of requiredScenarios) {
     assert.ok(scenarioDto.includes("'" + scenario + "'"), 'DTO is missing provider staging scenario: ' + scenario);
     assert.ok(migration.includes("'" + scenario + "'"), 'database constraint lacks scenario: ' + scenario);
