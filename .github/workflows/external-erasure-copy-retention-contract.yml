@@ -7,6 +7,17 @@ on:
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
+      - 'scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.test.mjs'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts'
+      - 'migrations/228_saas_tenant_backup_copy_class_coverage.sql'
+      - 'services/api/test/saas-tenant-propagation-contract.sql'
+      - 'services/api/.env.example'
+      - 'deploy/security/backup-copy-evidence-trust.env.example'
       - '.github/workflows/external-erasure-copy-retention-contract.yml'
   push:
     branches: [main, dev, rakibul-hasan]
@@ -15,6 +26,17 @@ on:
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
+      - 'scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.test.mjs'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts'
+      - 'migrations/228_saas_tenant_backup_copy_class_coverage.sql'
+      - 'services/api/test/saas-tenant-propagation-contract.sql'
+      - 'services/api/.env.example'
+      - 'deploy/security/backup-copy-evidence-trust.env.example'
       - '.github/workflows/external-erasure-copy-retention-contract.yml'
 
 permissions:
@@ -33,5 +55,5 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Verify backup-copy retention runbook contract
-        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs
+      - name: Verify backup-copy retention and signed evidence contracts
+        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs
