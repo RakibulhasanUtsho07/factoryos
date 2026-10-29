@@ -374,7 +374,7 @@ SET state='RELEASED',tombstone_replay_reference='restore-tombstone-replay-160',
 WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
   AND run_id='16040000-0000-4000-8000-000000000001';
 
-DO $
+DO $$
 BEGIN
   BEGIN
     INSERT INTO saas_tenant_backup_writer_operations
@@ -384,7 +384,7 @@ BEGIN
     RAISE EXCEPTION 'next writer epoch was accepted before provider release confirmation';
   EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
   END;
-END $;
+END $$;
 
 UPDATE saas_tenant_backup_writer_fences
 SET provider_release_confirmed_at=clock_timestamp()
@@ -393,7 +393,7 @@ WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINE
   AND state='RELEASED' AND release_reference='s3-release-policy-160'
   AND release_policy_digest=repeat('d',64);
 
-DO $
+DO $$
 BEGIN
   BEGIN
     INSERT INTO saas_tenant_backup_writer_operations (tenant_id,operation_id,category_code,producer_id,writer_epoch)
