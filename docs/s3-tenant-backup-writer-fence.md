@@ -40,3 +40,9 @@ The implementation lives in `services/api/src/saas/s3-tenant-backup-writer-fence
 - Release previews the policy without its fence statement and stores that resulting digest in the durable release record before removing the exact statement. Policy removal uses both the original and expected result digests, preserves unrelated statements and verifies read-back. An uncertain removal remains a retry/recovery task; target activation remains blocked.
 - The bucket policy must have a single controlled writer. The current S3 API has no compare-and-swap precondition for `PutBucketPolicy`; an infrastructure owner must ensure no out-of-band policy writer races this controller. The immediate before-write re-read is a race detector, not a substitute for exclusive ownership.
 - The bucket-policy Deny blocks direct object writes (`s3:PutObject`) and S3 replication writes (`s3:ReplicateObject`) under the matching resource prefix. It does not abort multipart uploads, inventory provider IAM/access-point permissions, revoke credentials or prove actual provider enforcement until a real-provider staging check passes. A source replication job that retries after release still requires separate queue/drift reconciliation. The S3 BACKUP erasure adapter remains fail-closed until the controller is integrated into the propagation run before inventory and all provider/producer acceptance gates are complete.
+
+
+The current configuration assertion does not establish exclusivity by itself; only infrastructure ownership controls and real-provider staging can prove the deployment has no competing bucket-policy writers.
+
+
+S3 BACKUP erasure adapter must continue to return false from `isConfigured()`, fail-closed, until provider policy and all producer integrations are independently accepted.
