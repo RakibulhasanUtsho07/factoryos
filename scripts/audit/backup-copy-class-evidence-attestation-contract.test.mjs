@@ -13,13 +13,14 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   const migration = await readRepoFile('migrations/228_saas_tenant_backup_copy_class_coverage.sql');
   const apiEnv = await readRepoFile('services/api/.env.example');
   const runbook = await readRepoFile('docs/external-erasure-backup-copy-retention-runbook.md');
+  const sqlContract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
   const signingDoc = await readRepoFile('docs/backup-copy-class-evidence-attestation.md');
   const signer = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.mjs');
 
   assert.match(helper, /factoryos\.backup-copy-class-evidence-attestation\/v1/);
   assert.match(helper, /publicKey\.asymmetricKeyType !== 'ed25519'/);
   assert.match(helper, /ServiceUnavailableException/);
-  assert.match(helper, /candidate\.publicKeyPem\.includes\('PRIVATE KEY'\)/);
+  assert.match(helper, /publicKeyPem\.includes\('PRIVATE KEY'\)/);
   assert.match(helper, /trustedKey\.ownerReference !== payload\.attestationOwnerReference/);
   assert.match(helper, /attestationOwnerReference !== payload\.dataOwnerReference/);
   assert.match(helper, /verify\(null, message, publicKey, signature\)/);
@@ -37,6 +38,8 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(migration, /attestation_signature varchar\(86\)/);
   assert.match(migration, /NEW\.attestation_signature[\s\S]*?OLD\.attestation_signature/);
   assert.match(migration, /attestation_owner_reference IN \(data_owner_reference,infrastructure_owner_reference\)/);
+  assert.ok(sqlContract.includes('attestation_key_id,attestation_owner_reference,attestation_signature'));
+  assert.match(sqlContract, /pending backup evidence signature was mutable/);
   assert.match(apiEnv, /FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON=\[\]/);
   assert.match(runbook, /signed backup copy-class evidence/i);
   assert.match(signingDoc, /does not replace independent reviewer approval/);
