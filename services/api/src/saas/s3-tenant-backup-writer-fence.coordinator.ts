@@ -101,9 +101,12 @@ export class S3TenantBackupWriterFenceCoordinator {
       await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_FENCE_READBACK_FAILED');
       throw new ServiceUnavailableException('Provider fence read-back failed; backup inventory/deletion is blocked');
     }
+    // providerPolicyDigest records the complete policy at installation time.
+    // Sibling category fences in the same run legitimately change that digest;
+    // the provider independently checks full digests during install/removal.
+    // While held, verify the exact deny statement and unresolved multipart list.
     if (!evidence.installed || evidence.pendingMultipartUploads !== 0
-      || evidence.providerFenceReference !== fence.providerFenceReference
-      || evidence.providerPolicyDigest !== fence.providerPolicyDigest) {
+      || evidence.providerFenceReference !== fence.providerFenceReference) {
       await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId,
         evidence.pendingMultipartUploads > 0 ? 'MULTIPART_UPLOADS_REMAINING' : 'PROVIDER_FENCE_POLICY_DRIFT');
       throw new ConflictException('Provider fence drift or unfinished multipart uploads detected; backup mutation is blocked for recovery');
