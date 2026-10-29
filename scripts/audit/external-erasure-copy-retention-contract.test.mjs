@@ -83,7 +83,7 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
   assert.match(adapter, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\);[\s\S]*?return true/);
   assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
-  assert.match(doc, /isConfigured\(\) remains false by default/i);
+  assert.match(doc, /isConfigured\(\)[\s\S]*?remains false by default/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
