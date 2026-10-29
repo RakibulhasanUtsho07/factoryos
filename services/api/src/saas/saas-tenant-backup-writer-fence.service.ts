@@ -266,7 +266,11 @@ export class SaasTenantBackupWriterFenceService {
       if (!current) throw new NotFoundException('Backup writer fence not found');
       if (current.state === 'FENCED') {
         if (current.provider_fence_reference === providerReference && current.provider_policy_digest === policyDigest
-          && current.writer_inventory_digest === inventoryDigest && Number(current.fenced_writer_count) === writerCount) return current;
+          && current.writer_inventory_digest === inventoryDigest && Number(current.fenced_writer_count) === writerCount
+          && current.writer_inventory_reference === inventoryReference
+          && current.policy_ownership_review_reference === policyOwnershipReviewReference
+          && current.staging_acceptance_reference === stagingAcceptanceReference
+          && current.restore_replay_reference === restoreReplayReference) return current;
         throw new ConflictException('Different provider fence evidence is already sealed');
       }
       if (current.state !== 'FENCING') throw new ConflictException('Provider fence evidence requires FENCING state');
