@@ -60,7 +60,7 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(artifactReader, /O_NOFOLLOW/);
   assert.match(artifactReader, /MAX_ARTIFACT_BYTES = 16 \\* 1024 \\* 1024/);
   assert.match(artifactReader, /actualDigest !== expectedDigestValue/);
-  assert.match(artifactReader, /after\\.mtimeNs === before\\.mtimeNs/);
+  assert.match(artifactReader, /before\\.mtimeNs === after\\.mtimeNs/);
   assert.match(artifactReaderSpec, /rejects digest mismatch/);
   assert.match(artifactReaderSpec, /rejects symlinks and non-regular files/);
   assert.match(artifactReaderSpec, /rejects oversized artifacts/);
