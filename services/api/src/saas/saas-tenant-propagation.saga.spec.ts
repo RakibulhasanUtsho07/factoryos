@@ -113,6 +113,24 @@ describe('SaasTenantPropagationService external saga', () => {
       reviewed_at: '2026-10-20T10:00:00.000Z', review_reason: 'Approved for integration test',
       created_at: '2026-10-20T09:00:00.000Z', updated_at: '2026-10-20T10:00:00.000Z',
     }));
+    const copyCoverageRows = REQUIRED_EXTERNAL_STORE_KINDS.map((kind, index) => ({
+      decision_id: `16060000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      tenant_id: tenant,
+      category_code: 'BUSINESS_DATA',
+      store_kind: kind,
+      revision: 1,
+      disposition: 'SUPPORTED',
+      evidence_reference: `evidence.copy-coverage.${kind.toLowerCase()}`,
+      evidence_sha256: 'a'.repeat(64),
+      evidence_at: new Date().toISOString(),
+      data_owner_reference: `owner.data.${kind.toLowerCase()}`,
+      infrastructure_owner_reference: `owner.infra.${kind.toLowerCase()}`,
+      policy_reference: `policy.retention.${kind.toLowerCase()}`,
+      status: 'ACCEPTED',
+      submitted_by_user_id: requester,
+      reviewed_by_user_id: reviewer,
+      valid_until: '2099-01-01T00:00:00.000Z',
+    }));
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
     backupFenceCoordinator = {
       beginPropagationFence: jest.fn(async () => {
@@ -149,6 +167,7 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: copyCoverageRows };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifests')) {
         storedResourceManifests.push({
