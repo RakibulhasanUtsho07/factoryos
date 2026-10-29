@@ -19,6 +19,9 @@ import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibil
 const CONFIG_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_CONFIG_REFERENCE';
 const PROVIDER_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_PROVIDER_REFERENCE';
 const PROVIDER_SCOPE_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_PROVIDER_SCOPE_REFERENCE';
+const POLICY_OWNERSHIP_REVIEW_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE';
+const STAGING_ACCEPTANCE_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE';
+const RESTORE_REPLAY_REFERENCE = 'FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE';
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const MAX_EVIDENCE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -40,6 +43,8 @@ interface AcceptanceRow extends QueryResultRow {
   revision: string | number;
   provider_reference: string;
   provider_scope_reference: string;
+  policy_ownership_review_reference: string;
+  restore_replay_reference: string;
   provider_scope_digest: string;
   configuration_reference: string;
   adapter_key: string;
@@ -68,6 +73,9 @@ interface EvidenceRow extends QueryResultRow {
 interface ProviderScope {
   providerReference: string;
   providerScopeReference: string;
+  policyOwnershipReviewReference: string;
+  stagingAcceptanceReference: string;
+  restoreReplayReference: string;
   providerScopeDigest: string;
   configurationReference: string;
   adapterKey: string;
@@ -87,9 +95,13 @@ export function digestSaasBackupProviderAcceptanceScope(input: {
   configurationReference: string;
   adapterKey: string;
   adapterVersion: string;
+  policyOwnershipReviewReference: string;
+  stagingAcceptanceReference: string;
+  restoreReplayReference: string;
 }): string {
   return createHash('sha256').update(JSON.stringify([
     input.providerReference, input.providerScopeReference, input.configurationReference,
+    input.policyOwnershipReviewReference, input.stagingAcceptanceReference, input.restoreReplayReference,
     input.adapterKey, input.adapterVersion,
   ]), 'utf8').digest('hex');
 }
@@ -114,6 +126,9 @@ export class SaasTenantBackupProviderAcceptanceService {
     const category = this.category(input?.category_code);
     const scope = this.providerScope(this.currentConfigReference(), 's3.tenant-backup.v1', '1.0.0');
     const stagingEvidenceReference = this.reference(input?.staging_evidence_reference, 'staging_evidence_reference');
+    if (stagingEvidenceReference !== scope.stagingAcceptanceReference) {
+      throw new ConflictException('Submitted staging evidence reference must match the independently configured staging acceptance reference');
+    }
     const idempotencyKey = this.key(input?.idempotency_key, 'idempotency_key');
     const scenarios = this.normalizeScenarios(input?.scenarios);
     const evidenceManifestDigest = digestSaasBackupProviderAcceptanceScenarios(scenarios);
@@ -158,11 +173,12 @@ export class SaasTenantBackupProviderAcceptanceService {
       const inserted = await client.query<AcceptanceRow>(
         'INSERT INTO saas_tenant_backup_provider_acceptances ' +
         '(acceptance_id,tenant_id,category_code,revision,provider_reference,provider_scope_reference,provider_scope_digest,' +
-        'configuration_reference,adapter_key,adapter_version,staging_evidence_reference,evidence_manifest_digest,scenario_count,' +
-        'status,idempotency_key,request_hash,submitted_by_user_id) ' +
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,10,'PENDING',$13,$14,$15) RETURNING *",
+        'configuration_reference,adapter_key,adapter_version,policy_ownership_review_reference,restore_replay_reference,' +
+        'staging_evidence_reference,evidence_manifest_digest,scenario_count,status,idempotency_key,request_hash,submitted_by_user_id) ' +
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,10,'PENDING',$15,$16,$17) RETURNING *",
         [acceptanceId, tenantId, category, revision, scope.providerReference, scope.providerScopeReference,
           scope.providerScopeDigest, scope.configurationReference, scope.adapterKey, scope.adapterVersion,
+          scope.policyOwnershipReviewReference, scope.restoreReplayReference,
           stagingEvidenceReference, evidenceManifestDigest, idempotencyKey, requestHash, actorUserId],
       );
       for (const scenario of scenarios) {
@@ -180,6 +196,9 @@ export class SaasTenantBackupProviderAcceptanceService {
         resourceId: acceptanceId, correlationId: null, requestId: null, dataClass: 'RESTRICTED',
         payload: { category, revision, providerReference: scope.providerReference,
           providerScopeReference: scope.providerScopeReference, providerScopeDigest: scope.providerScopeDigest,
+          policyOwnershipReviewReference: scope.policyOwnershipReviewReference,
+          stagingAcceptanceReference: scope.stagingAcceptanceReference,
+          restoreReplayReference: scope.restoreReplayReference,
           adapterKey: scope.adapterKey, adapterVersion: scope.adapterVersion, evidenceManifestDigest,
           scenarioCount: scenarios.length, failedScenarioCount: scenarios.filter((s) => s.outcome !== 'PASS').length },
       });
@@ -218,8 +237,11 @@ export class SaasTenantBackupProviderAcceptanceService {
         throw new ConflictException('Provider acceptance submission and review require different actors');
       }
       const scope = this.providerScope(current.configuration_reference, current.adapter_key, current.adapter_version);
-      if (current.provider_scope_digest !== scope.providerScopeDigest) {
-        throw new ConflictException('Provider acceptance scope does not match the current controlled configuration');
+      if (current.provider_scope_digest !== scope.providerScopeDigest
+        || current.policy_ownership_review_reference !== scope.policyOwnershipReviewReference
+        || current.staging_evidence_reference !== scope.stagingAcceptanceReference
+        || current.restore_replay_reference !== scope.restoreReplayReference) {
+        throw new ConflictException('Provider acceptance scope or evidence references do not match the current controlled configuration');
       }
       const latest = await client.query<AcceptanceRow>(
         'SELECT * FROM saas_tenant_backup_provider_acceptances WHERE tenant_id=$1 AND category_code=$2 AND provider_scope_digest=$3 ORDER BY revision DESC LIMIT 1 FOR UPDATE',
@@ -350,6 +372,9 @@ export class SaasTenantBackupProviderAcceptanceService {
       || row.configuration_reference !== scope.configurationReference
       || row.provider_reference !== scope.providerReference
       || row.provider_scope_reference !== scope.providerScopeReference
+      || row.policy_ownership_review_reference !== scope.policyOwnershipReviewReference
+      || row.staging_evidence_reference !== scope.stagingAcceptanceReference
+      || row.restore_replay_reference !== scope.restoreReplayReference
       || row.adapter_key !== adapterKeyValue || row.adapter_version !== adapterVersionValue) {
       throw new ServiceUnavailableException('No current, independently reviewed provider acceptance matches this exact provider scope');
     }
@@ -374,10 +399,23 @@ export class SaasTenantBackupProviderAcceptanceService {
     }
     const providerReference = this.reference(this.config.get<string>(PROVIDER_REFERENCE), 'provider_reference');
     const providerScopeReference = this.reference(this.config.get<string>(PROVIDER_SCOPE_REFERENCE), 'provider_scope_reference');
+    const policyOwnershipReviewReference = this.reference(
+      this.config.get<string>(POLICY_OWNERSHIP_REVIEW_REFERENCE), 'policy_ownership_review_reference',
+    );
+    const stagingAcceptanceReference = this.reference(
+      this.config.get<string>(STAGING_ACCEPTANCE_REFERENCE), 'staging_acceptance_reference',
+    );
+    const restoreReplayReference = this.reference(
+      this.config.get<string>(RESTORE_REPLAY_REFERENCE), 'restore_replay_reference',
+    );
     const providerScopeDigest = digestSaasBackupProviderAcceptanceScope({
       providerReference, providerScopeReference, configurationReference, adapterKey, adapterVersion,
+      policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference,
     });
-    return { providerReference, providerScopeReference, providerScopeDigest, configurationReference, adapterKey, adapterVersion };
+    return {
+      providerReference, providerScopeReference, policyOwnershipReviewReference, stagingAcceptanceReference,
+      restoreReplayReference, providerScopeDigest, configurationReference, adapterKey, adapterVersion,
+    };
   }
 
   private currentConfigReference(): string {
@@ -476,7 +514,11 @@ export class SaasTenantBackupProviderAcceptanceService {
     return {
       acceptanceId: row.acceptance_id, tenantId: row.tenant_id, category: row.category_code,
       revision: Number(row.revision), providerReference: row.provider_reference,
-      providerScopeReference: row.provider_scope_reference, providerScopeDigest: row.provider_scope_digest,
+      providerScopeReference: row.provider_scope_reference,
+      policyOwnershipReviewReference: row.policy_ownership_review_reference,
+      stagingAcceptanceReference: row.staging_evidence_reference,
+      restoreReplayReference: row.restore_replay_reference,
+      providerScopeDigest: row.provider_scope_digest,
       configurationReference: row.configuration_reference, adapterKey: row.adapter_key,
       adapterVersion: row.adapter_version, stagingEvidenceReference: row.staging_evidence_reference,
       evidenceManifestDigest: row.evidence_manifest_digest, scenarioCount: Number(row.scenario_count),
