@@ -352,5 +352,5 @@ test('copy-class coverage and required target inventory cannot drift while an er
  assert.ok(migration.includes('BEFORE INSERT OR UPDATE OR DELETE'));
  assert.ok(manifest.split(/\r?\n/).includes('migrations/227_saas_external_copy_coverage_run_fence.sql'));
  assert.ok(workflow.includes('Reapplying external copy-coverage run fence'));
- assert.ok(runbook.includes('inventory is frozen while a propagation run is RUNNING'));
+ assert.ok(runbook.includes('A database-level run fence takes the tenant lock') && runbook.includes('while any propagation run is'));
 });
