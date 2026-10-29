@@ -5,6 +5,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import {
   verifyBackupCopyClassEvidenceAttestation,
@@ -35,14 +36,14 @@ const MAX_CLOCK_SKEW_MS=5*60*1000;
 
 @Injectable()
 export class SaasTenantBackupCopyClassCoverageService {
- constructor(private readonly database:DatabaseService,private readonly iamService:IamService,private readonly auditService:AuditService){}
+ constructor(private readonly database:DatabaseService,private readonly iamService:IamService,private readonly auditService:AuditService,private readonly evidenceArtifactReader:BackupCopyClassEvidenceArtifactReader){}
  async createDecision(tenantValue:string,actorValue:string,input:CreateSaasBackupCopyClassCoverageDto){
   const tenantId=this.uuid(tenantValue,'tenantId'),actorUserId=this.uuid(actorValue,'actorUserId');
   await this.iamService.authorize(actorUserId,tenantId,'saas.data_retention.write');
   const category=this.category(input?.category_code),copyClass=input?.copy_class_code,disposition=input?.disposition;
   if(!REQUIRED_BACKUP_COPY_CLASSES.includes(copyClass))throw new BadRequestException('copy_class_code is invalid');
   if(!['SUPPORTED','NOT_APPLICABLE','UNRESOLVED'].includes(disposition))throw new BadRequestException('disposition is invalid');
-  const evidenceReference=this.reference(input?.evidence_reference,'evidence_reference');
+  const evidenceReference=this.artifactReference(input?.evidence_reference);
   const evidenceSha256=this.digest(input?.evidence_sha256,'evidence_sha256');
   const evidenceAt=new Date(input?.evidence_at??'');
   if(!Number.isFinite(evidenceAt.getTime()))throw new BadRequestException('evidence_at must be a valid timestamp');
@@ -61,6 +62,7 @@ export class SaasTenantBackupCopyClassCoverageService {
    infrastructureOwnerReference,policyReference,reason,
   };
   verifyBackupCopyClassEvidenceAttestation(attestation,attestationSignature);
+  await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
   const requestHash=this.hash({operation:'BACKUP_COPY_CLASS_COVERAGE',...attestation,attestationSignature});
   const result=await this.database.transaction(async(client)=>{
    await this.lockTenant(client,tenantId);
@@ -112,6 +114,16 @@ export class SaasTenantBackupCopyClassCoverageService {
    if(latest.rows[0]?.decision_id!==current.decision_id)throw new ConflictException('A newer backup copy-class revision exists; reload before review');
    const age=Date.now()-new Date(current.evidence_at).getTime();
    if(age < -MAX_CLOCK_SKEW_MS||age>EVIDENCE_MAX_AGE_MS)throw new ConflictException('Backup copy-class evidence expired before review');
+   if(input.decision==='ACCEPT'){
+    verifyBackupCopyClassEvidenceAttestation({attestationKeyId:current.attestation_key_id,
+     attestationOwnerReference:current.attestation_owner_reference,tenantId:current.tenant_id,
+     categoryCode:current.category_code,copyClassCode:current.copy_class_code,disposition:current.disposition,
+     evidenceReference:current.evidence_reference,evidenceSha256:current.evidence_sha256,
+     evidenceAt:new Date(current.evidence_at).toISOString(),dataOwnerReference:current.data_owner_reference,
+     infrastructureOwnerReference:current.infrastructure_owner_reference,policyReference:current.policy_reference,reason:current.reason},
+     current.attestation_signature);
+    await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+   }
    const status:CoverageStatus=input.decision==='ACCEPT'?'ACCEPTED':'REJECTED';
    const validUntil=status==='ACCEPTED'?new Date(Date.now()+89*24*60*60*1000).toISOString():null;
    const updated=await client.query<CoverageRow>(
@@ -152,6 +164,9 @@ export class SaasTenantBackupCopyClassCoverageService {
  private category(value:unknown):SaasTransferDatasetCategory{
   if(typeof value!=='string'||!Object.values(SaasTransferDatasetCategory).includes(value as SaasTransferDatasetCategory))throw new BadRequestException('category_code is invalid');
   return value as SaasTransferDatasetCategory;
+ }
+ private artifactReference(value:unknown):string{
+  if(typeof value!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value))throw new BadRequestException('evidence_reference must be an opaque artifact identifier, not a path or URL');return value;
  }
  private reference(value:unknown,name:string):string{
   if(typeof value!=='string'||!SAFE_REFERENCE.test(value)||value.includes('://')||/(secret|password|credential|access[-_]?key|token)/i.test(value))throw new BadRequestException(name+' must be a non-secret opaque reference');
