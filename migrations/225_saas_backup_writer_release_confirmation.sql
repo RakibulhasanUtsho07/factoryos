@@ -25,13 +25,6 @@ END $$;
 ALTER TABLE saas_tenant_backup_writer_fences
   VALIDATE CONSTRAINT chk_saas_backup_writer_fence_release_confirmation;
 
--- A RELEASED row without provider read-back is still an active scope for uniqueness
--- and fencing purposes. Drop/recreate so replays also fix the older predicate.
-DROP INDEX IF EXISTS uq_saas_backup_writer_fence_active_scope;
-CREATE UNIQUE INDEX uq_saas_backup_writer_fence_active_scope
-  ON saas_tenant_backup_writer_fences(tenant_id,category_code)
-  WHERE state<>'RELEASED' OR provider_release_confirmed_at IS NULL;
-
 CREATE OR REPLACE FUNCTION public.factoryos_guard_saas_backup_writer_release_confirmation()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
 BEGIN
@@ -65,7 +58,18 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM public.saas_tenant_backup_writer_fences f
       WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code
-        AND (f.state<>'RELEASED' OR f.provider_release_confirmed_at IS NULL)
+        AND f.state<>'RELEASED'
+    ) OR EXISTS (
+      SELECT 1 FROM public.saas_tenant_backup_writer_fences f
+      WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code
+        AND f.state='RELEASED'
+        AND f.fence_id=(
+          SELECT latest.fence_id FROM public.saas_tenant_backup_writer_fences latest
+          WHERE latest.tenant_id=NEW.tenant_id AND latest.category_code=NEW.category_code
+            AND latest.state='RELEASED'
+          ORDER BY latest.released_at DESC,latest.fence_id DESC LIMIT 1
+        )
+        AND f.provider_release_confirmed_at IS NULL
     ) THEN
       RAISE EXCEPTION 'backup writer permit is blocked until provider fence removal is confirmed' USING ERRCODE='55000';
     END IF;
@@ -88,7 +92,18 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM public.saas_tenant_backup_writer_fences f
       WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code
-        AND (f.state<>'RELEASED' OR f.provider_release_confirmed_at IS NULL)
+        AND f.state<>'RELEASED'
+    ) OR EXISTS (
+      SELECT 1 FROM public.saas_tenant_backup_writer_fences f
+      WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code
+        AND f.state='RELEASED'
+        AND f.fence_id=(
+          SELECT latest.fence_id FROM public.saas_tenant_backup_writer_fences latest
+          WHERE latest.tenant_id=NEW.tenant_id AND latest.category_code=NEW.category_code
+            AND latest.state='RELEASED'
+          ORDER BY latest.released_at DESC,latest.fence_id DESC LIMIT 1
+        )
+        AND f.provider_release_confirmed_at IS NULL
     ) THEN
       RAISE EXCEPTION 'a new backup writer fence is blocked until previous provider release is confirmed' USING ERRCODE='55000';
     END IF;
