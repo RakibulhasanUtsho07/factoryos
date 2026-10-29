@@ -323,6 +323,31 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
   });
 
+  it('blocks propagation when the previously trusted evidence signing key is removed', async () => {
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = '[]';
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A removed signing key must invalidate accepted evidence',
+      idempotency_key: 'external-propagation-revoked-evidence-key',
+    })).rejects.toThrow('trusted-key configuration is invalid');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
+  it('blocks propagation when an accepted evidence signature has been tampered with', async () => {
+    const first = backupCopyClassRows[0];
+    const signature = String(first?.attestation_signature ?? '');
+    if (!signature) throw new Error('Signed backup copy-class fixture is missing a signature');
+    first!.attestation_signature = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A tampered source-owner signature must block provider execution',
+      idempotency_key: 'external-propagation-tampered-evidence-signature',
+    })).rejects.toThrow('attestation is invalid or its signer is no longer trusted');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
   it('fails closed when a prepared plan was produced by a different adapter version', async () => {
     adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
