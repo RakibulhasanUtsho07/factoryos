@@ -1,6 +1,6 @@
 import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
@@ -54,6 +54,10 @@ describe('BackupCopyClassEvidenceArtifactReader', () => {
     await expect(reader.verifyArtifact(
       'evidence-source-v1', createHash('sha256').update('immutable test bytes').digest('hex'),
     )).resolves.toMatchObject({ reference: 'evidence-source-v1' });
+
+    mkdirSync(join(root, 'evidence-directory-v1'));
+    await expect(reader.verifyArtifact('evidence-directory-v1', 'a'.repeat(64)))
+      .rejects.toBeInstanceOf(ConflictException);
   });
 
   it('fails closed when the evidence root is missing or not configured', async () => {
