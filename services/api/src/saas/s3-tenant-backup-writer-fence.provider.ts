@@ -379,7 +379,9 @@ export class S3TenantBackupWriterFenceProvider {
       Sid: 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''),
       Effect: 'Deny',
       Principal: '*',
-      Action: 's3:PutObject',
+      // Replication writes use a separate S3 authorization action; PutObject alone
+      // does not fence an S3 replication role from recreating objects in this prefix.
+      Action: ['s3:PutObject', 's3:ReplicateObject'],
       Resource: 'arn:aws:s3:::' + bucket + '/' + this.prefix(tenantId, category) + '*',
     };
   }
