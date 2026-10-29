@@ -6,12 +6,11 @@ import { SaasTransferDatasetCategory as Category } from './dto/create-saas-schem
 const tenant = 'c1000000-0000-4000-8000-000000000001';
 const fenceId = 'c5000000-0000-4000-8000-000000000005';
 const actor = 'c4000000-0000-4000-8000-000000000004';
+const reviewer = 'c7000000-0000-4000-8000-000000000007';
+const snapshotId = 'c6000000-0000-4000-8000-000000000006';
 const digest = 'a'.repeat(64);
 const reference = 's3-bucket-policy-fence.' + fenceId.replace(/-/g, '');
-const inventoryEvidence = {
-  reference: 'backup-writers.inventory.2026-10-29',
-  digest,
-  count: 3,
+const providerAcceptance = {
   policyOwnershipReviewReference: 'policy-owner.review.2026-10-29',
   stagingAcceptanceReference: 'staging.s3-fence.accepted.2026-10-29',
   restoreReplayReference: 'restore.tombstone-replay.accepted.2026-10-29',
@@ -19,12 +18,26 @@ const inventoryEvidence = {
 
 function view(state: string, overrides: Record<string, unknown> = {}) {
   return {
-    fenceId, tenantId: tenant, category: Category.BUSINESS_DATA, requestId: 'c2000000-0000-4000-8000-000000000002',
-    requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003', state, writerEpoch: 1,
+    fenceId, tenantId: tenant, category: Category.BUSINESS_DATA,
+    requestId: 'c2000000-0000-4000-8000-000000000002', requestVersion: 1,
+    runId: 'c3000000-0000-4000-8000-000000000003', state, writerEpoch: 1,
+    createdByUserId: actor, writerInventorySnapshotId: null,
     providerFenceReference: null, providerPolicyDigest: null, writerInventoryDigest: null, fencedWriterCount: null,
-    erasureManifestDigest: null, verificationReference: null, verifiedResidualCount: null, tombstoneReplayReference: null,
-    nextWriterEpoch: null, recoveryReason: null, releasePolicyDigest: null, releaseReference: null,
-    releaseWriterInventoryDigest: null, releaseWriterCount: null, reviewedByUserId: null, releasedAt: null,
+    writerInventoryReference: null, policyOwnershipReviewReference: null, stagingAcceptanceReference: null,
+    restoreReplayReference: null, erasureManifestDigest: null, verificationReference: null,
+    verifiedResidualCount: null, tombstoneReplayReference: null, nextWriterEpoch: null, recoveryReason: null,
+    releasePolicyDigest: null, releaseReference: null, releaseWriterInventoryDigest: null,
+    releaseWriterCount: null, reviewedByUserId: null, releasedAt: null,
+    ...overrides,
+  };
+}
+function acceptedInventory(overrides: Record<string, unknown> = {}) {
+  return {
+    snapshotId, tenantId, category: Category.BUSINESS_DATA, revision: 1,
+    inventoryReference: 'backup-writers.inventory.2026-10-29', manifestDigest: digest, entryCount: 3,
+    status: 'ACCEPTED' as const,
+    registeredByUserId: 'c8000000-0000-4000-8000-000000000008',
+    reviewedByUserId: reviewer, reviewedAt: new Date(0).toISOString(), entries: [],
     ...overrides,
   };
 }
@@ -35,24 +48,29 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const lifecycle = {
       getFence: jest.fn(async () => current),
       beginErasureFence: jest.fn(async () => [current]),
-      markErasureStarted: jest.fn(async () => view('ERASING', { providerFenceReference: reference, providerPolicyDigest: digest })),
+      markErasureStarted: jest.fn(async () => view('ERASING', {
+        providerFenceReference: reference, providerPolicyDigest: digest, writerInventorySnapshotId: snapshotId,
+      })),
       markErasureVerified: jest.fn(async () => view('ERASURE_VERIFIED')),
       advanceAfterDrain: jest.fn(async () => ({
         fence: view('FENCING'), readyForProviderFence: true, activeWriterOperations: 0,
       })),
       recordProviderFenceInstalled: jest.fn(async () => view('FENCED', {
-        providerFenceReference: reference, providerPolicyDigest: digest,
-        writerInventoryDigest: digest, fencedWriterCount: 3,
+        writerInventorySnapshotId: snapshotId, writerInventoryReference: acceptedInventory().inventoryReference,
+        providerFenceReference: reference, providerPolicyDigest: digest, writerInventoryDigest: digest, fencedWriterCount: 3,
+        policyOwnershipReviewReference: providerAcceptance.policyOwnershipReviewReference,
+        stagingAcceptanceReference: providerAcceptance.stagingAcceptanceReference,
+        restoreReplayReference: providerAcceptance.restoreReplayReference,
       })),
       requireRecovery: jest.fn(async () => view('RECOVERY_REQUIRED')),
       releaseAfterTombstoneReplay: jest.fn(async () => view('RELEASED', {
-        state: 'RELEASED', reviewedByUserId: actor, releaseReference: reference,
+        state: 'RELEASED', reviewedByUserId: reviewer, releaseReference: reference,
         releasePolicyDigest: digest, releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
         tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
       })),
     };
     const provider = {
-      getReviewedWriterInventoryEvidence: jest.fn(() => inventoryEvidence),
+      getProviderAcceptanceReferences: jest.fn(() => providerAcceptance),
       inspectFence: jest.fn(async () => ({
         providerFenceReference: reference, providerPolicyDigest: digest, scopePrefixDigest: digest,
         multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: true,
@@ -70,26 +88,32 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
         policyAbsent: true as const, alreadyAbsent: false,
       })),
     };
-    return { coordinator: new S3TenantBackupWriterFenceCoordinator(lifecycle as never, provider as never), lifecycle, provider, current };
+    const writerInventory = { requireCurrentAcceptedSnapshot: jest.fn(async () => acceptedInventory()) };
+    return {
+      coordinator: new S3TenantBackupWriterFenceCoordinator(lifecycle as never, provider as never, writerInventory as never),
+      lifecycle, provider, writerInventory, current,
+    };
   }
 
-  it('acquires the durable/provider fence before entering ERASING', async () => {
-    const { coordinator, lifecycle, provider } = setup('DRAINING');
+  it('acquires the durable/provider fence before entering ERASING and verifies it before inventory begins', async () => {
+    const { coordinator, lifecycle, provider, writerInventory } = setup();
     const result = await coordinator.beginPropagationFence({
       tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
       requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003',
       sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
     });
     expect(result).toEqual([expect.objectContaining({ state: 'ERASING' })]);
-    expect(provider.getReviewedWriterInventoryEvidence).toHaveBeenCalledTimes(1);
+    expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(2);
+    expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(2);
     expect(lifecycle.beginErasureFence).toHaveBeenCalledTimes(1);
     expect(provider.installFence).toHaveBeenCalledTimes(1);
+    expect(provider.inspectFence).toHaveBeenCalledTimes(1);
     expect(lifecycle.markErasureStarted).toHaveBeenCalledWith(tenant, fenceId);
     expect(provider.installFence.mock.invocationCallOrder[0]).toBeLessThan(lifecycle.markErasureStarted.mock.invocationCallOrder[0]!);
   });
 
   it('requires recovery when provider policy drifts before inventory begins', async () => {
-    const { coordinator, lifecycle, provider } = setup('DRAINING');
+    const { coordinator, lifecycle, provider } = setup();
     provider.inspectFence.mockResolvedValueOnce({
       providerFenceReference: reference, providerPolicyDigest: 'b'.repeat(64), scopePrefixDigest: digest,
       multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: true,
@@ -104,7 +128,9 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
 
   it('requires zero-residual verification before marking each backup category verified', async () => {
     const { coordinator, lifecycle } = setup('ERASING');
-    lifecycle.getFence.mockResolvedValue(view('ERASING', { providerFenceReference: reference, providerPolicyDigest: digest }) as never);
+    lifecycle.getFence.mockResolvedValue(view('ERASING', {
+      providerFenceReference: reference, providerPolicyDigest: digest, writerInventorySnapshotId: snapshotId,
+    }) as never);
     const result = await coordinator.recordPropagationVerification({
       tenantId: tenant, categories: [Category.BUSINESS_DATA],
       manifestDigest: digest, verificationReference: 'backup.verify.receipt.001', residualCopies: 0,
@@ -120,37 +146,56 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     })).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('records FENCED only after the application drain and provider policy read-back complete', async () => {
-    const { coordinator, lifecycle, provider } = setup();
-    const result = await coordinator.installAndRecordFence({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
-      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
-      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
-      restoreReplayReference: inventoryEvidence.restoreReplayReference,
-    });
+  it('seals FENCED only after current accepted inventory and provider read-back', async () => {
+    const { coordinator, lifecycle, provider, writerInventory } = setup();
+    const result = await coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
     expect(lifecycle.advanceAfterDrain).toHaveBeenCalledWith(tenant, fenceId);
+    expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(2);
     expect(provider.installFence).toHaveBeenCalledWith({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
     expect(lifecycle.recordProviderFenceInstalled).toHaveBeenCalledWith({
-      tenantId: tenant, fenceId, providerFenceReference: reference,
-      providerPolicyDigest: digest, writerInventoryDigest: digest, fencedWriterCount: 3,
-      writerInventoryReference: inventoryEvidence.reference,
-      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
-      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
-      restoreReplayReference: inventoryEvidence.restoreReplayReference,
+      tenantId: tenant, fenceId, providerFenceReference: reference, providerPolicyDigest: digest,
+      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventorySnapshotId: snapshotId,
+      writerInventoryReference: acceptedInventory().inventoryReference,
+      policyOwnershipReviewReference: providerAcceptance.policyOwnershipReviewReference,
+      stagingAcceptanceReference: providerAcceptance.stagingAcceptanceReference,
+      restoreReplayReference: providerAcceptance.restoreReplayReference,
     });
     expect(result.state).toBe('FENCED');
   });
 
+  it('fails closed before S3 when the latest inventory is not accepted', async () => {
+    const { coordinator, provider, lifecycle, writerInventory } = setup();
+    writerInventory.requireCurrentAcceptedSnapshot.mockRejectedValue(new ServiceUnavailableException('not reviewed'));
+    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(provider.installFence).not.toHaveBeenCalled();
+    expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
+  });
+
+  it('requires the reviewer to be independent from the fence creator', async () => {
+    const { coordinator, provider, writerInventory } = setup();
+    writerInventory.requireCurrentAcceptedSnapshot.mockResolvedValue(acceptedInventory({ reviewedByUserId: actor }) as never);
+    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(provider.installFence).not.toHaveBeenCalled();
+  });
+
+  it('keeps the provider deny closed if the accepted inventory changes during installation', async () => {
+    const { coordinator, lifecycle, provider, writerInventory } = setup();
+    writerInventory.requireCurrentAcceptedSnapshot
+      .mockResolvedValueOnce(acceptedInventory() as never)
+      .mockResolvedValueOnce(acceptedInventory({ snapshotId: 'c6000000-0000-4000-8000-000000000009' }) as never);
+    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(provider.installFence).toHaveBeenCalled();
+    expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'WRITER_INVENTORY_CHANGED');
+    expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
+  });
+
   it('does not mark FENCED while any multipart upload remains', async () => {
     const { coordinator, lifecycle } = setup('FENCING', { pendingMultipartUploads: 2 });
-    await expect(coordinator.installAndRecordFence({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
-      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
-      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
-      restoreReplayReference: inventoryEvidence.restoreReplayReference,
-    })).rejects.toBeInstanceOf(ConflictException);
+    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ConflictException);
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
   });
 
@@ -159,13 +204,8 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     lifecycle.advanceAfterDrain.mockResolvedValue({
       fence: view('DRAINING'), readyForProviderFence: false, activeWriterOperations: 1,
     } as never);
-    await expect(coordinator.installAndRecordFence({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
-      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
-      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
-      restoreReplayReference: inventoryEvidence.restoreReplayReference,
-    })).rejects.toBeInstanceOf(ConflictException);
+    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ConflictException);
     expect(provider.installFence).not.toHaveBeenCalled();
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
   });
@@ -176,7 +216,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     lifecycle.releaseAfterTombstoneReplay.mockImplementation(async () => {
       sequence.push('database-release');
       return view('RELEASED', {
-        reviewedByUserId: actor, releaseReference: reference, releasePolicyDigest: digest,
+        reviewedByUserId: reviewer, releaseReference: reference, releasePolicyDigest: digest,
         releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
         tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
       }) as never;
@@ -186,28 +226,28 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       return { providerFenceReference: reference, providerPolicyDigest: digest, policyAbsent: true as const, alreadyAbsent: false };
     });
     const result = await coordinator.releaseAfterTombstoneReplay({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: actor,
+      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
     });
     expect(sequence).toEqual(['database-release', 'provider-policy-remove']);
     expect(lifecycle.releaseAfterTombstoneReplay).toHaveBeenCalledWith(expect.objectContaining({
       providerReleaseReference: reference, releasePolicyDigest: digest,
-      nextWriterEpoch: 2, reviewedByUserId: actor,
+      nextWriterEpoch: 2, reviewedByUserId: reviewer,
     }));
     expect(result.fence.state).toBe('RELEASED');
   });
 
-  it('allows a retry after the durable release if provider policy removal previously failed', async () => {
+  it('allows retry after durable release when provider policy removal previously failed', async () => {
     const released = view('RELEASED', {
-      reviewedByUserId: actor, releaseReference: reference, releasePolicyDigest: digest,
+      reviewedByUserId: reviewer, releaseReference: reference, releasePolicyDigest: digest,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
     });
     const { coordinator, lifecycle, provider } = setup('RELEASED');
     lifecycle.getFence.mockResolvedValue(released as never);
     const result = await coordinator.releaseAfterTombstoneReplay({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: actor,
+      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
     });
@@ -220,7 +260,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const { coordinator, lifecycle, provider } = setup('ERASURE_VERIFIED');
     provider.removeFence.mockRejectedValue(new Error('provider timeout'));
     await expect(coordinator.releaseAfterTombstoneReplay({
-      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: actor,
+      tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
     })).rejects.toBeInstanceOf(ServiceUnavailableException);
