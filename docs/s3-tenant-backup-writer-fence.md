@@ -1,6 +1,6 @@
 # Tenant backup writer-fence ledger
 
-**Status:** Application-side durable lifecycle is implemented in this branch. Provider-wide enforcement and producer integration remain release blockers.
+**Status:** Application-side durable lifecycle and an S3 bucket-policy apply/read-back adapter are implemented in this branch. Provider activation, producer integration and actual-provider acceptance remain release blockers.
 
 ## Scope and lifecycle
 
@@ -20,10 +20,23 @@ The PostgreSQL tenant-row lock serializes writer-operation registration against 
 
 An upload with an unknown provider result stays ACTIVE. There is no TTL or automatic expiry that could let an erasure run overtake an object write that might still commit. DRAINING cannot advance while any operation is ACTIVE. Recovery requires a provider-backed attestation and a new inventory; the coordinator never removes a provider deny policy itself.
 
-The provider controller must modify only its reviewed scope, read the policy back, inventory all principals and automated jobs that can write backup objects, and prove that stale writer generations cannot recreate erased data. This service accepts evidence records but does not independently authenticate a provider's policy response. Therefore, the S3 BACKUP adapter remains fail-closed until the provider controller and every producer are integrated and independently accepted.
+The S3 provider adapter installs an explicit bucket-policy Deny for `s3:PutObject` against exactly `factoryos-backups/{tenant UUID}/{DATASET_CATEGORY}/*`, preserves unrelated policy statements, re-reads the policy after mutation, checks the full policy digest, and inventories unfinished multipart uploads. It uses separate policy credentials from the object-erasure credential. The coordinator advances to `FENCED` only after provider read-back succeeds, all application writer outcomes are terminal, multipart-upload inventory is empty, and reviewed writer-inventory evidence is supplied. Release planning records the expected policy digest durably before removing only the exact fence statement.
+
+This is a provider-neutral S3 API integration, not proof that every S3-compatible provider implements bucket-policy semantics identically. Policy mutation remains disabled by default and requires explicit configuration plus an infrastructure-owner acknowledgement that this service is the exclusive bucket-policy writer. The controller cannot enforce exclusive ownership outside this service or perform a provider IAM/Access Point principal inventory. Real-provider policy semantics, account-level access points, replication/service principals, policy drift, race-free deployment ownership, and every producer identity must be reviewed and tested in staging. Therefore, the S3 BACKUP adapter remains fail-closed until those gates are independently accepted.
 
 ## Explicit blockers
 
-The service is only the durable application-side coordinator. At this commit, no provider control-plane adapter that applies and independently reads back the S3 write freeze is integrated, and the repository's backup-producing and out-of-process identities have not been proven to use this coordinator. The S3 BACKUP adapter must continue to return false from isConfigured(), fail-closed.
+The service is only the durable application-side coordinator. At this commit, the provider adapter exists but actual policy mutation is disabled unless `FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=true`, `FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED=true`, a matching `FACTORYOS_BACKUP_STORAGE_POLICY_CONFIG_REFERENCE` and separate policy credentials are provided. These settings are an operational assertion, not an independently verified lock on provider policy changes. The repository's backup-producing and out-of-process identities have not all been proven to use this coordinator. The S3 BACKUP adapter must continue to return false from `isConfigured()`, fail-closed.
 
 Before activation, integrate: least-privilege provider policy application/read-back; complete writer-principal inventory; every in-process and external producer operation/epoch gate; uncertain multipart/upload recovery; policy drift detection; tombstone replay; stale-generation rejection; controlled real-provider staging. AS-137 / NFR-PROD-14 remain PARTIAL until this and all other copy classes are accepted.
+
+
+## S3 bucket-policy control-plane contract
+
+The implementation lives in `services/api/src/saas/s3-tenant-backup-writer-fence.provider.ts` and `s3-tenant-backup-writer-fence.coordinator.ts`.
+
+- Install reads the current bucket policy, rejects a conflicting statement ID, re-reads before mutation to detect a changed policy, adds only a scoped explicit Deny, then re-reads and compares the complete canonical policy digest.
+- It enumerates all incomplete multipart uploads for the exact tenant/category prefix after applying the Deny. Any residual multipart upload keeps the durable fence at `FENCING`; callers must reconcile it before proceeding to `FENCED`.
+- Release previews the policy without its fence statement and stores that resulting digest in the durable release record before removing the exact statement. Policy removal uses both the original and expected result digests, preserves unrelated statements and verifies read-back. An uncertain removal remains a retry/recovery task; target activation remains blocked.
+- The bucket policy must have a single controlled writer. The current S3 API has no compare-and-swap precondition for `PutBucketPolicy`; an infrastructure owner must ensure no out-of-band policy writer races this controller. The immediate before-write re-read is a race detector, not a substitute for exclusive ownership.
+- This adapter only blocks `s3:PutObject` under the matching resource prefix. It does not abort multipart uploads, inventory provider IAM/access-point permissions, revoke credentials or prove actual provider enforcement until a real-provider staging check passes.
