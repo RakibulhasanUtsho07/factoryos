@@ -223,11 +223,12 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     } catch {
       return false;
     }
-    // Fail closed: S3 versioning/Object Lock do not fence new writes. This
-    // adapter has no runtime coordinator that can acquire a writer freeze and
-    // hold it until the erasure run is durably terminal. Keep the BACKUP target
-    // inactive until that lifecycle integration exists; unit tests can still
-    // exercise the version-specific mutation contract directly.
+    // Fail closed: the S3 policy controller and durable fence coordinator
+    // exist, but this adapter is not yet activated through the propagation
+    // runner with provider policy ownership, a complete writer inventory,
+    // every producer/replication identity, multipart reconciliation and
+    // real-provider staging acceptance. S3 versioning/Object Lock alone do not
+    // fence new writes. Keep BACKUP inactive until those integration gates pass.
     return false;
   }
 
