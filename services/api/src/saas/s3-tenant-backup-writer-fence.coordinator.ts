@@ -61,7 +61,6 @@ export class S3TenantBackupWriterFenceCoordinator {
         throw new ConflictException('Backup writer fence cannot enter propagation from its current lifecycle state');
       }
       await this.assertProviderAcceptanceCurrent(fence, input);
-      await this.assertProviderAcceptanceCurrent(fence, input);
       await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
       active.push(fence);
@@ -79,6 +78,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence is not held in an erasure lifecycle state');
       }
+      await this.assertProviderAcceptanceCurrent(fence, input);
       await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
     }
