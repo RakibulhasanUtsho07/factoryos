@@ -428,6 +428,14 @@ export class SaasTenantPropagationService {
       };
 
       try {
+        if (target.storeKind === 'BACKUP') {
+          if (!this.backupWriterFenceCoordinator) {
+            throw new ServiceUnavailableException('Backup writer-fence coordinator is unavailable; backup mutation is blocked');
+          }
+          await this.backupWriterFenceCoordinator.assertFenceHeld({
+            tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+          });
+        }
         if (planEntry) {
           const loaded = await this.loadPlanFromManifest({
             tenantId, actorUserId, requestId, runId: prepared.run.run_id,
@@ -490,6 +498,11 @@ export class SaasTenantPropagationService {
           if (resourceEventState === 'PREPARED') {
             await recordResourceEvent('DELETE_REQUESTED');
             resourceEventState = 'DELETE_REQUESTED';
+          }
+          if (target.storeKind === 'BACKUP') {
+            await this.backupWriterFenceCoordinator!.assertFenceHeld({
+              tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+            });
           }
           deletion = await adapter.erase({ ...context, plan });
           deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
