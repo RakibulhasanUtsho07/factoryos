@@ -38,7 +38,7 @@ describe('SaasTenantPropagationService external saga', () => {
   let firstPrepareOrder = 0;
   let firstDeleteIntentOrder = 0;
   let firstEraseOrder = 0;
-  let backupFenceCoordinator: { beginPropagationFence: ReturnType<typeof jest.fn>; recordPropagationVerification: ReturnType<typeof jest.fn> };
+  let backupFenceCoordinator: { beginPropagationFence: ReturnType<typeof jest.fn>; assertFenceHeld: ReturnType<typeof jest.fn>; recordPropagationVerification: ReturnType<typeof jest.fn> };
   const adapterMocks: ReturnType<typeof createAdapter>[] = [];
   let service: SaasTenantPropagationService;
 
@@ -120,6 +120,7 @@ describe('SaasTenantPropagationService external saga', () => {
         firstFenceOrder = operationSequence;
         return [];
       }),
+      assertFenceHeld: jest.fn(async () => undefined),
       recordPropagationVerification: jest.fn(async () => []),
     };
 
