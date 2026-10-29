@@ -105,7 +105,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     });
     expect(result).toEqual([expect.objectContaining({ state: 'ERASING' })]);
     expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(2);
-    expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(2);
+    expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(3);
     expect(lifecycle.beginErasureFence).toHaveBeenCalledTimes(1);
     expect(provider.installFence).toHaveBeenCalledTimes(1);
     expect(provider.inspectFence).toHaveBeenCalledTimes(1);
