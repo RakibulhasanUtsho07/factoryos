@@ -271,11 +271,12 @@ export class S3TenantBackupWriterFenceCoordinator {
     releaseWriterCount: number;
     tombstoneReplayReference: string;
     nextWriterEpoch: number;
-  }): Promise<{ fence: BackupWriterFenceView; providerRelease: S3TenantBackupWriterFenceRemovalEvidence }> {
+  } & BackupProviderAcceptanceBinding): Promise<{ fence: BackupWriterFenceView; providerRelease: S3TenantBackupWriterFenceRemovalEvidence }> {
     const current = await this.requireMatchingFence(input.tenantId, input.category, input.fenceId);
     if (current.state !== 'ERASURE_VERIFIED' && current.state !== 'RELEASED') {
       throw new ConflictException('Provider write-deny policy cannot be released before zero-residual erasure verification');
     }
+    await this.assertProviderAcceptanceCurrent(current, input);
     if (current.state === 'ERASURE_VERIFIED') await this.assertInventoryMatchesFence(current);
 
     const plan = await this.provider.planFenceRemoval({
@@ -288,6 +289,9 @@ export class S3TenantBackupWriterFenceCoordinator {
       throw new ConflictException('The expected S3 deny statement is absent before durable release; recovery is required');
     }
 
+    // Revalidate immediately before sealing the next epoch. A revoked/expired
+    // acceptance keeps release blocked and the provider Deny installed.
+    await this.assertProviderAcceptanceCurrent(current, input);
     let released = current;
     if (current.state === 'ERASURE_VERIFIED') {
       released = await this.lifecycle.releaseAfterTombstoneReplay({
