@@ -191,7 +191,14 @@ test('propagation runner acquires the backup fence before any target inventory',
   const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
   const env = await readRepoFile('services/api/.env.example');
   const migration = await readRepoFile('migrations/222_saas_tenant_backup_writer_fence_ledger.sql');
+  const adapterDoc = await readRepoFile('docs/s3-tenant-backup-erasure-adapter.md');
+  const runbook = await readRepoFile(RUNBOOK);
+  const fenceDoc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
 
+  assert.match(adapterDoc, /propagation runner is now wired to the coordinator/i);
+  assert.match(runbook, /propagation runner now acquires and reads back the fence before any target adapter inventory/i);
+  assert.doesNotMatch(runbook, /runtime writer-fence coordinator is implemented/i);
+  assert.doesNotMatch(fenceDoc, /until the controller is integrated into the propagation run before inventory/i);
   assert.match(runner, /beginPropagationFence/);
   assert.match(runner, /beginPropagationFence[\s\S]*?for \(const target of prepared\.targets\)/);
   assert.match(runner, /recordPropagationVerification/);
