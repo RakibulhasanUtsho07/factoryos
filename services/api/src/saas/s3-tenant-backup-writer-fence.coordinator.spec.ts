@@ -35,7 +35,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const lifecycle = {
       getFence: jest.fn(async () => current),
       beginErasureFence: jest.fn(async () => [current]),
-      markErasureStarted: jest.fn(async () => view('ERASING')),
+      markErasureStarted: jest.fn(async () => view('ERASING', { providerFenceReference: reference, providerPolicyDigest: digest })),
       markErasureVerified: jest.fn(async () => view('ERASURE_VERIFIED')),
       advanceAfterDrain: jest.fn(async () => ({
         fence: view('FENCING'), readyForProviderFence: true, activeWriterOperations: 0,
@@ -53,6 +53,10 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     };
     const provider = {
       getReviewedWriterInventoryEvidence: jest.fn(() => inventoryEvidence),
+      inspectFence: jest.fn(async () => ({
+        providerFenceReference: reference, providerPolicyDigest: digest, scopePrefixDigest: digest,
+        multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: true,
+      })),
       installFence: jest.fn(async () => ({
         providerFenceReference: reference, providerPolicyDigest: digest, scopePrefixDigest: digest,
         multipartInventoryDigest: digest, pendingMultipartUploads: 0, ...evidence,
@@ -84,9 +88,23 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     expect(provider.installFence.mock.invocationCallOrder[0]).toBeLessThan(lifecycle.markErasureStarted.mock.invocationCallOrder[0]!);
   });
 
+  it('requires recovery when provider policy drifts before inventory begins', async () => {
+    const { coordinator, lifecycle, provider } = setup('DRAINING');
+    provider.inspectFence.mockResolvedValueOnce({
+      providerFenceReference: reference, providerPolicyDigest: 'b'.repeat(64), scopePrefixDigest: digest,
+      multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: true,
+    } as never);
+    await expect(coordinator.beginPropagationFence({
+      tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
+      requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003',
+      sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'PROVIDER_FENCE_POLICY_DRIFT');
+  });
+
   it('requires zero-residual verification before marking each backup category verified', async () => {
     const { coordinator, lifecycle } = setup('ERASING');
-    lifecycle.getFence.mockResolvedValue(view('ERASING') as never);
+    lifecycle.getFence.mockResolvedValue(view('ERASING', { providerFenceReference: reference, providerPolicyDigest: digest }) as never);
     const result = await coordinator.recordPropagationVerification({
       tenantId: tenant, categories: [Category.BUSINESS_DATA],
       manifestDigest: digest, verificationReference: 'backup.verify.receipt.001', residualCopies: 0,
