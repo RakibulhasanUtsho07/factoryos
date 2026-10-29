@@ -45,6 +45,9 @@ function canonicalClaims(body, tenantId) {
   if (!/^[a-f0-9]{64}$/.test(requiredString(body.evidence_sha256, 'evidence_sha256'))) {
     throw new Error('evidence_sha256 must be a lowercase SHA-256 digest');
   }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(requiredString(body.evidence_reference, 'evidence_reference'))) {
+    throw new Error('evidence_reference must be a single opaque artifact identifier, not a URL or path');
+  }
   const evidenceDate = new Date(requiredString(body.evidence_at, 'evidence_at'));
   if (!Number.isFinite(evidenceDate.getTime())) throw new Error('evidence_at must be a valid timestamp');
   const age = Date.now() - evidenceDate.getTime();
