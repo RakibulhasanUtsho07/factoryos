@@ -89,6 +89,7 @@ test('runbook explicitly distinguishes an operational contract from production d
 });
 
 const BACKUP_WRITER_FENCE_SERVICE = 'services/api/src/saas/saas-tenant-backup-writer-fence.service.ts';
+const S3_WRITER_FENCE_PROVIDER = 'services/api/src/saas/s3-tenant-backup-writer-fence.provider.ts';
 const BACKUP_WRITER_FENCE_MIGRATION = 'migrations/222_saas_tenant_backup_writer_fence_ledger.sql';
 const BACKUP_WRITER_FENCE_DOC = 'docs/s3-tenant-backup-writer-fence.md';
 
@@ -150,4 +151,16 @@ test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage
   assert.match(contract, /stale writer epoch was accepted after release/);
   assert.match(contract, /Tenant B must not see tenant A backup writer fence/);
   assert.match(workflow, /Reapplying the tenant backup writer-fence ledger/);
+});
+
+
+test('S3 writer fence denies both direct object uploads and replication writes', async () => {
+  const provider = await readRepoFile(S3_WRITER_FENCE_PROVIDER);
+  const providerSpec = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.provider.spec.ts');
+  const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
+
+  assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
+  assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
+  assert.match(doc, /s3:PutObject.*s3:ReplicateObject/);
+  assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
 });
