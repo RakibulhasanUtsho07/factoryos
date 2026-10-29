@@ -87,6 +87,42 @@ describe('S3TenantBackupWriterFenceProvider', () => {
     fetchMock.mockRestore();
   });
 
+  it('requires explicit reviewed inventory, exclusive policy ownership, staging and restore evidence', () => {
+    expect(() => provider.getReviewedWriterInventoryEvidence()).toThrow(ServiceUnavailableException);
+    provider = new S3TenantBackupWriterFenceProvider(createConfig({
+      FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED: 'true',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED: 'true',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REFERENCE: 'backup-writer-inventory.v1',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_DIGEST: 'a'.repeat(64),
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_COUNT: '3',
+      FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE: 'policy-owner-review.v1',
+      FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE: 'staging-s3-fence-acceptance.v1',
+      FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE: 'restore-tombstone-replay.v1',
+    }));
+    expect(provider.getReviewedWriterInventoryEvidence()).toEqual({
+      reference: 'backup-writer-inventory.v1',
+      digest: 'a'.repeat(64),
+      count: 3,
+      policyOwnershipReviewReference: 'policy-owner-review.v1',
+      stagingAcceptanceReference: 'staging-s3-fence-acceptance.v1',
+      restoreReplayReference: 'restore-tombstone-replay.v1',
+    });
+  });
+
+  it('rejects evidence references that could contain a URL or credential-like material', () => {
+    provider = new S3TenantBackupWriterFenceProvider(createConfig({
+      FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED: 'true',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED: 'true',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REFERENCE: 'https://evidence.invalid/writers',
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_DIGEST: 'a'.repeat(64),
+      FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_COUNT: '3',
+      FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE: 'policy-owner-review.v1',
+      FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE: 'staging-s3-fence-acceptance.v1',
+      FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE: 'restore-tombstone-replay.v1',
+    }));
+    expect(() => provider.getReviewedWriterInventoryEvidence()).toThrow(ServiceUnavailableException);
+  });
+
   it('does not call the provider when explicit policy-controller enablement/ownership is absent', async () => {
     provider = new S3TenantBackupWriterFenceProvider(createConfig({
       FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED: 'false',
