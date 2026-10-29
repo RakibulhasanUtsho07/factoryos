@@ -13,13 +13,13 @@ import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibil
  * The policy statement is read back before FENCED is recorded. Unfinished
  * multipart uploads keep FENCING closed until they have been reconciled.
  */
-@Injectable()
 interface BackupProviderAcceptanceBinding {
   configReference: string;
   adapterKey: string;
   adapterVersion: string;
 }
 
+@Injectable()
 export class S3TenantBackupWriterFenceCoordinator {
   constructor(
     private readonly lifecycle: SaasTenantBackupWriterFenceService,
