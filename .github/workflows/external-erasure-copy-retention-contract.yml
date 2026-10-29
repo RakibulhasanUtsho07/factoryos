@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'docs/external-erasure-backup-copy-retention-runbook.md'
+      - 'docs/backup-copy-class-evidence-attestation.md'
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
@@ -23,6 +24,7 @@ on:
     branches: [main, dev, rakibul-hasan]
     paths:
       - 'docs/external-erasure-backup-copy-retention-runbook.md'
+      - 'docs/backup-copy-class-evidence-attestation.md'
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
