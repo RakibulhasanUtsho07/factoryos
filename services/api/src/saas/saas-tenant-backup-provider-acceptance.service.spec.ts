@@ -17,11 +17,17 @@ const acceptanceId = 'a3000000-0000-4000-8000-000000000001';
 const configReference = 'backup-storage-erasure.v1';
 const providerReference = 'aws-account-archive-primary';
 const providerScopeReference = 'aws-account-000000000000:factoryos-backups:us-east-1';
+const policyOwnershipReviewReference = 'policy-review.backup-v1';
+const stagingAcceptanceReference = 'staging.release-evidence.backup';
+const restoreReplayReference = 'restore-replay.backup-v1';
 
 const config = new ConfigService({
   FACTORYOS_BACKUP_STORAGE_CONFIG_REFERENCE: configReference,
   FACTORYOS_BACKUP_STORAGE_PROVIDER_REFERENCE: providerReference,
   FACTORYOS_BACKUP_STORAGE_PROVIDER_SCOPE_REFERENCE: providerScopeReference,
+  FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_REVIEW_REFERENCE: policyOwnershipReviewReference,
+  FACTORYOS_BACKUP_STORAGE_STAGING_ACCEPTANCE_REFERENCE: stagingAcceptanceReference,
+  FACTORYOS_BACKUP_STORAGE_RESTORE_REPLAY_REFERENCE: restoreReplayReference,
 });
 function evidence(): NormalizedBackupProviderAcceptanceScenario[] {
   return SAAS_BACKUP_PROVIDER_ACCEPTANCE_SCENARIOS.map((scenarioCode, index) => ({
@@ -35,14 +41,17 @@ function evidence(): NormalizedBackupProviderAcceptanceScenario[] {
 function acceptanceRow(scenarios: NormalizedBackupProviderAcceptanceScenario[], overrides: Record<string, unknown> = {}) {
   const scopeDigest = digestSaasBackupProviderAcceptanceScope({
     providerReference, providerScopeReference, configurationReference: configReference,
+    policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference,
     adapterKey: 's3.tenant-backup.v1', adapterVersion: '1.0.0',
   });
   return {
     acceptance_id: acceptanceId, tenant_id: tenant, category_code: Category.BUSINESS_DATA, revision: 1,
     provider_reference: providerReference, provider_scope_reference: providerScopeReference,
+    policy_ownership_review_reference: policyOwnershipReviewReference,
+    restore_replay_reference: restoreReplayReference,
     provider_scope_digest: scopeDigest, configuration_reference: configReference,
     adapter_key: 's3.tenant-backup.v1', adapter_version: '1.0.0',
-    staging_evidence_reference: 'staging.release-evidence.backup',
+    staging_evidence_reference: stagingAcceptanceReference,
     evidence_manifest_digest: digestSaasBackupProviderAcceptanceScenarios(scenarios), scenario_count: 10,
     status: 'ACCEPTED', idempotency_key: 'provider-acceptance-v1', request_hash: 'b'.repeat(64),
     submitted_by_user_id: submittedBy, reviewed_by_user_id: reviewedBy,
@@ -118,10 +127,13 @@ describe('SaasTenantBackupProviderAcceptanceService', () => {
   it('provides stable scope digests for identical reviewed provider references', () => {
     const scope = {
       providerReference, providerScopeReference, configurationReference: configReference,
+      policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference,
       adapterKey: 's3.tenant-backup.v1', adapterVersion: '1.0.0',
     };
     expect(digestSaasBackupProviderAcceptanceScope(scope)).toBe(digestSaasBackupProviderAcceptanceScope(scope));
     expect(digestSaasBackupProviderAcceptanceScope({ ...scope, providerScopeReference: 'another-scope' }))
+      .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
+    expect(digestSaasBackupProviderAcceptanceScope({ ...scope, restoreReplayReference: 'another-restore-evidence' }))
       .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
   });
 
