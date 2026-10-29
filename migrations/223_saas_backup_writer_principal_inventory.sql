@@ -170,24 +170,20 @@ CREATE TRIGGER saas_tenant_backup_writer_inventory_snapshot_guard
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_inventory_entry()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
-DECLARE snapshot_status text; snapshot_category text;
+DECLARE snapshot_status text;
 BEGIN
   IF TG_OP<>'INSERT' THEN
     RAISE EXCEPTION 'writer inventory entries are immutable and retained as governance evidence' USING ERRCODE='55000';
   END IF;
-  SELECT s.status,s.category_code INTO snapshot_status,snapshot_category
+  SELECT s.status INTO snapshot_status
     FROM public.saas_tenant_backup_writer_inventory_snapshots s
     WHERE s.tenant_id=NEW.tenant_id AND s.snapshot_id=NEW.snapshot_id
     FOR SHARE;
-  IF NOT FOUND OR snapshot_status<>'PENDING' OR snapshot_category<>NEW.access_path_code /* placeholder guarded below */ THEN
-    -- Category is bound to the parent through its tenant/snapshot FK. Access path is
-    -- a separate dimension; the expression below is intentionally only a state guard.
-    IF NOT FOUND OR snapshot_status<>'PENDING' THEN
-      RAISE EXCEPTION 'writer inventory entries may be added only to a pending snapshot' USING ERRCODE='55000';
-    END IF;
+  IF NOT FOUND OR snapshot_status<>'PENDING' THEN
+    RAISE EXCEPTION 'writer inventory entries may be added only to a pending snapshot' USING ERRCODE='55000';
   END IF;
   RETURN NEW;
-END $$;
+END $;
 DROP TRIGGER IF EXISTS saas_tenant_backup_writer_inventory_entry_guard
   ON saas_tenant_backup_writer_inventory_entries;
 CREATE TRIGGER saas_tenant_backup_writer_inventory_entry_guard
