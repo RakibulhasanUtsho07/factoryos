@@ -1,6 +1,10 @@
 import { jest } from '@jest/globals';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
@@ -16,6 +20,16 @@ const { publicKey: backupEvidencePublicKey, privateKey: backupEvidencePrivateKey
 const backupEvidenceKeyId = 'copy-owner-ed25519-test-v1';
 const backupEvidenceOwner = 'owner.infra.ci';
 const priorBackupEvidenceTrust = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
+const priorBackupEvidenceRoot = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
+const backupEvidenceRoot = mkdtempSync(join(tmpdir(), 'factoryos-saga-evidence-'));
+process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
+afterAll(() => {
+  if (priorBackupEvidenceTrust === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = priorBackupEvidenceTrust;
+  if (priorBackupEvidenceRoot === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
+  else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = priorBackupEvidenceRoot;
+  rmSync(backupEvidenceRoot, { recursive: true, force: true });
+});
 const backupEvidenceTrust = JSON.stringify([{
   keyId: backupEvidenceKeyId,
   ownerReference: backupEvidenceOwner,
@@ -125,6 +139,7 @@ describe('SaasTenantPropagationService external saga', () => {
 
   beforeEach(() => {
     process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = backupEvidenceTrust;
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
     jest.resetAllMocks();
     storedReceipts.length = 0;
     storedResourceManifests.length = 0;
@@ -167,11 +182,14 @@ describe('SaasTenantPropagationService external saga', () => {
       valid_until: '2099-01-01T00:00:00.000Z',
     }));
     backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => {
+      const evidenceReference = `evidence.backup-copy-class.${copyClass.toLowerCase()}`;
+      const evidenceBytes = Buffer.from(`Synthetic evidence pack for ${copyClass}; tenant ${tenant}; fixture v1`, 'utf8');
+      writeFileSync(join(backupEvidenceRoot, evidenceReference), evidenceBytes);
       const row: Record<string, unknown> = {
         decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
         tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
         disposition: copyClass === 'S3_OBJECT_VERSIONS' ? 'SUPPORTED' : 'NOT_APPLICABLE',
-        evidence_reference: `evidence.backup-copy-class.${copyClass.toLowerCase()}`, evidence_sha256: 'b'.repeat(64),
+        evidence_reference: evidenceReference, evidence_sha256: createHash('sha256').update(evidenceBytes).digest('hex'),
         evidence_at: new Date().toISOString(), data_owner_reference: `owner.data.${copyClass.toLowerCase()}`,
         infrastructure_owner_reference: backupEvidenceOwner,
         attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
@@ -306,7 +324,7 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       throw new Error('unexpected transaction SQL: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never, backupFenceCoordinator as never);
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(), adapterMocks as never, backupFenceCoordinator as never);
   });
 
   it('fails closed when a backup copy class is unresolved', async () => {
