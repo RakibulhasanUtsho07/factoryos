@@ -386,6 +386,6 @@ test('granular backup copy-class coverage blocks unresolved backup media and bin
  assert.ok(controller.includes("RequirePermission('saas.data_retention.approve')"));
  assert.ok(module.includes('SaasTenantBackupCopyClassCoverageController'));
  assert.ok(sql.includes('saas_tenant_backup_copy_class_coverage_decisions'));
- assert.ok(sql.includes('backup copy-class evidence changed while an erasure run is RUNNING'));
+ assert.ok(sql.includes('backup copy-class evidence changed while an erasure run was RUNNING'));
  assert.ok(runbook.includes('Granular backup copy-class acceptance'));
 });
