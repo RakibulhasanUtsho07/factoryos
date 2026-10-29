@@ -228,17 +228,17 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       const storage = readConfiguration(this.config);
       await this.assertVersioningEnabled(storage);
       await this.assertObjectLockEnabled(storage);
-      // These deployment-controlled evidence references are necessary gates,
-      // not independent proof; real-provider acceptance remains an operational
-      // release requirement. Defaults stay disabled in .env.example.
+      // These deployment-controlled evidence references and the reviewed inventory
+      // are necessary preflight data, not independent proof of actual provider behavior.
       this.writerFenceProvider.getProviderAcceptanceReferences();
-      // A target is not ready until every requested category has an accepted,
-      // tenant-scoped writer-principal inventory snapshot. The runner repeats
-      // this check after the fence is installed and before any destructive step.
       for (const category of target.categories) {
         await this.writerInventory.requireCurrentAcceptedSnapshot(target.tenantId, category);
       }
-      return true;
+      // Deliberately stay inactive until durable, independently reviewed provider
+      // acceptance (including real staging evidence, IAM/access-point completeness,
+      // policy ownership and restore replay) is represented and checked in the DB.
+      // A set of environment flags/reference strings is not sufficient to enable erasure.
+      return false;
     } catch {
       return false;
     }
