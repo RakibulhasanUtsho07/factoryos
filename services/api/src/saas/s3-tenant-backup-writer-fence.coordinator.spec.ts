@@ -10,6 +10,7 @@ const reviewer = 'c7000000-0000-4000-8000-000000000007';
 const snapshotId = 'c6000000-0000-4000-8000-000000000006';
 const digest = 'a'.repeat(64);
 const reference = 's3-bucket-policy-fence.' + fenceId.replace(/-/g, '');
+const acceptanceBinding = { configReference: 'backup-storage-erasure.v1', adapterKey: 's3.tenant-backup.v1', adapterVersion: '1.0.0' };
 const providerAcceptance = {
   policyOwnershipReviewReference: 'policy-owner.review.2026-10-29',
   stagingAcceptanceReference: 'staging.s3-fence.accepted.2026-10-29',
@@ -90,21 +91,25 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       })),
     };
     const writerInventory = { requireCurrentAcceptedSnapshot: jest.fn(async () => acceptedInventory()) };
+    const providerAcceptanceService = {
+      requireCurrentAcceptedProviderAcceptance: jest.fn(async () => ({ acceptanceId: 'provider-acceptance-001', status: 'ACCEPTED' })),
+    };
     return {
-      coordinator: new S3TenantBackupWriterFenceCoordinator(lifecycle as never, provider as never, writerInventory as never),
-      lifecycle, provider, writerInventory, current,
+      coordinator: new S3TenantBackupWriterFenceCoordinator(lifecycle as never, provider as never, writerInventory as never, providerAcceptanceService as never),
+      lifecycle, provider, writerInventory, providerAcceptanceService, current,
     };
   }
 
   it('acquires the durable/provider fence before entering ERASING and verifies it before inventory begins', async () => {
     const { coordinator, lifecycle, provider, writerInventory } = setup();
     const result = await coordinator.beginPropagationFence({
+      ...acceptanceBinding,
       tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
       requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003',
       sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
     });
     expect(result).toEqual([expect.objectContaining({ state: 'ERASING' })]);
-    expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(2);
+    expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(4);
     expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(4);
     expect(lifecycle.beginErasureFence).toHaveBeenCalledTimes(1);
     expect(provider.installFence).toHaveBeenCalledTimes(1);
@@ -134,6 +139,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       writerInventoryDigest: digest, fencedWriterCount: 3, createdByUserId: actor,
     }) as never);
     const result = await coordinator.recordPropagationVerification({
+      ...acceptanceBinding,
       tenantId: tenant, categories: [Category.BUSINESS_DATA],
       manifestDigest: digest, verificationReference: 'backup.verify.receipt.001', residualCopies: 0,
     });
@@ -150,7 +156,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
 
   it('seals FENCED only after current accepted inventory and provider read-back', async () => {
     const { coordinator, lifecycle, provider, writerInventory } = setup();
-    const result = await coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
+    const result = await coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
     expect(lifecycle.advanceAfterDrain).toHaveBeenCalledWith(tenant, fenceId);
     expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(2);
     expect(provider.installFence).toHaveBeenCalledWith({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
@@ -163,6 +169,40 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       restoreReplayReference: providerAcceptance.restoreReplayReference,
     });
     expect(result.state).toBe('FENCED');
+  });
+
+  it('moves to recovery if provider acceptance is revoked after the Deny is installed', async () => {
+    const { coordinator, lifecycle, provider, providerAcceptanceService } = setup();
+    let checks = 0;
+    providerAcceptanceService.requireCurrentAcceptedProviderAcceptance.mockImplementation(async () => {
+      checks += 1;
+      if (checks === 2) throw new ServiceUnavailableException('revoked after install');
+      return { acceptanceId: 'provider-acceptance-001', status: 'ACCEPTED' } as never;
+    });
+
+    await expect(coordinator.installAndRecordFence({
+      ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(provider.installFence).toHaveBeenCalled();
+    expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
+    expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
+  });
+
+  it('blocks backup mutation if current provider acceptance is revoked before a destructive step', async () => {
+    const { coordinator, lifecycle, provider, providerAcceptanceService } = setup('ERASING');
+    lifecycle.getFence.mockResolvedValue(view('ERASING', {
+      providerFenceReference: reference, providerPolicyDigest: digest, writerInventorySnapshotId: snapshotId,
+      writerInventoryDigest: digest, fencedWriterCount: 3, createdByUserId: actor,
+    }) as never);
+    providerAcceptanceService.requireCurrentAcceptedProviderAcceptance.mockRejectedValue(
+      new ServiceUnavailableException('revoked'),
+    );
+
+    await expect(coordinator.assertFenceHeld({
+      ...acceptanceBinding, tenantId: tenant, categories: [Category.BUSINESS_DATA],
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
+    expect(provider.inspectFence).not.toHaveBeenCalled();
   });
 
   it('fails closed before S3 when the latest inventory is not accepted', async () => {
