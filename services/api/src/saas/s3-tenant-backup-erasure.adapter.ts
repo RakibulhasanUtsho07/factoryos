@@ -228,7 +228,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       // These deployment-controlled evidence references are necessary gates,
       // not independent proof; real-provider acceptance remains an operational
       // release requirement. Defaults stay disabled in .env.example.
-      this.writerFenceProvider.getReviewedWriterInventoryEvidence();
+      this.writerFenceProvider.getProviderAcceptanceReferences();
       return true;
     } catch {
       return false;
