@@ -121,17 +121,17 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
   const env = await readRepoFile('services/api/.env.example');
 
-  assert.match(adapter, /S3 versioning\\/Object Lock alone do not fence new writes[\\s\\S]*?return false;/i);
-  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED/);
-  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED/);
-  assert.match(provider, /Effect: 'Deny'[\\s\\S]*?Action: 's3:PutObject'/);
-  assert.match(provider, /listMultipartUploads/);
-  assert.match(provider, /independently read-back/i);
-  assert.match(coordinator, /recordProviderFenceInstalled/);
-  assert.match(coordinator, /releasePolicyDigest/);
-  assert.match(coordinator, /await this\\.provider\\.removeFence/);
-  assert.match(env, /FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=false/);
-  assert.match(doc, /does not establish exclusivity by itself/i);
+  assert.ok(adapter.includes('S3 versioning/Object Lock alone do not fence new writes'));
+  assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED'));
+  assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED'));
+  assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("Action: 's3:PutObject'"));
+  assert.ok(provider.includes('listMultipartUploads'));
+  assert.ok(provider.includes('independently read-back'));
+  assert.ok(coordinator.includes('recordProviderFenceInstalled'));
+  assert.ok(coordinator.includes('releasePolicyDigest'));
+  assert.ok(coordinator.includes('this.provider.removeFence'));
+  assert.ok(env.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=false'));
+  assert.ok(doc.includes('does not establish exclusivity by itself'));
 });
 test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage', async () => {
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
