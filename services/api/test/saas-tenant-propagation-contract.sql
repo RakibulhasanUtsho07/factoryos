@@ -300,9 +300,35 @@ BEGIN
   END;
 END $$;
 
+-- This snapshot is synthetic CI evidence: a submitted inventory independently reviewed by a different actor.
+INSERT INTO saas_tenant_backup_writer_inventory_snapshots
+  (snapshot_id,tenant_id,category_code,revision,inventory_reference,manifest_digest,entry_count,status,
+   idempotency_key,request_hash,registered_by_user_id)
+VALUES
+  ('16070000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000001',
+   'BUSINESS_DATA',1,'writer-inventory-ci-160','fb139422c8b254b8bd3f9bfd60b38a11f4939acbe8826098cc3ee3df01ba34dc',1,'PENDING',
+   'writer-inventory-160-v1',repeat('d',64),'16010000-0000-4000-8000-000000000001');
+
+INSERT INTO saas_tenant_backup_writer_inventory_entries
+  (tenant_id,snapshot_id,entry_ordinal,producer_id,provider_principal_reference,access_path_code,permission_scope_digest)
+VALUES
+  ('16000000-0000-4000-8000-000000000001','16070000-0000-4000-8000-000000000001',
+   1,'backup-worker-ci','aws-role-writer-ci-160','APP_WORKER',repeat('c',64));
+
+UPDATE saas_tenant_backup_writer_inventory_snapshots
+SET status='ACCEPTED',reviewed_by_user_id='16010000-0000-4000-8000-000000000002',
+    review_reason='Independent CI review of the synthetic writer principal inventory',reviewed_at=clock_timestamp()
+WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+  AND snapshot_id='16070000-0000-4000-8000-000000000001';
+
 UPDATE saas_tenant_backup_writer_fences
 SET state='FENCED',provider_fence_reference='s3-fence-policy-160',
-    provider_policy_digest=repeat('a',64),writer_inventory_digest=repeat('b',64),fenced_writer_count=1
+    provider_policy_digest=repeat('a',64),writer_inventory_digest='fb139422c8b254b8bd3f9bfd60b38a11f4939acbe8826098cc3ee3df01ba34dc',fenced_writer_count=1,
+    writer_inventory_reference='writer-inventory-ci-160',
+    policy_ownership_review_reference='policy-owner-review-ci-160',
+    staging_acceptance_reference='s3-stage-acceptance-ci-160',
+    restore_replay_reference='restore-replay-ci-160',
+    writer_inventory_snapshot_id='16070000-0000-4000-8000-000000000001'
 WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND category_code='BUSINESS_DATA'
   AND run_id='16040000-0000-4000-8000-000000000001';
 
