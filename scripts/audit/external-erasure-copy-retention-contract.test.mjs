@@ -96,6 +96,9 @@ test('runbook explicitly distinguishes an operational contract from production d
 const BACKUP_WRITER_FENCE_SERVICE = 'services/api/src/saas/saas-tenant-backup-writer-fence.service.ts';
 const S3_WRITER_FENCE_PROVIDER = 'services/api/src/saas/s3-tenant-backup-writer-fence.provider.ts';
 const BACKUP_WRITER_FENCE_MIGRATION = 'migrations/222_saas_tenant_backup_writer_fence_ledger.sql';
+const BACKUP_WRITER_INVENTORY_SERVICE = 'services/api/src/saas/saas-tenant-backup-writer-inventory.service.ts';
+const BACKUP_WRITER_INVENTORY_MIGRATION = 'migrations/223_saas_backup_writer_principal_inventory.sql';
+const BACKUP_WRITER_FENCE_COORDINATOR = 'services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts';
 const BACKUP_WRITER_FENCE_DOC = 'docs/s3-tenant-backup-writer-fence.md';
 
 test('backup writer-fence ledger provides crash-safe drain and database guardrails', async () => {
@@ -186,4 +189,21 @@ test('propagation runner acquires the backup fence before any target inventory',
   assert.ok(migration.trimEnd().endsWith('COMMIT;'), 'writer-fence migration must be one closed transaction');
   assert.match(env, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED=false/);
   assert.match(env, /FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED=false/);
+});
+
+
+test('backup writer fences are bound to the latest independently reviewed inventory snapshot', async () => {
+  const service = await readRepoFile(BACKUP_WRITER_INVENTORY_SERVICE);
+  const migration = await readRepoFile(BACKUP_WRITER_INVENTORY_MIGRATION);
+  const coordinator = await readRepoFile(BACKUP_WRITER_FENCE_COORDINATOR);
+  assert.match(service, /requireCurrentAcceptedSnapshot/);
+  assert.match(service, /reviewedByUserId/);
+  assert.match(service, /this\.hash\(entries\) !== row\.manifest_digest/);
+  assert.match(migration, /writer inventory entries may be added only to a pending snapshot/);
+  assert.match(migration, /writer inventory review requires the exact sealed entry count/);
+  assert.match(migration, /snapshot_digest IS DISTINCT FROM NEW\.writer_inventory_digest/);
+  assert.match(migration, /writer_inventory_snapshot_id/);
+  assert.match(coordinator, /getProviderAcceptanceReferences/);
+  assert.match(coordinator, /requireCurrentAcceptedSnapshot/);
+  assert.match(coordinator, /WRITER_INVENTORY_CHANGED/);
 });
