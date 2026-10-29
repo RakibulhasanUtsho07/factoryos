@@ -2,6 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { ConflictException, Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
+import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
 import type {
   SaasExternalPropagationContext,
   SaasExternalPropagationDeleteReceipt,
@@ -215,10 +216,12 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     private readonly config: ConfigService,
     @Optional() @Inject(S3TenantBackupWriterFenceProvider)
     private readonly writerFenceProvider?: S3TenantBackupWriterFenceProvider,
+    @Optional() @Inject(SaasTenantBackupWriterInventoryService)
+    private readonly writerInventory?: SaasTenantBackupWriterInventoryService,
   ) {}
 
   async isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean> {
-    if (!this.supportsTarget(target) || !this.writerFenceProvider) return false;
+    if (!this.supportsTarget(target) || !this.writerFenceProvider || !this.writerInventory) return false;
     const expectedReference = this.config.get<string>(CONFIG_REFERENCE)?.trim();
     if (!expectedReference || target.configReference.trim() !== expectedReference) return false;
     try {
@@ -229,6 +232,12 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       // not independent proof; real-provider acceptance remains an operational
       // release requirement. Defaults stay disabled in .env.example.
       this.writerFenceProvider.getProviderAcceptanceReferences();
+      // A target is not ready until every requested category has an accepted,
+      // tenant-scoped writer-principal inventory snapshot. The runner repeats
+      // this check after the fence is installed and before any destructive step.
+      for (const category of target.categories) {
+        await this.writerInventory.requireCurrentAcceptedSnapshot(target.tenantId, category);
+      }
       return true;
     } catch {
       return false;
