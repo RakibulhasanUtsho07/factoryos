@@ -76,7 +76,7 @@ describe('SaasTenantBackupWriterInventoryService', () => {
   it('normalizes entry order before hashing an accepted snapshot', async () => {
     const row = snapshotRow();
     const reversed = [
-      entryRow({ entry_ordinal: 2, producer_id: 'backup-scheduler', provider_principal_reference: 'aws-role-scheduled-backup' }),
+      entryRow({ entry_ordinal: 2, producer_id: 'backup-scheduler', provider_principal_reference: 'aws-role-scheduled-backup', access_path_code: 'SCHEDULED_JOB' }),
       entryRow({ entry_ordinal: 1 }),
     ];
     const normalized = [
