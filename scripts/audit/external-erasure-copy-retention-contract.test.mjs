@@ -73,12 +73,17 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   assert.match(runbook, /provider\/control-plane fence/i);
 });
 
-test('BACKUP target cannot activate until an erasure-lifecycle writer fence is implemented', async () => {
-  const source = await readRepoFile(BACKUP_ADAPTER_SOURCE);
-  assert.match(source, /S3 versioning\/Object Lock(?: alone)? do not[\s\S]*?fence new writes[\s\S]*?return false;/i);
-  assert.match(source, /return false;/);
+test('BACKUP target stays inactive unless runtime writer-fence acceptance gates are complete', async () => {
+  const adapter = await readRepoFile(BACKUP_ADAPTER_SOURCE);
+  const provider = await readRepoFile(S3_WRITER_FENCE_PROVIDER);
   const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
-  assert.match(doc, /`isConfigured\(\)` intentionally returns false/i);
+
+  assert.match(adapter, /S3 versioning\/Object Lock alone do not[\s\S]*?fence new writes/i);
+  assert.match(adapter, /if \(!this\.supportsTarget\(target\) \|\| !this\.writerFenceProvider\) return false/);
+  assert.match(adapter, /this\.writerFenceProvider\.getReviewedWriterInventoryEvidence\(\);[\s\S]*?return true/);
+  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED/);
+  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
+  assert.match(doc, /isConfigured\(\) remains false by default/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
@@ -163,4 +168,22 @@ test('S3 writer fence denies direct object writes, replication and replication d
   assert.ok(providerSpec.includes("Action: ['s3:PutObject', 's3:ReplicateObject', 's3:ReplicateDelete']"));
   assert.match(doc, /s3:PutObject.*s3:ReplicateObject.*s3:ReplicateDelete/);
   assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
+});
+
+test('propagation runner acquires the backup fence before any target inventory', async () => {
+  const runner = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+  const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
+  const env = await readRepoFile('services/api/.env.example');
+  const migration = await readRepoFile('migrations/222_saas_tenant_backup_writer_fence_ledger.sql');
+
+  assert.match(runner, /beginPropagationFence/);
+  assert.match(runner, /beginPropagationFence[\s\S]*?for \(const target of prepared\.targets\)/);
+  assert.match(runner, /recordPropagationVerification/);
+  assert.match(coordinator, /getReviewedWriterInventoryEvidence/);
+  assert.match(coordinator, /installAndRecordFence[\s\S]*?markErasureStarted/);
+  assert.match(migration, /chk_saas_backup_writer_fence_acceptance_references/);
+  assert.match(migration, /staging_acceptance_reference IS NOT NULL/);
+  assert.ok(migration.trimEnd().endsWith('COMMIT;'), 'writer-fence migration must be one closed transaction');
+  assert.match(env, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED=false/);
+  assert.match(env, /FACTORYOS_BACKUP_STORAGE_WRITER_INVENTORY_REVIEWED=false/);
 });
