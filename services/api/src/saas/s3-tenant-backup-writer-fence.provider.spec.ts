@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
 import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
@@ -117,6 +118,14 @@ describe('S3TenantBackupWriterFenceProvider', () => {
     expect(evidence.multipartInventoryDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(policyReadCount).toBeGreaterThanOrEqual(3);
     expect(policyWriteCount).toBe(1);
+    const policyWrite = fetchMock.mock.calls.find(([, init]) =>
+      String(init?.method ?? 'GET').toUpperCase() === 'PUT');
+    expect(policyWrite).toBeDefined();
+    const writeInit = policyWrite?.[1];
+    const body = String(writeInit?.body ?? '');
+    const headers = writeInit?.headers as Record<string, string>;
+    expect(headers['content-md5']).toBe(createHash('md5').update(Buffer.from(body, 'utf8')).digest('base64'));
+    expect(headers.Authorization).toContain('SignedHeaders=content-md5;content-type;host;x-amz-content-sha256;x-amz-date');
   });
 
   it('refuses to overwrite a conflicting statement that reuses this fence ID', async () => {
