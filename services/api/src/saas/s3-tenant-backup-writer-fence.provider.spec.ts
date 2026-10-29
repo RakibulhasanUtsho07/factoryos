@@ -96,7 +96,7 @@ describe('S3TenantBackupWriterFenceProvider', () => {
     expect(policyWriteCount).toBe(0);
   });
 
-  it('adds and reads back a tenant/category-only deny while preserving unrelated bucket policy', async () => {
+  it('denies direct uploads and replication into only the tenant/category prefix while preserving unrelated policy', async () => {
     const evidence = await provider.installFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
     const statements = (policy as { Statement: Array<Record<string, unknown>> }).Statement;
     const fence = statements.find((statement) => statement.Sid === 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''));
@@ -104,7 +104,7 @@ describe('S3TenantBackupWriterFenceProvider', () => {
       Sid: 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''),
       Effect: 'Deny',
       Principal: '*',
-      Action: 's3:PutObject',
+      Action: ['s3:PutObject', 's3:ReplicateObject'],
       Resource: 'arn:aws:s3:::factoryos-backups/' + keyPrefix + '*',
     });
     expect(statements.some((statement) => statement.Sid === 'ExistingReadOnly')).toBe(true);
