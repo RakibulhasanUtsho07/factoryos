@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
@@ -59,7 +60,7 @@ export class BackupCopyClassEvidenceArtifactReader {
       throw new ServiceUnavailableException('This runtime cannot securely open evidence artifacts without following links');
     }
 
-    let handle;
+    let handle: FileHandle | undefined;
     try {
       handle = await open(artifactPath, constants.O_RDONLY | noFollow | (constants.O_NONBLOCK ?? 0));
       const before = await handle.stat({ bigint: true });
