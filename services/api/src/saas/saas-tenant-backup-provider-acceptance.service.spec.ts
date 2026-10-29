@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import {
   digestSaasBackupProviderAcceptanceScenarios,
   digestSaasBackupProviderAcceptanceScope,
@@ -89,6 +89,14 @@ describe('SaasTenantBackupProviderAcceptanceService', () => {
     )).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
+  it('rejects a submitted staging reference that differs from the deployment-controlled reference', async () => {
+    const { service } = setup();
+    await expect(service.createAcceptance(tenant, submittedBy, {
+      category_code: Category.BUSINESS_DATA,
+      staging_evidence_reference: 'staging.evidence.some-other-run',
+    } as never)).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('accepts only an intact, current, fully passing ten-scenario record', async () => {
     const scenarios = evidence();
     const row = acceptanceRow(scenarios);
@@ -112,6 +120,9 @@ describe('SaasTenantBackupProviderAcceptanceService', () => {
       { status: 'PENDING' },
       { valid_until: new Date(Date.now() - 1_000).toISOString() },
       { provider_scope_reference: 'aws-account-elsewhere:other-bucket:us-east-1' },
+      { policy_ownership_review_reference: 'policy-review.other-scope' },
+      { staging_evidence_reference: 'staging.evidence.other-scope' },
+      { restore_replay_reference: 'restore-replay.other-scope' },
     ]) {
       const scenarios = evidence();
       const { service } = setup((sql) => {
@@ -132,6 +143,10 @@ describe('SaasTenantBackupProviderAcceptanceService', () => {
     };
     expect(digestSaasBackupProviderAcceptanceScope(scope)).toBe(digestSaasBackupProviderAcceptanceScope(scope));
     expect(digestSaasBackupProviderAcceptanceScope({ ...scope, providerScopeReference: 'another-scope' }))
+      .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
+    expect(digestSaasBackupProviderAcceptanceScope({ ...scope, policyOwnershipReviewReference: 'another-policy-review' }))
+      .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
+    expect(digestSaasBackupProviderAcceptanceScope({ ...scope, stagingAcceptanceReference: 'another-staging-evidence' }))
       .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
     expect(digestSaasBackupProviderAcceptanceScope({ ...scope, restoreReplayReference: 'another-restore-evidence' }))
       .not.toBe(digestSaasBackupProviderAcceptanceScope(scope));
