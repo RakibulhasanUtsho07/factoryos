@@ -7,17 +7,21 @@ const readRepoFile = (path) => readFile(resolve(process.cwd(), path), 'utf8');
 
 test('backup copy-class evidence requires a trusted owner signature bound to the complete claim', async () => {
   const helper = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
+  const artifactReader = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts');
+  const artifactReaderSpec = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts');
   const helperSpec = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts');
   const dto = await readRepoFile('services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts');
   const service = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
   const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
   const saga = await readRepoFile('services/api/src/saas/saas-tenant-propagation.saga.spec.ts');
   const migration = await readRepoFile('migrations/228_saas_tenant_backup_copy_class_coverage.sql');
+  const referenceMigration = await readRepoFile('migrations/229_saas_backup_copy_class_evidence_reference.sql');
   const apiEnv = await readRepoFile('services/api/.env.example');
   const runbook = await readRepoFile('docs/external-erasure-backup-copy-retention-runbook.md');
   const sqlContract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
   const signingDoc = await readRepoFile('docs/backup-copy-class-evidence-attestation.md');
   const signer = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.mjs');
+  const signerSpec = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.test.mjs');
 
   assert.match(helper, /factoryos\.backup-copy-class-evidence-attestation\/v1/);
   assert.match(helper, /publicKey\.asymmetricKeyType !== 'ed25519'/);
@@ -52,4 +56,19 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(signingDoc, /does not replace independent reviewer approval/);
   assert.match(signer, /Evidence pack digest does not match payload evidence_sha256/);
   assert.match(signer, /privateKey\.asymmetricKeyType !== 'ed25519'/);
+  assert.match(artifactReader, /FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR/);
+  assert.match(artifactReader, /O_NOFOLLOW/);
+  assert.match(artifactReader, /MAX_ARTIFACT_BYTES = 16 \\* 1024 \\* 1024/);
+  assert.match(artifactReader, /actualDigest !== expectedDigestValue/);
+  assert.match(artifactReader, /after\\.mtimeNs === before\\.mtimeNs/);
+  assert.match(artifactReaderSpec, /rejects digest mismatch/);
+  assert.match(artifactReaderSpec, /rejects symlinks and non-regular files/);
+  assert.match(artifactReaderSpec, /rejects oversized artifacts/);
+  assert.match(service, /evidenceArtifactReader\\.verifyArtifact\\(evidenceReference,evidenceSha256\\)/);
+  assert.match(service, /evidenceArtifactReader\\.verifyArtifact\\(current\\.evidence_reference,current\\.evidence_sha256\\)/);
+  assert.match(propagation, /backupEvidenceArtifactReader\\.verifyArtifact\\(decision\\.evidence_reference, decision\\.evidence_sha256\\)/);
+  assert.match(dto, /evidence_reference.*A-Za-z0-9\\._-/);
+  assert.match(referenceMigration, /evidence_reference ~/);
+  assert.match(signer, /single opaque artifact identifier, not a URL or path/);
+  assert.match(signerSpec, /URL and path references/);
 });
