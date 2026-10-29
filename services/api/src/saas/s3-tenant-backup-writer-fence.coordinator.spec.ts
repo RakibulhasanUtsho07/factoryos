@@ -70,6 +70,12 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
         releasePolicyDigest: digest, releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
         tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
       })),
+      confirmProviderFenceReleased: jest.fn(async () => view('RELEASED', {
+        state: 'RELEASED', reviewedByUserId: reviewer, releaseReference: reference,
+        releasePolicyDigest: digest, releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
+        tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
+        providerReleaseConfirmedAt: new Date().toISOString(),
+      })),
     };
     const provider = {
       getProviderAcceptanceReferences: jest.fn(() => providerAcceptance),
@@ -109,7 +115,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
     });
     expect(result).toEqual([expect.objectContaining({ state: 'ERASING' })]);
-    expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(4);
+    expect(provider.getProviderAcceptanceReferences).toHaveBeenCalledTimes(5);
     expect(writerInventory.requireCurrentAcceptedSnapshot).toHaveBeenCalledTimes(4);
     expect(lifecycle.beginErasureFence).toHaveBeenCalledTimes(1);
     expect(provider.installFence).toHaveBeenCalledTimes(1);
