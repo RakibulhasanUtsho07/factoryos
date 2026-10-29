@@ -291,6 +291,20 @@ export class SaasTenantPropagationService {
       const targets = targetResult.rows.map((row) => this.mapTarget(row))
         .filter((target) => target.categories.some((category) => categories.includes(category)));
       this.assertTargetCoverage(categories, targets);
+      // One fence lifecycle represents one sealed backup inventory per category.
+      // Until cross-target aggregate manifests are supported, reject overlapping
+      // BACKUP targets rather than letting one target verify a shared fence early.
+      const backupCategoryOwners = new Map<SaasTransferDatasetCategory, string>();
+      for (const target of targets.filter((candidate) => candidate.storeKind === 'BACKUP')) {
+        for (const category of target.categories.filter((value) => categories.includes(value))) {
+          const priorTarget = backupCategoryOwners.get(category);
+          if (priorTarget) {
+            throw new ConflictException('Overlapping required BACKUP targets share category ' + category
+              + '; one sealed provider inventory per category is required before whole-tenant propagation');
+          }
+          backupCategoryOwners.set(category, target.targetId);
+        }
+      }
       for (const target of targets) {
         const adapter = this.adapterFor(target);
         if (!(await adapter.isConfigured(target))) {
