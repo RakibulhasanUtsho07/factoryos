@@ -99,7 +99,7 @@ CREATE TRIGGER saas_tenant_external_copy_coverage_decision_guard
  BEFORE INSERT OR UPDATE OR DELETE ON public.saas_tenant_external_copy_coverage_decisions
  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_saas_external_copy_coverage_decision();
 
-INSERT INTO public.saas_tenant_relation_inventory
+INSERT INTO factoryos_governance.tenant_relation_inventory
  (schema_name,relation_name,scope_model,data_category,export_disposition,erasure_disposition,audit_requirement,rationale)
 VALUES ('public','saas_tenant_external_copy_coverage_decisions','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT',
  'Revisioned evidence-backed copy-class coverage decisions; unresolved, expired or unreviewed coverage blocks whole-tenant erasure.')
