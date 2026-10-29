@@ -25,7 +25,7 @@ interface WriterFenceRow extends QueryResultRow {
   state: BackupWriterFenceState; writer_epoch: string | number; created_by_user_id: string;
   provider_fence_reference: string | null; provider_policy_digest: string | null;
   writer_inventory_digest: string | null; fenced_writer_count: string | number | null;
-  writer_inventory_reference: string | null; policy_ownership_review_reference: string | null;
+  writer_inventory_reference: string | null; writer_inventory_snapshot_id: string | null; policy_ownership_review_reference: string | null;
   staging_acceptance_reference: string | null; restore_replay_reference: string | null;
   erasure_manifest_digest: string | null; verification_reference: string | null;
   verified_residual_count: string | number | null; tombstone_replay_reference: string | null;
@@ -51,7 +51,7 @@ export interface BeginBackupWriterFenceInput {
 export interface ProviderWriterFenceEvidence {
   tenantId: string; fenceId: string; providerFenceReference: string;
   providerPolicyDigest: string; writerInventoryDigest: string; fencedWriterCount: number;
-  writerInventoryReference: string; policyOwnershipReviewReference: string;
+  writerInventorySnapshotId: string; writerInventoryReference: string; writerInventorySnapshotId: string; policyOwnershipReviewReference: string;
   stagingAcceptanceReference: string; restoreReplayReference: string;
 }
 export interface BackupWriterFenceView {
@@ -59,7 +59,8 @@ export interface BackupWriterFenceView {
   requestId: string; requestVersion: number; runId: string; state: BackupWriterFenceState;
   writerEpoch: number; providerFenceReference: string | null; providerPolicyDigest: string | null;
   writerInventoryDigest: string | null; fencedWriterCount: number | null;
-  writerInventoryReference: string | null; policyOwnershipReviewReference: string | null;
+  writerInventorySnapshotId: string | null; createdByUserId: string;
+  writerInventoryReference: string | null; writerInventorySnapshotId: string | null; policyOwnershipReviewReference: string | null;
   stagingAcceptanceReference: string | null; restoreReplayReference: string | null;
   erasureManifestDigest: string | null; verificationReference: string | null;
   verifiedResidualCount: number | null; tombstoneReplayReference: string | null;
@@ -252,6 +253,7 @@ export class SaasTenantBackupWriterFenceService {
     const policyDigest = this.digest(input?.providerPolicyDigest, 'providerPolicyDigest');
     const inventoryDigest = this.digest(input?.writerInventoryDigest, 'writerInventoryDigest');
     const writerCount = this.integer(input?.fencedWriterCount, 'fencedWriterCount', 1, 100000);
+    const inventorySnapshotId = this.uuid(input?.writerInventorySnapshotId, 'writerInventorySnapshotId');
     const inventoryReference = this.reference(input?.writerInventoryReference, 'writerInventoryReference');
     const policyOwnershipReviewReference = this.reference(input?.policyOwnershipReviewReference, 'policyOwnershipReviewReference');
     const stagingAcceptanceReference = this.reference(input?.stagingAcceptanceReference, 'stagingAcceptanceReference');
@@ -268,6 +270,7 @@ export class SaasTenantBackupWriterFenceService {
         if (current.provider_fence_reference === providerReference && current.provider_policy_digest === policyDigest
           && current.writer_inventory_digest === inventoryDigest && Number(current.fenced_writer_count) === writerCount
           && current.writer_inventory_reference === inventoryReference
+          && current.writer_inventory_snapshot_id === inventorySnapshotId
           && current.policy_ownership_review_reference === policyOwnershipReviewReference
           && current.staging_acceptance_reference === stagingAcceptanceReference
           && current.restore_replay_reference === restoreReplayReference) return current;
@@ -278,7 +281,7 @@ export class SaasTenantBackupWriterFenceService {
         throw new ConflictException('Cannot seal provider freeze while any upload outcome is unresolved');
       }
       const updated = await client.query<WriterFenceRow>(
-        "UPDATE saas_tenant_backup_writer_fences SET state='FENCED',provider_fence_reference=$3,provider_policy_digest=$4,writer_inventory_digest=$5,fenced_writer_count=$6,writer_inventory_reference=$7,policy_ownership_review_reference=$8,staging_acceptance_reference=$9,restore_replay_reference=$10,updated_at=clock_timestamp() WHERE tenant_id=$1 AND fence_id=$2 AND state='FENCING' RETURNING *",
+        "UPDATE saas_tenant_backup_writer_fences SET state='FENCED',provider_fence_reference=$3,provider_policy_digest=$4,writer_inventory_digest=$5,fenced_writer_count=$6,writer_inventory_reference=$7,policy_ownership_review_reference=$8,staging_acceptance_reference=$9,restore_replay_reference=$10,writer_inventory_snapshot_id=$11,updated_at=clock_timestamp() WHERE tenant_id=$1 AND fence_id=$2 AND state='FENCING' RETURNING *",
         [tenantId, fenceId, providerReference, policyDigest, inventoryDigest, writerCount, inventoryReference,
           policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference],
       );
@@ -463,7 +466,7 @@ export class SaasTenantBackupWriterFenceService {
       requestId: row.request_id, requestVersion: Number(row.request_version), runId: row.run_id,
       state: row.state, writerEpoch: Number(row.writer_epoch), providerFenceReference: row.provider_fence_reference,
       providerPolicyDigest: row.provider_policy_digest, writerInventoryDigest: row.writer_inventory_digest,
-      writerInventoryReference: row.writer_inventory_reference,
+      writerInventoryReference: row.writer_inventory_reference, writerInventorySnapshotId: row.writer_inventory_snapshot_id, createdByUserId: row.created_by_user_id,
       policyOwnershipReviewReference: row.policy_ownership_review_reference,
       stagingAcceptanceReference: row.staging_acceptance_reference,
       restoreReplayReference: row.restore_replay_reference,
