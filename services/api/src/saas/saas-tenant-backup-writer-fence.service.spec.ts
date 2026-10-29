@@ -106,6 +106,59 @@ describe('SaasTenantBackupWriterFenceService', () => {
     })).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
+  it('blocks the next writer epoch until provider policy removal is confirmed', async () => {
+    const { database, client } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('FROM saas_tenant_backup_writer_operations')) return [];
+      if (sql.includes('FROM saas_tenant_backup_writer_fences') && sql.includes("state<>'RELEASED'")) return [];
+      if (sql.includes('SELECT next_writer_epoch,provider_release_confirmed_at')) {
+        return [{ next_writer_epoch: 2, provider_release_confirmed_at: null }];
+      }
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    await expect(service.beginWriteOperation({
+      tenantId: tenant, category: Category.BUSINESS_DATA,
+      operationId: 'c5000000-0000-4000-8000-000000000006', producerId: 'backup-worker', writerEpoch: 2,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO saas_tenant_backup_writer_operations'))).toBe(false);
+  });
+
+  it('records provider policy read-back before unblocking the released writer epoch', async () => {
+    const released = {
+      fence_id: runId, tenant_id: tenant, category_code: Category.BUSINESS_DATA,
+      request_id: requestId, request_version: 1, run_id: runId, source_export_digest: digest,
+      state: 'RELEASED', writer_epoch: 1, created_by_user_id: actor,
+      provider_fence_reference: 's3-bucket-policy-fence-001', provider_policy_digest: digest,
+      writer_inventory_digest: digest, writer_inventory_reference: 'writer-inventory-160',
+      writer_inventory_snapshot_id: 'c6000000-0000-4000-8000-000000000006',
+      policy_ownership_review_reference: 'policy-ownership-review-160',
+      staging_acceptance_reference: 'staging-acceptance-160', restore_replay_reference: 'restore-replay-160',
+      fenced_writer_count: 1, erasure_manifest_digest: digest, verification_reference: 'backup-verify-160',
+      verified_residual_count: 0, tombstone_replay_reference: 'restore-tombstone-replay-160',
+      release_policy_digest: digest, release_reference: 's3-release-policy-160',
+      release_writer_inventory_digest: digest, release_writer_count: 1, next_writer_epoch: 2,
+      reviewed_by_user_id: 'c4000000-0000-4000-8000-000000000005',
+      recovery_from_state: null, recovery_reason: null, recovery_attestation_reference: null,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      released_at: new Date().toISOString(), provider_release_confirmed_at: null,
+    };
+    const { database, client } = mockDatabase((sql) => {
+      if (sql.includes('FROM tenants')) return [{ id: tenant }];
+      if (sql.includes('SELECT * FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND fence_id=$2 FOR UPDATE')) return [released];
+      if (sql.includes('UPDATE saas_tenant_backup_writer_fences SET provider_release_confirmed_at')) {
+        return [{ ...released, provider_release_confirmed_at: new Date().toISOString() }];
+      }
+      return [];
+    });
+    const service = new SaasTenantBackupWriterFenceService(database as never);
+    const result = await service.confirmProviderFenceReleased({
+      tenantId: tenant, fenceId: runId, providerReleaseReference: 's3-release-policy-160', providerPolicyDigest: digest,
+    });
+    expect(result).toMatchObject({ state: 'RELEASED', nextWriterEpoch: 2 });
+    expect(result.providerReleaseConfirmedAt).toBeTruthy();
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('SET provider_release_confirmed_at=clock_timestamp()'))).toBe(true);
+  });
 });
 
   it('blocks replay of a still-active operation after a fence starts', async () => {
