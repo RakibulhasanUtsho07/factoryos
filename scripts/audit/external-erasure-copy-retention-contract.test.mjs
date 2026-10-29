@@ -338,3 +338,19 @@ test('whole-tenant erasure requires current reviewed evidence for every copy cla
  assert.ok(runbook.includes('Machine-enforced copy-class coverage'));
  assert.ok(runbook.includes('UNRESOLVED') && runbook.includes('block erasure'));
 });
+
+
+test('copy-class coverage and required target inventory cannot drift while an erasure run is RUNNING', async () => {
+ const migration=await readRepoFile('migrations/227_saas_external_copy_coverage_run_fence.sql');
+ const manifest=await readRepoFile('scripts/audit/migration-manifest.txt');
+ const workflow=await readRepoFile('.github/workflows/api-postgres-ci.yml');
+ const runbook=await readRepoFile(RUNBOOK);
+ assert.ok(migration.includes('CREATE OR REPLACE FUNCTION public.factoryos_guard_saas_external_copy_coverage_run_fence()'));
+ assert.ok(migration.includes('PERFORM 1 FROM public.tenants WHERE id=scope_tenant FOR UPDATE'));
+ assert.ok(migration.includes("r.status='RUNNING'"));
+ assert.ok(migration.includes('saas_tenant_external_data_targets'));
+ assert.ok(migration.includes('BEFORE INSERT OR UPDATE OR DELETE'));
+ assert.ok(manifest.split(/\r?\n/).includes('migrations/227_saas_external_copy_coverage_run_fence.sql'));
+ assert.ok(workflow.includes('Reapplying external copy-coverage run fence'));
+ assert.ok(runbook.includes('inventory is frozen while a propagation run is RUNNING'));
+});

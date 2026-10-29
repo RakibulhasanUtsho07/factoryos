@@ -30,6 +30,8 @@ Every requested category must have a current, independently reviewed decision fo
 
 Each decision is revisioned, tenant-scoped, idempotent, digest-bound, and immutable after independent review. Evidence must be no more than 30 days old at submission and approval; accepted decisions expire within 90 days. `SUPPORTED` requires a current active required target/adapter. `NOT_APPLICABLE` requires evidence plus data-owner, infrastructure-owner and policy references, and is inconsistent if a required target exists. `UNRESOLVED`, missing, pending, rejected, expired, tampered or contradictory decisions block erasure.
 
+A database-level run fence takes the tenant lock and rejects inserts/updates/deletes to the coverage registry or required-target inventory while any propagation run is `RUNNING`. This closes the check-then-mutate window between an application-side recheck and a provider call; once the run is `PARTIAL` or terminal, reviewers can submit a new revision.
+
 The accepted category/store-kind decisions and target bindings are included in the propagation manifest digest. The service rechecks coverage before adapter preparation/recovery, before mutation, before verification and during finalization under the tenant governance lock. A changed review revision or target inventory blocks additional mutation and prevents a run from reaching `VERIFIED`; a separately reviewed run is required. Human review of a reference/digest is a governance gate, not automatic authentication of source evidence.
 
 ## Legal holds and retention policy
