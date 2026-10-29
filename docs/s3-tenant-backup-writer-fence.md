@@ -46,3 +46,12 @@ The current configuration assertion does not establish exclusivity by itself; on
 
 
 Keep BACKUP inactive by default. Missing provider-control-plane settings or any missing/invalid acceptance reference causes `isConfigured()` to return false. Do not set the acceptance gates until the infrastructure owner has reviewed real-provider staging and complete producer inventory; they are evidence references, not proof by themselves.
+
+
+## Reviewed writer-principal inventory snapshots
+
+Migration `223_saas_backup_writer_principal_inventory.sql` adds a tenant-scoped, versioned inventory ledger. Submit a snapshot through `POST /v2/saas/data-retention/backup-writer-inventories`, inspect the current accepted snapshot with `GET /v2/saas/data-retention/backup-writer-inventories/{categoryCode}/current`, and review a submission through `POST /v2/saas/data-retention/backup-writer-inventories/{snapshotId}/review`. Submission and review require the `saas.data_retention.write` and `saas.data_retention.approve` permissions respectively; the submitter cannot approve their own snapshot.
+
+A snapshot lists producer ID, provider-principal reference, access-path class and a SHA-256 digest of the permission scope. Entry identity and snapshot content are immutable after submission. Review recomputes the canonical, sorted entry digest and count; use is blocked when the latest revision is pending/rejected or its stored count/digest does not match its entries. The coordinator fetches this reviewed database snapshot rather than accepting caller-supplied digest/count, binds the exact snapshot ID and checks that it has not changed across provider policy installation.
+
+**Scope warning:** a reviewed snapshot is a human-attested inventory, not proof that the full AWS IAM/service-principal/access-point/replication writer population was discovered. It cannot independently discover external producers, prevent out-of-band credentials, or prove that all jobs observe the application epoch gate. Real-provider staging, policy-ownership controls and external producer reconciliation remain separate acceptance gates; `S3TenantBackupErasureAdapter.isConfigured()` remains fail-closed.
