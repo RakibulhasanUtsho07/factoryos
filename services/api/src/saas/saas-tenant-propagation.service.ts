@@ -19,6 +19,7 @@ import {
 } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
 import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
   SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
@@ -87,6 +88,7 @@ export class SaasTenantPropagationService {
     private readonly database: DatabaseService,
     private readonly iamService: IamService,
     private readonly auditService: AuditService,
+    private readonly backupEvidenceArtifactReader: BackupCopyClassEvidenceArtifactReader,
     @Optional() @Inject(SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS)
     private readonly adapters: SaasTenantExternalDataPropagationAdapter[] = [],
     @Optional() @Inject(S3TenantBackupWriterFenceCoordinator)
@@ -333,7 +335,7 @@ export class SaasTenantPropagationService {
          ORDER BY category_code,copy_class_code,revision DESC`,
         [tenantId, categories],
       );
-      this.assertBackupCopyClassCoverage(categories, targets, backupCopyClassResult.rows);
+      await this.assertBackupCopyClassCoverage(categories, targets, backupCopyClassResult.rows);
       const backupCopyClassCoverageManifest = this.backupCopyClassCoverageManifest(backupCopyClassResult.rows);
       const backupCopyClassCoverageDigest = this.hash(backupCopyClassCoverageManifest);
       // One fence lifecycle represents one sealed backup inventory per category.
@@ -1123,11 +1125,11 @@ export class SaasTenantPropagationService {
     })).sort((a, b) => a.targetId < b.targetId ? -1 : a.targetId > b.targetId ? 1 : 0);
   }
 
-  private assertBackupCopyClassCoverage(
+  private async assertBackupCopyClassCoverage(
     categories: SaasTransferDatasetCategory[],
     targets: SaasTenantExternalDataTarget[],
     decisions: BackupCopyClassCoverageRow[],
-  ) {
+  ): Promise<void> {
     const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.copy_class_code, decision]));
     for (const category of categories) {
       for (const copyClass of REQUIRED_BACKUP_COPY_CLASSES) {
@@ -1169,6 +1171,9 @@ export class SaasTenantPropagationService {
           throw new ConflictException('Backup copy-class evidence attestation is invalid or its signer is no longer trusted for '
             + category + '/' + copyClass);
         }
+        // Re-read source bytes at every preflight/resume/provider checkpoint. A once-valid
+        // reference cannot silently disappear or be replaced by a different evidence pack.
+        await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
         if (decision.disposition === 'UNRESOLVED') {
           throw new ConflictException('Unresolved backup copy class blocks whole-tenant erasure: ' + category + '/' + copyClass);
         }
@@ -1235,7 +1240,7 @@ export class SaasTenantPropagationService {
         'SELECT DISTINCT ON (category_code,copy_class_code) * FROM public.saas_tenant_backup_copy_class_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,copy_class_code,revision DESC',
         [tenantId, categories],
       );
-      this.assertBackupCopyClassCoverage(categories, targets, backupCopyClasses.rows);
+      await this.assertBackupCopyClassCoverage(categories, targets, backupCopyClasses.rows);
       return {
         coverageDigest: this.hash(this.copyCoverageManifest(result.rows)),
         backupCopyClassCoverageDigest: this.hash(this.backupCopyClassCoverageManifest(backupCopyClasses.rows)),
