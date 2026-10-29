@@ -1,7 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
-import { ConflictException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Inject, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import type {
   SaasExternalPropagationContext,
