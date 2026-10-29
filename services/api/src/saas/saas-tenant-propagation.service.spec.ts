@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
 const requester = '16010000-0000-4000-8000-000000000001';
@@ -68,7 +69,7 @@ describe('SaasTenantPropagationService', () => {
       if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: [] };
       throw new Error('unexpected SQL in no-target closure test: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, [adapter as never]);
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(), [adapter as never]);
   });
 
   it('does not call a provider or complete erasure when a required external-copy class has no reviewed target', async () => {
