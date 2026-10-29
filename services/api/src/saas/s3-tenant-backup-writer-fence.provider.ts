@@ -483,7 +483,10 @@ export class S3TenantBackupWriterFenceProvider {
       'x-amz-content-sha256': payloadHash,
       'x-amz-date': amzDate,
     };
-    if (body !== undefined) canonicalHeaders['content-type'] = 'application/json';
+    if (body !== undefined) {
+      canonicalHeaders['content-md5'] = createHash('md5').update(Buffer.from(body, 'utf8')).digest('base64');
+      canonicalHeaders['content-type'] = 'application/json';
+    }
     if (storage.sessionToken) canonicalHeaders['x-amz-security-token'] = storage.sessionToken;
     const headerNames = Object.keys(canonicalHeaders).sort();
     const canonicalHeaderText = headerNames.map((name) =>
@@ -511,7 +514,10 @@ export class S3TenantBackupWriterFenceProvider {
       Authorization: 'AWS4-HMAC-SHA256 Credential=' + storage.accessKeyId + '/' + scope
         + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature,
     };
-    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (body !== undefined) {
+      headers['content-md5'] = createHash('md5').update(Buffer.from(body, 'utf8')).digest('base64');
+      headers['content-type'] = 'application/json';
+    }
     if (storage.sessionToken) headers['x-amz-security-token'] = storage.sessionToken;
     try {
       return await globalThis.fetch(target, {
