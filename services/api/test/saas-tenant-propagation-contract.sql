@@ -37,6 +37,14 @@ BEGIN
   END LOOP;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    WHERE c.conrelid='public.saas_tenant_backup_copy_class_coverage_decisions'::regclass
+      AND c.conname='chk_saas_backup_copy_class_references'
+      AND pg_get_constraintdef(c.oid) ILIKE '%evidence_reference%'
+      AND pg_get_constraintdef(c.oid) ILIKE '%A-Za-z0-9._-%'
+  ) THEN RAISE EXCEPTION 'backup evidence references must be constrained to opaque single-component artifact IDs'; END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
     WHERE tgname='saas_tenant_data_legal_hold_external_propagation_fence'
       AND NOT tgisinternal
