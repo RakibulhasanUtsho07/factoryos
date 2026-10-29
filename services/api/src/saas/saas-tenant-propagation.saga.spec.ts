@@ -1,7 +1,9 @@
 import { jest } from '@jest/globals';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
+import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
@@ -10,6 +12,35 @@ const reviewer = '16010000-0000-4000-8000-000000000002';
 const postgresExecutor = '16010000-0000-4000-8000-000000000003';
 const propagationExecutor = '16010000-0000-4000-8000-000000000004';
 const independentAttestor = '16010000-0000-4000-8000-000000000005';
+const { publicKey: backupEvidencePublicKey, privateKey: backupEvidencePrivateKey } = generateKeyPairSync('ed25519');
+const backupEvidenceKeyId = 'copy-owner-ed25519-test-v1';
+const backupEvidenceOwner = 'owner.infra.ci';
+const priorBackupEvidenceTrust = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
+const backupEvidenceTrust = JSON.stringify([{
+  keyId: backupEvidenceKeyId,
+  ownerReference: backupEvidenceOwner,
+  publicKeyPem: backupEvidencePublicKey.export({ type: 'spki', format: 'pem' }).toString(),
+}]);
+function signBackupCopyClassRow(row: Record<string, unknown>) {
+  const payload: BackupCopyClassEvidenceAttestationPayload = {
+    attestationKeyId: String(row.attestation_key_id),
+    attestationOwnerReference: String(row.attestation_owner_reference),
+    tenantId: String(row.tenant_id),
+    categoryCode: String(row.category_code),
+    copyClassCode: String(row.copy_class_code),
+    disposition: String(row.disposition),
+    evidenceReference: String(row.evidence_reference),
+    evidenceSha256: String(row.evidence_sha256),
+    evidenceAt: new Date(row.evidence_at as string | Date).toISOString(),
+    dataOwnerReference: String(row.data_owner_reference),
+    infrastructureOwnerReference: String(row.infrastructure_owner_reference),
+    policyReference: String(row.policy_reference),
+    reason: String(row.reason),
+  };
+  row.attestation_signature = sign(
+    null, Buffer.from(canonicalizeBackupCopyClassEvidenceAttestation(payload), 'utf8'), backupEvidencePrivateKey,
+  ).toString('base64url');
+}
 const requestId = '16020000-0000-4000-8000-000000000001';
 const sourceDigest = 'b'.repeat(64);
 const sqlDigest = 'c'.repeat(64);
@@ -93,6 +124,7 @@ describe('SaasTenantPropagationService external saga', () => {
   }
 
   beforeEach(() => {
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = backupEvidenceTrust;
     jest.resetAllMocks();
     storedReceipts.length = 0;
     storedResourceManifests.length = 0;
@@ -134,16 +166,23 @@ describe('SaasTenantPropagationService external saga', () => {
       reviewed_by_user_id: reviewer,
       valid_until: '2099-01-01T00:00:00.000Z',
     }));
-    backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => ({
-      decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
-      tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
-      disposition: copyClass === 'S3_OBJECT_VERSIONS' ? 'SUPPORTED' : 'NOT_APPLICABLE',
-      evidence_reference: `evidence.backup-copy-class.${copyClass.toLowerCase()}`, evidence_sha256: 'b'.repeat(64),
-      evidence_at: new Date().toISOString(), data_owner_reference: `owner.data.${copyClass.toLowerCase()}`,
-      infrastructure_owner_reference: `owner.infra.${copyClass.toLowerCase()}`,
-      policy_reference: `policy.backup.${copyClass.toLowerCase()}`, status: 'ACCEPTED',
-      submitted_by_user_id: requester, reviewed_by_user_id: reviewer, valid_until: '2099-01-01T00:00:00.000Z',
-    }));
+    backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => {
+      const row: Record<string, unknown> = {
+        decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
+        disposition: copyClass === 'S3_OBJECT_VERSIONS' ? 'SUPPORTED' : 'NOT_APPLICABLE',
+        evidence_reference: `evidence.backup-copy-class.${copyClass.toLowerCase()}`, evidence_sha256: 'b'.repeat(64),
+        evidence_at: new Date().toISOString(), data_owner_reference: `owner.data.${copyClass.toLowerCase()}`,
+        infrastructure_owner_reference: backupEvidenceOwner,
+        attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
+        policy_reference: `policy.backup.${copyClass.toLowerCase()}`,
+        reason: 'Synthetic signed evidence fixture for policy-gate regression tests',
+        status: 'ACCEPTED', submitted_by_user_id: requester, reviewed_by_user_id: reviewer,
+        valid_until: '2099-01-01T00:00:00.000Z',
+      };
+      signBackupCopyClassRow(row);
+      return row;
+    });
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
     backupFenceCoordinator = {
       beginPropagationFence: jest.fn(async () => {
@@ -274,6 +313,7 @@ describe('SaasTenantPropagationService external saga', () => {
     const wal = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
     if (!wal) throw new Error('WAL/PITR copy-class fixture is missing');
     wal.disposition = 'UNRESOLVED';
+    signBackupCopyClassRow(wal);
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Unresolved WAL/PITR must block whole-tenant erasure',
       idempotency_key: 'external-propagation-wal-unresolved',
