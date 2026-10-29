@@ -198,7 +198,7 @@ export class SaasTenantBackupWriterInventoryService {
           entryCount: Number(current.entry_count), decision, reason },
       });
       return { row: updated.rows[0]!, entries };
-    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-backup-writer-inventory:' + tenantId + ':' snapshotId });
+    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-backup-writer-inventory-review:' + tenantId + ':' + snapshotId });
 
     return this.mapSnapshot(result.row, result.entries);
   }
