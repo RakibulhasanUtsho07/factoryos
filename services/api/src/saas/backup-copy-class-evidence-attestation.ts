@@ -72,26 +72,31 @@ function loadTrustedEvidenceKeys(raw: string | undefined): Map<string, TrustedEv
   }
 
   const keys = new Map<string, TrustedEvidenceKey>();
-  for (const candidate of parsed) {
+  for (const candidate of parsed as unknown[]) {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new ServiceUnavailableException('Backup copy-class trusted-key configuration is invalid');
+    }
+    const entry = candidate as Record<string, unknown>;
+    const keyId = entry.keyId;
+    const ownerReference = entry.ownerReference;
+    const publicKeyPem = entry.publicKeyPem;
     if (
-      candidate === null
-      || typeof candidate !== 'object'
-      || typeof candidate.keyId !== 'string'
-      || !KEY_ID.test(candidate.keyId)
-      || typeof candidate.ownerReference !== 'string'
-      || !SAFE_REFERENCE.test(candidate.ownerReference)
-      || candidate.ownerReference.includes('://')
-      || /(secret|password|credential|access[-_]?key|token)/i.test(candidate.ownerReference)
-      || typeof candidate.publicKeyPem !== 'string'
-      || !candidate.publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
-      || candidate.publicKeyPem.includes('PRIVATE KEY')
-      || keys.has(candidate.keyId)
+      typeof keyId !== 'string'
+      || !KEY_ID.test(keyId)
+      || typeof ownerReference !== 'string'
+      || !SAFE_REFERENCE.test(ownerReference)
+      || ownerReference.includes('://')
+      || /(secret|password|credential|access[-_]?key|token)/i.test(ownerReference)
+      || typeof publicKeyPem !== 'string'
+      || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
+      || publicKeyPem.includes('PRIVATE KEY')
+      || keys.has(keyId)
     ) {
       throw new ServiceUnavailableException('Backup copy-class trusted-key configuration is invalid');
     }
 
     try {
-      const publicKey = createPublicKey(candidate.publicKeyPem);
+      const publicKey = createPublicKey(publicKeyPem);
       if (publicKey.asymmetricKeyType !== 'ed25519') {
         throw new Error('Trusted evidence keys must use Ed25519');
       }
@@ -99,11 +104,7 @@ function loadTrustedEvidenceKeys(raw: string | undefined): Map<string, TrustedEv
       throw new ServiceUnavailableException('Backup copy-class trusted-key configuration is invalid');
     }
 
-    keys.set(candidate.keyId, {
-      keyId: candidate.keyId,
-      ownerReference: candidate.ownerReference,
-      publicKeyPem: candidate.publicKeyPem,
-    });
+    keys.set(keyId, { keyId, ownerReference, publicKeyPem });
   }
   return keys;
 }
