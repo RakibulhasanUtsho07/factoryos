@@ -43,9 +43,47 @@ export class S3TenantBackupWriterFenceCoordinator {
       } else if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence cannot enter propagation from its current lifecycle state');
       }
+      await this.assertProviderFenceMatches(fence);
       active.push(fence);
     }
     return active;
+  }
+
+  /** Recheck the exact provider policy before inventory or destructive adapter steps. */
+  async assertFenceHeld(input: {
+    tenantId: string; categories: SaasTransferDatasetCategory[];
+  }): Promise<void> {
+    for (const category of input.categories) {
+      const fence = await this.lifecycle.getFence(input.tenantId, category);
+      if (!fence) throw new NotFoundException('Backup writer fence not found for propagation category');
+      if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
+        throw new ConflictException('Backup writer fence is not held in an erasure lifecycle state');
+      }
+      await this.assertProviderFenceMatches(fence);
+    }
+  }
+
+  private async assertProviderFenceMatches(fence: BackupWriterFenceView): Promise<void> {
+    if (!fence.providerFenceReference || !fence.providerPolicyDigest) {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_FENCE_EVIDENCE_MISSING');
+      throw new ConflictException('Backup provider-fence evidence is missing; recovery is required before touching copies');
+    }
+    let evidence: Awaited<ReturnType<S3TenantBackupWriterFenceProvider['inspectFence']>>;
+    try {
+      evidence = await this.provider.inspectFence({
+        tenantId: fence.tenantId, category: fence.category, fenceId: fence.fenceId,
+      });
+    } catch {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_FENCE_READBACK_FAILED');
+      throw new ServiceUnavailableException('Provider fence read-back failed; backup inventory/deletion is blocked');
+    }
+    if (!evidence.installed || evidence.pendingMultipartUploads !== 0
+      || evidence.providerFenceReference !== fence.providerFenceReference
+      || evidence.providerPolicyDigest !== fence.providerPolicyDigest) {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId,
+        evidence.pendingMultipartUploads > 0 ? 'MULTIPART_UPLOADS_REMAINING' : 'PROVIDER_FENCE_POLICY_DRIFT');
+      throw new ConflictException('Provider fence drift or unfinished multipart uploads detected; backup mutation is blocked for recovery');
+    }
   }
 
   /** Persist verified zero-residual evidence without releasing the provider deny. */
@@ -63,6 +101,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (current.state !== 'ERASING' && current.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence must be ERASING before verification can be persisted');
       }
+      await this.assertProviderFenceMatches(current);
       results.push(await this.lifecycle.markErasureVerified({
         tenantId: input.tenantId, fenceId: current.fenceId, manifestDigest: input.manifestDigest,
         verificationReference: input.verificationReference, residualCopies: input.residualCopies,
