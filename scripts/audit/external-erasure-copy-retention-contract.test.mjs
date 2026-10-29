@@ -69,7 +69,7 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   assert.match(runbook, /\[the S3 tenant backup adapter contract\]\(s3-tenant-backup-erasure-adapter\.md\)/i);
   assert.match(backupDoc, /Object Lock/i);
   assert.match(backupDoc, /does not cover|does not prove|out of scope/i);
-  assert.match(backupDoc, /write-freeze mechanism/i);
+  assert.match(backupDoc, /freeze must be acquired|write-freeze mechanism/i);
   assert.match(runbook, /provider\/control-plane fence/i);
 });
 
@@ -162,5 +162,5 @@ test('S3 writer fence denies both direct object uploads and replication writes',
   assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
   assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
   assert.match(doc, /s3:PutObject.*s3:ReplicateObject/);
-  assert.match(doc, /S3 BACKUP adapter remains fail-closed/i);
+  assert.match(doc, /S3 BACKUP erasure adapter must continue to return false from `isConfigured\(\)`, fail-closed/i);
 });
