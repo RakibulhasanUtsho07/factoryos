@@ -43,12 +43,14 @@ export class BackupCopyClassEvidenceArtifactReader {
     let root: string;
     try {
       const rootEntry = await lstat(configuredRoot);
-      if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
-        throw new Error('Evidence root must be a real directory');
+      if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory() || (rootEntry.mode & 0o222) !== 0) {
+        throw new Error('Evidence root must be a real, non-writable directory');
       }
       root = await realpath(configuredRoot);
       const resolvedRoot = await stat(root);
-      if (!resolvedRoot.isDirectory()) throw new Error('Evidence root is not a directory');
+      if (!resolvedRoot.isDirectory() || (resolvedRoot.mode & 0o222) !== 0) {
+        throw new Error('Resolved evidence root must not have write permission bits');
+      }
     } catch {
       throw new ServiceUnavailableException('Backup copy-class evidence read-back root is unavailable or unsafe');
     }
@@ -64,8 +66,9 @@ export class BackupCopyClassEvidenceArtifactReader {
     try {
       handle = await open(artifactPath, constants.O_RDONLY | noFollow | (constants.O_NONBLOCK ?? 0));
       const before = await handle.stat({ bigint: true });
-      if (!before.isFile() || before.size < 1n || before.size > BigInt(MAX_ARTIFACT_BYTES)) {
-        throw new Error('Evidence artifact must be a non-empty regular file within the configured size bound');
+      if (!before.isFile() || before.size < 1n || before.size > BigInt(MAX_ARTIFACT_BYTES)
+        || (before.mode & 0o222n) !== 0n || before.nlink !== 1n) {
+        throw new Error('Evidence artifact must be a non-empty, non-writable regular file with one link within the configured size bound');
       }
 
       const hash = createHash('sha256');
@@ -82,7 +85,7 @@ export class BackupCopyClassEvidenceArtifactReader {
       const after = await handle.stat({ bigint: true });
       const stable = before.dev === after.dev && before.ino === after.ino
         && before.size === after.size && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs
-        && BigInt(position) === before.size;
+        && before.mode === after.mode && before.nlink === after.nlink && BigInt(position) === before.size;
       if (!stable) throw new Error('Evidence artifact changed during verification');
 
       const actualDigest = hash.digest('hex');

@@ -59,11 +59,15 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(signer, /privateKey\.asymmetricKeyType !== 'ed25519'/);
   assert.ok(artifactReader.includes('FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR'));
   assert.ok(artifactReader.includes('O_NOFOLLOW'));
+  assert.match(artifactReader, /rootEntry\.mode & 0o222/);
+  assert.match(artifactReader, /before\.mode & 0o222n/);
+  assert.match(artifactReader, /before\.nlink !== 1n/);
   assert.ok(artifactReader.includes('MAX_ARTIFACT_BYTES = 16 * 1024 * 1024'));
   assert.ok(artifactReader.includes('actualDigest !== expectedDigestValue'));
   assert.ok(artifactReader.includes('before.mtimeNs === after.mtimeNs'));
   assert.ok(artifactReaderSpec.includes('rejects digest mismatch'));
   assert.ok(artifactReaderSpec.includes('rejects symlinks and non-regular files'));
+  assert.ok(artifactReaderSpec.includes('rejects writable roots and writable or multiply-linked evidence files'));
   assert.ok(artifactReaderSpec.includes('rejects oversized artifacts'));
   assert.ok(service.includes('evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256)'));
   assert.ok(service.includes('evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256)'));

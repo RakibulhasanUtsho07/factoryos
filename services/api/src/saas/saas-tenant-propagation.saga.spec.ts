@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
@@ -27,6 +27,7 @@ process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
 // work from the Nest service may still perform a final checkpoint after this suite completes.
 // Cleanup happens only when the test process exits, never while a service callback can read it.
 process.on('exit', () => {
+  chmodSync(backupEvidenceRoot, 0o755);
   if (priorBackupEvidenceTrust === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
   else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = priorBackupEvidenceTrust;
   if (priorBackupEvidenceRoot === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
@@ -141,6 +142,8 @@ describe('SaasTenantPropagationService external saga', () => {
   }
 
   beforeEach(() => {
+    chmodSync(backupEvidenceRoot, 0o755);
+    for (const name of readdirSync(backupEvidenceRoot)) chmodSync(join(backupEvidenceRoot, name), 0o644);
     process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = backupEvidenceTrust;
     process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
     jest.resetAllMocks();
@@ -187,7 +190,9 @@ describe('SaasTenantPropagationService external saga', () => {
     backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => {
       const evidenceReference = `evidence.backup-copy-class.${copyClass.toLowerCase()}`;
       const evidenceBytes = Buffer.from(`Synthetic evidence pack for ${copyClass}; tenant ${tenant}; fixture v1`, 'utf8');
-      writeFileSync(join(backupEvidenceRoot, evidenceReference), evidenceBytes);
+      const evidencePath = join(backupEvidenceRoot, evidenceReference);
+      writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
+      chmodSync(evidencePath, 0o444);
       const row: Record<string, unknown> = {
         decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
         tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
@@ -204,6 +209,7 @@ describe('SaasTenantPropagationService external saga', () => {
       signBackupCopyClassRow(row);
       return row;
     });
+    chmodSync(backupEvidenceRoot, 0o555);
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
     backupFenceCoordinator = {
       beginPropagationFence: jest.fn(async () => {
@@ -372,7 +378,12 @@ describe('SaasTenantPropagationService external saga', () => {
   it('blocks propagation when source artifact bytes change after acceptance', async () => {
     const first = backupCopyClassRows[0];
     if (!first) throw new Error('Signed backup copy-class fixture is missing');
-    writeFileSync(join(backupEvidenceRoot, String(first.evidence_reference)), 'tampered evidence after independent review');
+    chmodSync(backupEvidenceRoot, 0o755);
+    const tamperedArtifactPath = join(backupEvidenceRoot, String(first.evidence_reference));
+    chmodSync(tamperedArtifactPath, 0o644);
+    writeFileSync(tamperedArtifactPath, 'tampered evidence after independent review');
+    chmodSync(tamperedArtifactPath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Source evidence bytes must still match the signed digest',
       idempotency_key: 'external-propagation-tampered-source-artifact',
