@@ -256,6 +256,11 @@ test('backup provider activation requires durable, independently reviewed, revoc
   assert.match(adapter, /requireCurrentAcceptedProviderAcceptance/);
   assert.match(service, /valid_until/);
   assert.match(service, /BACKUP_PROVIDER_ACCEPTANCE_REVOKED/);
+  assert.match(service, /policyOwnershipReviewReference/);
+  assert.match(service, /stagingAcceptanceReference/);
+  assert.match(service, /restoreReplayReference/);
+  assert.match(migration, /policy_ownership_review_reference varchar/);
+  assert.match(migration, /restore_replay_reference varchar/);
   assert.match(migration, /FORCE ROW LEVEL SECURITY/);
   assert.match(migration, /provider acceptance revocations are append-only/);
 });
