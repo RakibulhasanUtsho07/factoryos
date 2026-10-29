@@ -75,7 +75,7 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
 
 test('BACKUP target cannot activate until an erasure-lifecycle writer fence is implemented', async () => {
   const source = await readRepoFile(BACKUP_ADAPTER_SOURCE);
-  assert.match(source, /S3 versioning\/Object Lock do not fence new writes[\s\S]*?return false;/i);
+  assert.match(source, /S3 versioning\/Object Lock(?: alone)? do not[\s\S]*?fence new writes[\s\S]*?return false;/i);
   assert.match(source, /return false;/);
   const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
   assert.match(doc, /`isConfigured\(\)` intentionally returns false/i);
@@ -111,7 +111,7 @@ test('backup writer-fence ledger provides crash-safe drain and database guardrai
   assert.match(migration, /backup writer fence uses a stale writer epoch/i);
   assert.ok(migration.includes("recovery_attestation_reference !~* '://'"));
   assert.match(migration, /state<>'RELEASED'/i);
-  assert.match(doc, /Provider-wide enforcement and producer integration remain release blockers/i);
+  assert.match(doc, /Provider activation, producer integration and actual-provider acceptance remain release blockers/i);
   assert.match(doc, /AS-137 \/ NFR-PROD-14 remain PARTIAL/i);
 });
 
@@ -122,10 +122,10 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
   const env = await readRepoFile('services/api/.env.example');
 
-  assert.ok(adapter.includes('S3 versioning/Object Lock alone do not fence new writes'));
+  assert.match(adapter, /S3 versioning\/Object Lock alone do not[\s\S]*?fence new writes/);
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED'));
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED'));
-  assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("Action: 's3:PutObject'"));
+  assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("'s3:PutObject'") && provider.includes("'s3:ReplicateObject'"));
   assert.ok(provider.includes('listMultipartUploads'));
   assert.ok(provider.includes('independently read-back'));
   assert.ok(coordinator.includes('recordProviderFenceInstalled'));
@@ -162,5 +162,5 @@ test('S3 writer fence denies both direct object uploads and replication writes',
   assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
   assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
   assert.match(doc, /s3:PutObject.*s3:ReplicateObject/);
-  assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
+  assert.match(doc, /S3 BACKUP adapter remains fail-closed/i);
 });
