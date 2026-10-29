@@ -311,6 +311,22 @@ BEGIN
   END;
 END $$;
 
+-- The evidence signer metadata is immutable even while a decision is still pending.
+DO $$
+DECLARE
+  guard_message text;
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_backup_copy_class_coverage_decisions
+       SET attestation_signature=repeat('B',86)
+     WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+       AND decision_id='16070000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'pending backup evidence signature was mutable';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
+    IF guard_message NOT LIKE '%reviewed backup copy-class decisions are immutable%' THEN RAISE; END IF;
+  END;
+END $$;
 
 -- Backup writer-fence SQL lifecycle acceptance. This is synthetic data only.
 INSERT INTO saas_tenant_backup_writer_operations
