@@ -114,14 +114,25 @@ test('backup writer-fence ledger provides crash-safe drain and database guardrai
   assert.match(doc, /AS-137 \/ NFR-PROD-14 remain PARTIAL/i);
 });
 
-test('backup provider adapter remains fail-closed until the provider controller is integrated', async () => {
+test('backup erasure stays fail-closed while S3 policy and producer acceptance gates are open', async () => {
   const adapter = await readRepoFile(BACKUP_ADAPTER_SOURCE);
   const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
-  assert.match(adapter, /S3 versioning\/Object Lock do not fence new writes[\s\S]*?return false;/i);
-  assert.match(doc, /no provider control-plane adapter that applies and independently reads back the S3 write freeze is integrated/i);
+  const provider = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.provider.ts');
+  const coordinator = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.coordinator.ts');
+  const env = await readRepoFile('services/api/.env.example');
+
+  assert.match(adapter, /S3 versioning\\/Object Lock alone do not fence new writes[\\s\\S]*?return false;/i);
+  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED/);
+  assert.match(provider, /FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED/);
+  assert.match(provider, /Effect: 'Deny'[\\s\\S]*?Action: 's3:PutObject'/);
+  assert.match(provider, /listMultipartUploads/);
+  assert.match(provider, /independently read-back/i);
+  assert.match(coordinator, /recordProviderFenceInstalled/);
+  assert.match(coordinator, /releasePolicyDigest/);
+  assert.match(coordinator, /await this\\.provider\\.removeFence/);
+  assert.match(env, /FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=false/);
+  assert.match(doc, /does not establish exclusivity by itself/i);
 });
-
-
 test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage', async () => {
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
   const migration = await readRepoFile('migrations/222_saas_tenant_backup_writer_fence_ledger.sql');
