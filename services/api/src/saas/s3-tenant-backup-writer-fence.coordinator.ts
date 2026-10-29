@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantBackupWriterFenceService, BackupWriterFenceView, BeginBackupWriterFenceInput } from './saas-tenant-backup-writer-fence.service';
 import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
+import { SaasTenantBackupProviderAcceptanceService } from './saas-tenant-backup-provider-acceptance.service';
 import {
   S3TenantBackupWriterFenceProvider,
   S3TenantBackupWriterFenceRemovalEvidence,
@@ -13,22 +14,32 @@ import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibil
  * multipart uploads keep FENCING closed until they have been reconciled.
  */
 @Injectable()
+interface BackupProviderAcceptanceBinding {
+  configReference: string;
+  adapterKey: string;
+  adapterVersion: string;
+}
+
 export class S3TenantBackupWriterFenceCoordinator {
   constructor(
     private readonly lifecycle: SaasTenantBackupWriterFenceService,
     private readonly provider: S3TenantBackupWriterFenceProvider,
     private readonly writerInventory: SaasTenantBackupWriterInventoryService,
+    private readonly providerAcceptance: SaasTenantBackupProviderAcceptanceService,
   ) {}
 
   /**
    * Acquire provider and durable writer fences for a reviewed propagation run.
    * This method must complete before a BACKUP adapter performs its inventory.
    */
-  async beginPropagationFence(input: BeginBackupWriterFenceInput): Promise<BackupWriterFenceView[]> {
+  async beginPropagationFence(input: BeginBackupWriterFenceInput & BackupProviderAcceptanceBinding): Promise<BackupWriterFenceView[]> {
     this.provider.getProviderAcceptanceReferences();
-    // Validate all category inventories before creating DRAINING fences so a missing
-    // or pending review cannot unnecessarily pause tenant writers.
+    // Validate both provider acceptance and writer inventory before creating DRAINING
+    // fences so a missing/revoked review cannot unnecessarily pause tenant writers.
     for (const category of input.categories) {
+      await this.providerAcceptance.requireCurrentAcceptedProviderAcceptance(
+        input.tenantId, category, input.configReference, input.adapterKey, input.adapterVersion,
+      );
       await this.writerInventory.requireCurrentAcceptedSnapshot(input.tenantId, category);
     }
     const fences = await this.lifecycle.beginErasureFence(input);
@@ -41,6 +52,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (fence.state === 'DRAINING' || fence.state === 'FENCING') {
         fence = await this.installAndRecordFence({
           tenantId: input.tenantId, category: fence.category, fenceId: fence.fenceId,
+          configReference: input.configReference, adapterKey: input.adapterKey, adapterVersion: input.adapterVersion,
         });
       }
       if (fence.state === 'FENCED') {
@@ -48,6 +60,8 @@ export class S3TenantBackupWriterFenceCoordinator {
       } else if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence cannot enter propagation from its current lifecycle state');
       }
+      await this.assertProviderAcceptanceCurrent(fence, input);
+      await this.assertProviderAcceptanceCurrent(fence, input);
       await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
       active.push(fence);
@@ -58,7 +72,7 @@ export class S3TenantBackupWriterFenceCoordinator {
   /** Recheck the exact provider policy before inventory or destructive adapter steps. */
   async assertFenceHeld(input: {
     tenantId: string; categories: SaasTransferDatasetCategory[];
-  }): Promise<void> {
+  } & BackupProviderAcceptanceBinding): Promise<void> {
     for (const category of input.categories) {
       const fence = await this.lifecycle.getFence(input.tenantId, category);
       if (!fence) throw new NotFoundException('Backup writer fence not found for propagation category');
@@ -67,6 +81,23 @@ export class S3TenantBackupWriterFenceCoordinator {
       }
       await this.assertInventoryMatchesFence(fence);
       await this.assertProviderFenceMatches(fence);
+    }
+  }
+
+  private async assertProviderAcceptanceCurrent(
+    fence: BackupWriterFenceView,
+    binding: BackupProviderAcceptanceBinding,
+  ): Promise<void> {
+    try {
+      // Re-read deployment gates and the current accepted/unrevoked record before
+      // inventory, deletion and verification; a revoked gate must preserve the deny.
+      this.provider.getProviderAcceptanceReferences();
+      await this.providerAcceptance.requireCurrentAcceptedProviderAcceptance(
+        fence.tenantId, fence.category, binding.configReference, binding.adapterKey, binding.adapterVersion,
+      );
+    } catch {
+      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
+      throw new ServiceUnavailableException('Current provider acceptance is missing, expired or revoked; backup mutation is blocked and the provider deny remains installed');
     }
   }
 
@@ -122,7 +153,7 @@ export class S3TenantBackupWriterFenceCoordinator {
   async recordPropagationVerification(input: {
     tenantId: string; categories: SaasTransferDatasetCategory[]; manifestDigest: string;
     verificationReference: string; residualCopies: number;
-  }): Promise<BackupWriterFenceView[]> {
+  } & BackupProviderAcceptanceBinding): Promise<BackupWriterFenceView[]> {
     if (input.residualCopies !== 0) {
       throw new ConflictException('Backup writer fence cannot be verified while residual copies remain');
     }
@@ -133,6 +164,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       if (current.state !== 'ERASING' && current.state !== 'ERASURE_VERIFIED') {
         throw new ConflictException('Backup writer fence must be ERASING before verification can be persisted');
       }
+      await this.assertProviderAcceptanceCurrent(current, input);
       await this.assertInventoryMatchesFence(current);
       await this.assertProviderFenceMatches(current);
       results.push(await this.lifecycle.markErasureVerified({
@@ -147,8 +179,9 @@ export class S3TenantBackupWriterFenceCoordinator {
     tenantId: string;
     category: SaasTransferDatasetCategory;
     fenceId: string;
-  }): Promise<BackupWriterFenceView> {
+  } & BackupProviderAcceptanceBinding): Promise<BackupWriterFenceView> {
     const current = await this.requireMatchingFence(input.tenantId, input.category, input.fenceId);
+    await this.assertProviderAcceptanceCurrent(current, input);
     const inventory = await this.writerInventory.requireCurrentAcceptedSnapshot(input.tenantId, input.category);
     const providerAcceptance = this.provider.getProviderAcceptanceReferences();
     if (inventory.reviewedByUserId === current.createdByUserId) {
@@ -205,6 +238,7 @@ export class S3TenantBackupWriterFenceCoordinator {
       await this.lifecycle.requireRecovery(input.tenantId, input.fenceId, 'WRITER_INVENTORY_CHANGED');
       throw new ConflictException('Writer inventory changed during provider fencing; the deny policy remains installed and recovery is required');
     }
+    await this.assertProviderAcceptanceCurrent(current, input);
 
     return this.lifecycle.recordProviderFenceInstalled({
       tenantId: input.tenantId,
