@@ -18,6 +18,7 @@ import {
   REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
 } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
+import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
   SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
@@ -54,7 +55,8 @@ type BackupCopyClassCoverageRow = QueryResultRow & {
   copy_class_code: (typeof REQUIRED_BACKUP_COPY_CLASSES)[number]; revision: string | number;
   disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
   evidence_reference: string; evidence_sha256: string; evidence_at: string | Date;
-  data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string;
+  attestation_key_id: string; attestation_owner_reference: string; attestation_signature: string;
+  data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string; reason: string;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
   reviewed_by_user_id: string | null; valid_until: string | Date | null;
 };
@@ -1139,8 +1141,33 @@ export class SaasTenantPropagationService {
           || !SAFE_REFERENCE.test(decision.evidence_reference)
           || !SAFE_REFERENCE.test(decision.data_owner_reference)
           || !SAFE_REFERENCE.test(decision.infrastructure_owner_reference)
-          || !SAFE_REFERENCE.test(decision.policy_reference)) {
+          || !SAFE_REFERENCE.test(decision.policy_reference)
+          || !decision.attestation_key_id || !decision.attestation_owner_reference || !decision.attestation_signature) {
           throw new ConflictException('Backup propagation requires current independently reviewed evidence for ' + category + '/' + copyClass);
+        }
+        const attestation: BackupCopyClassEvidenceAttestationPayload = {
+          attestationKeyId: decision.attestation_key_id,
+          attestationOwnerReference: decision.attestation_owner_reference,
+          tenantId: decision.tenant_id,
+          categoryCode: decision.category_code,
+          copyClassCode: decision.copy_class_code,
+          disposition: decision.disposition,
+          evidenceReference: decision.evidence_reference,
+          evidenceSha256: decision.evidence_sha256,
+          evidenceAt: new Date(decision.evidence_at).toISOString(),
+          dataOwnerReference: decision.data_owner_reference,
+          infrastructureOwnerReference: decision.infrastructure_owner_reference,
+          policyReference: decision.policy_reference,
+          reason: decision.reason,
+        };
+        try {
+          // Recheck the deployment trust store on every run/resume/provider checkpoint.
+          // Removing or rotating a compromised key invalidates the old accepted evidence.
+          verifyBackupCopyClassEvidenceAttestation(attestation, decision.attestation_signature);
+        } catch (error) {
+          if (error instanceof ServiceUnavailableException) throw error;
+          throw new ConflictException('Backup copy-class evidence attestation is invalid or its signer is no longer trusted for '
+            + category + '/' + copyClass);
         }
         if (decision.disposition === 'UNRESOLVED') {
           throw new ConflictException('Unresolved backup copy class blocks whole-tenant erasure: ' + category + '/' + copyClass);
@@ -1171,6 +1198,9 @@ export class SaasTenantPropagationService {
       evidenceReference: decision.evidence_reference,
       evidenceSha256: decision.evidence_sha256,
       evidenceAt: new Date(decision.evidence_at).toISOString(),
+      attestationKeyId: decision.attestation_key_id,
+      attestationOwnerReference: decision.attestation_owner_reference,
+      attestationSignatureSha256: createHash('sha256').update(decision.attestation_signature, 'utf8').digest('hex'),
       dataOwnerReference: decision.data_owner_reference,
       infrastructureOwnerReference: decision.infrastructure_owner_reference,
       policyReference: decision.policy_reference,
