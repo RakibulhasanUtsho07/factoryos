@@ -96,8 +96,14 @@ export class S3TenantBackupWriterFenceCoordinator {
         fence.tenantId, fence.category, binding.configReference, binding.adapterKey, binding.adapterVersion,
       );
     } catch {
-      await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
-      throw new ServiceUnavailableException('Current provider acceptance is missing, expired or revoked; backup mutation is blocked and the provider deny remains installed');
+      if (fence.state !== 'RELEASED') {
+        try {
+          await this.lifecycle.requireRecovery(fence.tenantId, fence.fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
+        } catch {
+          throw new ServiceUnavailableException('Provider acceptance is invalid and the recovery state could not be durably recorded; no further backup mutation is allowed');
+        }
+      }
+      throw new ServiceUnavailableException('Current provider acceptance is missing, expired or revoked; backup mutation/release is blocked and any installed provider deny is retained');
     }
   }
 
@@ -319,6 +325,10 @@ export class S3TenantBackupWriterFenceCoordinator {
       }
     }
 
+    // Revalidate again after the durable epoch release and immediately before
+    // removing the provider Deny. If acceptance was revoked during the database
+    // transition, leave the provider policy installed; availability may pause.
+    await this.assertProviderAcceptanceCurrent(released, input);
     try {
       const providerRelease = await this.provider.removeFence({
         tenantId: input.tenantId,
