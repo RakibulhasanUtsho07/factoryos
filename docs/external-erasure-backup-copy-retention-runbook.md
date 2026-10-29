@@ -34,6 +34,29 @@ A database-level run fence takes the tenant lock and rejects inserts/updates/del
 
 The accepted category/store-kind decisions and target bindings are included in the propagation manifest digest. The service rechecks coverage before adapter preparation/recovery, before mutation, before verification and during finalization under the tenant governance lock. A changed review revision or target inventory blocks additional mutation and prevents a run from reaching `VERIFIED`; a separately reviewed run is required. Human review of a reference/digest is a governance gate, not automatic authentication of source evidence.
 
+## Granular backup copy-class acceptance
+
+The generic `BACKUP` store is not a complete inventory of backup copies. Each requested data category now requires current, independently reviewed evidence for every class below through `/v2/saas/data-retention/backup-copy-classes`.
+
+| Copy class | Scope | Adapter status |
+|---|---|---|
+| `S3_OBJECT_VERSIONS` | Versioned S3 objects and delete markers for the tenant/category prefix | Adapter exists; production acceptance remains disabled |
+| `POSTGRESQL_BASE_BACKUP` | Base/database backups | No reviewed erasure adapter |
+| `POSTGRESQL_WAL_PITR` | WAL archives and point-in-time recovery copies | No reviewed erasure adapter |
+| `REDIS_AOF_BACKUP` | AOF files and exported AOF copies | No reviewed erasure adapter |
+| `REDIS_RDB_BACKUP` | RDB snapshots and exported RDB copies | No reviewed erasure adapter |
+| `FILESYSTEM_SNAPSHOT` | Filesystem snapshots and snapshot-derived copies | No reviewed erasure adapter |
+| `BLOCK_VOLUME_SNAPSHOT` | Volume/block snapshots and clones | No reviewed erasure adapter |
+| `MANAGED_BACKUP_VAULT` | Provider-managed backup vaults and retention copies | No reviewed erasure adapter |
+| `REPLICA_FAILOVER_COPY` | Replica, failover and promoted-copy histories | No reviewed erasure adapter |
+| `EXTERNAL_DR_COPY` | External disaster-recovery copies and secondary sites | No reviewed erasure adapter |
+
+Submit with `POST /v2/saas/data-retention/backup-copy-classes`, inspect the current matrix at `GET /v2/saas/data-retention/backup-copy-classes/:categoryCode/current`, and independently review with `POST /v2/saas/data-retention/backup-copy-classes/:decisionId/review`. Each decision records an evidence reference and digest, data owner, infrastructure owner, policy reference and reason. A reviewer different from the submitter must accept/reject the revision. Evidence older than 30 days is rejected at submission/review; accepted decisions expire within 90 days.
+
+A missing, pending, rejected, expired, unresolved or contradictory row blocks whole-tenant erasure. `S3_OBJECT_VERSIONS` must bind the reviewed `s3.tenant-backup.v1` target. Marking any other class `SUPPORTED` fails closed until a class-specific adapter is implemented and independently accepted. `NOT_APPLICABLE` needs deployment-specific, source-derived evidence; missing integration, configuration or owner response is not proof that the class is absent.
+
+The decisions are tenant-isolated by forced RLS, immutable after review, frozen by the database during `RUNNING` propagation, and bound into the propagation manifest digest. This is an evidence-backed governance control, not automatic discovery of cloud accounts/vaults, and a stored digest does not independently authenticate the source artifact.
+
 ## Legal holds and retention policy
 
 - A designated legal/compliance owner must approve the legal basis, jurisdiction, minimum/maximum retention, expiry trigger, deletion method, exception process, and policy version for each copy class before production enforcement.

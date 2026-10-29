@@ -197,6 +197,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/227_saas_external_copy_coverage_run_fence.sql
 
+          echo "Reapplying granular backup copy-class registry to verify immutability and tenant RLS"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/228_saas_tenant_backup_copy_class_coverage.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \

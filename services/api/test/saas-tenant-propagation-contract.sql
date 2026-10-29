@@ -16,7 +16,8 @@ BEGIN
     'saas_tenant_finance_retention_runs',
     'saas_tenant_backup_writer_operations',
     'saas_tenant_backup_writer_fences',
-    'saas_tenant_external_copy_coverage_decisions'
+    'saas_tenant_external_copy_coverage_decisions',
+    'saas_tenant_backup_copy_class_coverage_decisions'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c WHERE c.oid=format('public.%I',t)::regclass
@@ -42,6 +43,10 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'active legal holds must fence overlapping RUNNING external erasure';
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_backup_copy_class_coverage_run_fence' AND NOT tgisinternal
+  ) THEN RAISE EXCEPTION 'backup copy-class inventory must be frozen during RUNNING propagation'; END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_copy_coverage_run_fence' AND NOT tgisinternal
@@ -191,6 +196,17 @@ VALUES
   'SUPPORTED','evidence-copycoverage-b-160',repeat('b',64),clock_timestamp(),'owner-data-b-160','owner-infra-b-160',
   'policy-retention-b-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-b-160',repeat('f',64),'16010000-0000-4000-8000-000000000002');
 
+INSERT INTO saas_tenant_backup_copy_class_coverage_decisions
+ (decision_id,tenant_id,category_code,copy_class_code,revision,disposition,evidence_reference,evidence_sha256,evidence_at,
+  data_owner_reference,infrastructure_owner_reference,policy_reference,reason,status,idempotency_key,request_hash,submitted_by_user_id)
+VALUES
+ ('16070000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000001','BUSINESS_DATA','POSTGRESQL_WAL_PITR',1,
+  'UNRESOLVED','evidence-backupclass-a-160',repeat('c',64),clock_timestamp(),'owner-data-a-160','owner-infra-a-160',
+  'policy-retention-a-160','Synthetic pending WAL/PITR fixture','PENDING','backup-class-a-160',repeat('d',64),'16010000-0000-4000-8000-000000000001'),
+ ('16070000-0000-4000-8000-000000000002','16000000-0000-4000-8000-000000000002','BUSINESS_DATA','POSTGRESQL_WAL_PITR',1,
+  'UNRESOLVED','evidence-backupclass-b-160',repeat('e',64),clock_timestamp(),'owner-data-b-160','owner-infra-b-160',
+  'policy-retention-b-160','Synthetic pending WAL/PITR fixture','PENDING','backup-class-b-160',repeat('f',64),'16010000-0000-4000-8000-000000000002');
+
 INSERT INTO saas_tenant_external_data_targets
  (tenant_id,target_id,store_kind,adapter_key,config_reference,registration_reason,categories,required,
   registered_by_user_id,idempotency_key,request_hash)
@@ -276,6 +292,18 @@ BEGIN
        'factoryos.data.external.running','Run fence SQL negative test','["BUSINESS_DATA"]',true,
        '16010000-0000-4000-8000-000000000001','sql-target-running-160',repeat('1',64));
     RAISE EXCEPTION 'required target inventory changed while an erasure run was RUNNING';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
+    IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;
+  END;
+  BEGIN
+    UPDATE saas_tenant_backup_copy_class_coverage_decisions
+       SET status='ACCEPTED',reviewed_by_user_id='16010000-0000-4000-8000-000000000002',
+           review_reason='Independent copy-class review',reviewed_at=clock_timestamp(),
+           valid_until=clock_timestamp()+interval '89 days'
+     WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+       AND decision_id='16070000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'backup copy-class evidence changed while an erasure run was RUNNING';
   EXCEPTION WHEN SQLSTATE '55000' THEN
     GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
     IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;

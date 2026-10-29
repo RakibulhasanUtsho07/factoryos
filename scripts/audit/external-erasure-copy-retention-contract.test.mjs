@@ -357,3 +357,35 @@ test('copy-class coverage and required target inventory cannot drift while an er
  assert.ok(workflow.includes('Reapplying external copy-coverage run fence'));
  assert.ok(runbook.includes('A database-level run fence takes the tenant lock') && runbook.includes('while any propagation run is'));
 });
+
+
+test('granular backup copy-class coverage blocks unresolved backup media and binds reviewed evidence', async () => {
+ const migration=await readRepoFile('migrations/228_saas_tenant_backup_copy_class_coverage.sql');
+ const manifest=await readRepoFile('scripts/audit/migration-manifest.txt');
+ const workflow=await readRepoFile('.github/workflows/api-postgres-ci.yml');
+ const source=await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+ const constants=await readRepoFile('services/api/src/saas/backup-copy-class-coverage.constants.ts');
+ const coverageService=await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
+ const controller=await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.controller.ts');
+ const module=await readRepoFile('services/api/src/saas/saas.module.ts');
+ const sql=await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
+ const runbook=await readRepoFile(RUNBOOK);
+ assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS public.saas_tenant_backup_copy_class_coverage_decisions'));
+ assert.ok(migration.includes('FORCE ROW LEVEL SECURITY'));
+ assert.ok(migration.includes('factoryos_guard_saas_external_copy_coverage_run_fence'));
+ assert.ok(migration.includes('backup copy-class evidence and scope are immutable'));
+ assert.ok(migration.includes('separate reviewer and reason'));
+ assert.ok(manifest.split(/\r?\n/).includes('migrations/228_saas_tenant_backup_copy_class_coverage.sql'));
+ assert.ok(workflow.includes('Reapplying granular backup copy-class registry'));
+ for(const code of ['POSTGRESQL_BASE_BACKUP','POSTGRESQL_WAL_PITR','REDIS_AOF_BACKUP','REDIS_RDB_BACKUP','FILESYSTEM_SNAPSHOT','BLOCK_VOLUME_SNAPSHOT','MANAGED_BACKUP_VAULT','REPLICA_FAILOVER_COPY','EXTERNAL_DR_COPY']) assert.ok(constants.includes(code));
+ assert.ok(source.includes('assertBackupCopyClassCoverage'));
+ assert.ok(source.includes('backupCopyClassCoverageDigest'));
+ assert.ok(source.includes('Unresolved backup copy class blocks whole-tenant erasure'));
+ assert.ok(source.includes('No reviewed erasure adapter is registered for backup copy class'));
+ assert.ok(coverageService.includes('submission and review require different actors'));
+ assert.ok(controller.includes("RequirePermission('saas.data_retention.approve')"));
+ assert.ok(module.includes('SaasTenantBackupCopyClassCoverageController'));
+ assert.ok(sql.includes('saas_tenant_backup_copy_class_coverage_decisions'));
+ assert.ok(sql.includes('backup copy-class evidence changed while an erasure run is RUNNING'));
+ assert.ok(runbook.includes('Granular backup copy-class acceptance'));
+});
