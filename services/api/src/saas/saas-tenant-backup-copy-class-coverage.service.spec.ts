@@ -10,15 +10,17 @@ describe('SaasTenantBackupCopyClassCoverageService',()=>{
  const database={query:jest.fn<(...args:unknown[])=>Promise<{rows:unknown[]}>>(),transaction:jest.fn<(...args:unknown[])=>Promise<unknown>>()};
  const iam={authorize:jest.fn<(...args:unknown[])=>Promise<void>>()};
  const audit={recordWithClient:jest.fn<(...args:unknown[])=>Promise<string>>()};
+ const evidenceReader={verifyArtifact:jest.fn<(...args:unknown[])=>Promise<{reference:string;sha256:string;sizeBytes:number}>>()};
  let service:SaasTenantBackupCopyClassCoverageService;
  beforeEach(()=>{
   jest.resetAllMocks();iam.authorize.mockResolvedValue(undefined);audit.recordWithClient.mockResolvedValue('audit-event');
+  evidenceReader.verifyArtifact.mockImplementation(async(reference,sha256)=>({reference:String(reference),sha256:String(sha256),sizeBytes:42}));
   database.transaction.mockImplementation(async(...args:unknown[])=>{
    const callback=args.find(v=>typeof v==='function') as ((client:unknown)=>Promise<unknown>)|undefined;
    if(!callback)throw new Error('transaction callback is required');
    return callback({query:clientQuery} as never);
   });
-  service=new SaasTenantBackupCopyClassCoverageService(database as never,iam as never,audit as never);
+  service=new SaasTenantBackupCopyClassCoverageService(database as never,iam as never,audit as never,evidenceReader as never);
  });
  it('rejects evidence older than 30 days',async()=>{
   await expect(service.createDecision(tenant,submitter,{
