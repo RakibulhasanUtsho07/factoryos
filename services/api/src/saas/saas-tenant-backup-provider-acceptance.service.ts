@@ -397,17 +397,29 @@ export class SaasTenantBackupProviderAcceptanceService {
     if (this.config.get<string>(CONFIG_REFERENCE)?.trim() !== configurationReference) {
       throw new ServiceUnavailableException('Backup provider acceptance configuration reference does not match the active deployment');
     }
-    const providerReference = this.reference(this.config.get<string>(PROVIDER_REFERENCE), 'provider_reference');
-    const providerScopeReference = this.reference(this.config.get<string>(PROVIDER_SCOPE_REFERENCE), 'provider_scope_reference');
-    const policyOwnershipReviewReference = this.reference(
-      this.config.get<string>(POLICY_OWNERSHIP_REVIEW_REFERENCE), 'policy_ownership_review_reference',
-    );
-    const stagingAcceptanceReference = this.reference(
-      this.config.get<string>(STAGING_ACCEPTANCE_REFERENCE), 'staging_acceptance_reference',
-    );
-    const restoreReplayReference = this.reference(
-      this.config.get<string>(RESTORE_REPLAY_REFERENCE), 'restore_replay_reference',
-    );
+    let providerReference: string;
+    let providerScopeReference: string;
+    let policyOwnershipReviewReference: string;
+    let stagingAcceptanceReference: string;
+    let restoreReplayReference: string;
+    try {
+      providerReference = this.reference(this.config.get<string>(PROVIDER_REFERENCE), 'provider_reference');
+      providerScopeReference = this.reference(this.config.get<string>(PROVIDER_SCOPE_REFERENCE), 'provider_scope_reference');
+      policyOwnershipReviewReference = this.reference(
+        this.config.get<string>(POLICY_OWNERSHIP_REVIEW_REFERENCE), 'policy_ownership_review_reference',
+      );
+      stagingAcceptanceReference = this.reference(
+        this.config.get<string>(STAGING_ACCEPTANCE_REFERENCE), 'staging_acceptance_reference',
+      );
+      restoreReplayReference = this.reference(
+        this.config.get<string>(RESTORE_REPLAY_REFERENCE), 'restore_replay_reference',
+      );
+    } catch {
+      // Missing/invalid deployment-controlled scope is an unavailable provider,
+      // not a caller's malformed request; never expose a 400 that could be read
+      // as permission to bypass the provider acceptance gate.
+      throw new ServiceUnavailableException('Backup provider acceptance scope references are missing or invalid');
+    }
     const providerScopeDigest = digestSaasBackupProviderAcceptanceScope({
       providerReference, providerScopeReference, configurationReference, adapterKey, adapterVersion,
       policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference,
