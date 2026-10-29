@@ -172,7 +172,7 @@ ALTER TABLE saas_tenant_backup_writer_fences
   ADD COLUMN IF NOT EXISTS staging_acceptance_reference varchar(200),
   ADD COLUMN IF NOT EXISTS restore_replay_reference varchar(200);
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -181,10 +181,35 @@ BEGIN
   ) THEN
     ALTER TABLE saas_tenant_backup_writer_fences
       ADD CONSTRAINT chk_saas_backup_writer_fence_acceptance_references CHECK (
-        (writer_inventory_reference IS NULL AND policy_ownership_review_reference IS NULL
-          AND staging_acceptance_reference IS NULL AND restore_replay_reference IS NULL)
-        OR (writer_inventory_reference IS NOT NULL
-          AND writer_inventory_reference ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}
+        (
+          (state IN ('FENCED','ERASING','ERASURE_VERIFIED','RELEASED')
+            OR (state='RECOVERY_REQUIRED' AND recovery_from_state IN ('FENCED','ERASING','ERASURE_VERIFIED')))
+          AND writer_inventory_reference IS NOT NULL
+          AND writer_inventory_reference ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'
+          AND writer_inventory_reference !~* '://' AND writer_inventory_reference !~* '(secret|password|credential|access[-_]?key|token)'
+          AND policy_ownership_review_reference IS NOT NULL
+          AND policy_ownership_review_reference ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'
+          AND policy_ownership_review_reference !~* '://' AND policy_ownership_review_reference !~* '(secret|password|credential|access[-_]?key|token)'
+          AND staging_acceptance_reference IS NOT NULL
+          AND staging_acceptance_reference ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'
+          AND staging_acceptance_reference !~* '://' AND staging_acceptance_reference !~* '(secret|password|credential|access[-_]?key|token)'
+          AND restore_replay_reference IS NOT NULL
+          AND restore_replay_reference ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$'
+          AND restore_replay_reference !~* '://' AND restore_replay_reference !~* '(secret|password|credential|access[-_]?key|token)'
+        )
+        OR (
+          state NOT IN ('FENCED','ERASING','ERASURE_VERIFIED','RELEASED')
+          AND NOT (state='RECOVERY_REQUIRED' AND recovery_from_state IN ('FENCED','ERASING','ERASURE_VERIFIED'))
+          AND writer_inventory_reference IS NULL
+          AND policy_ownership_review_reference IS NULL
+          AND staging_acceptance_reference IS NULL
+          AND restore_replay_reference IS NULL
+        )
+      ) NOT VALID;
+  END IF;
+END $$;
+ALTER TABLE saas_tenant_backup_writer_fences
+  VALIDATE CONSTRAINT chk_saas_backup_writer_fence_acceptance_references;
 ALTER TABLE saas_tenant_backup_writer_fences FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_backup_writer_fences_tenant_allow ON saas_tenant_backup_writer_fences;
 DROP POLICY IF EXISTS saas_tenant_backup_writer_fences_tenant_enforce ON saas_tenant_backup_writer_fences;
