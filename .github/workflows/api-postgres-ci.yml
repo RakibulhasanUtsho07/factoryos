@@ -201,6 +201,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/228_saas_tenant_backup_copy_class_coverage.sql
 
+          echo "Reapplying backup evidence reference hardening to verify opaque-ID constraints are idempotent"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/229_saas_backup_copy_class_evidence_reference.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
