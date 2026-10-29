@@ -366,6 +366,19 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
   });
 
+  it('blocks propagation when source artifact bytes change after acceptance', async () => {
+    const first = backupCopyClassRows[0];
+    if (!first) throw new Error('Signed backup copy-class fixture is missing');
+    writeFileSync(join(backupEvidenceRoot, String(first.evidence_reference)), 'tampered evidence after independent review');
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Source evidence bytes must still match the signed digest',
+      idempotency_key: 'external-propagation-tampered-source-artifact',
+    })).rejects.toThrow('evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
   it('fails closed when a prepared plan was produced by a different adapter version', async () => {
     adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
