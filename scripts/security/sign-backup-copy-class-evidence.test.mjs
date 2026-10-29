@@ -72,6 +72,36 @@ test('signer checks the evidence-pack digest and emits a verifiable Ed25519 API 
   }
 });
 
+test('signer refuses URL and path references so the API cannot perform remote fetches', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-backup-copy-attestation-reference-'));
+  try {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const keyPath = join(directory, 'owner-private.pem');
+    const evidencePath = join(directory, 'evidence-pack.bin');
+    const payloadPath = join(directory, 'payload.json');
+    const evidence = Buffer.from('opaque evidence artifact', 'utf8');
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    writeFileSync(evidencePath, evidence);
+    writeFileSync(payloadPath, JSON.stringify({
+      category_code: 'BUSINESS_DATA', copy_class_code: 'POSTGRESQL_WAL_PITR', disposition: 'UNRESOLVED',
+      evidence_reference: '../outside', evidence_sha256: createHash('sha256').update(evidence).digest('hex'),
+      evidence_at: new Date().toISOString(), attestation_key_id: 'copy-owner-test-v1',
+      attestation_owner_reference: 'owner.infrastructure.v1', data_owner_reference: 'owner.data.v1',
+      infrastructure_owner_reference: 'owner.infrastructure.v1', policy_reference: 'policy.retention.v1',
+      reason: 'WAL archive class needs investigation', idempotency_key: 'wal-pitr-path-reference-v1',
+    }));
+    const result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /single opaque artifact identifier/);
+    assert.doesNotMatch(result.stdout, /attestation_signature/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('signer refuses to sign when evidence bytes do not match the claimed digest', () => {
   const directory = mkdtempSync(join(tmpdir(), 'factoryos-backup-copy-attestation-mismatch-'));
   try {
