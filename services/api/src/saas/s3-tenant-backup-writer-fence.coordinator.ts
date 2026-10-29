@@ -26,6 +26,11 @@ export class S3TenantBackupWriterFenceCoordinator {
    */
   async beginPropagationFence(input: BeginBackupWriterFenceInput): Promise<BackupWriterFenceView[]> {
     this.provider.getProviderAcceptanceReferences();
+    // Validate all category inventories before creating DRAINING fences so a missing
+    // or pending review cannot unnecessarily pause tenant writers.
+    for (const category of input.categories) {
+      await this.writerInventory.requireCurrentAcceptedSnapshot(input.tenantId, category);
+    }
     const fences = await this.lifecycle.beginErasureFence(input);
     const active: BackupWriterFenceView[] = [];
     for (const original of fences) {
@@ -148,6 +153,10 @@ export class S3TenantBackupWriterFenceCoordinator {
     const providerAcceptance = this.provider.getProviderAcceptanceReferences();
     if (inventory.reviewedByUserId === current.createdByUserId) {
       throw new ConflictException('Writer inventory reviewer must be independent of the propagation/fence creator');
+    }
+    if (current.state === 'FENCED' && !current.writerInventorySnapshotId) {
+      await this.lifecycle.requireRecovery(input.tenantId, input.fenceId, 'WRITER_INVENTORY_EVIDENCE_MISSING');
+      throw new ConflictException('Existing provider fence has no reviewed inventory binding; recovery is required');
     }
     if (current.writerInventorySnapshotId && (
       current.writerInventorySnapshotId !== inventory.snapshotId
