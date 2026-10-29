@@ -10,6 +10,7 @@ import { SaasSandboxController } from './saas-sandbox.controller';
 import { SaasSandboxService } from './saas-sandbox.service';
 import { SaasTenantDataTransferController } from './saas-tenant-data-transfer.controller';
 import { SaasTenantRetentionController } from './saas-tenant-retention.controller';
+import { SaasTenantBackupWriterInventoryController } from './saas-tenant-backup-writer-inventory.controller';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
 import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
@@ -37,6 +38,7 @@ import { WmsPodS3ErasureAdapter } from './wms-pod-s3-erasure.adapter';
 import { RedisCacheErasureAdapter } from './redis-cache-erasure.adapter';
 import { S3TenantBackupErasureAdapter } from './s3-tenant-backup-erasure.adapter';
 import { SaasTenantBackupWriterFenceService } from './saas-tenant-backup-writer-fence.service';
+import { SaasTenantBackupWriterInventoryService } from './saas-tenant-backup-writer-inventory.service';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { TenantCacheModule } from './tenant-cache.module';
@@ -53,6 +55,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasDeploymentProfileController,
     SaasTenantDataTransferController,
     SaasTenantRetentionController,
+    SaasTenantBackupWriterInventoryController,
   ],
   providers: [
     SaasUsageService,
@@ -77,6 +80,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     WmsPodS3ErasureAdapter,
     S3TenantBackupErasureAdapter,
     SaasTenantBackupWriterFenceService,
+    SaasTenantBackupWriterInventoryService,
     S3TenantBackupWriterFenceProvider,
     S3TenantBackupWriterFenceCoordinator,
     {
@@ -111,6 +115,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantFinanceRetentionService,
     SaasTenantDataTransferWorkerService,
     SaasTenantBackupWriterFenceService,
+    SaasTenantBackupWriterInventoryService,
     S3TenantBackupWriterFenceCoordinator,
   ],
 })
