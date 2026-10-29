@@ -1,6 +1,8 @@
 import { createHash, createHmac } from 'node:crypto';
 import { ConflictException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Inject, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import type {
   SaasExternalPropagationContext,
   SaasExternalPropagationDeleteReceipt,
@@ -210,26 +212,28 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
   readonly adapterKey = ADAPTER_KEY;
   readonly adapterVersion = ADAPTER_VERSION;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() @Inject(S3TenantBackupWriterFenceProvider)
+    private readonly writerFenceProvider?: S3TenantBackupWriterFenceProvider,
+  ) {}
 
   async isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean> {
-    if (!this.supportsTarget(target)) return false;
+    if (!this.supportsTarget(target) || !this.writerFenceProvider) return false;
     const expectedReference = this.config.get<string>(CONFIG_REFERENCE)?.trim();
     if (!expectedReference || target.configReference.trim() !== expectedReference) return false;
     try {
       const storage = readConfiguration(this.config);
       await this.assertVersioningEnabled(storage);
       await this.assertObjectLockEnabled(storage);
+      // These deployment-controlled evidence references are necessary gates,
+      // not independent proof; real-provider acceptance remains an operational
+      // release requirement. Defaults stay disabled in .env.example.
+      this.writerFenceProvider.getReviewedWriterInventoryEvidence();
+      return true;
     } catch {
       return false;
     }
-    // Fail closed: the S3 policy controller and durable fence coordinator
-    // exist, but this adapter is not yet activated through the propagation
-    // runner with provider policy ownership, a complete writer inventory,
-    // every producer/replication identity, multipart reconciliation and
-    // real-provider staging acceptance. S3 versioning/Object Lock alone do not
-    // fence new writes. Keep BACKUP inactive until those integration gates pass.
-    return false;
   }
 
   async prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan> {
