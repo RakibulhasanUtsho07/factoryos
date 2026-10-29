@@ -33,7 +33,7 @@ function view(state: string, overrides: Record<string, unknown> = {}) {
 }
 function acceptedInventory(overrides: Record<string, unknown> = {}) {
   return {
-    snapshotId, tenantId, category: Category.BUSINESS_DATA, revision: 1,
+    snapshotId, tenantId: tenant, category: Category.BUSINESS_DATA, revision: 1,
     inventoryReference: 'backup-writers.inventory.2026-10-29', manifestDigest: digest, entryCount: 3,
     status: 'ACCEPTED' as const,
     registeredByUserId: 'c8000000-0000-4000-8000-000000000008',
