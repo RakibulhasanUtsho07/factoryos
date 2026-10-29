@@ -80,10 +80,14 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
 
   assert.match(adapter, /await this\.assertVersioningEnabled\(storage\);[\s\S]*?await this\.assertObjectLockEnabled\(storage\);/);
   assert.match(adapter, /if \(!this\.supportsTarget\(target\) \|\| !this\.writerFenceProvider \|\| !this\.writerInventory\) return false/);
-  assert.match(adapter, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\);[\s\S]*?return true/);
+  const activation = adapter.slice(adapter.indexOf('async isConfigured'), adapter.indexOf('async prepare'));
+  assert.match(activation, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\)/);
+  assert.match(activation, /Deliberately stay inactive until durable, independently reviewed provider/);
+  assert.match(activation, /return false/);
+  assert.doesNotMatch(activation, /return true/);
   assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
-  assert.match(doc, /isConfigured\(\)[\s\S]*?remains false by default/i);
+  assert.match(doc, /isConfigured\(\)[\s\S]*?returns false/i);
 });
 
 test('runbook explicitly distinguishes an operational contract from production deletion evidence', async () => {
