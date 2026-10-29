@@ -243,21 +243,21 @@ test('next writer epoch remains gated until provider policy removal is durably c
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
   const workflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
 
-  assert.ok(manifest.split(/\\r?\\n/).map((entry) => entry.trim()).includes('migrations/225_saas_backup_writer_release_confirmation.sql'));
+  assert.ok(manifest.split(/\r?\n/).map((entry) => entry.trim()).includes('migrations/225_saas_backup_writer_release_confirmation.sql'));
   assert.match(migration, /provider_release_confirmed_at timestamptz/);
   assert.match(migration, /factoryos_guard_saas_backup_writer_release_gate/);
   assert.match(migration, /factoryos_guard_saas_backup_writer_fence_release_gate/);
   assert.match(migration, /provider release confirmation is a one-way fact/);
   assert.match(service, /async confirmProviderFenceReleased/);
   assert.match(service, /provider_release_confirmed_at === null/);
-  assert.match(coordinator, /this\\.lifecycle\\.confirmProviderFenceReleased/);
+  assert.match(coordinator, /this\.lifecycle\.confirmProviderFenceReleased/);
   const releaseStart = coordinator.indexOf('async releaseAfterTombstoneReplay');
   const policyRemoval = coordinator.indexOf('this.provider.removeFence', releaseStart);
   const releaseConfirm = coordinator.indexOf('this.lifecycle.confirmProviderFenceReleased', releaseStart);
   assert.ok(releaseStart >= 0 && policyRemoval > releaseStart && releaseConfirm > policyRemoval);
   assert.match(contract, /next writer epoch was accepted before provider release confirmation/);
   assert.match(serviceSpec, /blocks the next writer epoch until provider policy removal is confirmed/);
-  assert.match(workflow, /Reapplying provider-release confirmation gate[\\s\\S]*?migrations\\/225_saas_backup_writer_release_confirmation\\.sql/);
+  assert.match(workflow, /Reapplying provider-release confirmation gate[\s\S]*?migrations\/225_saas_backup_writer_release_confirmation\.sql/);
   assert.ok(migration.trimEnd().endsWith('COMMIT;'), 'writer-release confirmation migration must be one closed transaction');
 });
 
