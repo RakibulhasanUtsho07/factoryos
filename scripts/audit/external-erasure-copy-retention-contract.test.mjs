@@ -142,23 +142,32 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   assert.ok(env.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=false'));
   assert.ok(doc.includes('not an independently verified lock on provider policy changes'));
 });
-test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage', async () => {
+test('backup writer-fence and inventory migrations are in replay and PostgreSQL acceptance coverage', async () => {
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
   const migration = await readRepoFile('migrations/222_saas_tenant_backup_writer_fence_ledger.sql');
+  const inventoryMigration = await readRepoFile('migrations/223_saas_backup_writer_principal_inventory.sql');
   const contract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
   const workflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
 
-  assert.ok(
-    manifest.split(/\r?\n/).map((entry) => entry.trim()).includes('migrations/222_saas_tenant_backup_writer_fence_ledger.sql'),
-    'writer-fence migration must be included in the canonical PostgreSQL replay',
-  );
+  const manifestEntries = manifest.split(/\r?\n/).map((entry) => entry.trim());
+  assert.ok(manifestEntries.includes('migrations/222_saas_tenant_backup_writer_fence_ledger.sql'),
+    'writer-fence migration must be included in the canonical PostgreSQL replay');
+  assert.ok(manifestEntries.includes('migrations/223_saas_backup_writer_principal_inventory.sql'),
+    'writer inventory migration must be included in the canonical PostgreSQL replay');
   assert.match(migration, /tenant_relation_ownership_reviews/i);
   assert.match(migration, /backup writer operation uses a stale writer epoch/i);
+  assert.match(inventoryMigration, /saas_tenant_backup_writer_inventory_snapshots/);
+  assert.match(inventoryMigration, /saas_tenant_backup_writer_fence_inventory_binding_guard/);
+  assert.doesNotMatch(inventoryMigration, /\bAS \$(?:\r?\n)|\bEND \$(?:;|\r?\n)/,
+    'inventory migration PL/pgSQL dollar-quote delimiters must be balanced');
+  assert.ok(inventoryMigration.trimEnd().endsWith('COMMIT;'),
+    'inventory migration must be one closed transaction');
   assert.match(contract, /writer fence advanced while upload outcome remained ACTIVE/);
   assert.match(contract, /backup erasure was verified while residual copies remained/);
   assert.match(contract, /stale writer epoch was accepted after release/);
   assert.match(contract, /Tenant B must not see tenant A backup writer fence/);
   assert.match(workflow, /Reapplying the tenant backup writer-fence ledger/);
+  assert.match(workflow, /Reapplying the reviewed backup writer-principal inventory[\s\S]*?migrations\/223_saas_backup_writer_principal_inventory\.sql/);
 });
 
 
