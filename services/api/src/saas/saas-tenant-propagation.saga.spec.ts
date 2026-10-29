@@ -269,7 +269,11 @@ describe('SaasTenantPropagationService external saga', () => {
   });
 
   it('fails closed before any inventory when backup writer-fence acquisition fails', async () => {
-    backupFenceCoordinator.beginPropagationFence.mockRejectedValueOnce(new Error('provider policy read-back unavailable'));
+    backupFenceCoordinator.beginPropagationFence.mockImplementationOnce(async () => {
+      operationSequence += 1;
+      firstFenceOrder = operationSequence;
+      throw new Error('provider policy read-back unavailable');
+    });
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Require backup fence before inventory', idempotency_key: 'external-propagation-fence-fails',
     })).rejects.toThrow('provider policy read-back unavailable');
