@@ -2,7 +2,7 @@
 
 **Purpose:** prevent a caller from inventing or altering a backup-copy-class evidence claim without a signature from an owner key explicitly trusted by the API deployment.
 
-**Boundary:** this proves a trusted key signed a canonical statement. It does not replace independent reviewer approval, automatic evidence discovery, independent provider read-back, or proof that a remote reference contains the claimed bytes. The signer utility checks a local evidence-pack digest before signing; reviewers must still inspect the source evidence independently.
+**Boundary:** this proves a trusted key signed canonical claims, and the API can read the exact evidence bytes from its deployment-owned read-only evidence root and compare SHA-256 before submission, acceptance review, and propagation checkpoints. It still does not discover arbitrary remote artifacts or prove that every provider backup copy has been enumerated; independent reviewers and real-provider staging acceptance remain required.
 
 ## Trust configuration
 
@@ -45,3 +45,14 @@ Submit the signed body to `POST /v2/saas/data-retention/backup-copy-classes`. Th
 An empty or broken trust store is a service-configuration failure, and invalid/unknown signatures or owner bindings are rejected. Do not downgrade to unsigned rows, re-sign a stale claim, or mark a missing source artifact `NOT_APPLICABLE`. If a key is compromised, remove it from the deployment trust store, rotate under the documented key-management policy and submit new evidence; a revoked/missing key must not be treated as a valid current source attestation.
 
 Synthetic CI keys and SQL fixture signatures exist only to test cryptographic/control contracts. They are not evidence of real PostgreSQL, Redis, S3, vault, snapshot, replica or disaster-recovery behavior. Provider staging, an independently reviewed evidence pack, owner-approved retention policy, and full copy-class coverage remain required for production release acceptance.
+
+
+## Source artifact read-back
+
+Set `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR` to an absolute directory mounted into the API runtime and owned by the deployment/evidence pipeline. It must be a real directory, not a symlink. Mount it read-only for the API identity. The API does not follow URLs and does not fetch caller-supplied HTTP(S) destinations.
+
+Every `evidence_reference` is a single opaque file identifier matching `[A-Za-z0-9][A-Za-z0-9._-]{0,199}`. The referenced file must exist under the configured root, be a regular non-empty file, be opened without following symlinks, and be no larger than 16 MiB. The API streams the bytes with a bounded buffer, computes SHA-256 itself, checks the actual byte count, and rejects metadata/content changes detected during reading. The result must equal the signed `evidence_sha256`; missing files, symbolic links, directory entries, oversize data, wrong digest or an unavailable/unsafe root fail closed.
+
+Copy the *same evidence pack bytes* used by the signer into the read-only evidence root under the opaque reference before submission. Do not put a directory name, path, URL, tenant data, or secret into the reference. If the source evidence changes, publish a new artifact ID and digest, create a new signed revision, and obtain independent review. Old accepted decisions are rechecked against the current artifact at every propagation preflight/recovery/provider checkpoint, so a missing or replaced artifact blocks execution.
+
+This source reader is a deployment-local immutable-artifact contract, not yet an S3/GCS/Vault object-source adapter. A mounted immutable evidence volume or approved artifact staging pipeline must supply the file. Real provider metadata, IAM ownership, inventory completeness and backup enumeration still require independently reviewed source evidence.
