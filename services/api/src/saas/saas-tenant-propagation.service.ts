@@ -378,14 +378,21 @@ export class SaasTenantPropagationService {
     const backupFenceCategories = [...new Set(backupTargets.flatMap((target) =>
       target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
     ))].sort();
-    if (backupTargets.length > 0) {
-      if (!this.backupWriterFenceCoordinator) {
-        throw new ServiceUnavailableException('Required backup writer-fence coordinator is not registered; external propagation is halted before provider inventory');
-      }
-      await this.backupWriterFenceCoordinator.beginPropagationFence({
+    if (backupTargets.length > 0 && !this.backupWriterFenceCoordinator) {
+      throw new ServiceUnavailableException('Required backup writer-fence coordinator is not registered; external propagation is halted before provider inventory');
+    }
+    // Acquire every target's exact scope before entering the adapter loop. Different
+    // category targets may use different reviewed provider configuration/adapter bindings.
+    for (const target of backupTargets) {
+      const targetCategories = [...new Set(target.categories.filter((category) =>
+        this.parseCategories(prepared.request.categories).includes(category)))].sort();
+      if (targetCategories.length === 0) continue;
+      await this.backupWriterFenceCoordinator!.beginPropagationFence({
         tenantId, requestId, requestVersion: Number(prepared.request.version),
         runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
-        categories: backupFenceCategories, actorUserId,
+        categories: targetCategories, actorUserId,
+        configReference: target.configReference, adapterKey: target.adapterKey,
+        adapterVersion: this.adapterFor(target).adapterVersion,
       });
     }
 
@@ -448,6 +455,7 @@ export class SaasTenantPropagationService {
           }
           await this.backupWriterFenceCoordinator.assertFenceHeld({
             tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+            configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
           });
         }
         if (planEntry) {
@@ -516,6 +524,7 @@ export class SaasTenantPropagationService {
           if (target.storeKind === 'BACKUP') {
             await this.backupWriterFenceCoordinator!.assertFenceHeld({
               tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+              configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
             });
           }
           deletion = await adapter.erase({ ...context, plan });
@@ -549,6 +558,7 @@ export class SaasTenantPropagationService {
             tenantId, categories: verifiedBackupCategories,
             manifestDigest: verifiedDigest!, verificationReference: verificationReference!,
             residualCopies: Number(residualCopies),
+            configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
           });
         }
         receiptStatus = verified ? 'VERIFIED' : 'RESIDUALS';
