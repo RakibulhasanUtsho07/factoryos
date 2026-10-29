@@ -21,7 +21,7 @@ All ten must be **PASS**; **FAIL** or **NOT_RUN** evidence is retained but canno
 
 ## Scope and lifecycle
 
-The API captures the deployment-configured provider reference, provider-scope reference, configuration reference, adapter key/version and a digest over those exact values. The provider-scope reference must uniquely identify the provider account/project, region and dedicated bucket/container scope, without embedding credentials. Never re-use a scope reference for a different provider bucket or account.
+The API captures the deployment-configured provider reference, provider-scope reference, configuration reference, adapter key/version, policy-ownership review reference, staging-acceptance reference and restore-replay reference. A canonical digest binds all of those values. The submitted top-level staging evidence reference must exactly equal the deployment's configured staging-acceptance reference; changing any of these references invalidates the old scope digest and requires a new acceptance. The provider-scope reference must uniquely identify the provider account/project, region and dedicated bucket/container scope, without embedding credentials. Never re-use a scope reference for a different provider bucket or account.
 
 Submitters need saas.data_retention.write. Approval/rejection and revocation need saas.data_retention.approve; a submitter cannot approve their own record. Only the latest revision for a tenant/category/provider scope can be reviewed. Accepted records expire after 90 days. Revocation is stored separately as an append-only fact and immediately causes runtime checks to fail.
 
@@ -34,6 +34,6 @@ Routes:
 
 ## Runtime behavior and limitations
 
-The S3 adapter checks the current accepted record during preflight and again before prepare, mutation and verification. It checks the evidence digest, all ten PASS outcomes, expiry, revocation, adapter version and exact configured scope. Missing settings, stale revisions, a newer pending/rejected record, changed scope, expiry, digest mismatch or revocation all keep the adapter inactive.
+The S3 adapter checks the current accepted record during preflight and again before prepare, mutation and verification. It checks the evidence digest, all ten PASS outcomes, expiry, revocation, adapter version, exact configured provider scope, policy-ownership review reference, staging-acceptance reference and restore-replay reference. Missing settings, stale revisions, a newer pending/rejected record, changed scope, expiry, digest mismatch or revocation all keep the adapter inactive.
 
 This does **not** perform IAM/Access Point discovery, prove exclusive bucket-policy ownership, provision workload identity, validate a compliance retention policy, or cover database WAL/PITR, Redis AOF/RDB, snapshots, backup vaults, replicas, external DR, search indexes, vector stores, learning artifacts or external caches. Human reviewers must validate the actual provider evidence in its source system; opaque references alone are not proof. Real-provider staging and the broader AS-137 / NFR-PROD-14 checklist remain mandatory. Do not promote the PR or mark those requirements PASS solely because CI passes.
