@@ -132,7 +132,7 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   assert.ok(coordinator.includes('releasePolicyDigest'));
   assert.ok(coordinator.includes('this.provider.removeFence'));
   assert.ok(env.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED=false'));
-  assert.ok(doc.includes('does not establish exclusivity by itself'));
+  assert.ok(doc.includes('not an independently verified lock on provider policy changes'));
 });
 test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage', async () => {
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
@@ -162,5 +162,5 @@ test('S3 writer fence denies both direct object uploads and replication writes',
   assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
   assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
   assert.match(doc, /s3:PutObject.*s3:ReplicateObject/);
-  assert.match(doc, /S3 BACKUP erasure adapter must continue to return false from `isConfigured\(\)`, fail-closed/i);
+  assert.match(doc, /S3 BACKUP adapter remains fail-closed/i);
 });
