@@ -286,6 +286,33 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     expect(result.fence.state).toBe('RELEASED');
   });
 
+  it('keeps the provider Deny installed if acceptance is revoked after epoch release but before policy removal', async () => {
+    const { coordinator, lifecycle, provider, providerAcceptanceService } = setup('ERASURE_VERIFIED');
+    lifecycle.getFence.mockResolvedValue(view('ERASURE_VERIFIED', {
+      writerInventorySnapshotId: snapshotId, writerInventoryDigest: digest, fencedWriterCount: 3,
+    }) as never);
+    lifecycle.releaseAfterTombstoneReplay.mockResolvedValue(view('RELEASED', {
+      reviewedByUserId: reviewer, releaseReference: reference, releasePolicyDigest: digest,
+      releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
+      tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
+    }) as never);
+    let checks = 0;
+    providerAcceptanceService.requireCurrentAcceptedProviderAcceptance.mockImplementation(async () => {
+      checks += 1;
+      if (checks === 3) throw new ServiceUnavailableException('revoked immediately before policy removal');
+      return { acceptanceId: 'provider-acceptance-001', status: 'ACCEPTED' } as never;
+    });
+
+    await expect(coordinator.releaseAfterTombstoneReplay({
+      ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
+      reviewedByUserId: reviewer, releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
+      tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(lifecycle.releaseAfterTombstoneReplay).toHaveBeenCalled();
+    expect(provider.removeFence).not.toHaveBeenCalled();
+    expect(checks).toBe(3);
+  });
+
   it('allows retry after durable release when provider policy removal previously failed', async () => {
     const released = view('RELEASED', {
       reviewedByUserId: reviewer, releaseReference: reference, releasePolicyDigest: digest,
