@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { SaasTenantBackupWriterFenceService, BackupWriterFenceView } from './saas-tenant-backup-writer-fence.service';
+import { SaasTenantBackupWriterFenceService, BackupWriterFenceView, BeginBackupWriterFenceInput } from './saas-tenant-backup-writer-fence.service';
 import {
   S3TenantBackupWriterFenceProvider,
   S3TenantBackupWriterFenceRemovalEvidence,
@@ -18,12 +18,72 @@ export class S3TenantBackupWriterFenceCoordinator {
     private readonly provider: S3TenantBackupWriterFenceProvider,
   ) {}
 
+  /**
+   * Acquire provider and durable writer fences for a reviewed propagation run.
+   * This method must complete before a BACKUP adapter performs its inventory.
+   */
+  async beginPropagationFence(input: BeginBackupWriterFenceInput): Promise<BackupWriterFenceView[]> {
+    const inventory = this.provider.getReviewedWriterInventoryEvidence();
+    const fences = await this.lifecycle.beginErasureFence(input);
+    const active: BackupWriterFenceView[] = [];
+    for (const original of fences) {
+      let fence = original;
+      if (fence.state === 'RECOVERY_REQUIRED') {
+        throw new ConflictException('Backup writer fence requires provider-attested recovery before this propagation may resume');
+      }
+      if (fence.state === 'DRAINING' || fence.state === 'FENCING') {
+        fence = await this.installAndRecordFence({
+          tenantId: input.tenantId, category: fence.category, fenceId: fence.fenceId,
+          writerInventoryDigest: inventory.digest, fencedWriterCount: inventory.count,
+          writerInventoryReference: inventory.reference,
+          policyOwnershipReviewReference: inventory.policyOwnershipReviewReference,
+          stagingAcceptanceReference: inventory.stagingAcceptanceReference,
+          restoreReplayReference: inventory.restoreReplayReference,
+        });
+      }
+      if (fence.state === 'FENCED') {
+        fence = await this.lifecycle.markErasureStarted(input.tenantId, fence.fenceId);
+      } else if (fence.state !== 'ERASING' && fence.state !== 'ERASURE_VERIFIED') {
+        throw new ConflictException('Backup writer fence cannot enter propagation from its current lifecycle state');
+      }
+      active.push(fence);
+    }
+    return active;
+  }
+
+  /** Persist verified zero-residual evidence without releasing the provider deny. */
+  async recordPropagationVerification(input: {
+    tenantId: string; categories: SaasTransferDatasetCategory[]; manifestDigest: string;
+    verificationReference: string; residualCopies: number;
+  }): Promise<BackupWriterFenceView[]> {
+    if (input.residualCopies !== 0) {
+      throw new ConflictException('Backup writer fence cannot be verified while residual copies remain');
+    }
+    const results: BackupWriterFenceView[] = [];
+    for (const category of input.categories) {
+      const current = await this.lifecycle.getFence(input.tenantId, category);
+      if (!current) throw new NotFoundException('Backup writer fence not found for verified propagation category');
+      if (current.state !== 'ERASING' && current.state !== 'ERASURE_VERIFIED') {
+        throw new ConflictException('Backup writer fence must be ERASING before verification can be persisted');
+      }
+      results.push(await this.lifecycle.markErasureVerified({
+        tenantId: input.tenantId, fenceId: current.fenceId, manifestDigest: input.manifestDigest,
+        verificationReference: input.verificationReference, residualCopies: input.residualCopies,
+      }));
+    }
+    return results;
+  }
+
   async installAndRecordFence(input: {
     tenantId: string;
     category: SaasTransferDatasetCategory;
     fenceId: string;
     writerInventoryDigest: string;
     fencedWriterCount: number;
+    writerInventoryReference: string;
+    policyOwnershipReviewReference: string;
+    stagingAcceptanceReference: string;
+    restoreReplayReference: string;
   }): Promise<BackupWriterFenceView> {
     const current = await this.requireMatchingFence(input.tenantId, input.category, input.fenceId);
     if (current.state !== 'DRAINING' && current.state !== 'FENCING' && current.state !== 'FENCED') {
@@ -58,6 +118,10 @@ export class S3TenantBackupWriterFenceCoordinator {
       providerPolicyDigest: evidence.providerPolicyDigest,
       writerInventoryDigest: input.writerInventoryDigest,
       fencedWriterCount: input.fencedWriterCount,
+      writerInventoryReference: input.writerInventoryReference,
+      policyOwnershipReviewReference: input.policyOwnershipReviewReference,
+      stagingAcceptanceReference: input.stagingAcceptanceReference,
+      restoreReplayReference: input.restoreReplayReference,
     });
   }
 
