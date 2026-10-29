@@ -8,6 +8,14 @@ const fenceId = 'c5000000-0000-4000-8000-000000000005';
 const actor = 'c4000000-0000-4000-8000-000000000004';
 const digest = 'a'.repeat(64);
 const reference = 's3-bucket-policy-fence.' + fenceId.replace(/-/g, '');
+const inventoryEvidence = {
+  reference: 'backup-writers.inventory.2026-10-29',
+  digest,
+  count: 3,
+  policyOwnershipReviewReference: 'policy-owner.review.2026-10-29',
+  stagingAcceptanceReference: 'staging.s3-fence.accepted.2026-10-29',
+  restoreReplayReference: 'restore.tombstone-replay.accepted.2026-10-29',
+};
 
 function view(state: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -26,6 +34,9 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const current = view(initialState);
     const lifecycle = {
       getFence: jest.fn(async () => current),
+      beginErasureFence: jest.fn(async () => [current]),
+      markErasureStarted: jest.fn(async () => view('ERASING')),
+      markErasureVerified: jest.fn(async () => view('ERASURE_VERIFIED')),
       advanceAfterDrain: jest.fn(async () => ({
         fence: view('FENCING'), readyForProviderFence: true, activeWriterOperations: 0,
       })),
@@ -41,6 +52,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       })),
     };
     const provider = {
+      getReviewedWriterInventoryEvidence: jest.fn(() => inventoryEvidence),
       installFence: jest.fn(async () => ({
         providerFenceReference: reference, providerPolicyDigest: digest, scopePrefixDigest: digest,
         multipartInventoryDigest: digest, pendingMultipartUploads: 0, ...evidence,
@@ -57,17 +69,57 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     return { coordinator: new S3TenantBackupWriterFenceCoordinator(lifecycle as never, provider as never), lifecycle, provider, current };
   }
 
+  it('acquires the durable/provider fence before entering ERASING', async () => {
+    const { coordinator, lifecycle, provider } = setup('DRAINING');
+    const result = await coordinator.beginPropagationFence({
+      tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
+      requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003',
+      sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
+    });
+    expect(result).toEqual([expect.objectContaining({ state: 'ERASING' })]);
+    expect(provider.getReviewedWriterInventoryEvidence).toHaveBeenCalledTimes(1);
+    expect(lifecycle.beginErasureFence).toHaveBeenCalledTimes(1);
+    expect(provider.installFence).toHaveBeenCalledTimes(1);
+    expect(lifecycle.markErasureStarted).toHaveBeenCalledWith(tenant, fenceId);
+    expect(provider.installFence.mock.invocationCallOrder[0]).toBeLessThan(lifecycle.markErasureStarted.mock.invocationCallOrder[0]!);
+  });
+
+  it('requires zero-residual verification before marking each backup category verified', async () => {
+    const { coordinator, lifecycle } = setup('ERASING');
+    lifecycle.getFence.mockResolvedValue(view('ERASING') as never);
+    const result = await coordinator.recordPropagationVerification({
+      tenantId: tenant, categories: [Category.BUSINESS_DATA],
+      manifestDigest: digest, verificationReference: 'backup.verify.receipt.001', residualCopies: 0,
+    });
+    expect(lifecycle.markErasureVerified).toHaveBeenCalledWith({
+      tenantId: tenant, fenceId, manifestDigest: digest,
+      verificationReference: 'backup.verify.receipt.001', residualCopies: 0,
+    });
+    expect(result).toEqual([expect.objectContaining({ state: 'ERASURE_VERIFIED' })]);
+    await expect(coordinator.recordPropagationVerification({
+      tenantId: tenant, categories: [Category.BUSINESS_DATA],
+      manifestDigest: digest, verificationReference: 'backup.verify.receipt.002', residualCopies: 1,
+    })).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('records FENCED only after the application drain and provider policy read-back complete', async () => {
     const { coordinator, lifecycle, provider } = setup();
     const result = await coordinator.installAndRecordFence({
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3,
+      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
+      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
+      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
+      restoreReplayReference: inventoryEvidence.restoreReplayReference,
     });
     expect(lifecycle.advanceAfterDrain).toHaveBeenCalledWith(tenant, fenceId);
     expect(provider.installFence).toHaveBeenCalledWith({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
     expect(lifecycle.recordProviderFenceInstalled).toHaveBeenCalledWith({
       tenantId: tenant, fenceId, providerFenceReference: reference,
       providerPolicyDigest: digest, writerInventoryDigest: digest, fencedWriterCount: 3,
+      writerInventoryReference: inventoryEvidence.reference,
+      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
+      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
+      restoreReplayReference: inventoryEvidence.restoreReplayReference,
     });
     expect(result.state).toBe('FENCED');
   });
@@ -76,7 +128,10 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const { coordinator, lifecycle } = setup('FENCING', { pendingMultipartUploads: 2 });
     await expect(coordinator.installAndRecordFence({
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3,
+      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
+      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
+      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
+      restoreReplayReference: inventoryEvidence.restoreReplayReference,
     })).rejects.toBeInstanceOf(ConflictException);
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
   });
@@ -88,7 +143,10 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     } as never);
     await expect(coordinator.installAndRecordFence({
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
-      writerInventoryDigest: digest, fencedWriterCount: 3,
+      writerInventoryDigest: digest, fencedWriterCount: 3, writerInventoryReference: inventoryEvidence.reference,
+      policyOwnershipReviewReference: inventoryEvidence.policyOwnershipReviewReference,
+      stagingAcceptanceReference: inventoryEvidence.stagingAcceptanceReference,
+      restoreReplayReference: inventoryEvidence.restoreReplayReference,
     })).rejects.toBeInstanceOf(ConflictException);
     expect(provider.installFence).not.toHaveBeenCalled();
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
