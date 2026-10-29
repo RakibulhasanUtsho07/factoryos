@@ -307,3 +307,33 @@ test('backup writer operation registration is bound to the current accepted prod
   assert.match(source, /ORDER BY revision DESC LIMIT 1 FOR SHARE/);
   assert.match(source, /Backup writer operations require an independently accepted writer-principal inventory/);
 });
+
+
+test('whole-tenant erasure requires current reviewed evidence for every copy class and category', async () => {
+ const migration=await readRepoFile('migrations/226_saas_external_copy_class_coverage.sql');
+ const manifest=await readRepoFile('scripts/audit/migration-manifest.txt');
+ const workflow=await readRepoFile('.github/workflows/api-postgres-ci.yml');
+ const source=await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+ const coverageService=await readRepoFile('services/api/src/saas/saas-tenant-external-copy-coverage.service.ts');
+ const controller=await readRepoFile('services/api/src/saas/saas-tenant-external-copy-coverage.controller.ts');
+ const module=await readRepoFile('services/api/src/saas/saas.module.ts');
+ const runbook=await readRepoFile(RUNBOOK);
+ assert.match(migration,/CREATE TABLE IF NOT EXISTS public\\.saas_tenant_external_copy_coverage_decisions/i);
+ assert.match(migration,/FORCE ROW LEVEL SECURITY/i);
+ assert.match(migration,/external copy-class coverage decisions are immutable/i);
+ assert.match(migration,/separate reviewer and reason/i);
+ assert.match(migration,/evidence expired before approval/i);
+ assert.match(migration,/CREATE TRIGGER saas_tenant_external_copy_coverage_decision_guard/i);
+ assert.match(manifest,/^migrations\\/226_saas_external_copy_class_coverage\\.sql$/m);
+ assert.match(workflow,/Reapplying reviewed external copy-class coverage[\\s\\S]*?migrations\\/226_saas_external_copy_class_coverage\\.sql/);
+ for(const disposition of ['SUPPORTED','NOT_APPLICABLE','UNRESOLVED'])assert.ok(source.includes(disposition));
+ assert.match(source,/assertCurrentCopyCoverage[\\s\\S]*?adapter\\.erase/);
+ assert.match(source,/assertCurrentCopyCoverage[\\s\\S]*?adapter\\.verify/);
+ assert.match(source,/copyClassCoverageDigest/);
+ assert.match(coverageService,/Idempotency-Key was reused for a different copy-class coverage decision/);
+ assert.match(coverageService,/submission and review require different actors/);
+ assert.match(controller,/saas\\.data_retention\\.approve/);
+ assert.match(module,/SaasTenantExternalCopyCoverageController/);
+ assert.match(runbook,/Machine-enforced copy-class coverage/);
+ assert.match(runbook,/UNRESOLVED.*block erasure/i);
+});

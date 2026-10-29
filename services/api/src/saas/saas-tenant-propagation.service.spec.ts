@@ -65,6 +65,7 @@ describe('SaasTenantPropagationService', () => {
       }
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: [] };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: [] };
       throw new Error('unexpected SQL in no-target closure test: ' + sql);
     });
     service = new SaasTenantPropagationService(database as never, iam as never, audit as never, [adapter as never]);

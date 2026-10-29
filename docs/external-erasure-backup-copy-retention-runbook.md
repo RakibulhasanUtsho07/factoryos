@@ -24,6 +24,14 @@ Do not assume a class is absent merely because it is not returned by the live-st
 
 Each copy identity should use a stable opaque provider/resource locator plus an immutable version, snapshot, generation, or backup identifier where available. Record the tenant/request binding, data category, provider and account/region boundary, copy class, policy version, creation/expiry metadata, legal-hold disposition, responsible owner, adapter/procedure version, and evidence reference. Do not put credentials, connection strings, tokens, raw customer payloads, or encryption keys into manifests, logs, tickets, or evidence packs.
 
+## Machine-enforced copy-class coverage
+
+Every requested category must have a current, independently reviewed decision for each required store kind: `OBJECT_STORAGE`, `CACHE`, `SEARCH_INDEX`, `VECTOR_STORE`, `LEARNING_ARTIFACT`, `EXTERNAL_PROVIDER`, `REPLICA`, and `BACKUP`. Submit evidence through `POST /v2/saas/data-retention/external-copy-coverage`, inspect the current category matrix through `GET /v2/saas/data-retention/external-copy-coverage/:categoryCode/current`, and review via `POST /v2/saas/data-retention/external-copy-coverage/:decisionId/review`.
+
+Each decision is revisioned, tenant-scoped, idempotent, digest-bound, and immutable after independent review. Evidence must be no more than 30 days old at submission and approval; accepted decisions expire within 90 days. `SUPPORTED` requires a current active required target/adapter. `NOT_APPLICABLE` requires evidence plus data-owner, infrastructure-owner and policy references, and is inconsistent if a required target exists. `UNRESOLVED`, missing, pending, rejected, expired, tampered or contradictory decisions block erasure.
+
+The accepted category/store-kind decisions and target bindings are included in the propagation manifest digest. The service rechecks coverage before adapter preparation/recovery, before mutation, before verification and during finalization under the tenant governance lock. A changed review revision or target inventory blocks additional mutation and prevents a run from reaching `VERIFIED`; a separately reviewed run is required. Human review of a reference/digest is a governance gate, not automatic authentication of source evidence.
+
 ## Legal holds and retention policy
 
 - A designated legal/compliance owner must approve the legal basis, jurisdiction, minimum/maximum retention, expiry trigger, deletion method, exception process, and policy version for each copy class before production enforcement.
