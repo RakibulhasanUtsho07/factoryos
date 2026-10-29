@@ -79,7 +79,7 @@ test('BACKUP target stays inactive unless runtime writer-fence acceptance gates 
   const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
 
   assert.match(adapter, /await this\.assertVersioningEnabled\(storage\);[\s\S]*?await this\.assertObjectLockEnabled\(storage\);/);
-  assert.match(adapter, /if \(!this\.supportsTarget\(target\) \|\| !this\.writerFenceProvider\) return false/);
+  assert.match(adapter, /if \(!this\.supportsTarget\(target\) \|\| !this\.writerFenceProvider \|\| !this\.writerInventory\) return false/);
   assert.match(adapter, /this\.writerFenceProvider\.getProviderAcceptanceReferences\(\);[\s\S]*?return true/);
   assert.match(provider, /getProviderAcceptanceReferences/);
   assert.match(provider, /FACTORYOS_BACKUP_STORAGE_ERASURE_RUNNER_ENABLED/);
