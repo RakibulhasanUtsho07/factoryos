@@ -130,7 +130,7 @@ CREATE POLICY saas_tenant_backup_writer_inventory_entries_tenant_enforce
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_inventory_snapshot()
-RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
 DECLARE actual_entry_count integer;
 BEGIN
   IF TG_OP='DELETE' THEN
@@ -190,7 +190,7 @@ BEGIN
     RAISE EXCEPTION 'writer inventory entries may be added only to a pending snapshot' USING ERRCODE='55000';
   END IF;
   RETURN NEW;
-END $;
+END $$;
 DROP TRIGGER IF EXISTS saas_tenant_backup_writer_inventory_entry_guard
   ON saas_tenant_backup_writer_inventory_entries;
 CREATE TRIGGER saas_tenant_backup_writer_inventory_entry_guard
