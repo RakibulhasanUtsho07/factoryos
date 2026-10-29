@@ -34,8 +34,11 @@ describe('SaasTenantPropagationService external saga', () => {
   const storedResourceItems: Record<string, unknown>[] = [];
   const storedResourceEvents: Record<string, unknown>[] = [];
   let operationSequence = 0;
+  let firstFenceOrder = 0;
+  let firstPrepareOrder = 0;
   let firstDeleteIntentOrder = 0;
   let firstEraseOrder = 0;
+  let backupFenceCoordinator: { beginPropagationFence: ReturnType<typeof jest.fn>; recordPropagationVerification: ReturnType<typeof jest.fn> };
   const adapterMocks: ReturnType<typeof createAdapter>[] = [];
   let service: SaasTenantPropagationService;
 
@@ -52,6 +55,8 @@ describe('SaasTenantPropagationService external saga', () => {
     };
     adapter.isConfigured.mockResolvedValue(true);
     adapter.prepare.mockImplementation(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstPrepareOrder === 0) firstPrepareOrder = operationSequence;
       const input = args[0] as { target: { targetId: string } };
       const resources = [
         { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.1', resourceVersionReference: null },
@@ -92,6 +97,8 @@ describe('SaasTenantPropagationService external saga', () => {
     storedResourceItems.length = 0;
     storedResourceEvents.length = 0;
     operationSequence = 0;
+    firstFenceOrder = 0;
+    firstPrepareOrder = 0;
     firstDeleteIntentOrder = 0;
     firstEraseOrder = 0;
     adapterMocks.length = 0;
@@ -107,6 +114,14 @@ describe('SaasTenantPropagationService external saga', () => {
       created_at: '2026-10-20T09:00:00.000Z', updated_at: '2026-10-20T10:00:00.000Z',
     }));
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
+    backupFenceCoordinator = {
+      beginPropagationFence: jest.fn(async () => {
+        operationSequence += 1;
+        firstFenceOrder = operationSequence;
+        return [];
+      }),
+      recordPropagationVerification: jest.fn(async () => []),
+    };
 
     database.transaction.mockImplementation(async (...args: unknown[]) => {
       const callback = args.find((value) => typeof value === 'function') as
@@ -218,7 +233,7 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       throw new Error('unexpected transaction SQL: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never);
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never, backupFenceCoordinator as never);
   });
 
   it('fails closed when a prepared plan was produced by a different adapter version', async () => {
@@ -252,6 +267,18 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(storedResourceManifests.some((manifest) => manifest.target_id === 'target-OBJECT_STORAGE')).toBe(false);
   });
 
+  it('fails closed before any inventory when backup writer-fence acquisition fails', async () => {
+    backupFenceCoordinator.beginPropagationFence.mockRejectedValueOnce(new Error('provider policy read-back unavailable'));
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Require backup fence before inventory', idempotency_key: 'external-propagation-fence-fails',
+    })).rejects.toThrow('provider policy read-back unavailable');
+    expect(firstFenceOrder).toBeGreaterThan(0);
+    for (const adapter of adapterMocks) {
+      expect(adapter.prepare).not.toHaveBeenCalled();
+      expect(adapter.erase).not.toHaveBeenCalled();
+    }
+  });
+
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Verify every external copy', idempotency_key: 'external-propagation-saga-v1',
@@ -270,6 +297,15 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETE_REQUESTED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
     expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
     expect(storedResourceEvents.filter((event) => event.outcome_code === 'VERIFIED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(backupFenceCoordinator.beginPropagationFence).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId, requestId, requestVersion: 1, sourceExportDigest: sourceDigest,
+      categories: ['BUSINESS_DATA'], actorUserId: propagationExecutor,
+    }));
+    expect(backupFenceCoordinator.recordPropagationVerification).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId, categories: ['BUSINESS_DATA'], residualCopies: 0,
+    }));
+    expect(firstFenceOrder).toBeGreaterThan(0);
+    expect(firstPrepareOrder).toBeGreaterThan(firstFenceOrder);
     expect(firstDeleteIntentOrder).toBeGreaterThan(0);
     expect(firstEraseOrder).toBeGreaterThan(firstDeleteIntentOrder);
     for (const adapter of adapterMocks) {
