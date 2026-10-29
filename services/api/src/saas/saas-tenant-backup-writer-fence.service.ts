@@ -34,6 +34,7 @@ interface WriterFenceRow extends QueryResultRow {
   next_writer_epoch: string | number | null; reviewed_by_user_id: string | null;
   recovery_from_state: BackupWriterFenceState | null; recovery_reason: string | null;
   recovery_attestation_reference: string | null; created_at: string; updated_at: string; released_at: string | null;
+  provider_release_confirmed_at: string | Date | null;
 }
 
 export interface BeginBackupWriterOperationInput {
@@ -67,7 +68,7 @@ export interface BackupWriterFenceView {
   nextWriterEpoch: number | null; recoveryReason: string | null;
   releasePolicyDigest: string | null; releaseReference: string | null;
   releaseWriterInventoryDigest: string | null; releaseWriterCount: number | null;
-  reviewedByUserId: string | null; releasedAt: string | null;
+  reviewedByUserId: string | null; releasedAt: string | null; providerReleaseConfirmedAt: string | null;
 }
 
 /**
@@ -106,6 +107,13 @@ export class SaasTenantBackupWriterFenceService {
         if (replayFence.rows[0]) {
           throw new ConflictException('An active writer operation under a fence must be provider-reconciled, not retried as a fresh upload');
         }
+        const latestRelease = await client.query<{ provider_release_confirmed_at: string | Date | null }>(
+          "SELECT provider_release_confirmed_at FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state='RELEASED' ORDER BY released_at DESC,fence_id DESC LIMIT 1",
+          [tenantId, category],
+        );
+        if (latestRelease.rows[0] && latestRelease.rows[0].provider_release_confirmed_at === null) {
+          throw new ConflictException('Backup writer permits remain gated until provider policy removal is confirmed by read-back');
+        }
         return prior;
       }
       const blocked = await client.query<{ fence_id: string }>(
@@ -113,10 +121,13 @@ export class SaasTenantBackupWriterFenceService {
         [tenantId, category],
       );
       if (blocked.rows[0]) throw new ConflictException('Backup writes are fenced for this tenant/category');
-      const latest = await client.query<{ next_writer_epoch: string | number }>(
-        "SELECT next_writer_epoch FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state='RELEASED' ORDER BY released_at DESC,fence_id DESC LIMIT 1",
+      const latest = await client.query<{ next_writer_epoch: string | number; provider_release_confirmed_at: string | Date | null }>(
+        "SELECT next_writer_epoch,provider_release_confirmed_at FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state='RELEASED' ORDER BY released_at DESC,fence_id DESC LIMIT 1",
         [tenantId, category],
       );
+      if (latest.rows[0] && latest.rows[0].provider_release_confirmed_at === null) {
+        throw new ConflictException('Backup writes remain gated until provider policy removal is confirmed by read-back');
+      }
       const expectedEpoch = latest.rows[0] ? Number(latest.rows[0].next_writer_epoch) : 1;
       if (writerEpoch !== expectedEpoch) throw new ConflictException('Backup writer epoch is stale; use the current tombstone-reconciled generation');
       const inserted = await client.query<WriterOperationRow>(
@@ -201,10 +212,13 @@ export class SaasTenantBackupWriterFenceService {
           }
           return prior;
         }
-        const latest = await client.query<{ next_writer_epoch: string | number }>(
-          "SELECT next_writer_epoch FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state='RELEASED' ORDER BY released_at DESC,fence_id DESC LIMIT 1",
+        const latest = await client.query<{ next_writer_epoch: string | number; provider_release_confirmed_at: string | Date | null }>(
+          "SELECT next_writer_epoch,provider_release_confirmed_at FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state='RELEASED' ORDER BY released_at DESC,fence_id DESC LIMIT 1",
           [tenantId, category],
         );
+        if (latest.rows[0] && latest.rows[0].provider_release_confirmed_at === null) {
+          throw new ConflictException('A new erasure fence is blocked until the previous provider release is confirmed');
+        }
         const writerEpoch = latest.rows[0] ? Number(latest.rows[0].next_writer_epoch) : 1;
         const inserted = await client.query<WriterFenceRow>(
           "INSERT INTO saas_tenant_backup_writer_fences (tenant_id,category_code,request_id,request_version,run_id,source_export_digest,state,writer_epoch,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,'DRAINING',$7,$8) RETURNING *",
@@ -418,6 +432,36 @@ export class SaasTenantBackupWriterFenceService {
     return this.mapFence(row);
   }
 
+  async confirmProviderFenceReleased(input: {
+    tenantId: string; fenceId: string; providerReleaseReference: string; providerPolicyDigest: string;
+  }): Promise<BackupWriterFenceView> {
+    const tenantId = this.uuid(input?.tenantId, 'tenantId');
+    const fenceId = this.uuid(input?.fenceId, 'fenceId');
+    const releaseReference = this.reference(input?.providerReleaseReference, 'providerReleaseReference');
+    const releaseDigest = this.digest(input?.providerPolicyDigest, 'providerPolicyDigest');
+    const row = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const found = await client.query<WriterFenceRow>(
+        'SELECT * FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND fence_id=$2 FOR UPDATE',
+        [tenantId, fenceId],
+      );
+      const current = found.rows[0];
+      if (!current) throw new NotFoundException('Backup writer fence not found');
+      if (current.state !== 'RELEASED') throw new ConflictException('Provider removal confirmation requires a durable RELEASED intent');
+      if (current.release_reference !== releaseReference || current.release_policy_digest !== releaseDigest) {
+        throw new ConflictException('Provider removal read-back does not match the durable release evidence');
+      }
+      if (current.provider_release_confirmed_at !== null) return current;
+      const updated = await client.query<WriterFenceRow>(
+        "UPDATE saas_tenant_backup_writer_fences SET provider_release_confirmed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE tenant_id=$1 AND fence_id=$2 AND state='RELEASED' AND provider_release_confirmed_at IS NULL RETURNING *",
+        [tenantId, fenceId],
+      );
+      if (!updated.rows[0]) throw new ConflictException('Provider release confirmation raced another lifecycle update');
+      return updated.rows[0];
+    }, { tenantId, advisoryLockKey: 'saas-backup-writer-fence-release-confirm:' + tenantId + ':' fenceId });
+    return this.mapFence(row);
+  }
+
   async getFence(tenantValue: string, categoryValue: SaasTransferDatasetCategory): Promise<BackupWriterFenceView | null> {
     const tenantId = this.uuid(tenantValue, 'tenantId');
     const category = this.category(categoryValue);
@@ -479,6 +523,7 @@ export class SaasTenantBackupWriterFenceService {
       releaseWriterInventoryDigest: row.release_writer_inventory_digest,
       releaseWriterCount: row.release_writer_count === null ? null : Number(row.release_writer_count),
       reviewedByUserId: row.reviewed_by_user_id, releasedAt: row.released_at,
+      providerReleaseConfirmedAt: row.provider_release_confirmed_at ? new Date(row.provider_release_confirmed_at).toISOString() : null,
     };
   }
   private parseCategories(value: SaasTransferDatasetCategory[] | string): SaasTransferDatasetCategory[] {
