@@ -51,7 +51,7 @@ export interface BeginBackupWriterFenceInput {
 export interface ProviderWriterFenceEvidence {
   tenantId: string; fenceId: string; providerFenceReference: string;
   providerPolicyDigest: string; writerInventoryDigest: string; fencedWriterCount: number;
-  writerInventorySnapshotId: string; writerInventoryReference: string; writerInventorySnapshotId: string; policyOwnershipReviewReference: string;
+  writerInventorySnapshotId: string; writerInventoryReference: string; policyOwnershipReviewReference: string;
   stagingAcceptanceReference: string; restoreReplayReference: string;
 }
 export interface BackupWriterFenceView {
@@ -60,7 +60,7 @@ export interface BackupWriterFenceView {
   writerEpoch: number; providerFenceReference: string | null; providerPolicyDigest: string | null;
   writerInventoryDigest: string | null; fencedWriterCount: number | null;
   writerInventorySnapshotId: string | null; createdByUserId: string;
-  writerInventoryReference: string | null; writerInventorySnapshotId: string | null; policyOwnershipReviewReference: string | null;
+  writerInventoryReference: string | null; policyOwnershipReviewReference: string | null;
   stagingAcceptanceReference: string | null; restoreReplayReference: string | null;
   erasureManifestDigest: string | null; verificationReference: string | null;
   verifiedResidualCount: number | null; tombstoneReplayReference: string | null;
@@ -283,7 +283,7 @@ export class SaasTenantBackupWriterFenceService {
       const updated = await client.query<WriterFenceRow>(
         "UPDATE saas_tenant_backup_writer_fences SET state='FENCED',provider_fence_reference=$3,provider_policy_digest=$4,writer_inventory_digest=$5,fenced_writer_count=$6,writer_inventory_reference=$7,policy_ownership_review_reference=$8,staging_acceptance_reference=$9,restore_replay_reference=$10,writer_inventory_snapshot_id=$11,updated_at=clock_timestamp() WHERE tenant_id=$1 AND fence_id=$2 AND state='FENCING' RETURNING *",
         [tenantId, fenceId, providerReference, policyDigest, inventoryDigest, writerCount, inventoryReference,
-          policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference],
+          policyOwnershipReviewReference, stagingAcceptanceReference, restoreReplayReference, inventorySnapshotId],
       );
       return updated.rows[0]!;
     }, { tenantId, advisoryLockKey: 'saas-backup-writer-fence:' + tenantId + ':' + fenceId });
