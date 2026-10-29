@@ -74,7 +74,7 @@ function canonicalQuery(parameters: Array<[string, string]>): string {
 }
 
 function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return '[' + value.map((entry) => canonicalJson(entry)).join(',') + ']';
   const object = value as Record<string, unknown>;
   return '{' + Object.keys(object).sort().map((key) =>
