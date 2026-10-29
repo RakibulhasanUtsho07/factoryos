@@ -125,7 +125,8 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       multipartInventoryDigest: digest, pendingMultipartUploads: 0, installed: false,
     } as never);
     await expect(coordinator.beginPropagationFence({
-      tenantId: tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
+      ...acceptanceBinding,
+      tenantId:   tenant, requestId: 'c2000000-0000-4000-8000-000000000002',
       requestVersion: 1, runId: 'c3000000-0000-4000-8000-000000000003',
       sourceExportDigest: digest, categories: [Category.BUSINESS_DATA], actorUserId: actor,
     })).rejects.toBeInstanceOf(ConflictException);
@@ -149,7 +150,8 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     });
     expect(result).toEqual([expect.objectContaining({ state: 'ERASURE_VERIFIED' })]);
     await expect(coordinator.recordPropagationVerification({
-      tenantId: tenant, categories: [Category.BUSINESS_DATA],
+      ...acceptanceBinding,
+      tenantId:   tenant, categories: [Category.BUSINESS_DATA],
       manifestDigest: digest, verificationReference: 'backup.verify.receipt.002', residualCopies: 1,
     })).rejects.toBeInstanceOf(ConflictException);
   });
@@ -208,7 +210,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
   it('fails closed before S3 when the latest inventory is not accepted', async () => {
     const { coordinator, provider, lifecycle, writerInventory } = setup();
     writerInventory.requireCurrentAcceptedSnapshot.mockRejectedValue(new ServiceUnavailableException('not reviewed'));
-    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+    await expect(coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
       .rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(provider.installFence).not.toHaveBeenCalled();
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
@@ -217,7 +219,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
   it('requires the reviewer to be independent from the fence creator', async () => {
     const { coordinator, provider, writerInventory } = setup();
     writerInventory.requireCurrentAcceptedSnapshot.mockResolvedValue(acceptedInventory({ reviewedByUserId: actor }) as never);
-    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+    await expect(coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
       .rejects.toBeInstanceOf(ConflictException);
     expect(provider.installFence).not.toHaveBeenCalled();
   });
@@ -227,7 +229,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     writerInventory.requireCurrentAcceptedSnapshot
       .mockResolvedValueOnce(acceptedInventory() as never)
       .mockResolvedValueOnce(acceptedInventory({ snapshotId: 'c6000000-0000-4000-8000-000000000009' }) as never);
-    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+    await expect(coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
       .rejects.toBeInstanceOf(ConflictException);
     expect(provider.installFence).toHaveBeenCalled();
     expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'WRITER_INVENTORY_CHANGED');
@@ -236,7 +238,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
 
   it('does not mark FENCED while any multipart upload remains', async () => {
     const { coordinator, lifecycle } = setup('FENCING', { pendingMultipartUploads: 2 });
-    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+    await expect(coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
       .rejects.toBeInstanceOf(ConflictException);
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
   });
@@ -246,7 +248,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     lifecycle.advanceAfterDrain.mockResolvedValue({
       fence: view('DRAINING'), readyForProviderFence: false, activeWriterOperations: 1,
     } as never);
-    await expect(coordinator.installAndRecordFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+    await expect(coordinator.installAndRecordFence({ ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
       .rejects.toBeInstanceOf(ConflictException);
     expect(provider.installFence).not.toHaveBeenCalled();
     expect(lifecycle.recordProviderFenceInstalled).not.toHaveBeenCalled();
