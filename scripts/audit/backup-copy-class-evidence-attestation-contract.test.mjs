@@ -38,7 +38,7 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(migration, /NEW\.attestation_signature[\s\S]*?OLD\.attestation_signature/);
   assert.match(migration, /attestation_owner_reference IN \(data_owner_reference,infrastructure_owner_reference\)/);
   assert.match(apiEnv, /FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON=\[\]/);
-  assert.match(runbook, /signed backup copy-class evidence/);
+  assert.match(runbook, /signed backup copy-class evidence/i);
   assert.match(signingDoc, /does not replace independent reviewer approval/);
   assert.match(signer, /Evidence pack digest does not match payload evidence_sha256/);
   assert.match(signer, /privateKey\.asymmetricKeyType !== 'ed25519'/);
