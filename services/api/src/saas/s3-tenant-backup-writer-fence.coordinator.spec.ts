@@ -273,6 +273,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       return { providerFenceReference: reference, providerPolicyDigest: digest, policyAbsent: true as const, alreadyAbsent: false };
     });
     const result = await coordinator.releaseAfterTombstoneReplay({
+      ...acceptanceBinding,
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
@@ -294,6 +295,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const { coordinator, lifecycle, provider } = setup('RELEASED');
     lifecycle.getFence.mockResolvedValue(released as never);
     const result = await coordinator.releaseAfterTombstoneReplay({
+      ...acceptanceBinding,
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
@@ -303,6 +305,26 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     expect(result.providerRelease.policyAbsent).toBe(true);
   });
 
+  it('refuses provider release when the acceptance has been revoked', async () => {
+    const { coordinator, lifecycle, provider, providerAcceptanceService } = setup('ERASURE_VERIFIED');
+    lifecycle.getFence.mockResolvedValue(view('ERASURE_VERIFIED', {
+      writerInventorySnapshotId: snapshotId, writerInventoryDigest: digest, fencedWriterCount: 3,
+    }) as never);
+    providerAcceptanceService.requireCurrentAcceptedProviderAcceptance.mockRejectedValue(
+      new ServiceUnavailableException('revoked'),
+    );
+
+    await expect(coordinator.releaseAfterTombstoneReplay({
+      ...acceptanceBinding, tenantId: tenant, category: Category.BUSINESS_DATA, fenceId,
+      reviewedByUserId: reviewer, releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
+      tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(lifecycle.releaseAfterTombstoneReplay).not.toHaveBeenCalled();
+    expect(provider.planFenceRemoval).not.toHaveBeenCalled();
+    expect(provider.removeFence).not.toHaveBeenCalled();
+    expect(lifecycle.requireRecovery).toHaveBeenCalledWith(tenant, fenceId, 'PROVIDER_ACCEPTANCE_REVOKED');
+  });
+
   it('leaves the deny policy in place if provider removal cannot be confirmed', async () => {
     const { coordinator, lifecycle, provider } = setup('ERASURE_VERIFIED');
     lifecycle.getFence.mockResolvedValue(view('ERASURE_VERIFIED', {
@@ -310,6 +332,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     }) as never);
     provider.removeFence.mockRejectedValue(new Error('provider timeout'));
     await expect(coordinator.releaseAfterTombstoneReplay({
+      ...acceptanceBinding,
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
       releaseWriterInventoryDigest: digest, releaseWriterCount: 3,
       tombstoneReplayReference: 'restore-tombstone-replay-001', nextWriterEpoch: 2,
