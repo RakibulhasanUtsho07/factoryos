@@ -159,8 +159,8 @@ test('S3 writer fence denies direct object writes, replication and replication d
   const providerSpec = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.provider.spec.ts');
   const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
 
-  assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
-  assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
+  assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"],\s*['"]s3:ReplicateDelete['"]\]/);
+  assert.ok(providerSpec.includes("Action: ['s3:PutObject', 's3:ReplicateObject', 's3:ReplicateDelete']"));
   assert.match(doc, /s3:PutObject.*s3:ReplicateObject.*s3:ReplicateDelete/);
   assert.match(doc, /S3 BACKUP adapter remains fail-closed/i);
 });
