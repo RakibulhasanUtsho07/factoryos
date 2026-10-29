@@ -125,7 +125,7 @@ test('backup erasure stays fail-closed while S3 policy and producer acceptance g
   assert.match(adapter, /S3 versioning\/Object Lock alone do not[\s\S]*?fence new writes/);
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_CONTROLLER_ENABLED'));
   assert.ok(provider.includes('FACTORYOS_BACKUP_STORAGE_POLICY_OWNERSHIP_ACKNOWLEDGED'));
-  assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("'s3:PutObject'") && provider.includes("'s3:ReplicateObject'"));
+  assert.ok(provider.includes("Effect: 'Deny'") && provider.includes("'s3:PutObject'") && provider.includes("'s3:ReplicateObject'") && provider.includes("'s3:ReplicateDelete'"));
   assert.ok(provider.includes('listMultipartUploads'));
   assert.ok(provider.includes('independently read-back'));
   assert.ok(coordinator.includes('recordProviderFenceInstalled'));
@@ -154,13 +154,13 @@ test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage
 });
 
 
-test('S3 writer fence denies both direct object uploads and replication writes', async () => {
+test('S3 writer fence denies direct object writes, replication and replication delete markers', async () => {
   const provider = await readRepoFile(S3_WRITER_FENCE_PROVIDER);
   const providerSpec = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.provider.spec.ts');
   const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
 
   assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"]\]/);
   assert.match(providerSpec, /s3:PutObject['"],\s*'s3:ReplicateObject/);
-  assert.match(doc, /s3:PutObject.*s3:ReplicateObject/);
+  assert.match(doc, /s3:PutObject.*s3:ReplicateObject.*s3:ReplicateDelete/);
   assert.match(doc, /S3 BACKUP adapter remains fail-closed/i);
 });
