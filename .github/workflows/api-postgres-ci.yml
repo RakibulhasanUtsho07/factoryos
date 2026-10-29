@@ -185,6 +185,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/223_saas_backup_writer_principal_inventory.sql
 
+          echo "Reapplying provider-release confirmation gate to verify writer epoch remains blocked until policy read-back"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/225_saas_backup_writer_release_confirmation.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
