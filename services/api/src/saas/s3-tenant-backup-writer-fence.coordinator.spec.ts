@@ -50,6 +50,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
       beginErasureFence: jest.fn(async () => [current]),
       markErasureStarted: jest.fn(async () => view('ERASING', {
         providerFenceReference: reference, providerPolicyDigest: digest, writerInventorySnapshotId: snapshotId,
+        writerInventoryDigest: digest, fencedWriterCount: 3, createdByUserId: actor,
       })),
       markErasureVerified: jest.fn(async () => view('ERASURE_VERIFIED')),
       advanceAfterDrain: jest.fn(async () => ({
@@ -130,6 +131,7 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
     const { coordinator, lifecycle } = setup('ERASING');
     lifecycle.getFence.mockResolvedValue(view('ERASING', {
       providerFenceReference: reference, providerPolicyDigest: digest, writerInventorySnapshotId: snapshotId,
+      writerInventoryDigest: digest, fencedWriterCount: 3, createdByUserId: actor,
     }) as never);
     const result = await coordinator.recordPropagationVerification({
       tenantId: tenant, categories: [Category.BUSINESS_DATA],
@@ -212,6 +214,9 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
 
   it('durably seals release before removing the provider deny statement', async () => {
     const { coordinator, lifecycle, provider } = setup('ERASURE_VERIFIED');
+    lifecycle.getFence.mockResolvedValue(view('ERASURE_VERIFIED', {
+      writerInventorySnapshotId: snapshotId, writerInventoryDigest: digest, fencedWriterCount: 3,
+    }) as never);
     const sequence: string[] = [];
     lifecycle.releaseAfterTombstoneReplay.mockImplementation(async () => {
       sequence.push('database-release');
@@ -258,6 +263,9 @@ describe('S3TenantBackupWriterFenceCoordinator', () => {
 
   it('leaves the deny policy in place if provider removal cannot be confirmed', async () => {
     const { coordinator, lifecycle, provider } = setup('ERASURE_VERIFIED');
+    lifecycle.getFence.mockResolvedValue(view('ERASURE_VERIFIED', {
+      writerInventorySnapshotId: snapshotId, writerInventoryDigest: digest, fencedWriterCount: 3,
+    }) as never);
     provider.removeFence.mockRejectedValue(new Error('provider timeout'));
     await expect(coordinator.releaseAfterTombstoneReplay({
       tenantId: tenant, category: Category.BUSINESS_DATA, fenceId, reviewedByUserId: reviewer,
