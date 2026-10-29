@@ -458,7 +458,7 @@ export class SaasTenantBackupWriterFenceService {
       );
       if (!updated.rows[0]) throw new ConflictException('Provider release confirmation raced another lifecycle update');
       return updated.rows[0];
-    }, { tenantId, advisoryLockKey: 'saas-backup-writer-fence-release-confirm:' + tenantId + ':' fenceId });
+    }, { tenantId, advisoryLockKey: 'saas-backup-writer-fence-release-confirm:' + tenantId + ':' + fenceId });
     return this.mapFence(row);
   }
 
