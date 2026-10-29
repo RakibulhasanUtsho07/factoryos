@@ -130,7 +130,8 @@ CREATE POLICY saas_tenant_backup_writer_inventory_entries_tenant_enforce
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_inventory_snapshot()
-RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
+RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $
+DECLARE actual_entry_count integer;
 BEGIN
   IF TG_OP='DELETE' THEN
     RAISE EXCEPTION 'backup writer inventory snapshots are retained as governance evidence' USING ERRCODE='55000';
@@ -157,6 +158,12 @@ BEGIN
     OR NEW.reviewed_by_user_id IS NULL OR NEW.reviewed_by_user_id=OLD.registered_by_user_id
     OR NEW.reviewed_at IS NULL OR length(btrim(COALESCE(NEW.review_reason,'')))<3 THEN
     RAISE EXCEPTION 'only a pending writer inventory may receive one independent review' USING ERRCODE='55000';
+  END IF;
+  SELECT count(*)::integer INTO actual_entry_count
+    FROM public.saas_tenant_backup_writer_inventory_entries e
+    WHERE e.tenant_id=OLD.tenant_id AND e.snapshot_id=OLD.snapshot_id;
+  IF actual_entry_count<>OLD.entry_count THEN
+    RAISE EXCEPTION 'writer inventory review requires the exact sealed entry count' USING ERRCODE='55000';
   END IF;
   PERFORM 1 FROM public.tenants t WHERE t.id=OLD.tenant_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'writer inventory requires an existing tenant' USING ERRCODE='23503'; END IF;
@@ -192,7 +199,7 @@ CREATE TRIGGER saas_tenant_backup_writer_inventory_entry_guard
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_fence_inventory_binding()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
-DECLARE snapshot_status text; snapshot_category text; snapshot_revision bigint;
+DECLARE snapshot_status text; snapshot_category text; snapshot_revision bigint; snapshot_digest text;
         snapshot_count integer; actual_count integer;
 BEGIN
   IF TG_OP='INSERT' THEN
@@ -209,11 +216,13 @@ BEGIN
     IF NEW.writer_inventory_snapshot_id IS NULL THEN
       RAISE EXCEPTION 'FENCED requires an independently reviewed writer inventory snapshot' USING ERRCODE='55000';
     END IF;
-    SELECT s.status,s.category_code,s.revision,s.entry_count
-      INTO snapshot_status,snapshot_category,snapshot_revision,snapshot_count
+    SELECT s.status,s.category_code,s.revision,s.manifest_digest,s.entry_count
+      INTO snapshot_status,snapshot_category,snapshot_revision,snapshot_digest,snapshot_count
       FROM public.saas_tenant_backup_writer_inventory_snapshots s
       WHERE s.tenant_id=NEW.tenant_id AND s.snapshot_id=NEW.writer_inventory_snapshot_id;
-    IF NOT FOUND OR snapshot_status<>'ACCEPTED' OR snapshot_category<>NEW.category_code THEN
+    IF NOT FOUND OR snapshot_status<>'ACCEPTED' OR snapshot_category<>NEW.category_code
+      OR snapshot_digest IS DISTINCT FROM NEW.writer_inventory_digest
+      OR snapshot_count IS DISTINCT FROM NEW.fenced_writer_count THEN
       RAISE EXCEPTION 'FENCED requires an accepted inventory snapshot for the same tenant/category' USING ERRCODE='55000';
     END IF;
     SELECT count(*)::integer INTO actual_count
