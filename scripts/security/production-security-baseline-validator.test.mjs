@@ -111,6 +111,24 @@ function validAttestation() {
         evidence_reference: 'evidence://identity/jwks-rotation',
       },
     },
+    backup_copy_evidence: {
+      deployment_platform: 'Kubernetes v1.30+',
+      evidence_root_path: '/var/run/factoryos/backup-evidence',
+      evidence_volume_reference: 'evidence-volume://prod/backup-copy-archive',
+      deployment_enforcement_reference: 'evidence://deployment/backup-evidence-vap-binding',
+      volume_mount_read_only: true,
+      api_identity_write_denied: true,
+      api_identity_remount_denied: true,
+      publisher_identity_separate: true,
+      mount_verification: {
+        result: 'PASS',
+        candidate_sha: candidateSha,
+        workflow_url: 'https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/123456789',
+        evidence_reference: 'evidence://deployment/mount-probe/exact-candidate',
+        tested_environment: 'isolated-preproduction-eu',
+        executed_at_utc: '2026-10-21T09:00:00Z',
+      },
+    },
     network: {
       default_deny_ingress: true,
       default_deny_egress: true,
@@ -164,6 +182,50 @@ test('parser rejects duplicate YAML keys rather than accepting ambiguous evidenc
 
 test('complete security evidence passes only when tied to the exact candidate SHA', () => {
   assert.deepEqual(validateSecurityAttestation(validAttestation(), candidateSha, now), []);
+});
+
+test('backup evidence deployment must be read-only, independently published and bound to the candidate', async (t) => {
+  await t.test('rejects a writable evidence mount', () => {
+    const evidence = validAttestation();
+    evidence.backup_copy_evidence.volume_mount_read_only = false;
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('backup_copy_evidence.volume_mount_read_only must equal true')));
+  });
+
+  await t.test('rejects API identity write or remount permission', () => {
+    const writable = validAttestation();
+    writable.backup_copy_evidence.api_identity_write_denied = false;
+    assert.ok(validateSecurityAttestation(writable, candidateSha, now).some((error) => error.includes('api_identity_write_denied must equal true')));
+    const remountable = validAttestation();
+    remountable.backup_copy_evidence.api_identity_remount_denied = false;
+    assert.ok(validateSecurityAttestation(remountable, candidateSha, now).some((error) => error.includes('api_identity_remount_denied must equal true')));
+  });
+
+  await t.test('rejects a publisher running under the API identity', () => {
+    const evidence = validAttestation();
+    evidence.backup_copy_evidence.publisher_identity_separate = false;
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('publisher_identity_separate must equal true')));
+  });
+
+  await t.test('rejects mount evidence for another candidate SHA', () => {
+    const evidence = validAttestation();
+    evidence.backup_copy_evidence.mount_verification.candidate_sha = 'b'.repeat(40);
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('mount_verification.candidate_sha must match')));
+  });
+
+  await t.test('rejects missing runtime mount evidence', () => {
+    const evidence = validAttestation();
+    evidence.backup_copy_evidence.mount_verification.result = 'NOT_RUN';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('mount_verification.result must equal "PASS"')));
+  });
+
+  await t.test('rejects relative or root-only evidence paths', () => {
+    const relative = validAttestation();
+    relative.backup_copy_evidence.evidence_root_path = 'var/run/evidence';
+    assert.ok(validateSecurityAttestation(relative, candidateSha, now).some((error) => error.includes('non-root absolute POSIX path')));
+    const rootOnly = validAttestation();
+    rootOnly.backup_copy_evidence.evidence_root_path = '/';
+    assert.ok(validateSecurityAttestation(rootOnly, candidateSha, now).some((error) => error.includes('non-root absolute POSIX path')));
+  });
 });
 
 test('incomplete or contradictory security evidence fails closed', async (t) => {

@@ -1,0 +1,12 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factoryos-backup-evidence-readonly
+spec:
+  policyName: factoryos-backup-evidence-readonly
+  validationActions:
+    - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        factoryos.io/backup-evidence-enforcement: required

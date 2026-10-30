@@ -231,3 +231,12 @@ Rollback must cover application config and secret-version references, not only t
 - approval_utc: <pending>
 
 The approval register must be updated only by authorized release personnel once evidence is complete. Do not mark the release approved from the implementation branch or this report draft.
+
+
+## 10. Backup-copy evidence volume deployment gate
+
+Signed backup-copy-class evidence is accepted only when the API can read exact evidence bytes from a deployment-owned Linux read-only mount. POSIX mode checks and the runtime `/proc/self/mountinfo` per-mount `ro` check are necessary runtime controls, but production provisioning must also prevent the API identity from writing to or remounting that volume. The evidence publisher must be a separate identity and the volume reference must identify the exact immutable evidence source.
+
+For Kubernetes v1.30+, install the `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` in `deploy/security/backup-copy-evidence-readonly-policy.yaml` and `deploy/security/backup-copy-evidence-readonly-binding.yaml`. Label the intended production API namespace `factoryos.io/backup-evidence-enforcement=required` only after the policy has been accepted and the binding is installed; restart all API Pods so they are re-admitted under the policy. The policy enforces a single direct absolute evidence-root environment path, one matching read-only PVC/CSI mount without subPath, non-root execution, read-only container root filesystem, no privilege escalation/privileged mode, and dropped capabilities. The manifest requires Kubernetes v1.30+; a different platform needs an equivalent enforced workload control.
+
+The release validator now requires a populated `backup_copy_evidence` record: deployment platform, absolute non-root evidence path, evidence-volume reference, enforcement-policy reference, read-only mount proof, denial of API write/remount privileges, separate publisher identity, and a runtime mount-verification record tied to the exact candidate SHA and a repository Actions run. The checked-in template keeps these fields empty/false/NOT_RUN. Do not turn them into passing values without independently reviewed deployment evidence. CI validates policy/configuration contracts; it does not apply the policy to a live cluster or attest an actual production mount.

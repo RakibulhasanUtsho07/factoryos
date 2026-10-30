@@ -26,6 +26,12 @@ on:
       - 'services/api/test/saas-tenant-propagation-contract.sql'
       - 'services/api/.env.example'
       - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'deploy/security/production-security-baseline.yml'
+      - 'scripts/security/validate-production-security-baseline.mjs'
+      - 'scripts/security/production-security-baseline-validator.test.mjs'
       - '.github/workflows/external-erasure-copy-retention-contract.yml'
   push:
     branches: [main, dev, rakibul-hasan]
@@ -53,6 +59,12 @@ on:
       - 'services/api/test/saas-tenant-propagation-contract.sql'
       - 'services/api/.env.example'
       - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'deploy/security/production-security-baseline.yml'
+      - 'scripts/security/validate-production-security-baseline.mjs'
+      - 'scripts/security/production-security-baseline-validator.test.mjs'
       - '.github/workflows/external-erasure-copy-retention-contract.yml'
 
 permissions:
@@ -72,4 +84,4 @@ jobs:
         with:
           node-version: 22
       - name: Verify backup-copy retention and signed evidence contracts
-        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs
+        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/production-security-baseline-validator.test.mjs

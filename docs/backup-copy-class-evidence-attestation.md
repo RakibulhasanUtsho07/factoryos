@@ -56,3 +56,31 @@ Every `evidence_reference` is a single opaque file identifier matching `[A-Za-z0
 Copy the *same evidence pack bytes* used by the signer into the read-only evidence root under the opaque reference before submission. Do not put a directory name, path, URL, tenant data, or secret into the reference. If the source evidence changes, publish a new artifact ID and digest, create a new signed revision, and obtain independent review. Old accepted decisions are rechecked against the current artifact at every propagation preflight/recovery/provider checkpoint, so a missing or replaced artifact blocks execution.
 
 This source reader is a deployment-local immutable-artifact contract, not yet an S3/GCS/Vault object-source adapter. A mounted immutable evidence volume or approved artifact staging pipeline must supply the file. Real provider metadata, IAM ownership, inventory completeness and backup enumeration still require independently reviewed source evidence.
+
+
+## Deployment-time read-only volume enforcement
+
+For Kubernetes production clusters, install the checked-in admission policy and binding before creating or restarting the API Pods. The policy uses `admissionregistration.k8s.io/v1` ValidatingAdmissionPolicy (stable on Kubernetes v1.30+) and has `failurePolicy: Fail` with a `Deny` binding. It applies to namespaces labelled `factoryos.io/backup-evidence-enforcement=required`.
+
+The policy rejects a Pod container that sets `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR` unless exactly one direct absolute path is set and exactly one matching mount exists. That mount must be read-only, must not use `subPath` or `subPathExpr`, and must come from a PVC or a read-only CSI volume. The container must run non-root, have a read-only root filesystem, disable privilege escalation and drop all Linux capabilities. A missing evidence-root variable remains fail-closed in the application itself; the production security release attestation additionally requires the root path and deployment evidence.
+
+Install and test in this order (the namespace and Deployment names are operator inputs; no namespace is assumed by this repository):
+
+```sh
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=60s
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+
+kubectl label namespace "$API_NAMESPACE" factoryos.io/backup-evidence-enforcement=required --overwrite
+kubectl rollout restart deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+kubectl rollout status deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+kubectl get validatingadmissionpolicy factoryos-backup-evidence-readonly -o yaml
+kubectl get validatingadmissionpolicybinding factoryos-backup-evidence-readonly -o yaml
+```
+
+The rollout restart is mandatory after enabling the namespace binding because admission policies apply to newly admitted Pods; changing a Namespace label does not retroactively re-admit existing Pods. Verify a negative admission probe is denied when the evidence mount is writable, uses `subPath`, has no PVC/CSI source, or omits the required container security context. Verify the real API Pod is admitted with the exact `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR` path and matching read-only volume mount. Do not remove the namespace label or binding as a routine workaround.
+
+This admission policy is Kubernetes-specific and requires Kubernetes v1.30 or later. On another Linux deployment platform, implement an equivalent fail-closed workload policy that enforces a read-only bind/volume mount and denies the API identity write/remount privileges; attach the provider's active policy/identity evidence to the production security attestation. If the platform cannot enforce this boundary, do not accept signed backup-copy evidence and do not activate the backup erasure gate. Applying these manifests to a real cluster and verifying its identity/mount configuration remain operator-controlled deployment actions; a successful CI test does not claim they have been applied.

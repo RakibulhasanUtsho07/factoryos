@@ -1,0 +1,51 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factoryos-backup-evidence-readonly
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >-
+        object.spec.containers.all(container,
+          !has(container.env) ||
+          container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 0 ||
+          (
+            container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 1 &&
+            container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').all(variable,
+              has(variable.value) &&
+              variable.value.startsWith('/') &&
+              variable.value != '/' &&
+              has(container.volumeMounts) &&
+              container.volumeMounts.filter(mount, mount.mountPath == variable.value).size() == 1 &&
+              container.volumeMounts.exists(mount,
+                mount.mountPath == variable.value &&
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr) &&
+                object.spec.volumes.exists(volume,
+                  volume.name == mount.name &&
+                  (
+                    has(volume.persistentVolumeClaim) ||
+                    (has(volume.csi) && volume.csi.readOnly == true)
+                  )
+                )
+              ) &&
+              has(container.securityContext) &&
+              container.securityContext.runAsNonRoot == true &&
+              container.securityContext.allowPrivilegeEscalation == false &&
+              container.securityContext.readOnlyRootFilesystem == true &&
+              container.securityContext.privileged != true &&
+              has(container.securityContext.capabilities) &&
+              has(container.securityContext.capabilities.drop) &&
+              container.securityContext.capabilities.drop.exists(capability, capability == 'ALL')
+            )
+          )
+        )
+      message: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR must be an absolute path backed by exactly one read-only PVC/CSI mount without subPath; the container must run non-root with a read-only root filesystem, no privilege escalation, and all capabilities dropped.
+      reason: Invalid

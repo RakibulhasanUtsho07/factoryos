@@ -65,6 +65,22 @@ secrets:
     issuer_owned: true
     jwks_overlap_and_cache_tested: false
     evidence_reference: ""
+backup_copy_evidence:
+  deployment_platform: ""
+  evidence_root_path: ""
+  evidence_volume_reference: ""
+  deployment_enforcement_reference: ""
+  volume_mount_read_only: false
+  api_identity_write_denied: false
+  api_identity_remount_denied: false
+  publisher_identity_separate: false
+  mount_verification:
+    result: NOT_RUN
+    candidate_sha: ""
+    workflow_url: ""
+    evidence_reference: ""
+    tested_environment: ""
+    executed_at_utc: ""
 network:
   default_deny_ingress: false
   default_deny_egress: false
