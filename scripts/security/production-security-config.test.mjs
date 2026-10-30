@@ -87,12 +87,24 @@ test('production backup evidence policy is installed as a deny binding in select
   assert.match(binding, /factoryos\.io\/backup-evidence-enforcement: required/);
 });
 
+test('backup evidence policy covers ephemeral container injection and namespace lock', async () => {
+  const podPolicy = await read('deploy/security/backup-copy-evidence-readonly-policy.yaml');
+  const namespacePolicy = await read('deploy/security/backup-copy-evidence-namespace-lock-policy.yaml');
+  const namespaceBinding = await read('deploy/security/backup-copy-evidence-namespace-lock-binding.yaml');
+  assert.match(podPolicy, /pods\\/ephemeralcontainers/);
+  assert.match(namespacePolicy, /operations: \\[\\"UPDATE\\", \\"DELETE\\"\\]/);
+  assert.match(namespacePolicy, /request\\.operation == 'UPDATE'/);
+  assert.match(namespaceBinding, /policyName: factoryos-backup-evidence-namespace-lock/);
+  assert.match(namespaceBinding, /- Deny/);
+});
 test('security baseline and egress YAML parse successfully', async () => {
   for (const path of [
     'deploy/security/production-security-baseline.yml',
     'deploy/security/network-egress-policy.yml',
     'deploy/security/backup-copy-evidence-readonly-policy.yaml',
     'deploy/security/backup-copy-evidence-readonly-binding.yaml',
+    'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml',
+    'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml',
   ]) {
     await prettier.format(await read(path), { parser: 'yaml' });
   }

@@ -84,3 +84,27 @@ kubectl get validatingadmissionpolicybinding factoryos-backup-evidence-readonly 
 The rollout restart is mandatory after enabling the namespace binding because admission policies apply to newly admitted Pods; changing a Namespace label does not retroactively re-admit existing Pods. Verify a negative admission probe is denied when the evidence mount is writable, uses `subPath`, references any PVC other than `factoryos-backup-evidence`, omits the source-level PVC `readOnly: true`, aliases that claim as a writable volume in another regular/init/ephemeral container, or omits the required container security context. Verify the real API Pod is admitted with the exact `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR` path and matching read-only volume mount. Do not remove the namespace label or binding as a routine workaround.
 
 This admission policy is Kubernetes-specific and requires Kubernetes v1.30 or later. On another Linux deployment platform, implement an equivalent fail-closed workload policy that enforces a read-only bind/volume mount and denies the API identity write/remount privileges; attach the provider's active policy/identity evidence to the production security attestation. If the platform cannot enforce this boundary, do not accept signed backup-copy evidence and do not activate the backup erasure gate. Applying these manifests to a real cluster and verifying its identity/mount configuration remain operator-controlled deployment actions; a successful CI test does not claim they have been applied.
+
+## Admission policy lock for production evidence namespaces
+
+The Pod policy also matches the `pods/ephemeralcontainers` subresource, so adding an ephemeral container is re-evaluated against the evidence-volume rules. A separate cluster-scoped Namespace ValidatingAdmissionPolicy preserves `factoryos.io/backup-evidence-enforcement=required` after a namespace is enrolled and denies ordinary deletion of that namespace. These controls do not prevent a cluster administrator with permission to remove the policy/binding from disabling enforcement; restrict those RBAC permissions and audit changes to the admission objects.
+
+Install both ValidatingAdmissionPolicies and wait for each to become Accepted before installing the bindings. The namespace-lock binding must be active before applying the namespace label; the update that adds the label is allowed, while later ordinary updates must preserve it.
+
+```sh
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=60s
+kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
+kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=60s
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+kubectl label namespace "$API_NAMESPACE" factoryos.io/backup-evidence-enforcement=required --overwrite
+kubectl rollout restart deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+kubectl rollout status deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+```
+
+Test that the `pods/ephemeralcontainers` subresource rejects a writable evidence-volume alias, that namespace label removal and namespace deletion are denied after enrollment, and that initial label enrolment succeeds. Removing the admission policy/binding itself is a privileged cluster-admin change and must be separately controlled.

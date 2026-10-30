@@ -184,3 +184,27 @@ A deployment must enforce the evidence-root mount before the API workload is rol
 The admission CEL gate rejects a configured evidence root unless the exact absolute environment path has one corresponding read-only mount of the dedicated PVC claim `factoryos-backup-evidence`; both `persistentVolumeClaim.readOnly` and `volumeMount.readOnly` must be `true`, and `subPath`/`subPathExpr` are forbidden. A second validation forces every use of that PVC in the selected namespace to be read-only for regular, init and ephemeral containers, including aliases from other Pods. The API container must be non-root with a read-only root filesystem, no privilege escalation, no privileged mode and all capabilities dropped. The evidence publisher must stage bytes outside this API namespace/workload before the PVC is sealed read-only. This complements the runtime `/proc/self/mountinfo` check; it does not replace it.
 
 For non-Kubernetes Linux deployments, provide an equivalent workload-level control and independently review the active mount/identity policy. In either case the API identity must be unable to write to or remount the evidence volume, and a separate publisher identity must stage artifacts. Record the active enforcement policy reference, volume reference, configured absolute path, independent mount-probe result and exact candidate SHA in the production security attestation. A missing control or failed probe blocks acceptance. Do not claim that repository manifests have been applied to a live cluster unless the operator supplies the deployment evidence.
+
+## Admission policy lock for production evidence namespaces
+
+The Pod policy also matches the `pods/ephemeralcontainers` subresource, so adding an ephemeral container is re-evaluated against the evidence-volume rules. A separate cluster-scoped Namespace ValidatingAdmissionPolicy preserves `factoryos.io/backup-evidence-enforcement=required` after a namespace is enrolled and denies ordinary deletion of that namespace. These controls do not prevent a cluster administrator with permission to remove the policy/binding from disabling enforcement; restrict those RBAC permissions and audit changes to the admission objects.
+
+Install both ValidatingAdmissionPolicies and wait for each to become Accepted before installing the bindings. The namespace-lock binding must be active before applying the namespace label; the update that adds the label is allowed, while later ordinary updates must preserve it.
+
+```sh
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-policy.yaml
+kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=60s
+kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
+kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=60s
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-readonly-binding.yaml
+kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+kubectl label namespace "$API_NAMESPACE" factoryos.io/backup-evidence-enforcement=required --overwrite
+kubectl rollout restart deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+kubectl rollout status deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+```
+
+Test that the `pods/ephemeralcontainers` subresource rejects a writable evidence-volume alias, that namespace label removal and namespace deletion are denied after enrollment, and that initial label enrolment succeeds. Removing the admission policy/binding itself is a privileged cluster-admin change and must be separately controlled.

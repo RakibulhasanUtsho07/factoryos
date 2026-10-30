@@ -13,7 +13,7 @@ test('Kubernetes admission policy is fail-closed and checks the exact evidence m
   assert.ok(policy.includes('kind: ValidatingAdmissionPolicy'));
   assert.ok(policy.includes('failurePolicy: Fail'));
   assert.ok(policy.includes('operations: ["CREATE", "UPDATE"]'));
-  assert.ok(policy.includes('resources: ["pods"]'));
+  assert.ok(policy.includes('resources: ["pods", "pods/ephemeralcontainers"]'));
   assert.equal((policy.match(/^    - expression:/gm) ?? []).length, 2);
 
   for (const required of [
@@ -48,4 +48,21 @@ test('Kubernetes admission binding denies invalid Pods only in explicitly labell
   assert.ok(binding.includes('validationActions:'));
   assert.ok(binding.includes('- Deny'));
   assert.ok(binding.includes('factoryos.io/backup-evidence-enforcement: required'));
+});
+
+test('enrolled backup-evidence namespaces cannot remove their enforcement label or be deleted', async () => {
+  const policy = await read('deploy/security/backup-copy-evidence-namespace-lock-policy.yaml');
+  const binding = await read('deploy/security/backup-copy-evidence-namespace-lock-binding.yaml');
+  assert.ok(policy.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
+  assert.ok(policy.includes('kind: ValidatingAdmissionPolicy'));
+  assert.ok(policy.includes('failurePolicy: Fail'));
+  assert.ok(policy.includes('operations: ["UPDATE", "DELETE"]'));
+  assert.ok(policy.includes('resources: ["namespaces"]'));
+  assert.ok(policy.includes("oldObject.metadata.labels['factoryos.io/backup-evidence-enforcement']"));
+  assert.ok(policy.includes("request.operation == 'UPDATE'"));
+  assert.ok(policy.includes("object.metadata.labels['factoryos.io/backup-evidence-enforcement'] == 'required'"));
+  assert.ok(binding.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
+  assert.ok(binding.includes('kind: ValidatingAdmissionPolicyBinding'));
+  assert.ok(binding.includes('policyName: factoryos-backup-evidence-namespace-lock'));
+  assert.ok(binding.includes('- Deny'));
 });

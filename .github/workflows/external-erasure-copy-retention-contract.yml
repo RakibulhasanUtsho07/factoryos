@@ -28,6 +28,8 @@ on:
       - 'deploy/security/backup-copy-evidence-trust.env.example'
       - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
       - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml'
       - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
       - 'deploy/security/production-security-baseline.yml'
       - 'scripts/security/validate-production-security-baseline.mjs'
@@ -61,6 +63,8 @@ on:
       - 'deploy/security/backup-copy-evidence-trust.env.example'
       - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
       - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml'
       - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
       - 'deploy/security/production-security-baseline.yml'
       - 'scripts/security/validate-production-security-baseline.mjs'
@@ -84,4 +88,4 @@ jobs:
         with:
           node-version: 22
       - name: Verify backup-copy retention and signed evidence contracts
-        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/production-security-baseline-validator.test.mjs
+        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs
