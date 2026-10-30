@@ -35,6 +35,9 @@ test('Kubernetes admission policy is fail-closed and checks the exact evidence m
     'object.spec.initContainers.all(container',
     'object.spec.ephemeralContainers.all(container',
   ]) assert.ok(policy.includes(required), 'policy missing check: ' + required);
+  assert.doesNotMatch(policy, /has\(container\.(?:env|volumeMounts)/);
+  assert.doesNotMatch(policy, /has\(object\.spec\.(?:initContainers|ephemeralContainers)/);
+  assert.doesNotMatch(policy, /has\(container\.securityContext\.capabilities\.drop/);
 });
 
 test('Kubernetes admission binding denies invalid Pods only in explicitly labelled production namespaces', async () => {

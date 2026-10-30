@@ -13,7 +13,6 @@ spec:
   validations:
     - expression: >-
         object.spec.containers.all(container,
-          !has(container.env) ||
           container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 0 ||
           (
             container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 1 &&
@@ -21,7 +20,6 @@ spec:
               has(variable.value) &&
               variable.value.startsWith('/') &&
               variable.value != '/' &&
-              has(container.volumeMounts) &&
               container.volumeMounts.filter(mount, mount.mountPath == variable.value).size() == 1 &&
               container.volumeMounts.exists(mount,
                 mount.mountPath == variable.value &&
@@ -41,7 +39,6 @@ spec:
               container.securityContext.readOnlyRootFilesystem == true &&
               container.securityContext.privileged != true &&
               has(container.securityContext.capabilities) &&
-              has(container.securityContext.capabilities.drop) &&
               container.securityContext.capabilities.drop.exists(capability, capability == 'ALL')
             )
           )
@@ -55,29 +52,26 @@ spec:
           (
             volume.persistentVolumeClaim.readOnly == true &&
             object.spec.containers.all(container,
-              !has(container.volumeMounts) ||
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
                 !has(mount.subPathExpr)
               )
             ) &&
-            (!has(object.spec.initContainers) || object.spec.initContainers.all(container,
-              !has(container.volumeMounts) ||
+            object.spec.initContainers.all(container,
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
                 !has(mount.subPathExpr)
               )
-            )) &&
-            (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(container,
-              !has(container.volumeMounts) ||
+            ) &&
+            object.spec.ephemeralContainers.all(container,
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
                 !has(mount.subPathExpr)
               )
-            ))
+            )
           )
         )
       message: The factoryos-backup-evidence PVC must be read-only at the Pod volume source and every regular, init, and ephemeral container mount in this production namespace.
