@@ -91,9 +91,9 @@ test('backup evidence policy covers ephemeral container injection and namespace 
   const podPolicy = await read('deploy/security/backup-copy-evidence-readonly-policy.yaml');
   const namespacePolicy = await read('deploy/security/backup-copy-evidence-namespace-lock-policy.yaml');
   const namespaceBinding = await read('deploy/security/backup-copy-evidence-namespace-lock-binding.yaml');
-  assert.match(podPolicy, /pods\\/ephemeralcontainers/);
-  assert.match(namespacePolicy, /operations: \\[\\"UPDATE\\", \\"DELETE\\"\\]/);
-  assert.match(namespacePolicy, /request\\.operation == 'UPDATE'/);
+  assert.ok(podPolicy.includes('pods/ephemeralcontainers'));
+  assert.ok(namespacePolicy.includes('operations: ["UPDATE", "DELETE"]'));
+  assert.ok(namespacePolicy.includes("request.operation == 'UPDATE'"));
   assert.match(namespaceBinding, /policyName: factoryos-backup-evidence-namespace-lock/);
   assert.match(namespaceBinding, /- Deny/);
 });
