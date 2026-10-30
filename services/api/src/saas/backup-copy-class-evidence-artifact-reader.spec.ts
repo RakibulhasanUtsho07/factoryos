@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -8,7 +9,8 @@ import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evide
 describe('BackupCopyClassEvidenceArtifactReader', () => {
   const root = mkdtempSync(join(tmpdir(), 'factoryos-backup-evidence-reader-'));
   const oldRoot = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
-  const reader = new BackupCopyClassEvidenceArtifactReader();
+  const mountVerifier = { assertPathMountedReadOnly: jest.fn(async (_path: string) => undefined) };
+  const reader = new BackupCopyClassEvidenceArtifactReader(mountVerifier as never);
 
   const writeArtifact = (reference: string, bytes: Buffer | string, mode = 0o444) => {
     const path = join(root, reference);
@@ -19,6 +21,7 @@ describe('BackupCopyClassEvidenceArtifactReader', () => {
   const sealRoot = () => chmodSync(root, 0o555);
 
   beforeEach(() => {
+    mountVerifier.assertPathMountedReadOnly.mockClear();
     chmodSync(root, 0o755);
     for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
     process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = root;
@@ -41,6 +44,8 @@ describe('BackupCopyClassEvidenceArtifactReader', () => {
     await expect(reader.verifyArtifact(reference, expectedDigest)).resolves.toEqual({
       reference, sha256: expectedDigest, sizeBytes: bytes.length,
     });
+    expect(mountVerifier.assertPathMountedReadOnly).toHaveBeenNthCalledWith(1, root);
+    expect(mountVerifier.assertPathMountedReadOnly).toHaveBeenNthCalledWith(2, join(root, reference));
   });
 
   it('rejects digest mismatch instead of accepting a caller-claimed digest', async () => {

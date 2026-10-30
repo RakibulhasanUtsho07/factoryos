@@ -4,6 +4,7 @@ import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { ConflictException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { LinuxReadOnlyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 
 const SAFE_ARTIFACT_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -25,6 +26,8 @@ export interface VerifiedBackupCopyClassEvidenceArtifact {
  */
 @Injectable()
 export class BackupCopyClassEvidenceArtifactReader {
+  constructor(private readonly mountVerifier: LinuxReadOnlyEvidenceMountVerifier) {}
+
   async verifyArtifact(referenceValue: string, expectedDigestValue: string): Promise<VerifiedBackupCopyClassEvidenceArtifact> {
     if (typeof referenceValue !== 'string' || !SAFE_ARTIFACT_REFERENCE.test(referenceValue)) {
       throw new ConflictException('Backup copy-class evidence artifact reference is invalid or cannot be resolved');
@@ -51,6 +54,7 @@ export class BackupCopyClassEvidenceArtifactReader {
       if (!resolvedRoot.isDirectory() || (resolvedRoot.mode & 0o222) !== 0) {
         throw new Error('Resolved evidence root must not have write permission bits');
       }
+      await this.mountVerifier.assertPathMountedReadOnly(root);
     } catch {
       throw new ServiceUnavailableException('Backup copy-class evidence read-back root is unavailable or unsafe');
     }
@@ -60,6 +64,13 @@ export class BackupCopyClassEvidenceArtifactReader {
     const noFollow = constants.O_NOFOLLOW;
     if (typeof noFollow !== 'number') {
       throw new ServiceUnavailableException('This runtime cannot securely open evidence artifacts without following links');
+    }
+
+    try {
+      // Check the exact file path too: a writable file bind mount could shadow a read-only root.
+      await this.mountVerifier.assertPathMountedReadOnly(artifactPath);
+    } catch {
+      throw new ServiceUnavailableException('Backup copy-class evidence artifact is not covered by a read-only mount');
     }
 
     let handle: FileHandle | undefined;

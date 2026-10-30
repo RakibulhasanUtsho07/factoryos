@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
@@ -333,7 +334,8 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       throw new Error('unexpected transaction SQL: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(), adapterMocks as never, backupFenceCoordinator as never);
+    const testMountVerifier: BackupCopyEvidenceMountVerifier = { assertPathMountedReadOnly: async () => undefined };
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(testMountVerifier as never), adapterMocks as never, backupFenceCoordinator as never);
   });
 
   it('fails closed when a backup copy class is unresolved', async () => {

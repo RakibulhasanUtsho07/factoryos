@@ -46,6 +46,7 @@ import { SaasTenantBackupProviderAcceptanceService } from './saas-tenant-backup-
 import { SaasTenantExternalCopyCoverageService } from './saas-tenant-external-copy-coverage.service';
 import { SaasTenantBackupCopyClassCoverageService } from './saas-tenant-backup-copy-class-coverage.service';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import { LinuxReadOnlyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 import { S3TenantBackupWriterFenceProvider } from './s3-tenant-backup-writer-fence.provider';
 import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { TenantCacheModule } from './tenant-cache.module';
@@ -94,6 +95,7 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantBackupProviderAcceptanceService,
     SaasTenantExternalCopyCoverageService,
     SaasTenantBackupCopyClassCoverageService,
+    LinuxReadOnlyEvidenceMountVerifier,
     BackupCopyClassEvidenceArtifactReader,
     S3TenantBackupWriterFenceProvider,
     S3TenantBackupWriterFenceCoordinator,

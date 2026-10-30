@@ -9,6 +9,8 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   const helper = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
   const artifactReader = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts');
   const artifactReaderSpec = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts');
+  const mountVerifier = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts');
+  const mountVerifierSpec = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts');
   const helperSpec = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts');
   const dto = await readRepoFile('services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts');
   const service = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
@@ -59,6 +61,15 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.match(signer, /privateKey\.asymmetricKeyType !== 'ed25519'/);
   assert.ok(artifactReader.includes('FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR'));
   assert.ok(artifactReader.includes('O_NOFOLLOW'));
+  assert.ok(artifactReader.includes('assertPathMountedReadOnly(root)'));
+  assert.ok(artifactReader.includes('assertPathMountedReadOnly(artifactPath)'));
+  assert.ok(mountVerifier.includes('/proc/self/mountinfo'));
+  assert.ok(mountVerifier.includes("entry.options.includes('ro')"));
+  assert.ok(mountVerifier.includes("process.platform !== 'linux'"));
+  assert.ok(mountVerifierSpec.includes('writable deeper bind mount'));
+  assert.ok(mountVerifierSpec.includes('per-mount ro option'));
+  assert.ok(mountVerifierSpec.includes('duplicate deepest mount points'));
+
   assert.match(artifactReader, /rootEntry\.mode & 0o222/);
   assert.match(artifactReader, /before\.mode & 0o222n/);
   assert.match(artifactReader, /before\.nlink !== 1n/);
