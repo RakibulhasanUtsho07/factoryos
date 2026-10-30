@@ -31,12 +31,17 @@ test('Kubernetes admission policy is fail-closed and checks the exact evidence m
     '!has(mount.subPath)',
     '!has(mount.subPathExpr)',
     'has(volume.persistentVolumeClaim)',
-    'volume.csi.readOnly == true',
+    "volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'",
+    'volume.persistentVolumeClaim.readOnly == true',
     'container.securityContext.runAsNonRoot == true',
     'container.securityContext.allowPrivilegeEscalation == false',
     'container.securityContext.readOnlyRootFilesystem == true',
     'container.securityContext.privileged != true',
     "capability == 'ALL'",
+    'object.spec.volumes.all(volume',
+    "claimName != 'factoryos-backup-evidence'",
+    'object.spec.initContainers.all(container',
+    'object.spec.ephemeralContainers.all(container',
   ]) assert.ok(expression.includes(required), 'policy missing check: ' + required);
 });
 

@@ -30,10 +30,9 @@ spec:
                 !has(mount.subPathExpr) &&
                 object.spec.volumes.exists(volume,
                   volume.name == mount.name &&
-                  (
-                    has(volume.persistentVolumeClaim) ||
-                    (has(volume.csi) && volume.csi.readOnly == true)
-                  )
+                  has(volume.persistentVolumeClaim) &&
+                  volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence' &&
+                  volume.persistentVolumeClaim.readOnly == true
                 )
               ) &&
               has(container.securityContext) &&
@@ -47,5 +46,39 @@ spec:
             )
           )
         )
-      message: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR must be an absolute path backed by exactly one read-only PVC/CSI mount without subPath; the container must run non-root with a read-only root filesystem, no privilege escalation, and all capabilities dropped.
+      message: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR must map to exactly one absolute, read-only mount of the dedicated factoryos-backup-evidence PVC without subPath; the container must run non-root with a read-only root filesystem, no privilege escalation, and all capabilities dropped.
+      reason: Invalid
+    - expression: >-
+        object.spec.volumes.all(volume,
+          !has(volume.persistentVolumeClaim) ||
+          volume.persistentVolumeClaim.claimName != 'factoryos-backup-evidence' ||
+          (
+            volume.persistentVolumeClaim.readOnly == true &&
+            object.spec.containers.all(container,
+              !has(container.volumeMounts) ||
+              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr)
+              )
+            ) &&
+            (!has(object.spec.initContainers) || object.spec.initContainers.all(container,
+              !has(container.volumeMounts) ||
+              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr)
+              )
+            )) &&
+            (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(container,
+              !has(container.volumeMounts) ||
+              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr)
+              )
+            ))
+          )
+        )
+      message: The factoryos-backup-evidence PVC must be read-only at the Pod volume source and every regular, init, and ephemeral container mount in this production namespace.
       reason: Invalid
