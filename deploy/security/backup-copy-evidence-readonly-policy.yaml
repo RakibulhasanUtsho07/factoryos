@@ -67,7 +67,7 @@ spec:
           )
         ) &&
         object.spec.containers.all(container,
-          container.volumeMounts.all(mount,
+          container.?volumeMounts.orValue([]).all(mount,
             !object.spec.volumes.exists(volume,
               volume.name == mount.name &&
               has(volume.persistentVolumeClaim) &&
@@ -83,7 +83,7 @@ spec:
           ) &&
           (
             !has(container.volumeDevices) ||
-            container.volumeDevices.all(device,
+            container.?volumeDevices.orValue([]).all(device,
               !object.spec.volumes.exists(volume,
                 volume.name == device.name &&
                 has(volume.persistentVolumeClaim) &&
@@ -92,8 +92,8 @@ spec:
             )
           )
         ) &&
-        object.spec.initContainers.all(container,
-          container.volumeMounts.all(mount,
+        object.spec.?initContainers.orValue([]).all(container,
+          container.?volumeMounts.orValue([]).all(mount,
             !object.spec.volumes.exists(volume,
               volume.name == mount.name &&
               has(volume.persistentVolumeClaim) &&
@@ -109,7 +109,7 @@ spec:
           ) &&
           (
             !has(container.volumeDevices) ||
-            container.volumeDevices.all(device,
+            container.?volumeDevices.orValue([]).all(device,
               !object.spec.volumes.exists(volume,
                 volume.name == device.name &&
                 has(volume.persistentVolumeClaim) &&
@@ -118,8 +118,8 @@ spec:
             )
           )
         ) &&
-        object.spec.ephemeralContainers.all(container,
-          container.volumeMounts.all(mount,
+        object.spec.?ephemeralContainers.orValue([]).all(container,
+          container.?volumeMounts.orValue([]).all(mount,
             !object.spec.volumes.exists(volume,
               volume.name == mount.name &&
               has(volume.persistentVolumeClaim) &&
@@ -152,7 +152,7 @@ spec:
           has(container.securityContext.seccompProfile) &&
           has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
         ) &&
-        (!has(object.spec.initContainers) || object.spec.initContainers.all(container,
+        object.spec.?initContainers.orValue([]).all(container,
           has(container.securityContext) &&
           has(container.securityContext.runAsNonRoot) && container.securityContext.runAsNonRoot == true &&
           has(container.securityContext.runAsUser) &&
@@ -166,8 +166,8 @@ spec:
           (!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked') &&
           has(container.securityContext.seccompProfile) &&
           has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
-        )) &&
-        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(container,
+        ) &&
+        object.spec.?ephemeralContainers.orValue([]).all(container,
           has(container.securityContext) &&
           has(container.securityContext.runAsNonRoot) && container.securityContext.runAsNonRoot == true &&
           has(container.securityContext.runAsUser) &&
@@ -181,13 +181,13 @@ spec:
           (!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked') &&
           has(container.securityContext.seccompProfile) &&
           has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
-        ))
+        )
       message: Every regular, init, and ephemeral container must be non-root, no-escalation, read-only-rootfs, drop ALL/add no capabilities, avoid unmasked proc, and use RuntimeDefault seccomp.
       reason: Invalid
 
     - expression: >-
-        object.spec.initContainers.all(container,
-          container.volumeMounts.all(mount,
+        object.spec.?initContainers.orValue([]).all(container,
+          container.?volumeMounts.orValue([]).all(mount,
             has(mount.readOnly) && mount.readOnly == true
           )
         )
