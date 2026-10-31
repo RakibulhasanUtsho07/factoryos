@@ -230,7 +230,7 @@ kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/valid-pod.yaml" >/
 
 expect_denied \
   "writable init-container alias" \
-  "Init containers must not attach writable volume mounts" \
+  "The factoryos-backup-evidence PVC must be read-only" \
   kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/writable-init-pod.yaml"
 
 cat > "$WORK_DIR/writable-init-scratch-pod.yaml" <<'POD'
