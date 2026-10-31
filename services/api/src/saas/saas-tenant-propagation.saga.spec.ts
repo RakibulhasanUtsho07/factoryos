@@ -10,8 +10,8 @@ import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
   EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import {
-  digestExternalStoreInventoryScope, EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
-  REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS,
+  canonicalizeExternalStoreInventorySourceReceipt, digestExternalStoreInventoryScope,
+  EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA, REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS,
 } from './external-store-inventory-manifest';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
@@ -23,6 +23,23 @@ const reviewer = '16010000-0000-4000-8000-000000000002';
 const postgresExecutor = '16010000-0000-4000-8000-000000000003';
 const propagationExecutor = '16010000-0000-4000-8000-000000000004';
 const independentAttestor = '16010000-0000-4000-8000-000000000005';
+const priorInventorySourceTrust = process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+const inventoryCollectorKeys = new Map(REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [sourceKind, {
+    keyId: 'collector.' + sourceKind.toLowerCase(),
+    ownerReference: 'owner.collector.' + sourceKind.toLowerCase(),
+    publicKey: pair.publicKey,
+    privateKey: pair.privateKey,
+  }] as const;
+}));
+const inventorySourceTrust = JSON.stringify([...inventoryCollectorKeys.entries()].map(([sourceKind, key]) => ({
+  keyId: key.keyId,
+  ownerReference: key.ownerReference,
+  sourceKinds: [sourceKind],
+  publicKeyPem: key.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+})));
+process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = inventorySourceTrust;
 
 function createExternalInventoryManifest(tenantId: string, categoryCode: string) {
   const now = new Date().toISOString();
@@ -33,19 +50,13 @@ function createExternalInventoryManifest(tenantId: string, categoryCode: string)
     region_references: ['region.ci.primary'],
   };
   const scopeSha256 = digestExternalStoreInventoryScope(scope);
-  return {
-    schema: EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
-    tenant_id: tenantId,
-    category_code: categoryCode,
-    generated_at: now,
-    scope,
-    scope_sha256: scopeSha256,
-    inventory_complete: true,
-    unclassified_store_count: 0,
-    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE', 'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP'],
-    sources: REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => ({
+  const manifestId = '17000000-0000-4000-8000-000000000001';
+  const sources = REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => {
+    const collector = inventoryCollectorKeys.get(sourceKind)!;
+    const receipt = {
       source_kind: sourceKind,
       source_reference: 'discovery.ci.' + sourceKind.toLowerCase(),
+      collection_run_reference: 'collector-run.ci.' + sourceKind.toLowerCase(),
       status: 'COMPLETE',
       pagination_exhausted: true,
       pages_fetched: 1,
@@ -54,7 +65,27 @@ function createExternalInventoryManifest(tenantId: string, categoryCode: string)
       scope_sha256: scopeSha256,
       started_at: now,
       completed_at: now,
-    })),
+      attestation_key_id: collector.keyId,
+      attestation_owner_reference: collector.ownerReference,
+      attestation_signature: '',
+    };
+    receipt.attestation_signature = sign(null, Buffer.from(canonicalizeExternalStoreInventorySourceReceipt(
+      receipt, { tenantId, categoryCode, manifestId },
+    ), 'utf8'), collector.privateKey).toString('base64url');
+    return receipt;
+  });
+  return {
+    schema: EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
+    manifest_id: manifestId,
+    tenant_id: tenantId,
+    category_code: categoryCode,
+    generated_at: now,
+    scope,
+    scope_sha256: scopeSha256,
+    inventory_complete: true,
+    unclassified_store_count: 0,
+    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE', 'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP'],
+    sources,
   };
 }
 const { publicKey: backupEvidencePublicKey, privateKey: backupEvidencePrivateKey } = generateKeyPairSync('ed25519');
@@ -73,6 +104,8 @@ process.on('exit', () => {
   else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = priorBackupEvidenceTrust;
   if (priorBackupEvidenceRoot === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
   else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = priorBackupEvidenceRoot;
+  if (priorInventorySourceTrust === undefined) delete process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = priorInventorySourceTrust;
   rmSync(backupEvidenceRoot, { recursive: true, force: true });
 });
 const backupEvidenceTrust = JSON.stringify([{
