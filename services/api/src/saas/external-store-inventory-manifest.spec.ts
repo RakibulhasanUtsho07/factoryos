@@ -14,7 +14,31 @@ const scope = {
   region_references: ['region.ap-southeast-1'],
 };
 
-function manifest(overrides: Record<string, unknown> = {}) {
+interface InventoryManifestFixture {
+  schema: string;
+  tenant_id: string;
+  category_code: string;
+  generated_at: string;
+  scope: typeof scope;
+  scope_sha256: string;
+  inventory_complete: boolean;
+  unclassified_store_count: number;
+  discovered_store_kinds: string[];
+  sources: Array<{
+    source_kind: string;
+    source_reference: string;
+    status: string;
+    pagination_exhausted: boolean;
+    pages_fetched: number;
+    item_count: number;
+    result_sha256: string;
+    scope_sha256: string;
+    started_at: string;
+    completed_at: string;
+  }>;
+}
+
+function manifest(overrides: Partial<InventoryManifestFixture> = {}): InventoryManifestFixture {
   const now = new Date().toISOString();
   const scopeSha256 = digestExternalStoreInventoryScope(scope);
   return {
