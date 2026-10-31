@@ -71,6 +71,9 @@ jobs:
           node --check scripts/security/validate-production-security-baseline.mjs
           node --check scripts/security/production-security-baseline-validator.test.mjs
           node --check scripts/security/validate-backup-copy-evidence-deployment.mjs
+          node --check scripts/security/require-supported-kubernetes-version.mjs
+          node --check scripts/security/require-supported-kubernetes-version.test.mjs
+          bash -n scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh
           node --check scripts/security/probe-backup-copy-evidence-runtime.mjs
           node --check scripts/security/backup-copy-evidence-deployment.test.mjs
           bash -n deploy/security/provision-backup-copy-evidence-enforcement.sh
@@ -81,7 +84,7 @@ jobs:
         run: |
           npm run test:load-smoke:contract
           npm run test:recovery:contract
-          node --test ../../scripts/security/production-security-config.test.mjs ../../scripts/security/production-security-baseline-validator.test.mjs ../../scripts/security/backup-copy-evidence-deployment.test.mjs ../../scripts/security/backup-copy-evidence-readonly-admission.test.mjs
+          node --test ../../scripts/security/production-security-config.test.mjs ../../scripts/security/production-security-baseline-validator.test.mjs ../../scripts/security/backup-copy-evidence-deployment.test.mjs ../../scripts/security/backup-copy-evidence-readonly-admission.test.mjs ../../scripts/security/require-supported-kubernetes-version.test.mjs
 
       - name: Audit production dependencies
         run: npm audit --omit=dev
