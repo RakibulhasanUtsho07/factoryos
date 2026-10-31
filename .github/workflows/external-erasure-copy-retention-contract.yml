@@ -146,7 +146,7 @@ jobs:
       - name: Verify backup-copy retention and signed evidence contracts
         run: |
           node --check scripts/security/require-supported-kubernetes-version.mjs
-          node --check scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
+          node --check scripts/security/require-supported-kubernetes-version.test.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.test.mjs
-          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs
+          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
