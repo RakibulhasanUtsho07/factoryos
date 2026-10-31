@@ -140,7 +140,7 @@ export class SaasTenantExternalCopyCoverageService {
    'SELECT DISTINCT ON (category_code,store_kind) * FROM public.saas_tenant_external_copy_coverage_decisions WHERE tenant_id=$1 AND category_code=$2 ORDER BY category_code,store_kind,revision DESC',
    [tenantId,category],{tenantId,userId:actorUserId});
   const items=result.rows.map(row=>this.map(row));
-  return {items,count:items.length,expectedStoreKinds:REQUIRED_EXTERNAL_STORE_KINDS};
+  return {items,count:items.length,expectedStoreKinds:EXTERNAL_COPY_COVERAGE_STORE_KINDS};
  }
  private map(row:CoverageRow){
   return {decisionId:row.decision_id,categoryCode:row.category_code,storeKind:row.store_kind,revision:Number(row.revision),
