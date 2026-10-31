@@ -27,7 +27,7 @@ function snapshot() {
       'factoryos-backup-evidence-api-service-account',
       'factoryos-backup-evidence-api-token-secret',
       'factoryos-backup-evidence-namespace-lock',
-    ].map((name) => ({ metadata: { name }, status: { conditions: [{ type: 'Accepted', status: 'True' }] } })) },
+    ].map((name) => ({ metadata: { name, generation: 1 }, status: { observedGeneration: 1, typeChecking: {} } })) },
     policyBindings: { items: [
       ['factoryos-backup-evidence-readonly', true],
       ['factoryos-backup-evidence-api-service-account', true],
@@ -162,10 +162,21 @@ test('rejects RBAC grants to the API ServiceAccount and its namespace groups', (
   }
 });
 
-test('fails closed when admission policy acceptance or a Deny binding is absent', () => {
-  const notAccepted = snapshot();
-  notAccepted.policies.items[0].status.conditions[0].status = 'False';
-  assert.ok(validateProvisioningSnapshot(notAccepted, { namespace }).some((error) => error.includes('not Accepted')));
+test('fails closed when admission policy generation is stale or CEL type-checking is absent/unsafe', () => {
+  const stalePolicy = snapshot();
+  stalePolicy.policies.items[0].status.observedGeneration = 0;
+  assert.ok(validateProvisioningSnapshot(stalePolicy, { namespace }).some((error) => error.includes('not observed its current generation')));
+
+  const missingTypeCheck = snapshot();
+  delete missingTypeCheck.policies.items[0].status.typeChecking;
+  assert.ok(validateProvisioningSnapshot(missingTypeCheck, { namespace }).some((error) => error.includes('status.typeChecking is absent')));
+
+  const warnedPolicy = snapshot();
+  warnedPolicy.policies.items[0].status.typeChecking.expressionWarnings = [
+    { fieldRef: 'spec.validations[0].expression', warning: "undefined field 'unsafe'" },
+  ];
+  assert.ok(validateProvisioningSnapshot(warnedPolicy, { namespace }).some((error) => error.includes('CEL type-checking warnings')));
+
   const noBinding = snapshot();
   noBinding.policyBindings.items = noBinding.policyBindings.items.filter((item) => item.metadata.name !== 'factoryos-backup-evidence-readonly');
   assert.ok(validateProvisioningSnapshot(noBinding, { namespace }).some((error) => error.includes('Binding is missing or misconfigured')));
