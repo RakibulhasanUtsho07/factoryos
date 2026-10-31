@@ -474,6 +474,31 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
+  it('blocks a signed NOT_APPLICABLE sentinel when the complete inventory manifest reports an unclassified store', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    const evidenceReference = String(sentinel.evidence_reference);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    const invalidManifest = createExternalInventoryManifest(tenant, 'BUSINESS_DATA');
+    invalidManifest.unclassified_store_count = 1;
+    const invalidBytes = Buffer.from(JSON.stringify(invalidManifest), 'utf8');
+
+    chmodSync(backupEvidenceRoot, 0o755);
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, invalidBytes, { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    sentinel.evidence_sha256 = createHash('sha256').update(invalidBytes).digest('hex');
+    signExternalCopyCoverageRow(sentinel);
+
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A signed but incomplete inventory manifest must block propagation',
+      idempotency_key: 'external-propagation-inventory-manifest-incomplete',
+    })).rejects.toThrow('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
   it('fails closed when a backup copy class is unresolved', async () => {
     const wal = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
     if (!wal) throw new Error('WAL/PITR copy-class fixture is missing');
