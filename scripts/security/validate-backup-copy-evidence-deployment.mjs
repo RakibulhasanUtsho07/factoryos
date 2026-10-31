@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateAdmissionPolicyStatus } from './validate-kubernetes-admission-policy-status.mjs';
 
 export const API_SERVICE_ACCOUNT = 'factoryos-backup-evidence-api';
 export const EVIDENCE_PVC = 'factoryos-backup-evidence';
@@ -153,9 +154,15 @@ export function validateProvisioningSnapshot(snapshot, options = {}) {
   const policyItems = list(snapshot?.policies?.items);
   for (const name of requiredPolicies) {
     const policy = policyItems.find((item) => item?.metadata?.name === name);
-    const accepted = list(policy?.status?.conditions).some((condition) =>
-      condition?.type === 'Accepted' && condition?.status === 'True');
-    if (!accepted) fail(errors, 'Required ValidatingAdmissionPolicy is missing or not Accepted: ' + name);
+    if (!policy) {
+      fail(errors, 'Required ValidatingAdmissionPolicy is missing: ' + name);
+      continue;
+    }
+    try {
+      validateAdmissionPolicyStatus(policy);
+    } catch (error) {
+      fail(errors, 'Required ValidatingAdmissionPolicy CEL type-check is not ready or failed: ' + name + ' (' + error.message + ')');
+    }
   }
   const bindingItems = list(snapshot?.policyBindings?.items);
   for (const [name, policyName, namespaceScoped] of requiredBindings) {
