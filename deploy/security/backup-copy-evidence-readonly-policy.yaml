@@ -81,11 +81,14 @@ spec:
               (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
             )
           ) &&
-          container.volumeDevices.all(device,
-            !object.spec.volumes.exists(volume,
-              volume.name == device.name &&
-              has(volume.persistentVolumeClaim) &&
-              volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+          (
+            !has(container.volumeDevices) ||
+            container.volumeDevices.all(device,
+              !object.spec.volumes.exists(volume,
+                volume.name == device.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+              )
             )
           )
         ) &&
@@ -104,11 +107,14 @@ spec:
               (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
             )
           ) &&
-          container.volumeDevices.all(device,
-            !object.spec.volumes.exists(volume,
-              volume.name == device.name &&
-              has(volume.persistentVolumeClaim) &&
-              volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+          (
+            !has(container.volumeDevices) ||
+            container.volumeDevices.all(device,
+              !object.spec.volumes.exists(volume,
+                volume.name == device.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+              )
             )
           )
         ) &&
