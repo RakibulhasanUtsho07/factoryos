@@ -57,48 +57,80 @@ spec:
       message: The evidence API Pod must use the dedicated token-disabled ServiceAccount, avoid host namespaces/hostPath/projected tokens, and map one absolute evidence root to the dedicated read-only PVC.
       reason: Invalid
     - expression: >-
-        has(object.spec.volumes) && object.spec.volumes.all(volume,
+        has(object.spec.volumes) &&
+        object.spec.volumes.all(volume,
           !has(volume.persistentVolumeClaim) ||
           volume.persistentVolumeClaim.claimName != 'factoryos-backup-evidence' ||
           (
-            has(volume.persistentVolumeClaim.readOnly) && volume.persistentVolumeClaim.readOnly == true &&
-            object.spec.containers.all(container,
-              (!has(container.volumeMounts) ||
-                container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                  has(mount.readOnly) && mount.readOnly == true &&
-                  !has(mount.subPath) &&
-                  !has(mount.subPathExpr) &&
-                  (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
-                )
-              ) &&
-              (!has(container.volumeDevices) ||
-                container.volumeDevices.filter(device, device.name == volume.name).size() == 0
+            has(volume.persistentVolumeClaim.readOnly) &&
+            volume.persistentVolumeClaim.readOnly == true
+          )
+        ) &&
+        object.spec.containers.all(container,
+          (
+            !has(container.volumeMounts) ||
+            container.volumeMounts.all(mount,
+              !object.spec.volumes.exists(volume,
+                volume.name == mount.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+              ) ||
+              (
+                has(mount.readOnly) &&
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
               )
-            ) &&
-            (!has(object.spec.initContainers) ||
-              object.spec.initContainers.all(container,
-                (!has(container.volumeMounts) ||
-                  container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                    has(mount.readOnly) && mount.readOnly == true &&
-                    !has(mount.subPath) &&
-                    !has(mount.subPathExpr) &&
-                    (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
-                  )
-                ) &&
-                (!has(container.volumeDevices) ||
-                  container.volumeDevices.filter(device, device.name == volume.name).size() == 0
-                )
+            )
+          ) &&
+          (
+            !has(container.volumeDevices) ||
+            !container.volumeDevices.exists(device,
+              object.spec.volumes.exists(volume,
+                volume.name == device.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
               )
-            ) &&
-            (!has(object.spec.ephemeralContainers) ||
-              object.spec.ephemeralContainers.all(container,
-                !has(container.volumeMounts) ||
-                container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                  has(mount.readOnly) && mount.readOnly == true &&
-                  !has(mount.subPath) &&
-                  !has(mount.subPathExpr) &&
-                  (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
-                )
+            )
+          )
+        ) &&
+        (
+          !has(object.spec.initContainers) ||
+          object.spec.initContainers.all(container,
+            !has(container.volumeMounts) ||
+            container.volumeMounts.all(mount,
+              !object.spec.volumes.exists(volume,
+                volume.name == mount.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+              ) ||
+              (
+                has(mount.readOnly) &&
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+              )
+            )
+          )
+        ) &&
+        (
+          !has(object.spec.ephemeralContainers) ||
+          object.spec.ephemeralContainers.all(container,
+            !has(container.volumeMounts) ||
+            container.volumeMounts.all(mount,
+              !object.spec.volumes.exists(volume,
+                volume.name == mount.name &&
+                has(volume.persistentVolumeClaim) &&
+                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+              ) ||
+              (
+                has(mount.readOnly) &&
+                mount.readOnly == true &&
+                !has(mount.subPath) &&
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
               )
             )
           )
