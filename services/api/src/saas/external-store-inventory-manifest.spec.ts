@@ -136,7 +136,7 @@ describe('external-store inventory manifest', () => {
 
   it('rejects a trusted collector key outside its approved discovery source kinds', () => {
     const base = manifest();
-    const other = base.sources[1];
+    const other = base.sources[1]!;
     const sourceRows = base.sources.map((source, index) => index === 0
       ? {
         ...source,
