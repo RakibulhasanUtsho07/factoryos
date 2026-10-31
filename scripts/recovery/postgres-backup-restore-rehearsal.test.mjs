@@ -102,6 +102,32 @@ test('release-gate mode requires a durable evidence receipt before opening any d
   }
 });
 
+test('release-gate mode requires an externally reviewed erasure replay ledger before opening database connections', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-erasure-replay-'));
+  try {
+    const smokeSql = join(directory, 'restore-smoke.sql');
+    const watermarkSql = join(directory, 'watermark.sql');
+    writeFileSync(smokeSql, 'SELECT 1;\\n', { mode: 0o600 });
+    writeFileSync(watermarkSql, 'SELECT 1;\\n', { mode: 0o600 });
+    const result = runScript(commonConfig(directory, {
+      FACTORYOS_DR_MODE: 'RELEASE_GATE',
+      FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE: 'I_HAVE_VERIFIED_EMPTY',
+      FACTORYOS_RECOVERY_EVIDENCE_JSON: join(directory, 'recovery-receipt.json'),
+      FACTORYOS_CANDIDATE_MIGRATION_MANIFEST: 'scripts/recovery/ci-candidate-migrations.txt',
+      FACTORYOS_RECOVERY_WATERMARK_SQL: watermarkSql,
+      FACTORYOS_RECOVERY_EVENT_TIME_UTC: '2026-10-20T12:00:00Z',
+      FACTORYOS_RECOVERY_OPERATOR: 'CI operator',
+      FACTORYOS_RECOVERY_APPROVER: 'CI approver',
+      FACTORYOS_CANDIDATE_SHA: 'a'.repeat(40),
+    }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /required environment variable is missing: FACTORYOS_RESTORE_ERASURE_REPLAY_SQL/);
+    assert.equal(result.stderr.includes('could not establish source database identity'), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('release-gate mode refuses approved SLOs without explicit owner-approved RPO and RTO seconds', () => {
   const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-slo-guard-'));
   try {
