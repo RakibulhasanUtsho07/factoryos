@@ -532,6 +532,31 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
+  it('blocks a source receipt whose claims were altered after the collector signed it', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    const evidenceReference = String(sentinel.evidence_reference);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    const manifest = createExternalInventoryManifest(tenant, 'BUSINESS_DATA');
+    manifest.sources[0]!.item_count = 99;
+    const alteredBytes = Buffer.from(JSON.stringify(manifest), 'utf8');
+
+    chmodSync(backupEvidenceRoot, 0o755);
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, alteredBytes, { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    sentinel.evidence_sha256 = createHash('sha256').update(alteredBytes).digest('hex');
+    signExternalCopyCoverageRow(sentinel);
+
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Collector signature must bind the source receipt values',
+      idempotency_key: 'external-propagation-source-receipt-tamper',
+    })).rejects.toThrow('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
   it('fails closed when a backup copy class is unresolved', async () => {
     const wal = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
     if (!wal) throw new Error('WAL/PITR copy-class fixture is missing');
