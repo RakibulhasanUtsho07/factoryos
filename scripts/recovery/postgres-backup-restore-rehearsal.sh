@@ -490,6 +490,7 @@ printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
 printf 'Candidate migrations: %s (%s entries, mode %s)\n' "$candidate_migration_status" "$candidate_migration_count" "$manifest_mode"
 printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
 printf 'Schema smoke: %s; API smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$schema_smoke_status" "$application_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
+printf 'Erasure tombstone replay: %s; requests: %s; residuals: %s; ledger SHA-256: %s\n' "$erasure_replay_status" "${erasure_replayed_requests:-NOT_RUN}" "${erasure_replay_residuals:-NOT_RUN}" "${erasure_ledger_sha256:-NOT_SET}"
 printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
 printf 'Operator sign-off is pending post-run review.\n'
 \n'* ]] || die "restore erasure SQL emitted an empty or multi-line ${marker} marker"
