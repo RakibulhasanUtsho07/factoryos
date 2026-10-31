@@ -13,10 +13,10 @@ spec:
   variables:
     - name: initContainers
       expression: >-
-        has(object.spec.initContainers) ? object.spec.initContainers : variables.initContainers
+        has(object.spec.initContainers) ? object.spec.initContainers : object.spec.?initContainers.orValue([])
     - name: ephemeralContainers
       expression: >-
-        has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : variables.ephemeralContainers
+        has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : object.spec.?ephemeralContainers.orValue([])
   validations:
     - expression: >-
         has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'factoryos-backup-evidence-api' &&
