@@ -12,6 +12,23 @@ spec:
         resources: ["pods", "pods/ephemeralcontainers"]
   validations:
     - expression: >-
+        object.spec.serviceAccountName == 'factoryos-backup-evidence-api' &&
+        has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false &&
+        object.spec.hostPID != true &&
+        object.spec.hostIPC != true &&
+        object.spec.hostNetwork != true &&
+        object.spec.shareProcessNamespace != true &&
+        object.spec.volumes.all(volume,
+          !has(volume.hostPath) &&
+          (
+            !has(volume.projected) ||
+            volume.projected.sources.all(source, !has(source.serviceAccountToken))
+          )
+        ) &&
+        object.spec.containers.filter(container,
+          container.env.exists(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR')
+        ).size() == 1 &&
         object.spec.containers.all(container,
           container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 0 ||
           (
@@ -26,24 +43,18 @@ spec:
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
                 !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None') &&
                 object.spec.volumes.exists(volume,
                   volume.name == mount.name &&
                   has(volume.persistentVolumeClaim) &&
                   volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence' &&
                   volume.persistentVolumeClaim.readOnly == true
                 )
-              ) &&
-              has(container.securityContext) &&
-              container.securityContext.runAsNonRoot == true &&
-              container.securityContext.allowPrivilegeEscalation == false &&
-              container.securityContext.readOnlyRootFilesystem == true &&
-              container.securityContext.privileged != true &&
-              has(container.securityContext.capabilities) &&
-              container.securityContext.capabilities.drop.exists(capability, capability == 'ALL')
+              )
             )
           )
         )
-      message: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR must map to exactly one absolute, read-only mount of the dedicated factoryos-backup-evidence PVC without subPath; the container must run non-root with a read-only root filesystem, no privilege escalation, and all capabilities dropped.
+      message: The evidence API Pod must use the dedicated token-disabled ServiceAccount, avoid host namespaces/hostPath/projected tokens, and map one absolute evidence root to the dedicated read-only PVC.
       reason: Invalid
     - expression: >-
         object.spec.volumes.all(volume,
@@ -55,24 +66,77 @@ spec:
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
-                !has(mount.subPathExpr)
-              )
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+              ) &&
+              container.volumeDevices.filter(device, device.name == volume.name).size() == 0
             ) &&
             object.spec.initContainers.all(container,
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
-                !has(mount.subPathExpr)
-              )
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+              ) &&
+              container.volumeDevices.filter(device, device.name == volume.name).size() == 0
             ) &&
             object.spec.ephemeralContainers.all(container,
               container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
                 mount.readOnly == true &&
                 !has(mount.subPath) &&
-                !has(mount.subPathExpr)
+                !has(mount.subPathExpr) &&
+                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
               )
             )
           )
         )
-      message: The factoryos-backup-evidence PVC must be read-only at the Pod volume source and every regular, init, and ephemeral container mount in this production namespace.
+      message: The factoryos-backup-evidence PVC must be read-only at the Pod volume source and every regular, init, and ephemeral container mount; block-device aliases are forbidden.
+      reason: Invalid
+    - expression: >-
+        object.spec.containers.all(container,
+          has(container.securityContext) &&
+          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsUser) &&
+          container.securityContext.runAsUser > 0 &&
+          container.securityContext.allowPrivilegeEscalation == false &&
+          container.securityContext.readOnlyRootFilesystem == true &&
+          container.securityContext.privileged != true &&
+          has(container.securityContext.capabilities) &&
+          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
+          container.securityContext.procMount != 'Unmasked' &&
+          has(container.securityContext.seccompProfile) &&
+          container.securityContext.seccompProfile.type == 'RuntimeDefault'
+        ) &&
+        object.spec.initContainers.all(container,
+          has(container.securityContext) &&
+          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsUser) &&
+          container.securityContext.runAsUser > 0 &&
+          container.securityContext.allowPrivilegeEscalation == false &&
+          container.securityContext.readOnlyRootFilesystem == true &&
+          container.securityContext.privileged != true &&
+          has(container.securityContext.capabilities) &&
+          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
+          container.securityContext.procMount != 'Unmasked' &&
+          has(container.securityContext.seccompProfile) &&
+          container.securityContext.seccompProfile.type == 'RuntimeDefault'
+        ) &&
+        object.spec.ephemeralContainers.all(container,
+          has(container.securityContext) &&
+          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsUser) &&
+          container.securityContext.runAsUser > 0 &&
+          container.securityContext.allowPrivilegeEscalation == false &&
+          container.securityContext.readOnlyRootFilesystem == true &&
+          container.securityContext.privileged != true &&
+          has(container.securityContext.capabilities) &&
+          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
+          container.securityContext.procMount != 'Unmasked' &&
+          has(container.securityContext.seccompProfile) &&
+          container.securityContext.seccompProfile.type == 'RuntimeDefault'
+        )
+      message: Every regular, init, and ephemeral container must be non-root, no-escalation, read-only-rootfs, drop ALL/add no capabilities, avoid unmasked proc, and use RuntimeDefault seccomp.
       reason: Invalid

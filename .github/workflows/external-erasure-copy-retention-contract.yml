@@ -26,6 +26,16 @@ on:
       - 'services/api/test/saas-tenant-propagation-contract.sql'
       - 'services/api/.env.example'
       - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'docs/backup-copy-evidence-deployment-provisioning.md'
+      - 'deploy/security/backup-copy-evidence-api-service-account.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-binding.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/validate-backup-copy-evidence-deployment.mjs'
+      - 'scripts/security/probe-backup-copy-evidence-runtime.mjs'
+      - 'scripts/security/backup-copy-evidence-deployment.test.mjs'
       - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
       - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
       - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
@@ -61,6 +71,16 @@ on:
       - 'services/api/test/saas-tenant-propagation-contract.sql'
       - 'services/api/.env.example'
       - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'docs/backup-copy-evidence-deployment-provisioning.md'
+      - 'deploy/security/backup-copy-evidence-api-service-account.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-binding.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/validate-backup-copy-evidence-deployment.mjs'
+      - 'scripts/security/probe-backup-copy-evidence-runtime.mjs'
+      - 'scripts/security/backup-copy-evidence-deployment.test.mjs'
       - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
       - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
       - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
@@ -87,5 +107,21 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: Parse Kubernetes admission manifests
+        run: |
+          ruby -ryaml -e 'ARGV.each { |path| YAML.load_file(path) }' \
+            deploy/security/backup-copy-evidence-readonly-policy.yaml \
+            deploy/security/backup-copy-evidence-readonly-binding.yaml \
+            deploy/security/backup-copy-evidence-api-service-account.yaml \
+            deploy/security/backup-copy-evidence-api-service-account-policy.yaml \
+            deploy/security/backup-copy-evidence-api-service-account-binding.yaml \
+            deploy/security/backup-copy-evidence-api-token-secret-policy.yaml \
+            deploy/security/backup-copy-evidence-api-token-secret-binding.yaml \
+            deploy/security/backup-copy-evidence-namespace-lock-policy.yaml \
+            deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+
+      - name: Validate provisioning script syntax
+        run: bash -n deploy/security/provision-backup-copy-evidence-enforcement.sh
+
       - name: Verify backup-copy retention and signed evidence contracts
-        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs
+        run: node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs

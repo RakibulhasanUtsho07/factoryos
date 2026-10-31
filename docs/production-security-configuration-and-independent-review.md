@@ -239,28 +239,24 @@ Signed backup-copy-class evidence is accepted only when the API can read exact e
 
 For Kubernetes v1.30+, install the `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` in `deploy/security/backup-copy-evidence-readonly-policy.yaml` and `deploy/security/backup-copy-evidence-readonly-binding.yaml`. Label the intended production API namespace `factoryos.io/backup-evidence-enforcement=required` only after the policy has been accepted and the binding is installed; restart all API Pods so they are re-admitted under the policy. The policy enforces one direct absolute evidence-root environment path backed by the dedicated `factoryos-backup-evidence` PVC, requires source-level and container-mount read-only flags, forbids subPath, and checks that no regular/init/ephemeral container in the selected production namespace reuses the PVC read-write. It also requires non-root execution, a read-only container root filesystem, no privilege escalation/privileged mode, and dropped capabilities. The publisher must stage evidence outside the API namespace/workload. The manifest requires Kubernetes v1.30+; a different platform needs an equivalent enforced workload control.
 
-The release validator now requires a populated `backup_copy_evidence` record: deployment platform, absolute non-root evidence path, evidence-volume reference, enforcement-policy reference, read-only mount proof, denial of API write/remount privileges, separate publisher identity, and a runtime mount-verification record tied to the exact candidate SHA and a repository Actions run. The checked-in template keeps these fields empty/false/NOT_RUN. Do not turn them into passing values without independently reviewed deployment evidence. CI validates policy/configuration contracts; it does not apply the policy to a live cluster or attest an actual production mount.
+The release validator requires both the application evidence record and a separate `backup_copy_evidence.deployment_provisioning` record. The deployment record is exact-candidate-SHA-bound and requires accepted policies, active Deny bindings, namespace enrollment, a fully observed/updated/available Deployment, a bound read-only PVC, every container security context, tokenless ServiceAccount, API-identity RBAC absence across namespaces, an immutable sha256-pinned API image with matching per-Pod runtime imageID, per-replica write-denial and remount-capability evidence, negative admission probes, and a distinct infrastructure reviewer. The checked-in template keeps these fields empty/false/NOT_RUN. Do not turn them into passing values without operator-run evidence and independent review. CI validates policy/configuration contracts; it does not apply the policy to a live cluster or attest an actual production mount.
 
-## Admission policy lock for production evidence namespaces
+## Admission policy lock and deployment provisioning
 
-The Pod policy also matches the `pods/ephemeralcontainers` subresource, so adding an ephemeral container is re-evaluated against the evidence-volume rules. A separate cluster-scoped Namespace ValidatingAdmissionPolicy preserves `factoryos.io/backup-evidence-enforcement=required` after a namespace is enrolled and denies ordinary deletion of that namespace. These controls do not prevent a cluster administrator with permission to remove the policy/binding from disabling enforcement; restrict those RBAC permissions and audit changes to the admission objects.
+The evidence namespace uses four fail-closed Kubernetes v1.30+ ValidatingAdmissionPolicies: read-only Pod/PVC enforcement, dedicated tokenless ServiceAccount protection, denial of legacy ServiceAccount-token Secrets, and namespace enrollment lock. Four Deny bindings activate the controls; the API's dedicated ServiceAccount has `automountServiceAccountToken: false`. All Pod containers (regular, init and ephemeral) must be non-root, no-escalation, read-only-rootfs, drop all capabilities, add none, avoid unmasked proc and use RuntimeDefault seccomp. Evidence PVC aliases must remain read-only with no subPath or mount propagation.
 
-Install both ValidatingAdmissionPolicies and wait for each to become Accepted before installing the bindings. The namespace-lock binding must be active before applying the namespace label; the update that adds the label is allowed, while later ordinary updates must preserve it.
+Use the single operator provisioning entry point rather than the earlier two-policy manual sequence:
 
 ```sh
-kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-policy.yaml
-kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
-kubectl apply -f deploy/security/backup-copy-evidence-readonly-policy.yaml
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=60s
-kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-policy.yaml
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=60s
-kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-readonly-binding.yaml
-kubectl apply --server-side --dry-run=server -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
-kubectl apply -f deploy/security/backup-copy-evidence-readonly-binding.yaml
-kubectl apply -f deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
-kubectl label namespace "$API_NAMESPACE" factoryos.io/backup-evidence-enforcement=required --overwrite
-kubectl rollout restart deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
-kubectl rollout status deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
+EXPECTED_KUBE_CONTEXT=prod-eu-1 \
+API_NAMESPACE=factoryos-api \
+API_DEPLOYMENT=factoryos-api \
+API_CONTAINER=api \
+CANDIDATE_SHA="$(git rev-parse HEAD)" \
+PROVISIONING_EVIDENCE_OUTPUT=./backup-evidence-provisioning.json \
+./deploy/security/provision-backup-copy-evidence-enforcement.sh
 ```
 
-Test that the `pods/ephemeralcontainers` subresource rejects a writable evidence-volume alias, that namespace label removal and namespace deletion are denied after enrollment, and that initial label enrolment succeeds. Removing the admission policy/binding itself is a privileged cluster-admin change and must be separately controlled.
+See [Backup evidence volume deployment provisioning](backup-copy-evidence-deployment-provisioning.md) for the required Deployment annotation/PVC shape, preflight, rollout and per-replica runtime probes, the expected negative admission results, and the evidence-handling procedure. It checks every Ready API Pod carries the exact candidate SHA and probes each replica's real mount namespace.
+
+The provisioner output is operator-run evidence, not independent infrastructure approval. A separate reviewer must inspect policy/binding protection, CSI/storage configuration, node and privileged host/storage-administrator boundaries, IAM roles and audit logs. A cluster administrator who can change the admission policies/bindings or underlying storage remains outside the API-process guarantee. Real-provider staging and full backup/copy class and writer-principal enumeration remain separate release blockers.

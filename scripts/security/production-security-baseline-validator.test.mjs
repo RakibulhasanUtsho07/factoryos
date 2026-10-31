@@ -128,6 +128,42 @@ function validAttestation() {
         tested_environment: 'isolated-preproduction-eu',
         executed_at_utc: '2026-10-21T09:00:00Z',
       },
+      deployment_provisioning: {
+        result: 'PASS',
+        candidate_sha: candidateSha,
+        evidence_reference: 'evidence://deployment/provisioning-run/exact-candidate',
+        tested_environment: 'isolated-preproduction-eu',
+        executed_at_utc: '2026-10-21T10:00:00Z',
+        operator_identity: 'PlatformOperator',
+        cluster_context: 'isolated-preproduction-eu',
+        namespace: 'factoryos-api',
+        deployment: 'factoryos-api',
+        api_service_account: 'factoryos-backup-evidence-api',
+        api_image_reference: 'ghcr.io/rakibulhasanutsho07/factoryos-api@sha256:' + 'a'.repeat(64),
+        api_image_digest_verified: true,
+        policy_accepted: true,
+        bindings_active: true,
+        namespace_enrolled: true,
+        deployment_ready: true,
+        pvc_bound_and_read_only: true,
+        all_container_security_contexts_verified: true,
+        tokenless_service_account: true,
+        api_identity_rbac_absent: true,
+        runtime_write_probe_denied: true,
+        api_identity_write_denied: true,
+        api_identity_remount_denied: true,
+        cap_sys_admin_absent: true,
+        no_new_privileges: true,
+        service_account_token_absent: true,
+        negative_admission_probes_passed: true,
+        independent_review: {
+          reviewer_identity: 'IndependentInfrastructureReviewer',
+          reviewer_organization: 'ExternalSecurityFirm',
+          scope_includes_mount_and_identity_boundary: true,
+          evidence_reference: 'evidence://deployment/independent-infrastructure-review',
+          executed_at_utc: '2026-10-21T11:00:00Z',
+        },
+      },
     },
     network: {
       default_deny_ingress: true,
@@ -216,6 +252,33 @@ test('backup evidence deployment must be read-only, independently published and 
     const evidence = validAttestation();
     evidence.backup_copy_evidence.mount_verification.result = 'NOT_RUN';
     assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('mount_verification.result must equal "PASS"')));
+  });
+
+  await t.test('deployment provisioning evidence is required, exact-SHA-bound and independently reviewed', () => {
+    const missing = validAttestation();
+    missing.backup_copy_evidence.deployment_provisioning.result = 'NOT_RUN';
+    assert.ok(validateSecurityAttestation(missing, candidateSha, now).some((error) => error.includes('deployment_provisioning.result must equal "PASS"')));
+    const wrongSha = validAttestation();
+    wrongSha.backup_copy_evidence.deployment_provisioning.candidate_sha = 'b'.repeat(40);
+    assert.ok(validateSecurityAttestation(wrongSha, candidateSha, now).some((error) => error.includes('deployment_provisioning.candidate_sha must match')));
+    const writeAllowed = validAttestation();
+    writeAllowed.backup_copy_evidence.deployment_provisioning.api_identity_write_denied = false;
+    assert.ok(validateSecurityAttestation(writeAllowed, candidateSha, now).some((error) => error.includes('deployment_provisioning.api_identity_write_denied must equal true')));
+    const remountAllowed = validAttestation();
+    remountAllowed.backup_copy_evidence.deployment_provisioning.api_identity_remount_denied = false;
+    assert.ok(validateSecurityAttestation(remountAllowed, candidateSha, now).some((error) => error.includes('deployment_provisioning.api_identity_remount_denied must equal true')));
+    const unsafe = validAttestation();
+    unsafe.backup_copy_evidence.deployment_provisioning.cap_sys_admin_absent = false;
+    assert.ok(validateSecurityAttestation(unsafe, candidateSha, now).some((error) => error.includes('deployment_provisioning.cap_sys_admin_absent must equal true')));
+    const sameReviewer = validAttestation();
+    sameReviewer.backup_copy_evidence.deployment_provisioning.independent_review.reviewer_identity = 'PlatformOperator';
+    assert.ok(validateSecurityAttestation(sameReviewer, candidateSha, now).some((error) => error.includes('must differ from the provisioning operator')));
+    const mutableImage = validAttestation();
+    mutableImage.backup_copy_evidence.deployment_provisioning.api_image_reference = 'ghcr.io/factoryos/api:latest';
+    assert.ok(validateSecurityAttestation(mutableImage, candidateSha, now).some((error) => error.includes('api_image_reference must be pinned')));
+    const wrongIdentity = validAttestation();
+    wrongIdentity.backup_copy_evidence.deployment_provisioning.api_service_account = 'default';
+    assert.ok(validateSecurityAttestation(wrongIdentity, candidateSha, now).some((error) => error.includes('api_service_account must equal "factoryos-backup-evidence-api"')));
   });
 
   await t.test('rejects relative or root-only evidence paths', () => {

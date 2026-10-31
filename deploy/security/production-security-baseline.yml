@@ -74,6 +74,40 @@ backup_copy_evidence:
   api_identity_write_denied: false
   api_identity_remount_denied: false
   publisher_identity_separate: false
+  deployment_provisioning:
+    result: NOT_RUN
+    candidate_sha: ""
+    evidence_reference: ""
+    tested_environment: ""
+    executed_at_utc: ""
+    operator_identity: ""
+    cluster_context: ""
+    namespace: ""
+    deployment: ""
+    api_service_account: ""
+    api_image_reference: ""
+    api_image_digest_verified: false
+    policy_accepted: false
+    bindings_active: false
+    namespace_enrolled: false
+    deployment_ready: false
+    pvc_bound_and_read_only: false
+    all_container_security_contexts_verified: false
+    tokenless_service_account: false
+    api_identity_rbac_absent: false
+    runtime_write_probe_denied: false
+    api_identity_write_denied: false
+    api_identity_remount_denied: false
+    cap_sys_admin_absent: false
+    no_new_privileges: false
+    service_account_token_absent: false
+    negative_admission_probes_passed: false
+    independent_review:
+      reviewer_identity: ""
+      reviewer_organization: ""
+      scope_includes_mount_and_identity_boundary: false
+      evidence_reference: ""
+      executed_at_utc: ""
   mount_verification:
     result: NOT_RUN
     candidate_sha: ""

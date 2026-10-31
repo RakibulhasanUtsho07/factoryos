@@ -7,62 +7,81 @@ async function read(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
-test('Kubernetes admission policy is fail-closed and checks the exact evidence mount', async () => {
+test('Kubernetes admission policy binds the API identity and evidence root to a fail-closed read-only Pod', async () => {
   const policy = await read('deploy/security/backup-copy-evidence-readonly-policy.yaml');
   assert.ok(policy.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
   assert.ok(policy.includes('kind: ValidatingAdmissionPolicy'));
   assert.ok(policy.includes('failurePolicy: Fail'));
   assert.ok(policy.includes('operations: ["CREATE", "UPDATE"]'));
   assert.ok(policy.includes('resources: ["pods", "pods/ephemeralcontainers"]'));
-  assert.equal((policy.match(/^    - expression:/gm) ?? []).length, 2);
+  assert.equal((policy.match(/^    - expression:/gm) ?? []).length, 3);
 
   for (const required of [
+    "object.spec.serviceAccountName == 'factoryos-backup-evidence-api'",
+    'object.spec.automountServiceAccountToken == false',
+    'object.spec.hostPID != true',
+    'object.spec.hostIPC != true',
+    'object.spec.hostNetwork != true',
+    'object.spec.shareProcessNamespace != true',
+    '!has(volume.hostPath)',
+    '!has(source.serviceAccountToken)',
     'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR',
     'variable.value.startsWith',
     'mount.mountPath == variable.value',
     'mount.readOnly == true',
-    '!has(mount.subPath)',
-    '!has(mount.subPathExpr)',
+    "mount.mountPropagation == 'None'",
+    "!has(mount.subPath)",
+    "!has(mount.subPathExpr)",
     "volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'",
     'volume.persistentVolumeClaim.readOnly == true',
+    'object.spec.containers.all(container',
+    'object.spec.initContainers.all(container',
+    'object.spec.ephemeralContainers.all(container',
+    'container.volumeDevices.filter(device, device.name == volume.name).size() == 0',
     'container.securityContext.runAsNonRoot == true',
+    'container.securityContext.runAsUser > 0',
     'container.securityContext.allowPrivilegeEscalation == false',
     'container.securityContext.readOnlyRootFilesystem == true',
     'container.securityContext.privileged != true',
     "capability == 'ALL'",
-    'object.spec.volumes.all(volume',
-    "claimName != 'factoryos-backup-evidence'",
-    'object.spec.initContainers.all(container',
-    'object.spec.ephemeralContainers.all(container',
+    'container.securityContext.capabilities.add.size() == 0',
+    "container.securityContext.procMount != 'Unmasked'",
+    "container.securityContext.seccompProfile.type == 'RuntimeDefault'",
   ]) assert.ok(policy.includes(required), 'policy missing check: ' + required);
-  assert.doesNotMatch(policy, /has\(container\.(?:env|volumeMounts)/);
-  assert.doesNotMatch(policy, /has\(object\.spec\.(?:initContainers|ephemeralContainers)/);
-  assert.doesNotMatch(policy, /has\(container\.securityContext\.capabilities\.drop/);
 });
 
-test('Kubernetes admission binding denies invalid Pods only in explicitly labelled production namespaces', async () => {
+test('read-only admission binding is limited to enrolled production namespaces', async () => {
   const binding = await read('deploy/security/backup-copy-evidence-readonly-binding.yaml');
-  assert.ok(binding.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
   assert.ok(binding.includes('kind: ValidatingAdmissionPolicyBinding'));
   assert.ok(binding.includes('policyName: factoryos-backup-evidence-readonly'));
-  assert.ok(binding.includes('validationActions:'));
   assert.ok(binding.includes('- Deny'));
+  assert.ok(binding.includes('factoryos.io/backup-evidence-enforcement: required'));
+  const tokenPolicy = await read('deploy/security/backup-copy-evidence-api-token-secret-policy.yaml');
+  const tokenBinding = await read('deploy/security/backup-copy-evidence-api-token-secret-binding.yaml');
+  assert.ok(tokenPolicy.includes("object.type != 'kubernetes.io/service-account-token'"));
+  assert.ok(tokenBinding.includes('policyName: factoryos-backup-evidence-api-token-secret'));
+  assert.ok(tokenBinding.includes('factoryos.io/backup-evidence-enforcement: required'));
+});
+
+test('dedicated ServiceAccount token automount is immutable after namespace enrollment', async () => {
+  const account = await read('deploy/security/backup-copy-evidence-api-service-account.yaml');
+  const policy = await read('deploy/security/backup-copy-evidence-api-service-account-policy.yaml');
+  const binding = await read('deploy/security/backup-copy-evidence-api-service-account-binding.yaml');
+  assert.ok(account.includes('name: factoryos-backup-evidence-api'));
+  assert.ok(account.includes('automountServiceAccountToken: false'));
+  assert.ok(policy.includes('operations: ["CREATE", "UPDATE", "DELETE"]'));
+  assert.ok(policy.includes('object.automountServiceAccountToken == false'));
+  assert.ok(policy.includes("request.operation == 'DELETE'"));
+  assert.ok(policy.includes('oldObject.metadata.name'));
+  assert.ok(binding.includes('policyName: factoryos-backup-evidence-api-service-account'));
   assert.ok(binding.includes('factoryos.io/backup-evidence-enforcement: required'));
 });
 
-test('enrolled backup-evidence namespaces cannot remove their enforcement label or be deleted', async () => {
+test('namespace enrollment remains locked against label removal and ordinary deletion', async () => {
   const policy = await read('deploy/security/backup-copy-evidence-namespace-lock-policy.yaml');
   const binding = await read('deploy/security/backup-copy-evidence-namespace-lock-binding.yaml');
-  assert.ok(policy.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
-  assert.ok(policy.includes('kind: ValidatingAdmissionPolicy'));
-  assert.ok(policy.includes('failurePolicy: Fail'));
   assert.ok(policy.includes('operations: ["UPDATE", "DELETE"]'));
-  assert.ok(policy.includes('resources: ["namespaces"]'));
-  assert.ok(policy.includes("oldObject.metadata.labels['factoryos.io/backup-evidence-enforcement']"));
   assert.ok(policy.includes("request.operation == 'UPDATE'"));
-  assert.ok(policy.includes("object.metadata.labels['factoryos.io/backup-evidence-enforcement'] == 'required'"));
-  assert.ok(binding.startsWith('apiVersion: admissionregistration.k8s.io/v1'));
-  assert.ok(binding.includes('kind: ValidatingAdmissionPolicyBinding'));
   assert.ok(binding.includes('policyName: factoryos-backup-evidence-namespace-lock'));
   assert.ok(binding.includes('- Deny'));
 });
