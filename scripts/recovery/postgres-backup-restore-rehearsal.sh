@@ -406,9 +406,10 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ "$erasure_replay_residuals" == "0" ]] || die "erasure tombstone replay left unresolved residuals"
   [[ "$erasure_ledger_watermark_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "erasure replay ledger watermark must be UTC RFC 3339"
   date -u -d "$erasure_ledger_watermark_utc" +%s >/dev/null 2>&1 || die "erasure replay ledger watermark is invalid"
-  ledger_watermark_epoch="$(date -u -d "$erasure_ledger_watermark_utc" +%s)"
-  current_epoch="$(epoch_now)"
-  (( ledger_watermark_epoch >= event_epoch && ledger_watermark_epoch <= current_epoch )) || die "erasure tombstone ledger must cover the incident cutoff and cannot be from the future"
+  ledger_watermark_epoch_ns="$(date -u -d "$erasure_ledger_watermark_utc" +%s%N)"
+  event_epoch_ns="$(date -u -d "$event_time_utc" +%s%N)"
+  current_epoch_ns="$(date -u +%s%N)"
+  (( ledger_watermark_epoch_ns >= event_epoch_ns && ledger_watermark_epoch_ns <= current_epoch_ns )) || die "erasure tombstone ledger must cover the exact incident cutoff and cannot be from the future"
 
   current_stage="erasure_tombstone_verification"
   if ! PGOPTIONS="-c default_transaction_read_only=on" psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
