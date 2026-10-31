@@ -142,6 +142,9 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
   if (!raw?.trim()) {
     throw new Error('external inventory source attestation trust is not configured');
   }
+  if (raw.length > 256 * 1024) {
+    throw new Error('external inventory source trusted-key configuration exceeds the supported size limit');
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -167,7 +170,7 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
       || sourceKinds.some((kind) => typeof kind !== 'string'
         || !REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.includes(kind as typeof REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS[number]))
       || new Set(sourceKinds).size !== sourceKinds.length
-      || typeof publicKeyPem !== 'string' || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
+      || typeof publicKeyPem !== 'string' || publicKeyPem.length > 4096 || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
       || publicKeyPem.includes('PRIVATE KEY') || keys.has(keyId)) {
       throw new Error('external inventory source trusted-key configuration is invalid');
     }
