@@ -8,6 +8,45 @@ import test from 'node:test';
 
 const script = resolve('scripts/security/sign-external-copy-coverage-evidence.mjs');
 const tenantId = '28000000-0000-4000-8000-000000000001';
+const inventorySourceKinds = [
+  'TENANT_SCOPE_CATALOG', 'RESOURCE_TYPE_CATALOG', 'IAM_WRITER_PRINCIPALS',
+  'REPLICATION_AND_DELIVERY', 'SCHEDULED_AND_DELAYED_WRITERS',
+  'RESTORE_AND_DR_PATHS', 'SECONDARY_EXTERNAL_STORES',
+];
+
+function completeInventoryEvidence(categoryCode = 'BUSINESS_DATA') {
+  const now = new Date().toISOString();
+  const scope = {
+    provider_references: ['provider.aws-account-001'],
+    account_references: ['account.001'],
+    project_references: ['project.factoryos'],
+    region_references: ['region.ap-southeast-1'],
+  };
+  const scopeSha256 = createHash('sha256').update(JSON.stringify(scope), 'utf8').digest('hex');
+  return Buffer.from(JSON.stringify({
+    schema: 'factoryos.external-store-inventory/v1',
+    tenant_id: tenantId,
+    category_code: categoryCode,
+    generated_at: now,
+    scope,
+    scope_sha256: scopeSha256,
+    inventory_complete: true,
+    unclassified_store_count: 0,
+    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'BACKUP'],
+    sources: inventorySourceKinds.map((sourceKind) => ({
+      source_kind: sourceKind,
+      source_reference: 'discovery.' + sourceKind.toLowerCase(),
+      status: 'COMPLETE',
+      pagination_exhausted: true,
+      pages_fetched: 1,
+      item_count: 0,
+      result_sha256: createHash('sha256').update(sourceKind).digest('hex'),
+      scope_sha256: scopeSha256,
+      started_at: now,
+      completed_at: now,
+    })),
+  }), 'utf8');
+}
 
 function canonicalClaims(body) {
   return JSON.stringify({
@@ -148,7 +187,23 @@ test('external coverage signer allows only fail-closed dispositions for an uncla
       script, '--payload', payloadPath, '--evidence-file', evidencePath,
       '--private-key-file', keyPath, '--tenant-id', tenantId,
     ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /complete, current, scope-bound external inventory manifest/);
+
+    const completeEvidence = completeInventoryEvidence();
+    writeFileSync(evidencePath, completeEvidence);
+    const acceptedPayload = {
+      ...payload,
+      disposition: 'NOT_APPLICABLE',
+      evidence_sha256: createHash('sha256').update(completeEvidence).digest('hex'),
+    };
+    writeFileSync(payloadPath, JSON.stringify(acceptedPayload));
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).attestation_signature, /^[A-Za-z0-9_-]{86}$/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
