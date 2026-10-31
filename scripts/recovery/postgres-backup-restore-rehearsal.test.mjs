@@ -93,6 +93,11 @@ test('release-gate mode requires a durable evidence receipt before opening any d
       FACTORYOS_RECOVERY_EVIDENCE_JSON: join(directory, 'recovery-receipt.json'),
       FACTORYOS_RECOVERY_OPERATOR: 'CI operator',
       FACTORYOS_RECOVERY_APPROVER: 'CI approver',
+      FACTORYOS_CANDIDATE_SHA: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      FACTORYOS_RESTORE_ERASURE_REPLAY_SQL: erasureReplaySql,
+      FACTORYOS_RESTORE_ERASURE_VERIFY_SQL: erasureVerifySql,
+      FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE: 'ci-ledger-slo-guard-v1',
+      FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256: 'a'.repeat(64),
     }));
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /required environment variable is missing: FACTORYOS_CANDIDATE_MIGRATION_MANIFEST/);
