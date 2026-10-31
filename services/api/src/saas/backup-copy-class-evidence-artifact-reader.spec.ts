@@ -44,6 +44,9 @@ describe('BackupCopyClassEvidenceArtifactReader', () => {
     await expect(reader.verifyArtifact(reference, expectedDigest)).resolves.toEqual({
       reference, sha256: expectedDigest, sizeBytes: bytes.length,
     });
+    await expect(reader.readVerifiedArtifact(reference, expectedDigest)).resolves.toEqual({
+      reference, sha256: expectedDigest, sizeBytes: bytes.length, bytes,
+    });
     expect(mountVerifier.assertPathMountedReadOnly).toHaveBeenNthCalledWith(1, root);
     expect(mountVerifier.assertPathMountedReadOnly).toHaveBeenNthCalledWith(2, join(root, reference));
   });
