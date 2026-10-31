@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 export const EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA = 'factoryos.external-store-inventory/v2';
 export const EXTERNAL_STORE_INVENTORY_SOURCE_RECEIPT_SCHEMA = 'factoryos.external-store-inventory-source-receipt/v1';
@@ -140,26 +141,26 @@ export function canonicalizeExternalStoreInventorySourceReceipt(
 
 function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSourceKey> {
   if (!raw?.trim()) {
-    throw new Error('external inventory source attestation trust is not configured');
+    throw new ServiceUnavailableException('external inventory source attestation trust is not configured');
   }
   if (raw.length > 256 * 1024) {
-    throw new Error('external inventory source trusted-key configuration exceeds the supported size limit');
+    throw new ServiceUnavailableException('external inventory source trusted-key configuration exceeds the supported size limit');
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error('external inventory source trusted-key configuration is invalid');
+    throw new ServiceUnavailableException('external inventory source trusted-key configuration is invalid');
   }
   if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_SOURCE_TRUSTED_KEYS) {
-    throw new Error('external inventory source trusted-key configuration is invalid');
+    throw new ServiceUnavailableException('external inventory source trusted-key configuration is invalid');
   }
 
   const keys = new Map<string, TrustedSourceKey>();
   const publicKeyFingerprints = new Set<string>();
   for (const candidate of parsed as unknown[]) {
     const entry = record(candidate);
-    if (!entry) throw new Error('external inventory source trusted-key configuration is invalid');
+    if (!entry) throw new ServiceUnavailableException('external inventory source trusted-key configuration is invalid');
     const keyId = entry.keyId;
     const ownerReference = entry.ownerReference;
     const sourceKinds = entry.sourceKinds;
@@ -173,20 +174,20 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
       || new Set(sourceKinds).size !== sourceKinds.length
       || typeof publicKeyPem !== 'string' || publicKeyPem.length > 4096 || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
       || publicKeyPem.includes('PRIVATE KEY') || keys.has(keyId)) {
-      throw new Error('external inventory source trusted-key configuration is invalid');
+      throw new ServiceUnavailableException('external inventory source trusted-key configuration is invalid');
     }
     let publicKey: ReturnType<typeof createPublicKey>;
     try {
       publicKey = createPublicKey(publicKeyPem);
       if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('source receipt keys must use Ed25519');
     } catch {
-      throw new Error('external inventory source trusted-key configuration is invalid');
+      throw new ServiceUnavailableException('external inventory source trusted-key configuration is invalid');
     }
     const fingerprint = createHash('sha256')
       .update(publicKey.export({ type: 'spki', format: 'der' }))
       .digest('hex');
     if (publicKeyFingerprints.has(fingerprint)) {
-      throw new Error('external inventory source trusted-key configuration contains a duplicate public key');
+      throw new ServiceUnavailableException('external inventory source trusted-key configuration contains a duplicate public key');
     }
     publicKeyFingerprints.add(fingerprint);
     keys.set(keyId, { keyId, ownerReference, sourceKinds: sourceKinds as string[], publicKeyPem });
