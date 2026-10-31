@@ -93,11 +93,6 @@ test('release-gate mode requires a durable evidence receipt before opening any d
       FACTORYOS_RECOVERY_EVIDENCE_JSON: join(directory, 'recovery-receipt.json'),
       FACTORYOS_RECOVERY_OPERATOR: 'CI operator',
       FACTORYOS_RECOVERY_APPROVER: 'CI approver',
-      FACTORYOS_CANDIDATE_SHA: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-      FACTORYOS_RESTORE_ERASURE_REPLAY_SQL: erasureReplaySql,
-      FACTORYOS_RESTORE_ERASURE_VERIFY_SQL: erasureVerifySql,
-      FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE: 'ci-ledger-slo-guard-v1',
-      FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256: 'a'.repeat(64),
     }));
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /required environment variable is missing: FACTORYOS_CANDIDATE_MIGRATION_MANIFEST/);
@@ -143,9 +138,13 @@ test('release-gate mode refuses approved SLOs without explicit owner-approved RP
     const smokeSql = join(directory, 'restore-smoke.sql');
     const migrations = join(directory, 'candidate-migrations.txt');
     const watermarkSql = join(directory, 'watermark.sql');
+    const erasureReplaySql = join(directory, 'erasure-replay.sql');
+    const erasureVerifySql = join(directory, 'erasure-verify.sql');
     writeFileSync(smokeSql, 'SELECT 1;\n', { mode: 0o600 });
     writeFileSync(migrations, 'migrations/151_growth_forecast_evaluation_calibration.sql\n', { mode: 0o600 });
     writeFileSync(watermarkSql, "SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD\\\"T\\\"HH24:MI:SS\\\"Z\\\"');\n", { mode: 0o600 });
+    writeFileSync(erasureReplaySql, 'SELECT 1;\\n', { mode: 0o600 });
+    writeFileSync(erasureVerifySql, 'SELECT 1;\\n', { mode: 0o600 });
     const result = runScript(commonConfig(directory, {
       FACTORYOS_DR_MODE: 'RELEASE_GATE',
       FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE: 'I_HAVE_VERIFIED_EMPTY',
@@ -155,6 +154,11 @@ test('release-gate mode refuses approved SLOs without explicit owner-approved RP
       FACTORYOS_RECOVERY_EVENT_TIME_UTC: '2026-10-20T12:00:00Z',
       FACTORYOS_RECOVERY_OPERATOR: 'CI operator',
       FACTORYOS_RECOVERY_APPROVER: 'CI approver',
+      FACTORYOS_CANDIDATE_SHA: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      FACTORYOS_RESTORE_ERASURE_REPLAY_SQL: erasureReplaySql,
+      FACTORYOS_RESTORE_ERASURE_VERIFY_SQL: erasureVerifySql,
+      FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE: 'ci-ledger-slo-guard-v1',
+      FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256: 'a'.repeat(64),
       FACTORYOS_DR_TARGETS_APPROVED: 'YES',
     }));
     assert.notEqual(result.status, 0);
