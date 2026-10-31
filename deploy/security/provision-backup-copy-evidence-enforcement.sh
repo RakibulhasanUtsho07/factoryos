@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 VALIDATOR="${REPO_ROOT}/scripts/security/validate-backup-copy-evidence-deployment.mjs"
 RUNTIME_PROBE="${REPO_ROOT}/scripts/security/probe-backup-copy-evidence-runtime.mjs"
 KUBERNETES_VERSION_CHECKER="${REPO_ROOT}/scripts/security/require-supported-kubernetes-version.mjs"
+POLICY_STATUS_CHECKER="${REPO_ROOT}/scripts/security/validate-kubernetes-admission-policy-status.mjs"
 SA_NAME="factoryos-backup-evidence-api"
 LABEL_KEY="factoryos.io/backup-evidence-enforcement"
 LABEL_VALUE="required"
@@ -29,7 +30,7 @@ actual_checkout_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   echo "Refusing checkout SHA '$actual_checkout_sha'; expected candidate '$CANDIDATE_SHA'" >&2
   exit 2
 }
-[[ -f "$VALIDATOR" && -f "$RUNTIME_PROBE" && -f "$KUBERNETES_VERSION_CHECKER" ]] || { echo "Run this script from a complete FactoryOS checkout" >&2; exit 2; }
+[[ -f "$VALIDATOR" && -f "$RUNTIME_PROBE" && -f "$KUBERNETES_VERSION_CHECKER" && -f "$POLICY_STATUS_CHECKER" ]] || { echo "Run this script from a complete FactoryOS checkout" >&2; exit 2; }
 
 actual_context="$(kubectl config current-context)"
 [[ "$actual_context" == "$EXPECTED_KUBE_CONTEXT" ]] || {
@@ -63,26 +64,18 @@ done
 kubectl apply -n "$API_NAMESPACE" -f "$SA_MANIFEST" >/dev/null
 for file in "${POLICY_FILES[@]}"; do kubectl apply -f "$file" >/dev/null; done
 
-if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=90s; then
-  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-readonly" >&2
-  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-readonly" -o yaml >&2 || true
-  exit 1
-fi
-if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-service-account --timeout=90s; then
-  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-api-service-account" >&2
-  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-api-service-account" -o yaml >&2 || true
-  exit 1
-fi
-if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-token-secret --timeout=90s; then
-  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-api-token-secret" >&2
-  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-api-token-secret" -o yaml >&2 || true
-  exit 1
-fi
-if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=90s; then
-  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-namespace-lock" >&2
-  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-namespace-lock" -o yaml >&2 || true
-  exit 1
-fi
+generation="$(kubectl get validatingadmissionpolicy factoryos-backup-evidence-readonly -o jsonpath='{.metadata.generation}')"
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$generation" validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=90s
+kubectl get validatingadmissionpolicy factoryos-backup-evidence-readonly -o json | node "$POLICY_STATUS_CHECKER"
+generation="$(kubectl get validatingadmissionpolicy factoryos-backup-evidence-api-service-account -o jsonpath='{.metadata.generation}')"
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$generation" validatingadmissionpolicy/factoryos-backup-evidence-api-service-account --timeout=90s
+kubectl get validatingadmissionpolicy factoryos-backup-evidence-api-service-account -o json | node "$POLICY_STATUS_CHECKER"
+generation="$(kubectl get validatingadmissionpolicy factoryos-backup-evidence-api-token-secret -o jsonpath='{.metadata.generation}')"
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$generation" validatingadmissionpolicy/factoryos-backup-evidence-api-token-secret --timeout=90s
+kubectl get validatingadmissionpolicy factoryos-backup-evidence-api-token-secret -o json | node "$POLICY_STATUS_CHECKER"
+generation="$(kubectl get validatingadmissionpolicy factoryos-backup-evidence-namespace-lock -o jsonpath='{.metadata.generation}')"
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$generation" validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=90s
+kubectl get validatingadmissionpolicy factoryos-backup-evidence-namespace-lock -o json | node "$POLICY_STATUS_CHECKER"
 
 for file in "${BINDING_FILES[@]}"; do kubectl apply -f "$file" >/dev/null; done
 
