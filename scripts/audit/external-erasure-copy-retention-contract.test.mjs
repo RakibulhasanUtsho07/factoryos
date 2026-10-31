@@ -429,6 +429,9 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   const signer = await readRepoFile('scripts/security/sign-external-copy-coverage-evidence.mjs');
   const inventoryManifest = await readRepoFile('services/api/src/saas/external-store-inventory-manifest.ts');
   const inventoryEvidenceDoc = await readRepoFile('docs/external-store-inventory-evidence.md');
+  const sourceReceiptSigner = await readRepoFile('scripts/security/sign-external-store-inventory-source-receipt.mjs');
+  const sourceReceiptSignerTest = await readRepoFile('scripts/security/sign-external-store-inventory-source-receipt.test.mjs');
+  const sourceTrustExample = await readRepoFile('deploy/security/backup-copy-evidence-trust.env.example');
   const runbook = await readRepoFile(RUNBOOK);
   assert.ok(migration.includes('attestation_key_id') && migration.includes('attestation_owner_reference') && migration.includes('attestation_signature'));
   assert.ok(migration.includes('new external copy-class coverage requires signed opaque evidence'));
@@ -449,7 +452,16 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(inventoryManifest.includes('REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS'));
   assert.ok(inventoryManifest.includes('pagination_exhausted'));
   assert.ok(inventoryManifest.includes('scope_sha256'));
+  assert.ok(inventoryManifest.includes('EXTERNAL_STORE_INVENTORY_SOURCE_RECEIPT_SCHEMA'));
+  assert.ok(inventoryManifest.includes('FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON'));
+  assert.ok(inventoryManifest.includes('canonicalizeExternalStoreInventorySourceReceipt'));
+  assert.ok(sourceReceiptSigner.includes('factoryos.external-store-inventory-source-receipt/v1'));
+  assert.ok(sourceReceiptSigner.includes('pagination_exhausted'));
+  assert.ok(sourceReceiptSignerTest.includes('valid Ed25519 signature'));
+  assert.ok(sourceReceiptSignerTest.includes('rejects incomplete pagination'));
+  assert.ok(sourceTrustExample.includes('FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON=[]'));
   assert.ok(inventoryEvidenceDoc.includes('factoryos.external-store-inventory/v1'));
+  assert.ok(inventoryEvidenceDoc.includes('Independently trusted source receipts'));
   assert.ok(inventoryEvidenceDoc.includes('does **not** independently call cloud provider APIs'));
   assert.ok(propagation.includes('validateExternalStoreInventoryManifest'));
   assert.ok(propagation.includes('readVerifiedArtifact'));
