@@ -22,6 +22,7 @@ FROM public.factoryos_ci_erasure_replay_ledger
 WHERE tombstone_id = 'ci-tombstone-after-snapshot-001';
 \echo FACTORYOS_ERASURE_VERIFY_STATUS=PASS
 \echo FACTORYOS_ERASURE_VERIFY_LEDGER_SHA256=:ledger_sha256
+\echo FACTORYOS_ERASURE_VERIFY_LEDGER_REFERENCE=:ledger_reference
 \echo FACTORYOS_ERASURE_VERIFY_CANDIDATE_SHA=:candidate_sha
 \echo FACTORYOS_ERASURE_VERIFY_TARGET_IDENTITY=:target_database_identity
 \echo FACTORYOS_ERASURE_VERIFY_RESIDUALS=0
