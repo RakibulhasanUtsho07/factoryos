@@ -27,13 +27,22 @@ kubectl apply -f "$DEPLOY_DIR/backup-copy-evidence-api-token-secret-policy.yaml"
 kubectl apply -f "$DEPLOY_DIR/backup-copy-evidence-readonly-policy.yaml"
 kubectl apply -f "$DEPLOY_DIR/backup-copy-evidence-namespace-lock-policy.yaml"
 
+POLICY_STATUS_CHECKER="$SCRIPT_DIR/validate-kubernetes-admission-policy-status.mjs"
+[[ -f "$POLICY_STATUS_CHECKER" ]] || { echo "Missing admission-policy status verifier" >&2; exit 2; }
+
 for policy_name in \
   factoryos-backup-evidence-readonly \
   factoryos-backup-evidence-api-service-account \
   factoryos-backup-evidence-api-token-secret \
   factoryos-backup-evidence-namespace-lock; do
-  if ! kubectl wait --for=condition=Accepted "validatingadmissionpolicy/$policy_name" --timeout=120s; then
-    echo "ValidatingAdmissionPolicy did not reach Accepted: $policy_name" >&2
+  generation="$(kubectl get validatingadmissionpolicy "$policy_name" -o jsonpath='{.metadata.generation}')"
+  if ! kubectl wait --for=jsonpath='{.status.observedGeneration}'="$generation" "validatingadmissionpolicy/$policy_name" --timeout=120s; then
+    echo "ValidatingAdmissionPolicy did not observe the current generation: $policy_name" >&2
+    kubectl get validatingadmissionpolicy "$policy_name" -o yaml >&2 || true
+    exit 1
+  fi
+  if ! kubectl get validatingadmissionpolicy "$policy_name" -o json | node "$POLICY_STATUS_CHECKER"; then
+    echo "ValidatingAdmissionPolicy CEL type-check did not pass: $policy_name" >&2
     kubectl get validatingadmissionpolicy "$policy_name" -o yaml >&2 || true
     exit 1
   fi
