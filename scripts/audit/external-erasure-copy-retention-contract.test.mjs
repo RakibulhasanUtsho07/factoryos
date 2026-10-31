@@ -427,6 +427,8 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   const attestation = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
   const dto = await readRepoFile('services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts');
   const signer = await readRepoFile('scripts/security/sign-external-copy-coverage-evidence.mjs');
+  const inventoryManifest = await readRepoFile('services/api/src/saas/external-store-inventory-manifest.ts');
+  const inventoryEvidenceDoc = await readRepoFile('docs/external-store-inventory-evidence.md');
   const runbook = await readRepoFile(RUNBOOK);
   assert.ok(migration.includes('attestation_key_id') && migration.includes('attestation_owner_reference') && migration.includes('attestation_signature'));
   assert.ok(migration.includes('new external copy-class coverage requires signed opaque evidence'));
@@ -442,6 +444,15 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(dto.includes('attestation_signature') && dto.includes('attestation_key_id'));
   assert.ok(source.includes('verifyExternalCopyCoverageEvidenceAttestation'));
   assert.ok(source.includes('evidenceArtifactReader.verifyArtifact'));
+  assert.ok(source.includes('validateExternalStoreInventoryManifest'));
+  assert.ok(source.includes('readVerifiedArtifact'));
+  assert.ok(inventoryManifest.includes('REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS'));
+  assert.ok(inventoryManifest.includes('pagination_exhausted'));
+  assert.ok(inventoryManifest.includes('scope_sha256'));
+  assert.ok(inventoryEvidenceDoc.includes('factoryos.external-store-inventory/v1'));
+  assert.ok(inventoryEvidenceDoc.includes('does **not** independently call cloud provider APIs'));
+  assert.ok(propagation.includes('validateExternalStoreInventoryManifest'));
+  assert.ok(propagation.includes('readVerifiedArtifact'));
   assert.ok(source.includes('Unsigned legacy external copy-coverage evidence cannot be accepted'));
   assert.ok(propagation.includes('await this.assertTargetCoverage'));
   assert.ok(propagation.includes('External copy-coverage evidence attestation is invalid'));
