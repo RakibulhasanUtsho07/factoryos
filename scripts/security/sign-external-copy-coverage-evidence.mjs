@@ -20,6 +20,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_SOURCE_COMPLETION_AGE_MS = 24 * 60 * 60 * 1000;
 
 function validateExternalInventoryManifest(bytes, body, tenantId) {
   if (body.store_kind !== 'UNCLASSIFIED_EXTERNAL_STORE' || body.disposition !== 'NOT_APPLICABLE') return;
@@ -42,7 +43,8 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
     return Number.isFinite(parsed) && parsed <= now + 5 * 60 * 1000
       && parsed >= now - 30 * 24 * 60 * 60 * 1000 ? parsed : null;
   };
-  if (validTime(manifest.generated_at) === null) fail('generated_at is stale or invalid');
+  const generatedAt = validTime(manifest.generated_at);
+  if (generatedAt === null) fail('generated_at is stale or invalid');
   if (manifest.inventory_complete !== true || manifest.unclassified_store_count !== 0) fail('inventory is incomplete or contains an unclassified store');
   if (!Array.isArray(manifest.discovered_store_kinds)
     || manifest.discovered_store_kinds.some((kind) => typeof kind !== 'string' || !INVENTORY_STORE_KINDS.has(kind))
@@ -124,6 +126,10 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
     const completedAt = validTime(source.completed_at);
     if (startedAt === null || completedAt === null || completedAt < startedAt) {
       fail('discovery source timestamps are invalid or incomplete');
+    }
+    if (startedAt < generatedAt - MAX_SOURCE_COMPLETION_AGE_MS
+      || completedAt > generatedAt + 5 * 60 * 1000) {
+      fail('discovery source receipts must complete within 24 hours before manifest generation');
     }
     const trustedKey = trustedKeys.get(source.attestation_key_id);
     if (!trustedKey || trustedKey.ownerReference !== source.attestation_owner_reference
