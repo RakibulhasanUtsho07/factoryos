@@ -96,6 +96,8 @@ if (args.decision === 'PASS') {
     ['read-only erasure verification method', evidence.verification?.erasureVerificationMethod === 'INDEPENDENT_READ_ONLY'],
     ['erasure ledger watermark covers incident cutoff', erasureLedgerWatermark !== null && Number.isFinite(eventAtMs) && Number.isFinite(finishedAtMs) && Number.isFinite(erasureLedgerWatermarkMs) && erasureLedgerWatermarkMs >= eventAtMs && erasureLedgerWatermarkMs <= finishedAtMs],
     ['erasure replay request count', Number.isSafeInteger(evidence.verification?.erasureReplayRequests) && evidence.verification.erasureReplayRequests >= 0],
+    ['independent verifier request count matches replay', Number.isSafeInteger(evidence.verification?.erasureVerificationRequests) && evidence.verification.erasureVerificationRequests === evidence.verification?.erasureReplayRequests],
+    ['zero independent verification residuals', evidence.verification?.erasureVerificationResiduals === 0],
     ['zero erasure replay residuals', evidence.verification?.erasureReplayResiduals === 0],
   ];
   const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
