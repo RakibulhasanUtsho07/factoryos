@@ -27,6 +27,15 @@ failure_probe_sql="${FACTORYOS_MIGRATION_FAILURE_PROBE_SQL:-$repo_root/services/
 evidence_file="${FACTORYOS_RECOVERY_EVIDENCE_JSON:-}"
 event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
 app_database_url="${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
+erasure_replay_sql="${FACTORYOS_RESTORE_ERASURE_REPLAY_SQL:-}"
+
+erasure_verify_sql="${FACTORYOS_RESTORE_ERASURE_VERIFY_SQL:-}"
+
+erasure_ledger_reference="${FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE:-}"
+
+erasure_ledger_sha256="${FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256:-}"
+
+candidate_sha="${FACTORYOS_CANDIDATE_SHA:-}"
 
 current_stage="configuration"
 rehearsal_status="RUNNING"
@@ -51,6 +60,12 @@ application_smoke_status="NOT_REPORTED"
 api_readiness_status="NOT_REPORTED"
 tenant_isolation_status="NOT_REPORTED"
 audit_continuity_status="NOT_REPORTED"
+erasure_replay_status="NOT_RUN"
+erasure_ledger_watermark_utc=""
+erasure_replayed_requests=""
+erasure_replay_residuals=""
+erasure_replay_sql_sha256=""
+erasure_verify_sql_sha256=""
 checksum_sha256=""
 checksum_verified=false
 archive_status="NOT_RUN"
