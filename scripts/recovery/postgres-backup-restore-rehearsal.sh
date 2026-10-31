@@ -62,6 +62,7 @@ erasure_replayed_requests=""
 erasure_replay_residuals=""
 erasure_replay_sql_sha256=""
 erasure_verify_sql_sha256=""
+erasure_verify_method=""
 checksum_sha256=""
 checksum_verified=false
 archive_status="NOT_RUN"
@@ -111,6 +112,7 @@ emit_evidence() {
   export FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS="$erasure_replay_residuals"
   export FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256="$erasure_replay_sql_sha256"
   export FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256="$erasure_verify_sql_sha256"
+  export FACTORYOS_DR_ERASURE_VERIFY_METHOD="$erasure_verify_method"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest"
   export FACTORYOS_DR_MIGRATION_MANIFEST_MODE="$manifest_mode"
   export FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
@@ -431,6 +433,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   verify_requests_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_REPLAYED_REQUESTS "$verify_log")"
   verify_residuals_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_RESIDUALS "$verify_log")"
   verify_method_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_METHOD "$verify_log")"
+  erasure_verify_method="$verify_method_marker"
   [[ "$verify_status_marker" == "PASS" && "$verify_ledger_marker" == "$erasure_ledger_sha256" && "$verify_candidate_marker" == "$candidate_sha" && "$verify_target_marker" == "$target_identity" && "$verify_requests_marker" == "$erasure_replayed_requests" && "$verify_residuals_marker" == "0" && "$verify_method_marker" == "INDEPENDENT_READ_ONLY" ]] || die "independent erasure replay verification did not reconcile to the exact ledger, candidate and restore target"
   erasure_replay_status="PASS"
 fi
