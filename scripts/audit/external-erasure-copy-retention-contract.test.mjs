@@ -389,3 +389,26 @@ test('granular backup copy-class coverage blocks unresolved backup media and bin
  assert.ok(sql.includes('backup copy-class evidence changed while an erasure run was RUNNING'));
  assert.ok(runbook.includes('Granular backup copy-class acceptance'));
 });
+
+test('canonical backup copy-class catalog covers documented backup and secondary-copy planes', async () => {
+  const constants = await readRepoFile('services/api/src/saas/backup-copy-class-coverage.constants.ts');
+  const migration = await readRepoFile('migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql');
+  const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
+  const runbook = await readRepoFile(RUNBOOK);
+  const attestationGuide = await readRepoFile('docs/backup-copy-class-evidence-attestation.md');
+  const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+  const expected = ["S3_OBJECT_VERSIONS","POSTGRESQL_BASE_BACKUP","POSTGRESQL_WAL_PITR","REDIS_AOF_BACKUP","REDIS_RDB_BACKUP","FILESYSTEM_SNAPSHOT","BLOCK_VOLUME_SNAPSHOT","MANAGED_BACKUP_VAULT","REPLICA_FAILOVER_COPY","EXTERNAL_DR_COPY","SEARCH_INDEX_COPY","VECTOR_STORE_COPY","LEARNING_ARTIFACT_COPY","EXTERNAL_PROVIDER_COPY","EXTERNAL_CACHE_COPY","UNCLASSIFIED_EXTERNAL_COPY"];
+  for (const code of expected) {
+    assert.ok(constants.includes("'" + code + "'"), 'API catalog is missing ' + code);
+    assert.ok(migration.includes("'" + code + "'"), 'PostgreSQL catalog constraint is missing ' + code);
+    assert.ok(runbook.includes('`' + code + '`'), 'runbook is missing ' + code);
+    assert.ok(attestationGuide.includes('`' + code + '`'), 'attestation guide is missing ' + code);
+  }
+  assert.ok(manifest.includes('migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql'),
+    'catalog expansion migration must be in the ordered PostgreSQL replay manifest');
+  assert.ok(propagation.includes('for (const copyClass of REQUIRED_BACKUP_COPY_CLASSES)'),
+    'whole-tenant erasure must iterate the complete API catalog');
+  assert.match(propagation, /No reviewed erasure adapter is registered for backup copy class/);
+  assert.match(runbook, /NOT_APPLICABLE` decision is valid only when the signed evidence pack proves the relevant inventory scope was exhaustively enumerated/);
+  assert.match(runbook, /UNCLASSIFIED_EXTERNAL_COPY/);
+});

@@ -114,11 +114,38 @@ Retain a tenant-scoped, access-controlled evidence pack containing:
 
 Keep the manifest and audit trail protected from generic tenant-data erasure in accordance with the external-erasure resource ledger. Evidence should be sufficient for independent review without reproducing deleted customer content.
 
+### Canonical tenant backup-copy-class catalog
+
+Every requested dataset category must have a current, independently reviewed decision for **each** canonical class below. The class catalog is enforced by the API propagation gate; a class is not considered covered merely because it appears in an operator's narrative inventory.
+
+| Copy-class key | Inventory boundary |
+|---|---|
+| `S3_OBJECT_VERSIONS` | Versioned S3-compatible tenant backup objects and delete markers |
+| `POSTGRESQL_BASE_BACKUP` | PostgreSQL base/full backups and exported database snapshots |
+| `POSTGRESQL_WAL_PITR` | WAL archives, continuous archiving and point-in-time recovery segments |
+| `REDIS_AOF_BACKUP` | Redis AOF persistence backups and archived AOF copies |
+| `REDIS_RDB_BACKUP` | Redis RDB snapshots and archived RDB copies |
+| `FILESYSTEM_SNAPSHOT` | Filesystem, persistent-volume and file-level snapshots |
+| `BLOCK_VOLUME_SNAPSHOT` | Block-volume, disk and storage-array snapshots |
+| `MANAGED_BACKUP_VAULT` | Provider-managed backup vaults and immutable backup services |
+| `REPLICA_FAILOVER_COPY` | Read replicas, replicas, failover copies and delayed replica queues |
+| `EXTERNAL_DR_COPY` | External disaster-recovery regions, accounts and recovery environments |
+| `SEARCH_INDEX_COPY` | Search indexes, index snapshots, reindex sources and retained search segments |
+| `VECTOR_STORE_COPY` | Vector databases, embeddings, vector snapshots and retained vector collections |
+| `LEARNING_ARTIFACT_COPY` | Model-training, evaluation, feature and learning artifacts |
+| `EXTERNAL_PROVIDER_COPY` | Copies held by external SaaS, integration or managed service providers |
+| `EXTERNAL_CACHE_COPY` | Legacy, application-managed and other external caches not proven to use the reviewed tenant-cache namespace |
+| `UNCLASSIFIED_EXTERNAL_COPY` | Fail-closed catch-all for any discovered copy that does not map to another catalog key |
+
+A `NOT_APPLICABLE` decision is valid only when the signed evidence pack proves the relevant inventory scope was exhaustively enumerated and found to contain no copy of that class. The pack must identify the tenant/category and all in-scope accounts, projects, regions, providers and control planes; list the authoritative discovery sources and owner identities queried; record enumeration timestamps, pagination/continuation completion and result counts; and account for direct, scheduled, replicated, delayed-retry and restore/DR writers. Missing sources, inaccessible accounts, incomplete pagination or an unknown producer must be recorded as `UNRESOLVED`, never inferred as not applicable.
+
+`UNCLASSIFIED_EXTERNAL_COPY` must also receive an explicit decision. If a discovered copy cannot be mapped safely, mark it `UNRESOLVED`; do not use the catch-all key as an erasure adapter. When a new copy system is discovered, add a dedicated catalog key through a reviewed migration before claiming whole-tenant coverage. No catalog can prove completeness without authenticated source enumeration and independent owner review.
+
 ## Supported adapter boundary
 
 At the current PR scope, the registered S3-compatible POD adapter covers only WMS POD evidence objects in the configured unversioned bucket. The registered BACKUP adapter provides a version-level S3 primitive for exact object versions and delete markers in a separate, tenant/category-exclusive S3-compatible archive under `factoryos-backups/{tenant UUID}/{DATASET_CATEGORY}/...`; it requires versioning and Object Lock to be enabled, inventories every version, checks each live version's provider legal-hold/retention state, hashes its persisted bytes, deletes explicit version IDs, and performs a fresh version inventory. Its `isConfigured()` remains fail-closed unless the durable writer-fence coordinator, reviewed writer inventory, and current provider-acceptance gates are valid. The propagation runner now acquires and reads back the fence before any target adapter inventory, and keeps it held through verification; production activation remains blocked until the acceptance records are backed by independently reviewed real-provider evidence and the complete external producer/principal set is covered. Its plan is bounded to 20,000 versions and the configured per-object streaming digest limit. See [the S3 tenant backup adapter contract](s3-tenant-backup-erasure-adapter.md). This is not an adapter for monolithic database dumps, PostgreSQL backup/PITR archives, RDB/AOF files, filesystem/volume snapshots, replicas, managed backup vaults, or other disaster-recovery copies. The Redis adapter covers only the new `TenantCacheService` namespace on a standalone primary with no replicas/cluster and reviewed AOF/noeviction settings. Its post-delete AOF rewrite is not a purge of separately retained AOF backups, filesystem or volume snapshots, backup vaults, or media copies.
 
-The following required store classes still need complete reviewed, configured adapter/provider procedures and acceptance evidence before closure: `SEARCH_INDEX`, `VECTOR_STORE`, `LEARNING_ARTIFACT`, `EXTERNAL_PROVIDER`, and `REPLICA`, plus any legacy/external cache not proven to use the reviewed tenant-cache namespace. The `BACKUP` class has a partial S3 version-level primitive, but is **not production-accepted**: a provider/control-plane write-freeze for every backup writer is not implemented/verified here, and database/PITR backups, Redis persistence copies, filesystem/volume snapshots, backup vaults and DR copies remain outside the adapter. Do not register a required target as production-ready simply because a generic interface or synthetic test exists.
+The canonical catalog now also requires explicit `SEARCH_INDEX_COPY`, `VECTOR_STORE_COPY`, `LEARNING_ARTIFACT_COPY`, `EXTERNAL_PROVIDER_COPY`, `EXTERNAL_CACHE_COPY` and `UNCLASSIFIED_EXTERNAL_COPY` decisions. These classes remain unsupported by a production erasure adapter in this scope: record `UNRESOLVED` while they exist or remain uncertain, and use `NOT_APPLICABLE` only with signed, independently reviewed exhaustive discovery evidence. `REPLICA_FAILOVER_COPY` and `EXTERNAL_DR_COPY` are also required catalog decisions even when their current configured store target is represented through the external-copy coverage registry. The `BACKUP` class has a partial S3 version-level primitive, but is **not production-accepted**: a provider/control-plane write-freeze for every backup writer is not implemented/verified here, and PostgreSQL base/WAL backups, Redis AOF/RDB archives, filesystem/volume snapshots, backup vaults and DR copies remain outside that adapter. Do not register a required target as production-ready simply because a generic interface or synthetic test exists.
 
 ## Go-live checklist
 

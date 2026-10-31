@@ -108,3 +108,26 @@ kubectl rollout status deployment/"$API_DEPLOYMENT" -n "$API_NAMESPACE"
 ```
 
 Test that the `pods/ephemeralcontainers` subresource rejects a writable evidence-volume alias, that namespace label removal and namespace deletion are denied after enrollment, and that initial label enrolment succeeds. Removing the admission policy/binding itself is a privileged cluster-admin change and must be separately controlled.
+
+## Canonical backup copy-class catalog
+
+The signed `copy_class_code` is restricted to the API's required catalog, applied to every requested data category:
+
+- `S3_OBJECT_VERSIONS`
+- `POSTGRESQL_BASE_BACKUP`
+- `POSTGRESQL_WAL_PITR`
+- `REDIS_AOF_BACKUP`
+- `REDIS_RDB_BACKUP`
+- `FILESYSTEM_SNAPSHOT`
+- `BLOCK_VOLUME_SNAPSHOT`
+- `MANAGED_BACKUP_VAULT`
+- `REPLICA_FAILOVER_COPY`
+- `EXTERNAL_DR_COPY`
+- `SEARCH_INDEX_COPY`
+- `VECTOR_STORE_COPY`
+- `LEARNING_ARTIFACT_COPY`
+- `EXTERNAL_PROVIDER_COPY`
+- `EXTERNAL_CACHE_COPY`
+- `UNCLASSIFIED_EXTERNAL_COPY`
+
+The evidence artifact must provide exhaustive discovery scope and completion evidence, not just an inventory of known resources. Identify all relevant accounts/projects/regions/providers/control planes, source APIs and inventory tools, owner identities, query timestamps, pagination/continuation completion, resource counts, direct and indirect writer identities, delayed retries, replication and restore/DR paths. Reconcile every discovered resource to exactly one catalog class. A new or unmapped resource is `UNCLASSIFIED_EXTERNAL_COPY` and must remain `UNRESOLVED` until a reviewed catalog extension and class-specific procedure exists. A `NOT_APPLICABLE` assertion requires signed evidence that every authoritative source in the declared scope was queried successfully and returned no matching resources; missing or inaccessible sources, incomplete pagination, unknown writers or ambiguous ownership are not proof of absence. The API's static catalog and successful CI checks do not independently discover cloud/provider resources.
