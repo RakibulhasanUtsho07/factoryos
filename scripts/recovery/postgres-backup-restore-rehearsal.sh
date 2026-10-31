@@ -107,6 +107,14 @@ emit_evidence() {
   export FACTORYOS_DR_API_READINESS_STATUS="$api_readiness_status"
   export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status"
   export FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
+  export FACTORYOS_DR_ERASURE_REPLAY_STATUS="$erasure_replay_status"
+  export FACTORYOS_DR_ERASURE_LEDGER_REFERENCE="$erasure_ledger_reference"
+  export FACTORYOS_DR_ERASURE_LEDGER_SHA256="$erasure_ledger_sha256"
+  export FACTORYOS_DR_ERASURE_LEDGER_WATERMARK_UTC="$erasure_ledger_watermark_utc"
+  export FACTORYOS_DR_ERASURE_REPLAYED_REQUESTS="$erasure_replayed_requests"
+  export FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS="$erasure_replay_residuals"
+  export FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256="$erasure_replay_sql_sha256"
+  export FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256="$erasure_verify_sql_sha256"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest"
   export FACTORYOS_DR_MIGRATION_MANIFEST_MODE="$manifest_mode"
   export FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
@@ -210,7 +218,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
 fi
 
-for tool in pg_dump pg_restore psql gpg sha256sum mktemp date; do need_command "$tool"; done
+for tool in pg_dump pg_restore psql gpg sha256sum mktemp date stat readlink grep sed awk git; do need_command "$tool"; done
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
 partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
