@@ -113,12 +113,21 @@ describe('external-store inventory manifest', () => {
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA')).not.toThrow();
   });
 
-  it('requires a deployment-configured source receipt trust store', () => {
+  it('requires a deployment-configured source receipt trust store without duplicate key aliases', () => {
     const bytes = Buffer.from(JSON.stringify(manifest()), 'utf8');
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), '[]'))
       .toThrow(/trusted-key configuration is invalid/);
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), ''))
       .toThrow(/trust is not configured/);
+    const duplicateAlias = JSON.parse(trustedSourceKeys);
+    duplicateAlias.push({
+      ...duplicateAlias[0],
+      keyId: 'collector.alias',
+      ownerReference: 'owner.collector.alias',
+    });
+    expect(() => validateExternalStoreInventoryManifest(
+      bytes, tenant, 'BUSINESS_DATA', Date.now(), JSON.stringify(duplicateAlias),
+    )).toThrow(/duplicate public key/);
   });
 
   it('rejects collector receipts older than 24 hours before manifest generation', () => {
