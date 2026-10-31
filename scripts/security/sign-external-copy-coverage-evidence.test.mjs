@@ -242,15 +242,29 @@ test('external coverage signer allows only fail-closed dispositions for an uncla
 
     const completeEvidence = completeInventoryEvidence();
     process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = completeEvidence.trustJson;
+    const staleSourceManifest = JSON.parse(completeEvidence.bytes.toString('utf8'));
+    staleSourceManifest.sources[0].started_at = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+    staleSourceManifest.sources[0].completed_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const staleSourceBytes = Buffer.from(JSON.stringify(staleSourceManifest), 'utf8');
+    writeFileSync(evidencePath, staleSourceBytes);
+    const acceptedPayload = {
+      ...payload,
+      disposition: 'NOT_APPLICABLE',
+      evidence_sha256: createHash('sha256').update(staleSourceBytes).digest('hex'),
+    };
+    writeFileSync(payloadPath, JSON.stringify(acceptedPayload));
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /within 24 hours before manifest generation/);
+
     const invalidSourceManifest = JSON.parse(completeEvidence.bytes.toString('utf8'));
     invalidSourceManifest.sources[0].item_count = 7;
     const tamperedBytes = Buffer.from(JSON.stringify(invalidSourceManifest), 'utf8');
     writeFileSync(evidencePath, tamperedBytes);
-    const acceptedPayload = {
-      ...payload,
-      disposition: 'NOT_APPLICABLE',
-      evidence_sha256: createHash('sha256').update(tamperedBytes).digest('hex'),
-    };
+    acceptedPayload.evidence_sha256 = createHash('sha256').update(tamperedBytes).digest('hex');
     writeFileSync(payloadPath, JSON.stringify(acceptedPayload));
     result = spawnSync(process.execPath, [
       script, '--payload', payloadPath, '--evidence-file', evidencePath,
