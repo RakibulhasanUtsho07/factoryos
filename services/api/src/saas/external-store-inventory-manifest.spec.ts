@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import {
   canonicalizeExternalStoreInventorySourceReceipt,
@@ -116,9 +117,9 @@ describe('external-store inventory manifest', () => {
   it('requires a deployment-configured source receipt trust store without duplicate key aliases', () => {
     const bytes = Buffer.from(JSON.stringify(manifest()), 'utf8');
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), '[]'))
-      .toThrow(/trusted-key configuration is invalid/);
+      .toThrow(ServiceUnavailableException);
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), ''))
-      .toThrow(/trust is not configured/);
+      .toThrow(ServiceUnavailableException);
     const duplicateAlias = JSON.parse(trustedSourceKeys);
     duplicateAlias.push({
       ...duplicateAlias[0],
