@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 
-export const EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA = 'factoryos.external-store-inventory/v1';
+export const EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA = 'factoryos.external-store-inventory/v2';
 export const EXTERNAL_STORE_INVENTORY_SOURCE_RECEIPT_SCHEMA = 'factoryos.external-store-inventory-source-receipt/v1';
 
 export const REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS = [
