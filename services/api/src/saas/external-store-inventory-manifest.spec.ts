@@ -192,8 +192,8 @@ describe('external-store inventory manifest', () => {
     expect(() => validateExternalStoreInventoryManifest(Buffer.from(JSON.stringify(partial)), tenant, 'BUSINESS_DATA'))
       .toThrow(/pagination exhausted/);
     const duplicate = manifest({
-      sources: base.sources.map((source, index) => index === 0
-        ? { ...source, source_kind: base.sources[1].source_kind } : source),
+      sources: base.sources.map((source, index) => index === 1
+        ? { ...source, source_kind: base.sources[0].source_kind } : source),
     });
     expect(() => validateExternalStoreInventoryManifest(Buffer.from(JSON.stringify(duplicate)), tenant, 'BUSINESS_DATA'))
       .toThrow(/duplicate or unsupported/);
