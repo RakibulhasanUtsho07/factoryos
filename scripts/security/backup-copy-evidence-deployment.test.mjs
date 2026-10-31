@@ -211,7 +211,8 @@ test('provisioner checks cluster context, policy acceptance, namespace enrollmen
     'Deployment requires a non-empty matchLabels selector',
     'Every Ready API replica',
     'imageID',
-    'sha256:',
+    'expectedImage.split("@").at(-1)',
+    'runtimeId.endsWith(expectedDigest)',
     'rev-parse HEAD',
   ]) assert.ok(script.includes(required), 'provisioner missing ' + required);
 });
