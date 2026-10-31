@@ -77,6 +77,7 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
     fail('source receipt trusted-key configuration is invalid');
   }
   const trustedKeys = new Map();
+  const publicKeyFingerprints = new Set();
   for (const entry of parsedTrust) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)
       || typeof entry.keyId !== 'string' || !KEY_ID.test(entry.keyId)
@@ -90,12 +91,18 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
       || entry.publicKeyPem.includes('PRIVATE KEY') || trustedKeys.has(entry.keyId)) {
       fail('source receipt trusted-key configuration is invalid');
     }
+    let publicKey;
     try {
-      const publicKey = createPublicKey(entry.publicKeyPem);
+      publicKey = createPublicKey(entry.publicKeyPem);
       if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('Ed25519 is required');
     } catch {
       fail('source receipt trusted-key configuration is invalid');
     }
+    const fingerprint = createHash('sha256')
+      .update(publicKey.export({ type: 'spki', format: 'der' }))
+      .digest('hex');
+    if (publicKeyFingerprints.has(fingerprint)) fail('source receipt trusted-key configuration contains a duplicate public key');
+    publicKeyFingerprints.add(fingerprint);
     trustedKeys.set(entry.keyId, entry);
   }
 
