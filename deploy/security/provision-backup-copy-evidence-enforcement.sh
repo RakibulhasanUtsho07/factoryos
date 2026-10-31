@@ -63,10 +63,26 @@ done
 kubectl apply -n "$API_NAMESPACE" -f "$SA_MANIFEST" >/dev/null
 for file in "${POLICY_FILES[@]}"; do kubectl apply -f "$file" >/dev/null; done
 
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=90s
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-service-account --timeout=90s
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-token-secret --timeout=90s
-kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=90s
+if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-readonly --timeout=90s; then
+  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-readonly" >&2
+  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-readonly" -o yaml >&2 || true
+  exit 1
+fi
+if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-service-account --timeout=90s; then
+  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-api-service-account" >&2
+  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-api-service-account" -o yaml >&2 || true
+  exit 1
+fi
+if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-api-token-secret --timeout=90s; then
+  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-api-token-secret" >&2
+  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-api-token-secret" -o yaml >&2 || true
+  exit 1
+fi
+if ! kubectl wait --for=condition=Accepted validatingadmissionpolicy/factoryos-backup-evidence-namespace-lock --timeout=90s; then
+  echo "ValidatingAdmissionPolicy did not reach Accepted: factoryos-backup-evidence-namespace-lock" >&2
+  kubectl get validatingadmissionpolicy "factoryos-backup-evidence-namespace-lock" -o yaml >&2 || true
+  exit 1
+fi
 
 for file in "${BINDING_FILES[@]}"; do kubectl apply -f "$file" >/dev/null; done
 
