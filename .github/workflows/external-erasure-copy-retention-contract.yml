@@ -38,6 +38,8 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
       - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
       - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.test.mjs'
       - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
       - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
       - 'services/api/src/saas/saas-tenant-propagation.service.ts'
@@ -116,6 +118,8 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
       - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
       - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.test.mjs'
       - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
       - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
       - 'services/api/src/saas/saas-tenant-propagation.service.ts'
@@ -191,4 +195,4 @@ jobs:
           node --check scripts/security/require-supported-kubernetes-version.test.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.test.mjs
-          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
+          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/sign-external-store-inventory-source-receipt.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
