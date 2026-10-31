@@ -592,19 +592,19 @@ jobs:
             ('e7140000-0000-4000-8000-000000000002','e7110000-0000-4000-8000-000000000002','e7120000-0000-4000-8000-000000000002','RECOVERY_REHEARSAL','RESTORE_CONTINUITY','TENANT','e7110000-0000-4000-8000-000000000002','INTERNAL','{"fixture":"backup-restore-audit-continuity","tenant":"B"}'::jsonb,clock_timestamp())
           ON CONFLICT (id) DO UPDATE SET payload=EXCLUDED.payload,created_at=EXCLUDED.created_at;
           CREATE SCHEMA factoryos_ci;
-          CREATE TABLE factoryos_ci.factoryos_ci_erasure_replay_fixture (
+          CREATE TABLE factoryos_ci.erasure_replay_fixture (
             fixture_id text PRIMARY KEY,
             tenant_id uuid NOT NULL,
             payload_marker text NOT NULL
           );
-          CREATE TABLE factoryos_ci.factoryos_ci_erasure_replay_ledger (
+          CREATE TABLE factoryos_ci.erasure_replay_ledger (
             tombstone_id text PRIMARY KEY,
             fixture_id text NOT NULL,
             tenant_id uuid NOT NULL
           );
-          INSERT INTO factoryos_ci.factoryos_ci_erasure_replay_fixture (fixture_id,tenant_id,payload_marker)
+          INSERT INTO factoryos_ci.erasure_replay_fixture (fixture_id,tenant_id,payload_marker)
           VALUES ('ci-restore-erasure-row-001','e7110000-0000-4000-8000-000000000001','MUST_NOT_REAPPEAR_AFTER_RESTORE');
-          INSERT INTO factoryos_ci.factoryos_ci_erasure_replay_ledger (tombstone_id,fixture_id,tenant_id)
+          INSERT INTO factoryos_ci.erasure_replay_ledger (tombstone_id,fixture_id,tenant_id)
           VALUES ('ci-tombstone-after-snapshot-001','ci-restore-erasure-row-001','e7110000-0000-4000-8000-000000000001');
           COMMIT;
           SQL
