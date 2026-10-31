@@ -471,6 +471,9 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(propagation.includes('await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256)'));
   assert.ok(attestation.includes('factoryos.external-copy-coverage-evidence-attestation/v1'));
   assert.ok(signer.includes('store_kind') && signer.includes('evidence_sha256'));
+  assert.ok(signer.includes('FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON'));
+  assert.ok(signer.includes('source receipt signature does not match its claims'));
+  assert.ok(signer.includes('manifest.manifest_id'));
   assert.ok(runbook.includes('Ed25519') && runbook.includes('read-back'));
   assert.ok(unclassifiedMigration.includes('UNCLASSIFIED_EXTERNAL_STORE'));
   assert.ok(unclassifiedMigration.includes("disposition IN ('NOT_APPLICABLE','UNRESOLVED')"));
