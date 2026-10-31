@@ -55,6 +55,7 @@ if (args.decision === 'PASS') {
   const sourceWatermark = utcEpochSeconds(evidence.timestamps?.sourceWatermarkUtc);
   const restoredWatermark = utcEpochSeconds(evidence.timestamps?.restoredWatermarkUtc);
   const eventAt = utcEpochSeconds(evidence.timestamps?.simulatedIncidentAtUtc);
+  const erasureLedgerWatermark = utcEpochSeconds(evidence.verification?.erasureReplayLedgerWatermarkUtc);
   const candidateManifestPath = evidence.candidate?.migrationManifestPath;
   const manifestPathIsSafe = typeof candidateManifestPath === 'string'
     && candidateManifestPath.length > 0
@@ -84,6 +85,14 @@ if (args.decision === 'PASS') {
     ['application smoke', evidence.verification?.applicationSmokeStatus === 'PASS'],
     ['tenant isolation', evidence.verification?.tenantIsolationStatus === 'PASS'],
     ['audit continuity', evidence.verification?.auditContinuityStatus === 'PASS'],
+    ['restore-time erasure tombstone replay', evidence.verification?.erasureReplayStatus === 'PASS'],
+    ['opaque erasure ledger reference', typeof evidence.verification?.erasureReplayLedgerReference === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$/.test(evidence.verification.erasureReplayLedgerReference)],
+    ['erasure ledger digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureReplayLedgerSha256 ?? '')],
+    ['erasure replay SQL digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureReplaySqlSha256 ?? '')],
+    ['erasure verification SQL digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureVerificationSqlSha256 ?? '')],
+    ['erasure ledger watermark covers incident cutoff', erasureLedgerWatermark !== null && eventAt !== null && erasureLedgerWatermark >= eventAt && finishedAt !== null && erasureLedgerWatermark <= finishedAt],
+    ['erasure replay request count', Number.isSafeInteger(evidence.verification?.erasureReplayRequests) && evidence.verification.erasureReplayRequests >= 0],
+    ['zero erasure replay residuals', evidence.verification?.erasureReplayResiduals === 0],
   ];
   const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length) fail('PASS sign-off requires successful evidence for: ' + failed.join(', '));
