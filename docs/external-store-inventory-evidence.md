@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `UNCLASSIFIED_EXTERNAL_STORE` coverage sentinel can be marked `NOT_APPLICABLE` only when the evidence artifact is a validated `factoryos.external-store-inventory/v1` JSON manifest. A generic binary evidence pack, a signer statement alone, or a list of discovered resources is insufficient.
+The `UNCLASSIFIED_EXTERNAL_STORE` coverage sentinel can be marked `NOT_APPLICABLE` only when the evidence artifact is a validated `factoryos.external-store-inventory/v2` JSON manifest. A generic binary evidence pack, a signer statement alone, or a list of discovered resources is insufficient.
 
 The API validates the exact read-only artifact bytes at submission, independent ACCEPT review, propagation preflight, recovery and subsequent provider checkpoints. The outer digest and Ed25519 owner attestation bind those exact bytes to the tenant/category/store-kind/disposition claim. Each discovery source also carries a separate Ed25519 collector receipt checked against a deployment-configured source trust store.
 
@@ -10,7 +10,7 @@ The API validates the exact read-only artifact bytes at submission, independent 
 
 The manifest must include:
 
-- `schema`: `factoryos.external-store-inventory/v1`.
+- `schema`: `factoryos.external-store-inventory/v2`.
 - `tenant_id` and `category_code`: exact values from the signed API claim.
 - `generated_at`: a current timestamp no more than 30 days old and no more than five minutes in the future.
 - `scope`: four arrays of opaque, non-secret references: `provider_references`, `account_references`, `project_references`, and `region_references`. At least one provider, account or project reference is required.
