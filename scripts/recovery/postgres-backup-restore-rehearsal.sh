@@ -413,7 +413,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   (( ledger_watermark_epoch_ns >= event_epoch_ns && ledger_watermark_epoch_ns <= current_epoch_ns )) || die "erasure tombstone ledger must cover the exact incident cutoff and cannot be from the future"
 
   current_stage="erasure_tombstone_verification"
-  if ! PGOPTIONS="-c default_transaction_read_only=on" psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
+  if ! PGOPTIONS="-c default_transaction_read_only=on" psql -w "service=$target_service" -X -qAt -1 -c "SET TRANSACTION READ ONLY" -v ON_ERROR_STOP=1 \
       -v "candidate_sha=$candidate_sha" \
       -v "target_database_identity=$target_identity" \
       -v "snapshot_watermark_utc=$restored_watermark_utc" \
