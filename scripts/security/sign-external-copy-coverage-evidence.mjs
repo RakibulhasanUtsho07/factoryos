@@ -6,6 +6,81 @@ const STORE_KINDS = new Set([
   'OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE',
   'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP', 'UNCLASSIFIED_EXTERNAL_STORE',
 ]);
+const INVENTORY_SOURCE_KINDS = [
+  'TENANT_SCOPE_CATALOG', 'RESOURCE_TYPE_CATALOG', 'IAM_WRITER_PRINCIPALS',
+  'REPLICATION_AND_DELIVERY', 'SCHEDULED_AND_DELAYED_WRITERS',
+  'RESTORE_AND_DR_PATHS', 'SECONDARY_EXTERNAL_STORES',
+];
+const INVENTORY_STORE_KINDS = new Set([
+  'OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE',
+  'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP',
+]);
+const SAFE_INVENTORY_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+
+function validateExternalInventoryManifest(bytes, body, tenantId) {
+  if (body.store_kind !== 'UNCLASSIFIED_EXTERNAL_STORE' || body.disposition !== 'NOT_APPLICABLE') return;
+  const fail = (reason) => {
+    throw new Error('UNCLASSIFIED_EXTERNAL_STORE NOT_APPLICABLE requires a complete, current, scope-bound external inventory manifest: ' + reason);
+  };
+  let manifest;
+  try { manifest = JSON.parse(bytes.toString('utf8')); } catch { fail('evidence is not valid JSON'); }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)
+    || manifest.schema !== 'factoryos.external-store-inventory/v1'
+    || typeof manifest.tenant_id !== 'string' || manifest.tenant_id.toLowerCase() !== tenantId.toLowerCase()
+    || manifest.category_code !== body.category_code) fail('schema, tenant or category mismatch');
+  const now = Date.now();
+  const validTime = (value) => {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && parsed <= now + 5 * 60 * 1000
+      && parsed >= now - 30 * 24 * 60 * 60 * 1000 ? parsed : null;
+  };
+  if (validTime(manifest.generated_at) === null) fail('generated_at is stale or invalid');
+  if (manifest.inventory_complete !== true || manifest.unclassified_store_count !== 0) fail('inventory is incomplete or contains an unclassified store');
+  if (!Array.isArray(manifest.discovered_store_kinds)
+    || manifest.discovered_store_kinds.some((kind) => typeof kind !== 'string' || !INVENTORY_STORE_KINDS.has(kind))
+    || new Set(manifest.discovered_store_kinds).size !== manifest.discovered_store_kinds.length) fail('discovered store kinds are not a unique known catalog');
+  const scope = manifest.scope;
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) fail('scope must be an object');
+  const normalizedScope = {};
+  for (const field of ['provider_references', 'account_references', 'project_references', 'region_references']) {
+    if (!Array.isArray(scope[field])) fail('scope.' + field + ' must be an array');
+    const values = scope[field];
+    if (values.some((value) => typeof value !== 'string' || !SAFE_INVENTORY_REFERENCE.test(value)
+      || value.includes('://') || /(secret|password|credential|access[-_]?key|token)/i.test(value))
+      || new Set(values).size !== values.length) fail('scope.' + field + ' contains an invalid or duplicate reference');
+    normalizedScope[field] = [...values].sort();
+  }
+  if (normalizedScope.provider_references.length + normalizedScope.account_references.length
+    + normalizedScope.project_references.length === 0) fail('scope does not identify a provider, account or project');
+  const scopeDigest = createHash('sha256').update(JSON.stringify(normalizedScope), 'utf8').digest('hex');
+  if (manifest.scope_sha256 !== scopeDigest) fail('canonical scope digest does not match');
+  if (!Array.isArray(manifest.sources) || manifest.sources.length !== INVENTORY_SOURCE_KINDS.length) {
+    fail('required discovery source set is incomplete');
+  }
+  const seen = new Set();
+  for (const source of manifest.sources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)
+      || !INVENTORY_SOURCE_KINDS.includes(source.source_kind) || seen.has(source.source_kind)) {
+      fail('discovery source is missing, duplicated or unsupported');
+    }
+    seen.add(source.source_kind);
+    if (typeof source.source_reference !== 'string' || !SAFE_INVENTORY_REFERENCE.test(source.source_reference)
+      || source.source_reference.includes('://') || /(secret|password|credential|access[-_]?key|token)/i.test(source.source_reference)
+      || source.status !== 'COMPLETE' || source.pagination_exhausted !== true
+      || !Number.isSafeInteger(source.pages_fetched) || source.pages_fetched < 1 || source.pages_fetched > 100000
+      || !Number.isSafeInteger(source.item_count) || source.item_count < 0
+      || typeof source.result_sha256 !== 'string' || !SHA256.test(source.result_sha256)
+      || source.scope_sha256 !== scopeDigest) fail('discovery source is incomplete or not bound to the declared scope');
+    const startedAt = validTime(source.started_at);
+    const completedAt = validTime(source.completed_at);
+    if (startedAt === null || completedAt === null || completedAt < startedAt) {
+      fail('discovery source timestamps are invalid or incomplete');
+    }
+  }
+  if (INVENTORY_SOURCE_KINDS.some((kind) => !seen.has(kind))) fail('required discovery source is missing');
+}
 
 function usage() {
   throw new Error(
@@ -93,11 +168,13 @@ function main() {
 
   const evidencePath = args.get('--evidence-file');
   if (!lstatSync(evidencePath).isFile()) throw new Error('--evidence-file must be a regular file, not a symlink');
-  const evidenceDigest = createHash('sha256').update(readFileSync(evidencePath)).digest('hex');
+  const evidenceBytes = readFileSync(evidencePath);
+  const evidenceDigest = createHash('sha256').update(evidenceBytes).digest('hex');
   if (evidenceDigest !== body.evidence_sha256) {
     throw new Error('Evidence pack digest does not match payload evidence_sha256; no signature was created');
   }
 
+  validateExternalInventoryManifest(evidenceBytes, body, args.get('--tenant-id'));
   const privateKey = createPrivateKey(readFileSync(args.get('--private-key-file'), 'utf8'));
   if (privateKey.asymmetricKeyType !== 'ed25519') throw new Error('Evidence signing key must be Ed25519');
   const claims = canonicalClaims(body, args.get('--tenant-id'));
