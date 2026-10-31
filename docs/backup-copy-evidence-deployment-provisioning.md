@@ -73,7 +73,7 @@ PROVISIONING_EVIDENCE_OUTPUT=./backup-evidence-provisioning.json \
 ./deploy/security/provision-backup-copy-evidence-enforcement.sh
 ```
 
-The script performs server-side dry-runs, applies each policy, waits for each ValidatingAdmissionPolicy to report Accepted, installs Deny bindings and the namespace lock before setting the enrollment label, rolls out/re-admits Pods, and re-reads live Deployment/PVC/ServiceAccount/namespace/RBAC state.
+The script performs server-side dry-runs, applies each policy, waits for each ValidatingAdmissionPolicy to observe its current generation and verifies completed CEL type-checking with zero expression warnings, installs Deny bindings and the namespace lock before setting the enrollment label, rolls out/re-admits Pods, and re-reads live Deployment/PVC/ServiceAccount/namespace/RBAC state.
 
 The `Backup Evidence Kubernetes Admission` workflow creates a disposable `kind` cluster for each currently maintained minor (v1.35, v1.36, and v1.37) using digest-pinned node images. It asks the real Kubernetes API server to type-check and accept all four ValidatingAdmissionPolicies, then runs a positive Pod admission control and negative probes for writable init/ephemeral mounts, `CAP_SYS_ADMIN`, ServiceAccount token re-enablement/Secret creation, and namespace lock bypass. This is CI conformance evidence for Kubernetes admission behavior, not a production-cluster provisioning run or proof of the real CSI/storage/host-admin boundary. The provisioner then verifies that a writable init-container alias, CAP_SYS_ADMIN addition, token automount re-enablement, legacy token-Secret creation and namespace-label removal are denied, and runs the mount/write/capability/token probe inside each running API replica.
 
