@@ -192,7 +192,8 @@ test('provisioner checks cluster context, policy acceptance, namespace enrollmen
   for (const required of [
     'EXPECTED_KUBE_CONTEXT',
     'kubectl config current-context',
-    'Kubernetes server v1.30+',
+    'KUBERNETES_VERSION_CHECKER',
+    'node "$KUBERNETES_VERSION_CHECKER"',
     '--dry-run=server',
     'validatingadmissionpolicy/factoryos-backup-evidence-readonly',
     'backup-copy-evidence-api-service-account',
