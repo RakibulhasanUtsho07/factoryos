@@ -132,7 +132,12 @@ describe('external copy-coverage evidence attestation', () => {
   });
 
   it('fails closed when the configured signer is revoked or the trust store is unavailable', () => {
-    expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), '[]'))
+    const revokedKeySet = JSON.stringify([{
+      keyId: 'different-external-copy-key-v1',
+      ownerReference,
+      publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+    }]);
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), revokedKeySet))
       .toThrow(BadRequestException);
     expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), undefined))
       .toThrow(ServiceUnavailableException);
