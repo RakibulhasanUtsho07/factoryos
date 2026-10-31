@@ -28,13 +28,9 @@ evidence_file="${FACTORYOS_RECOVERY_EVIDENCE_JSON:-}"
 event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
 app_database_url="${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
 erasure_replay_sql="${FACTORYOS_RESTORE_ERASURE_REPLAY_SQL:-}"
-
 erasure_verify_sql="${FACTORYOS_RESTORE_ERASURE_VERIFY_SQL:-}"
-
 erasure_ledger_reference="${FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE:-}"
-
 erasure_ledger_sha256="${FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256:-}"
-
 candidate_sha="${FACTORYOS_CANDIDATE_SHA:-}"
 
 current_stage="configuration"
@@ -88,7 +84,6 @@ emit_evidence() {
   local exit_code="$1"
   [[ -n "$evidence_file" ]] || return 0
   need_command node
-  [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$candidate_sha" ]] || die "candidate SHA does not match the checked-out repository"
   export FACTORYOS_DR_STATUS="$rehearsal_status"
   export FACTORYOS_DR_STAGE="$current_stage"
   export FACTORYOS_DR_EXIT_CODE="$exit_code"
@@ -217,6 +212,8 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
   [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
   need_command node
+  need_command git
+  [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$candidate_sha" ]] || die "candidate SHA does not match the checked-out repository"
   if ! (cd "$repo_root" && node scripts/audit/verify-migration-manifest.mjs); then
     die "canonical ordered migration manifest failed inventory verification"
   fi
