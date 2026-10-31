@@ -5,6 +5,7 @@ on:
     paths:
       - 'docs/external-erasure-backup-copy-retention-runbook.md'
       - 'docs/backup-copy-class-evidence-attestation.md'
+      - 'docs/external-store-inventory-evidence.md'
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
@@ -15,6 +16,8 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
@@ -80,6 +83,7 @@ on:
     paths:
       - 'docs/external-erasure-backup-copy-retention-runbook.md'
       - 'docs/backup-copy-class-evidence-attestation.md'
+      - 'docs/external-store-inventory-evidence.md'
       - 'docs/external-erasure-resource-ledger.md'
       - 'docs/tenant-cache-erasure-adapter.md'
       - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
@@ -90,6 +94,8 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
