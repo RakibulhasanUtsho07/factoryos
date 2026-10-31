@@ -22,6 +22,7 @@ import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from '
 import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import { validateExternalStoreInventoryManifest } from './external-store-inventory-manifest';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
   SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
@@ -1124,16 +1125,23 @@ export class SaasTenantPropagationService {
         throw new ConflictException('External copy-coverage evidence attestation is invalid or its signer is no longer trusted for '
           + category + '/' + kind);
       }
-      // Re-read the same evidence bytes from the read-only deployment evidence root each time.
-      await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+      // Re-read the exact evidence bytes at preflight, recovery and provider checkpoints.
       if (kind === UNCLASSIFIED_EXTERNAL_STORE_KIND) {
         if (decision.disposition !== 'NOT_APPLICABLE') {
           throw new ConflictException('An unclassified external store type was discovered or remains unresolved; classify it and submit a new signed coverage revision before propagation: ' + category);
         }
-        // This catch-all row is an attested complete-inventory assertion, not
-        // an executable provider class. It intentionally has no adapter.
+        const inventoryArtifact = await this.backupEvidenceArtifactReader.readVerifiedArtifact(
+          decision.evidence_reference, decision.evidence_sha256,
+        );
+        try {
+          validateExternalStoreInventoryManifest(inventoryArtifact.bytes, decision.tenant_id, category);
+        } catch {
+          throw new ConflictException('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest for ' + category);
+        }
+        // The catch-all is governance evidence only and never an executable adapter.
         continue;
       }
+      await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
       if (decision.disposition === 'UNRESOLVED') {
         throw new ConflictException('Unresolved external copy class blocks whole-tenant erasure: ' + category + '/' + kind);
       }
