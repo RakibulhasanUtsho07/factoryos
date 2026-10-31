@@ -258,6 +258,8 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: factoryos-evidence-negative-token
+  annotations:
+    kubernetes.io/service-account.name: factoryos-backup-evidence-api
 type: kubernetes.io/service-account-token
 SECRET
 
