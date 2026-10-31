@@ -121,6 +121,19 @@ describe('external-store inventory manifest', () => {
       .toThrow(/trust is not configured/);
   });
 
+  it('rejects collector receipts older than 24 hours before manifest generation', () => {
+    const base = manifest();
+    const staleSources = base.sources.map((source, index) => index === 0
+      ? {
+        ...source,
+        started_at: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+        completed_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      } : source);
+    expect(() => validateExternalStoreInventoryManifest(
+      Buffer.from(JSON.stringify({ ...base, sources: staleSources })), tenant, 'BUSINESS_DATA',
+    )).toThrow(/within 24 hours before manifest generation/);
+  });
+
   it('rejects source receipt tampering and replay into another manifest ID', () => {
     const base = manifest();
     const tamperedSources = base.sources.map((source, index) => index === 0
