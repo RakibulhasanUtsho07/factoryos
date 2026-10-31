@@ -92,6 +92,10 @@ jobs:
       CANDIDATE_MANIFEST_INPUT: ${{ inputs.candidate_migration_manifest }}
       WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }}
       SMOKE_SQL_INPUT: ${{ inputs.restore_smoke_sql }}
+      ERASURE_REPLAY_SQL_INPUT: ${{ vars.FACTORYOS_DR_ERASURE_REPLAY_SQL_PATH }}
+      ERASURE_VERIFY_SQL_INPUT: ${{ vars.FACTORYOS_DR_ERASURE_VERIFY_SQL_PATH }}
+      ERASURE_LEDGER_REFERENCE_INPUT: ${{ vars.FACTORYOS_DR_ERASURE_LEDGER_REFERENCE }}
+      ERASURE_LEDGER_SHA256_INPUT: ${{ vars.FACTORYOS_DR_ERASURE_LEDGER_SHA256 }}
       EVENT_TIME_INPUT: ${{ inputs.simulated_event_time_utc }}
       OPERATOR_INPUT: ${{ github.actor }}
       APPROVER_INPUT: ${{ inputs.approver }}
@@ -146,6 +150,14 @@ jobs:
           [[ ! -e "$BACKUP_OUTPUT_INPUT.sha256" && ! -L "$BACKUP_OUTPUT_INPUT.sha256" ]] || { echo "::error::backup checksum output already exists"; exit 1; }
           [[ ! -e "$EVIDENCE_OUTPUT_INPUT" && ! -L "$EVIDENCE_OUTPUT_INPUT" ]] || { echo "::error::evidence output already exists"; exit 1; }
           [[ -f "$CANDIDATE_MANIFEST_INPUT" && -f "$WATERMARK_SQL_INPUT" && -f "$SMOKE_SQL_INPUT" ]] || { echo "::error::candidate manifest, watermark SQL and smoke SQL must exist at the candidate SHA"; exit 1; }
+          [[ "$ERASURE_REPLAY_SQL_INPUT" == /* && -f "$ERASURE_REPLAY_SQL_INPUT" && -r "$ERASURE_REPLAY_SQL_INPUT" && ! -L "$ERASURE_REPLAY_SQL_INPUT" ]] || { echo "::error::erasure replay SQL path must be an absolute readable regular file on the protected runner"; exit 1; }
+          [[ "$ERASURE_VERIFY_SQL_INPUT" == /* && -f "$ERASURE_VERIFY_SQL_INPUT" && -r "$ERASURE_VERIFY_SQL_INPUT" && ! -L "$ERASURE_VERIFY_SQL_INPUT" ]] || { echo "::error::independent erasure verification SQL path must be an absolute readable regular file on the protected runner"; exit 1; }
+          replay_mode="$(stat -c '%a' -- "$ERASURE_REPLAY_SQL_INPUT")"
+          verify_mode="$(stat -c '%a' -- "$ERASURE_VERIFY_SQL_INPUT")"
+          (( (8#$replay_mode & 0022) == 0 && (8#$verify_mode & 0022) == 0 )) || { echo "::error::erasure replay SQL files must not be group/world writable"; exit 1; }
+          [[ "$(readlink -f -- "$ERASURE_REPLAY_SQL_INPUT")" != "$(readlink -f -- "$ERASURE_VERIFY_SQL_INPUT")" ]] || { echo "::error::replay and verification SQL must be separate files"; exit 1; }
+          [[ "$ERASURE_LEDGER_REFERENCE_INPUT" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$ ]] || { echo "::error::erasure ledger reference must be an opaque safe identifier"; exit 1; }
+          [[ "$ERASURE_LEDGER_SHA256_INPUT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::erasure ledger SHA-256 must be 64 lowercase hexadecimal characters"; exit 1; }
           [[ "$EVENT_TIME_INPUT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || { echo "::error::event time must be UTC RFC3339 ending in Z"; exit 1; }
           if [[ "$TARGETS_APPROVED_INPUT" == "true" ]]; then
             [[ "$RPO_TARGET_INPUT" =~ ^[0-9]+$ && "$RTO_TARGET_INPUT" =~ ^[0-9]+$ ]] || { echo "::error::approved RPO/RTO targets must be provided in seconds"; exit 1; }
@@ -186,6 +198,10 @@ jobs:
           FACTORYOS_RECOVERY_RPO_TARGET_SECONDS="$RPO_TARGET_INPUT" \
           FACTORYOS_RECOVERY_RTO_TARGET_SECONDS="$RTO_TARGET_INPUT" \
           FACTORYOS_CANDIDATE_SHA="$CANDIDATE_SHA_INPUT" \
+          FACTORYOS_RESTORE_ERASURE_REPLAY_SQL="$ERASURE_REPLAY_SQL_INPUT" \
+          FACTORYOS_RESTORE_ERASURE_VERIFY_SQL="$ERASURE_VERIFY_SQL_INPUT" \
+          FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE="$ERASURE_LEDGER_REFERENCE_INPUT" \
+          FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256="$ERASURE_LEDGER_SHA256_INPUT" \
           bash scripts/recovery/postgres-backup-restore-rehearsal.sh
 
       - name: Print receipt location and checksum without exposing database contents
