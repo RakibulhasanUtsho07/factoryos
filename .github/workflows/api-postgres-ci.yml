@@ -717,6 +717,8 @@ jobs:
           assert.equal(receipt.verification.erasureReplayLedgerReference, 'ci-erasure-ledger-fixture-v1');
           assert.equal(receipt.verification.erasureReplayLedgerSha256, process.env.FACTORYOS_CI_EXPECTED_ERASURE_LEDGER_SHA256);
           assert.equal(receipt.verification.erasureReplayRequests, 1);
+          assert.equal(receipt.verification.erasureVerificationRequests, 1);
+          assert.equal(receipt.verification.erasureVerificationResiduals, 0);
           assert.equal(receipt.verification.erasureReplayResiduals, 0);
           assert.equal(receipt.verification.erasureVerificationMethod, 'INDEPENDENT_READ_ONLY');
           assert.match(receipt.verification.erasureReplaySqlSha256, /^[a-f0-9]{64}$/);
