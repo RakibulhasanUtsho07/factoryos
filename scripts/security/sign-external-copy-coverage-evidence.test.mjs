@@ -24,7 +24,7 @@ function completeInventoryEvidence(categoryCode = 'BUSINESS_DATA') {
   };
   const scopeSha256 = createHash('sha256').update(JSON.stringify(scope), 'utf8').digest('hex');
   return Buffer.from(JSON.stringify({
-    schema: 'factoryos.external-store-inventory/v1',
+    schema: 'factoryos.external-store-inventory/v2',
     tenant_id: tenantId,
     category_code: categoryCode,
     generated_at: now,
