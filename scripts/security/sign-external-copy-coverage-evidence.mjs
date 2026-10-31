@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, createPrivateKey, sign } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 
 const STORE_KINDS = new Set([
@@ -17,6 +17,9 @@ const INVENTORY_STORE_KINDS = new Set([
 ]);
 const SAFE_INVENTORY_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
+const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function validateExternalInventoryManifest(bytes, body, tenantId) {
   if (body.store_kind !== 'UNCLASSIFIED_EXTERNAL_STORE' || body.disposition !== 'NOT_APPLICABLE') return;
@@ -28,7 +31,10 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)
     || manifest.schema !== 'factoryos.external-store-inventory/v2'
     || typeof manifest.tenant_id !== 'string' || manifest.tenant_id.toLowerCase() !== tenantId.toLowerCase()
-    || manifest.category_code !== body.category_code) fail('schema, tenant or category mismatch');
+    || manifest.category_code !== body.category_code
+    || typeof manifest.manifest_id !== 'string' || !UUID.test(manifest.manifest_id)) {
+    fail('schema, tenant, category or manifest ID mismatch');
+  }
   const now = Date.now();
   const validTime = (value) => {
     if (typeof value !== 'string' || !value.trim()) return null;
@@ -59,7 +65,40 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
   if (!Array.isArray(manifest.sources) || manifest.sources.length !== INVENTORY_SOURCE_KINDS.length) {
     fail('required discovery source set is incomplete');
   }
+  const rawTrust = process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+  if (!rawTrust?.trim() || rawTrust.length > 256 * 1024) {
+    fail('independent source receipt trust is not configured or exceeds the size limit');
+  }
+  let parsedTrust;
+  try { parsedTrust = JSON.parse(rawTrust); } catch { fail('source receipt trusted-key configuration is invalid'); }
+  if (!Array.isArray(parsedTrust) || parsedTrust.length < 1 || parsedTrust.length > 200) {
+    fail('source receipt trusted-key configuration is invalid');
+  }
+  const trustedKeys = new Map();
+  for (const entry of parsedTrust) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+      || typeof entry.keyId !== 'string' || !KEY_ID.test(entry.keyId)
+      || typeof entry.ownerReference !== 'string' || !SAFE_INVENTORY_REFERENCE.test(entry.ownerReference)
+      || entry.ownerReference.includes('://') || /(secret|password|credential|access[-_]?key|token)/i.test(entry.ownerReference)
+      || !Array.isArray(entry.sourceKinds) || entry.sourceKinds.length < 1
+      || entry.sourceKinds.some((kind) => !INVENTORY_SOURCE_KINDS.includes(kind))
+      || new Set(entry.sourceKinds).size !== entry.sourceKinds.length
+      || typeof entry.publicKeyPem !== 'string' || entry.publicKeyPem.length > 4096
+      || !entry.publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
+      || entry.publicKeyPem.includes('PRIVATE KEY') || trustedKeys.has(entry.keyId)) {
+      fail('source receipt trusted-key configuration is invalid');
+    }
+    try {
+      const publicKey = createPublicKey(entry.publicKeyPem);
+      if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('Ed25519 is required');
+    } catch {
+      fail('source receipt trusted-key configuration is invalid');
+    }
+    trustedKeys.set(entry.keyId, entry);
+  }
+
   const seen = new Set();
+  const collectionRuns = new Set();
   for (const source of manifest.sources) {
     if (!source || typeof source !== 'object' || Array.isArray(source)
       || !INVENTORY_SOURCE_KINDS.includes(source.source_kind) || seen.has(source.source_kind)) {
@@ -68,15 +107,55 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
     seen.add(source.source_kind);
     if (typeof source.source_reference !== 'string' || !SAFE_INVENTORY_REFERENCE.test(source.source_reference)
       || source.source_reference.includes('://') || /(secret|password|credential|access[-_]?key|token)/i.test(source.source_reference)
+      || typeof source.collection_run_reference !== 'string' || !SAFE_INVENTORY_REFERENCE.test(source.collection_run_reference)
+      || collectionRuns.has(source.collection_run_reference)
       || source.status !== 'COMPLETE' || source.pagination_exhausted !== true
       || !Number.isSafeInteger(source.pages_fetched) || source.pages_fetched < 1 || source.pages_fetched > 100000
       || !Number.isSafeInteger(source.item_count) || source.item_count < 0
       || typeof source.result_sha256 !== 'string' || !SHA256.test(source.result_sha256)
-      || source.scope_sha256 !== scopeDigest) fail('discovery source is incomplete or not bound to the declared scope');
+      || source.scope_sha256 !== scopeDigest
+      || typeof source.attestation_key_id !== 'string' || !KEY_ID.test(source.attestation_key_id)
+      || typeof source.attestation_owner_reference !== 'string' || !SAFE_INVENTORY_REFERENCE.test(source.attestation_owner_reference)
+      || typeof source.attestation_signature !== 'string' || !SIGNATURE.test(source.attestation_signature)) {
+      fail('discovery source is incomplete or not bound to the declared scope');
+    }
+    collectionRuns.add(source.collection_run_reference);
     const startedAt = validTime(source.started_at);
     const completedAt = validTime(source.completed_at);
     if (startedAt === null || completedAt === null || completedAt < startedAt) {
       fail('discovery source timestamps are invalid or incomplete');
+    }
+    const trustedKey = trustedKeys.get(source.attestation_key_id);
+    if (!trustedKey || trustedKey.ownerReference !== source.attestation_owner_reference
+      || !trustedKey.sourceKinds.includes(source.source_kind)) {
+      fail('source receipt signer is not independently trusted for ' + source.source_kind);
+    }
+    const signature = Buffer.from(source.attestation_signature, 'base64url');
+    if (signature.length !== 64 || signature.toString('base64url') !== source.attestation_signature) {
+      fail('source receipt signature is not canonical');
+    }
+    const receiptClaims = JSON.stringify({
+      schema: 'factoryos.external-store-inventory-source-receipt/v1',
+      attestationKeyId: source.attestation_key_id,
+      attestationOwnerReference: source.attestation_owner_reference,
+      tenantId: tenantId.toLowerCase(),
+      categoryCode: body.category_code,
+      manifestId: manifest.manifest_id.toLowerCase(),
+      sourceKind: source.source_kind,
+      sourceReference: source.source_reference,
+      collectionRunReference: source.collection_run_reference,
+      status: source.status,
+      paginationExhausted: source.pagination_exhausted,
+      pagesFetched: source.pages_fetched,
+      itemCount: source.item_count,
+      resultSha256: source.result_sha256,
+      scopeSha256: source.scope_sha256,
+      startedAt: source.started_at,
+      completedAt: source.completed_at,
+    });
+    if (!verify(null, Buffer.from(receiptClaims, 'utf8'),
+      createPublicKey(trustedKey.publicKeyPem), signature)) {
+      fail('source receipt signature does not match its claims for ' + source.source_kind);
     }
   }
   if (INVENTORY_SOURCE_KINDS.some((kind) => !seen.has(kind))) fail('required discovery source is missing');
