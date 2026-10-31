@@ -35,9 +35,9 @@ test('Kubernetes admission policy binds the API identity and evidence root to a 
     "volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'",
     'has(volume.persistentVolumeClaim.readOnly) && volume.persistentVolumeClaim.readOnly == true',
     'object.spec.containers.all(container',
-    'object.spec.initContainers.all(container',
-    'object.spec.ephemeralContainers.all(container',
-    'container.volumeDevices.all(device',
+    'object.spec.?initContainers.orValue([]).all(container',
+    'object.spec.?ephemeralContainers.orValue([]).all(container',
+    'container.?volumeDevices.orValue([]).all(device',
     'container.securityContext.runAsNonRoot == true',
     'container.securityContext.runAsUser > 0',
     'container.securityContext.allowPrivilegeEscalation == false',
@@ -47,8 +47,8 @@ test('Kubernetes admission policy binds the API identity and evidence root to a 
     'container.securityContext.capabilities.add.size() == 0',
     "!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked'",
     "container.securityContext.seccompProfile.type == 'RuntimeDefault'",
-    'object.spec.initContainers.all(container',
-    'container.volumeMounts.all(mount,',
+    'object.spec.?initContainers.orValue([]).all(container',
+    'container.?volumeMounts.orValue([]).all(mount,',
     'has(mount.readOnly) && mount.readOnly == true',
   ]) assert.ok(policy.includes(required), 'policy missing check: ' + required);
 });
