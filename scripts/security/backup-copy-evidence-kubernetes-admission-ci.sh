@@ -233,6 +233,57 @@ expect_denied \
   "Init containers must not attach writable volume mounts" \
   kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/writable-init-pod.yaml"
 
+cat > "$WORK_DIR/writable-init-scratch-pod.yaml" <<'POD'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: factoryos-evidence-negative-writable-init-scratch
+spec:
+  serviceAccountName: factoryos-backup-evidence-api
+  automountServiceAccountToken: false
+  volumes:
+    - name: evidence
+      persistentVolumeClaim:
+        claimName: factoryos-backup-evidence
+        readOnly: true
+    - name: scratch
+      emptyDir: {}
+  initContainers:
+    - name: writable-scratch-alias
+      image: registry.k8s.io/pause:3.10
+      securityContext: &restricted
+        runAsNonRoot: true
+        runAsUser: 10001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop: ["ALL"]
+          add: []
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+          readOnly: false
+  containers:
+    - name: api
+      image: registry.k8s.io/pause:3.10
+      env:
+        - name: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR
+          value: /evidence
+      securityContext: *restricted
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence
+          readOnly: true
+POD
+
+expect_denied \
+  "writable init-container scratch volume" \
+  "Init containers must not attach writable volume mounts" \
+  kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/writable-init-scratch-pod.yaml"
+
 cat > "$WORK_DIR/block-device-init-pod.yaml" <<'POD'
 apiVersion: v1
 kind: Pod

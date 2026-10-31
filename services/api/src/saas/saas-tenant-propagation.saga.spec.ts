@@ -396,6 +396,18 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
+  it('blocks propagation when the signed unclassified-store catch-all decision is missing', async () => {
+    const index = externalCopyCoverageRows.findIndex((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (index < 0) throw new Error('Unclassified external-store coverage fixture is missing');
+    externalCopyCoverageRows.splice(index, 1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Missing complete-inventory evidence must block propagation',
+      idempotency_key: 'external-propagation-unclassified-store-coverage-missing',
+    })).rejects.toThrow('External propagation requires current independently reviewed signed copy-class coverage for BUSINESS_DATA/UNCLASSIFIED_EXTERNAL_STORE');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
   it('blocks propagation when the complete-inventory sentinel reports a newly discovered unknown store', async () => {
     const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
     if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
