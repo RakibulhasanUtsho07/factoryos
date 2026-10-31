@@ -65,6 +65,8 @@ function sampleEvidence() {
       erasureReplayLedgerWatermarkUtc: '2026-10-20T10:01:00Z',
       erasureReplayRequests: 3,
       erasureReplayResiduals: 0,
+      erasureVerificationRequests: 3,
+      erasureVerificationResiduals: 0,
       erasureReplaySqlSha256: 'e'.repeat(64),
       erasureVerificationSqlSha256: 'f'.repeat(64),
       erasureVerificationMethod: 'INDEPENDENT_READ_ONLY',
@@ -117,6 +119,8 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_ERASURE_LEDGER_WATERMARK_UTC: '2026-10-20T10:01:00Z',
       FACTORYOS_DR_ERASURE_REPLAYED_REQUESTS: '3',
       FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS: '0',
+      FACTORYOS_DR_ERASURE_VERIFIED_REQUESTS: '3',
+      FACTORYOS_DR_ERASURE_VERIFICATION_RESIDUALS: '0',
       FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256: 'e'.repeat(64),
       FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256: 'f'.repeat(64),
       FACTORYOS_DR_ERASURE_VERIFY_METHOD: 'INDEPENDENT_READ_ONLY',
@@ -143,6 +147,8 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.verification.erasureReplayLedgerSha256, 'd'.repeat(64));
     assert.equal(receipt.verification.erasureReplayRequests, 3);
     assert.equal(receipt.verification.erasureReplayResiduals, 0);
+    assert.equal(receipt.verification.erasureVerificationRequests, 3);
+    assert.equal(receipt.verification.erasureVerificationResiduals, 0);
     assert.equal(receipt.candidate.migrationManifestMode, 'PENDING');
     assert.equal(receipt.candidate.migrationManifestSha256, 'b'.repeat(64));
     assert.equal(receipt.candidate.migrationCount, 8);
