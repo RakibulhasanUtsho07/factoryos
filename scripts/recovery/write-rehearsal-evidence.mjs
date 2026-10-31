@@ -72,6 +72,8 @@ const receipt = {
     erasureReplayLedgerWatermarkUtc: required('FACTORYOS_DR_ERASURE_LEDGER_WATERMARK_UTC'),
     erasureReplayRequests: numberOrNull('FACTORYOS_DR_ERASURE_REPLAYED_REQUESTS'),
     erasureReplayResiduals: numberOrNull('FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS'),
+    erasureVerificationRequests: numberOrNull('FACTORYOS_DR_ERASURE_VERIFIED_REQUESTS'),
+    erasureVerificationResiduals: numberOrNull('FACTORYOS_DR_ERASURE_VERIFICATION_RESIDUALS'),
     erasureReplaySqlSha256: required('FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256'),
     erasureVerificationSqlSha256: required('FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256'),
     erasureVerificationMethod: required('FACTORYOS_DR_ERASURE_VERIFY_METHOD'),
