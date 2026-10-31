@@ -32,7 +32,11 @@ for policy_name in \
   factoryos-backup-evidence-api-service-account \
   factoryos-backup-evidence-api-token-secret \
   factoryos-backup-evidence-namespace-lock; do
-  kubectl wait --for=condition=Accepted "validatingadmissionpolicy/$policy_name" --timeout=120s
+  if ! kubectl wait --for=condition=Accepted "validatingadmissionpolicy/$policy_name" --timeout=120s; then
+    echo "ValidatingAdmissionPolicy did not reach Accepted: $policy_name" >&2
+    kubectl get validatingadmissionpolicy "$policy_name" -o yaml >&2 || true
+    exit 1
+  fi
 done
 
 echo "Activating Deny bindings before enrolling the namespace"
