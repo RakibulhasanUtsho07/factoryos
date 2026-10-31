@@ -1,0 +1,80 @@
+name: Backup Evidence Kubernetes Admission
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/security/backup-copy-evidence-*.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/require-supported-kubernetes-version.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.test.mjs'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - '.github/workflows/backup-evidence-kubernetes-admission-ci.yml'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'deploy/security/backup-copy-evidence-*.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/require-supported-kubernetes-version.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.test.mjs'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - '.github/workflows/backup-evidence-kubernetes-admission-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-evidence-kubernetes-admission-\${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission:
+    name: Kubernetes \${{ matrix.minor }} live admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - minor: "1.35"
+            node-image: "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0"
+          - minor: "1.36"
+            node-image: "kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed"
+          - minor: "1.37"
+            node-image: "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go for the pinned kind release
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+
+      - name: Install pinned kind release
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          kind version
+
+      - name: Create disposable Kubernetes cluster
+        env:
+          KIND_NODE_IMAGE: \${{ matrix.node-image }}
+        run: |
+          kind create cluster \
+            --name factoryos-backup-evidence \
+            --image "$KIND_NODE_IMAGE" \
+            --wait 120s
+          kubectl version -o json
+          kubectl get --raw='/readyz?verbose'
+
+      - name: Run Kubernetes API server admission acceptance
+        run: |
+          node --test scripts/security/require-supported-kubernetes-version.test.mjs
+          bash -n scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh
+          bash scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh
+
+      - name: Delete disposable Kubernetes cluster
+        if: always()
+        run: kind delete cluster --name factoryos-backup-evidence
