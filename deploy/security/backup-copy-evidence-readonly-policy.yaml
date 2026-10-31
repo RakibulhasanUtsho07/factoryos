@@ -98,19 +98,31 @@ spec:
         (
           !has(object.spec.initContainers) ||
           object.spec.initContainers.all(container,
-            !has(container.volumeMounts) ||
-            container.volumeMounts.all(mount,
-              !object.spec.volumes.exists(volume,
-                volume.name == mount.name &&
-                has(volume.persistentVolumeClaim) &&
-                volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
-              ) ||
-              (
-                has(mount.readOnly) &&
-                mount.readOnly == true &&
-                !has(mount.subPath) &&
-                !has(mount.subPathExpr) &&
-                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+            (
+              !has(container.volumeMounts) ||
+              container.volumeMounts.all(mount,
+                !object.spec.volumes.exists(volume,
+                  volume.name == mount.name &&
+                  has(volume.persistentVolumeClaim) &&
+                  volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+                ) ||
+                (
+                  has(mount.readOnly) &&
+                  mount.readOnly == true &&
+                  !has(mount.subPath) &&
+                  !has(mount.subPathExpr) &&
+                  (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+                )
+              )
+            ) &&
+            (
+              !has(container.volumeDevices) ||
+              !container.volumeDevices.exists(device,
+                object.spec.volumes.exists(volume,
+                  volume.name == device.name &&
+                  has(volume.persistentVolumeClaim) &&
+                  volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence'
+                )
               )
             )
           )
