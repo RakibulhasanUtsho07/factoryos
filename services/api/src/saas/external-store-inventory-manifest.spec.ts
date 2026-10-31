@@ -117,7 +117,7 @@ describe('external-store inventory manifest', () => {
     const bytes = Buffer.from(JSON.stringify(manifest()), 'utf8');
     expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), '[]'))
       .toThrow(/trusted-key configuration is invalid/);
-    expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), undefined))
+    expect(() => validateExternalStoreInventoryManifest(bytes, tenant, 'BUSINESS_DATA', Date.now(), ''))
       .toThrow(/trust is not configured/);
   });
 
