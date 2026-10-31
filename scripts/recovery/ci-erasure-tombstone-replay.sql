@@ -3,10 +3,10 @@
 -- Production replay SQL is operator/provider-specific and must consume the approved external ledger.
 WITH tombstones AS (
   SELECT fixture_id, tenant_id
-  FROM public.factoryos_ci_erasure_replay_ledger
+  FROM factoryos.factoryos_ci_erasure_replay_ledger
   WHERE tombstone_id = 'ci-tombstone-after-snapshot-001'
 ), deleted AS (
-  DELETE FROM public.factoryos_ci_erasure_replay_fixture AS fixture
+  DELETE FROM factoryos.factoryos_ci_erasure_replay_fixture AS fixture
   USING tombstones
   WHERE fixture.fixture_id = tombstones.fixture_id
     AND fixture.tenant_id = tombstones.tenant_id
