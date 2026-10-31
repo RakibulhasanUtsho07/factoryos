@@ -74,6 +74,7 @@ const receipt = {
     erasureReplayResiduals: numberOrNull('FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS'),
     erasureReplaySqlSha256: required('FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256'),
     erasureVerificationSqlSha256: required('FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256'),
+    erasureVerificationMethod: required('FACTORYOS_DR_ERASURE_VERIFY_METHOD'),
     migrationRecoveryStatus: required('FACTORYOS_DR_FAILURE_RECOVERY_STATUS') ?? required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
   },
   measured: {
