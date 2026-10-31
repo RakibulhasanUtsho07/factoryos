@@ -44,6 +44,36 @@ The production workflow uses `FACTORYOS_MIGRATION_MANIFEST_MODE=PENDING`. After 
 
 The PostgreSQL CI workflow has a separate `IDEMPOTENT_REPLAY` mode that re-applies only the repository's explicitly listed late migrations already recorded in `schema_migrations`. This is an idempotency check for CI, not an acceptable production pending-migration manifest and not proof that every migration is safe to replay. The script's deliberate division-by-zero probe demonstrates transactional rollback of the fixture DDL/DML only; inspect each real migration's locking, transactionality, irreversible changes and external effects, and pre-approve its forward-fix/restore decision.
 
+### Restore-time tenant-erasure tombstone replay
+
+A database snapshot can predate a tenant erasure that completed after that snapshot. Restoring the database without replaying the authoritative erasure/tombstone ledger can therefore reintroduce tenant data. In `RELEASE_GATE` mode, the rehearsal now runs the reviewed replay procedure against the isolated restore target **after candidate migrations and before schema smoke, application smoke, or API readiness**. A replay failure leaves the target quarantined and prevents technical PASS.
+
+Configure these protected `production-dr-rehearsal` Environment variables on the approved recovery runner:
+
+- `FACTORYOS_DR_ERASURE_REPLAY_SQL_PATH`: absolute path to a reviewed, idempotent SQL replay script.
+- `FACTORYOS_DR_ERASURE_VERIFY_SQL_PATH`: absolute path to a separate independent read-only verification SQL script.
+- `FACTORYOS_DR_ERASURE_LEDGER_REFERENCE`: opaque identifier for the externally maintained, immutable erasure ledger snapshot.
+- `FACTORYOS_DR_ERASURE_LEDGER_SHA256`: SHA-256 digest of the exact approved ledger snapshot.
+
+The SQL files must be regular files on the protected runner, readable by the runner identity, not symlinks, and not group/world writable. The replay and verification paths must resolve to different files. Do not commit provider credentials, customer data or the external ledger payload. The operator must validate the ledger's signature/source, completeness and digest against its authoritative control plane before dispatch; the workflow records the supplied digest but does not independently authenticate that external authority.
+
+The replay SQL receives these `psql` variables: `candidate_sha`, `target_database_identity`, `snapshot_watermark_utc`, `incident_cutoff_utc`, `ledger_reference`, and `ledger_sha256`. It must apply the erasure tombstones absent from the restored snapshot, idempotently, through a ledger watermark that covers the incident cutoff. It must emit exactly one line for each marker:
+
+~~~text
+FACTORYOS_ERASURE_REPLAY_STATUS=PASS
+FACTORYOS_ERASURE_LEDGER_SHA256=<the supplied digest>
+FACTORYOS_ERASURE_LEDGER_REFERENCE=<the supplied opaque ledger reference>
+FACTORYOS_ERASURE_REPLAY_CANDIDATE_SHA=<the exact candidate SHA>
+FACTORYOS_ERASURE_REPLAY_TARGET_IDENTITY=<the exact restore target identity>
+FACTORYOS_ERASURE_LEDGER_WATERMARK_UTC=<UTC RFC3339 watermark>
+FACTORYOS_ERASURE_REPLAYED_REQUESTS=<non-negative integer>
+FACTORYOS_ERASURE_REPLAY_RESIDUALS=0
+~~~
+
+The ledger watermark must be at or after the incident cutoff and not in the future. The independent verifier runs in a single PostgreSQL transaction explicitly switched to `READ ONLY` (not only a client-side convention) and must emit exactly one each of `FACTORYOS_ERASURE_VERIFY_STATUS=PASS`, `FACTORYOS_ERASURE_VERIFY_LEDGER_SHA256`, `FACTORYOS_ERASURE_VERIFY_LEDGER_REFERENCE`, `FACTORYOS_ERASURE_VERIFY_CANDIDATE_SHA`, `FACTORYOS_ERASURE_VERIFY_TARGET_IDENTITY`, `FACTORYOS_ERASURE_VERIFY_REPLAYED_REQUESTS`, `FACTORYOS_ERASURE_VERIFY_RESIDUALS=0`, and `FACTORYOS_ERASURE_VERIFY_METHOD=INDEPENDENT_READ_ONLY`. All digest, candidate, target and request-count values must match the replay receipt. The replay and verifier SQL file hashes, ledger reference/digest/watermark, replay request count, independently observed verification request count, both residual counts and `INDEPENDENT_READ_ONLY` verification method are included in the technical receipt; a PASS operator sign-off rejects missing evidence or any residual.
+
+This is a restore-time database reconciliation hook, not a PostgreSQL WAL/PITR erasure adapter, backup-vault purge, or proof that S3, Redis persistence, snapshots, replicas, or external DR copies have been deleted. Provider-specific external copies still require their own reviewed inventory, retention/hold disposition, deletion/expiry procedure and independent residual verification. A successful replay is only as complete as the independently authenticated ledger and the approved SQL procedure.
+
 ## 3. RPO and RTO are measurements first
 
 The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the explicit incident/cutoff time and the restored durable-write watermark. Observed RTO is measured from that same incident/cutoff epoch until candidate migrations, failed-transaction recovery, restored-schema/RLS/audit checks, and candidate API readiness have all completed. The helper also reports restore-and-verification-only duration separately. The supplied cutoff must not be in the future. A probe query that returns only the wall clock is not an acceptable business watermark.

@@ -7,6 +7,7 @@ import {
 
 import { EntitlementsModule } from './entitlements/entitlements.module';
 import { SaasModule } from './saas/saas.module';
+import { TenantCacheModule } from './saas/tenant-cache.module';
 import { ConfigModule } from '@nestjs/config';
 
 import { AppController } from './app.controller';
@@ -57,6 +58,8 @@ import { ObservabilityModule } from './observability/observability.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+
+    TenantCacheModule,
 
     // ----------------------------------------------------------
     // Database

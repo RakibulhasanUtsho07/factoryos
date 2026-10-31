@@ -1,0 +1,26 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factoryos-backup-evidence-namespace-lock
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["namespaces"]
+        scope: "Cluster"
+  validations:
+    - expression: >-
+        !has(oldObject.metadata.labels) ||
+        !('factoryos.io/backup-evidence-enforcement' in oldObject.metadata.labels) ||
+        oldObject.metadata.labels['factoryos.io/backup-evidence-enforcement'] != 'required' ||
+        (
+          request.operation == 'UPDATE' &&
+          has(object.metadata.labels) &&
+          'factoryos.io/backup-evidence-enforcement' in object.metadata.labels &&
+          object.metadata.labels['factoryos.io/backup-evidence-enforcement'] == 'required'
+        )
+      message: A namespace enrolled in FactoryOS backup-evidence enforcement cannot remove its enforcement label or be deleted through an ordinary Namespace update/delete.
+      reason: Forbidden

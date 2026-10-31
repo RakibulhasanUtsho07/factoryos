@@ -71,10 +71,42 @@ test('production review artifacts do not claim an independent reviewer or comple
   assert.match(record, /release_approved: false|release approved: no/i);
 });
 
+test('production backup evidence policy is installed as a deny binding in selected namespaces', async () => {
+  const policy = await read('deploy/security/backup-copy-evidence-readonly-policy.yaml');
+  const binding = await read('deploy/security/backup-copy-evidence-readonly-binding.yaml');
+  assert.match(policy, /kind: ValidatingAdmissionPolicy/);
+  assert.match(policy, /failurePolicy: Fail/);
+  assert.match(policy, /mount\.readOnly == true/);
+  assert.match(policy, /volumeMounts\.filter/);
+  assert.match(policy, /volume\.persistentVolumeClaim/);
+  assert.match(policy, /factoryos-backup-evidence/);
+  assert.match(policy, /persistentVolumeClaim.readOnly == true/);
+  assert.match(policy, /variables\.ephemeralContainers\.all/);
+  assert.match(policy, /variables\.initContainers\.all/);
+  assert.match(policy, /has\(object\.spec\.initContainers\) \? object\.spec\.initContainers : object\.spec\.\?initContainers\.orValue\(\[\]\)/);
+  assert.match(binding, /kind: ValidatingAdmissionPolicyBinding/);
+  assert.match(binding, /validationActions:\s*\n\s*- Deny/);
+  assert.match(binding, /factoryos\.io\/backup-evidence-enforcement: required/);
+});
+
+test('backup evidence policy covers ephemeral container injection and namespace lock', async () => {
+  const podPolicy = await read('deploy/security/backup-copy-evidence-readonly-policy.yaml');
+  const namespacePolicy = await read('deploy/security/backup-copy-evidence-namespace-lock-policy.yaml');
+  const namespaceBinding = await read('deploy/security/backup-copy-evidence-namespace-lock-binding.yaml');
+  assert.ok(podPolicy.includes('pods/ephemeralcontainers'));
+  assert.ok(namespacePolicy.includes('operations: ["UPDATE", "DELETE"]'));
+  assert.ok(namespacePolicy.includes("request.operation == 'UPDATE'"));
+  assert.match(namespaceBinding, /policyName: factoryos-backup-evidence-namespace-lock/);
+  assert.match(namespaceBinding, /- Deny/);
+});
 test('security baseline and egress YAML parse successfully', async () => {
   for (const path of [
     'deploy/security/production-security-baseline.yml',
     'deploy/security/network-egress-policy.yml',
+    'deploy/security/backup-copy-evidence-readonly-policy.yaml',
+    'deploy/security/backup-copy-evidence-readonly-binding.yaml',
+    'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml',
+    'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml',
   ]) {
     await prettier.format(await read(path), { parser: 'yaml' });
   }

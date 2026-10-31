@@ -143,6 +143,62 @@ describe('SaasTenantRetentionService', () => {
     expect(audit.recordWithClient).not.toHaveBeenCalled();
   });
 
+  it('rejects an overlapping legal hold while external erasure propagation is running', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenant }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ categories: ['BUSINESS_DATA'] }] });
+
+    await expect(service.createLegalHold(tenant, actor, {
+      categories: ['BUSINESS_DATA'],
+      case_reference: 'CASE-BLOCKED-160',
+      reason: 'Preserve records for a new case',
+      idempotency_key: 'hold-blocked-running-v1',
+    } as never)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(clientQuery.mock.calls.some((call) =>
+      String(call[0]).includes('INSERT INTO saas_tenant_data_legal_holds'))).toBe(false);
+    expect(audit.recordWithClient).not.toHaveBeenCalled();
+  });
+
+  it('allows a non-overlapping legal hold while another category is propagating', async () => {
+    const hold = {
+      id: 'a4f8f4b8-a72b-4d28-b2f2-9b35ac55c1f1',
+      tenant_id: tenant,
+      categories: ['EVIDENCE'],
+      status: 'ACTIVE',
+      case_reference: 'CASE-EVIDENCE-160',
+      reason: 'Preserve independent evidence',
+      idempotency_key: 'hold-evidence-running-v1',
+      request_hash: 'a'.repeat(64),
+      created_by_user_id: actor,
+      created_at: '2026-10-28T10:00:00.000Z',
+      released_by_user_id: null,
+      released_at: null,
+      release_reason: null,
+      row_version: 1,
+      updated_at: '2026-10-28T10:00:00.000Z',
+    };
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenant }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ categories: ['BUSINESS_DATA'] }] })
+      .mockResolvedValueOnce({ rows: [hold] });
+
+    const result = await service.createLegalHold(tenant, actor, {
+      categories: ['EVIDENCE'],
+      case_reference: 'CASE-EVIDENCE-160',
+      reason: 'Preserve independent evidence',
+      idempotency_key: 'hold-evidence-running-v1',
+    } as never);
+
+    expect(result).toMatchObject({ hold: { categories: ['EVIDENCE'], status: 'ACTIVE' }, replayed: false });
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({ action: 'LEGAL_HOLD_CREATED' }),
+    );
+  });
+
   it('requires a distinct reviewer to release an active legal hold', async () => {
     const hold = {
       id: exportId,

@@ -1,0 +1,227 @@
+# External Erasure: Backup and Historical-Copy Retention Runbook
+
+**Status:** Operational acceptance contract; not a record of a completed production purge.  
+**Release gate:** AS-137 / NFR-PROD-14 remains **PARTIAL** until every required copy class has a reviewed adapter or provider procedure, approved retention policy, and controlled staging evidence.
+
+## Purpose and boundary
+
+The live-keyspace erasure adapters do not prove that historical or secondary copies have been removed. In particular, Redis `BGREWRITEAOF` only addresses the current AOF file after the adapter deletes its planned keys; it is not evidence that AOF backups, RDB files, volume snapshots, replicas, point-in-time recovery archives, or exported copies have been purged. Likewise, deleting an object from the configured WMS POD bucket does not by itself prove that provider-managed snapshots or other systems no longer contain it.
+
+This runbook governs discovery, retention decisions, deletion, verification, and evidence for historical and secondary copies. It does not authorize changing legal retention policy, bypassing a legal hold, or claiming provider behavior that has not been independently established.
+
+## Copy inventory
+
+Before enabling a store/category target for production erasure, the data owner and infrastructure owner must map the data lineage and enumerate applicable copy classes. The inventory must explicitly assess:
+
+1. **Redis persistence:** current AOF, AOF rewrite/temp files, retained AOF backups, RDB snapshots, managed-service backups, point-in-time recovery archives, and any copied persistence files.
+2. **Infrastructure copies:** filesystem snapshots, block-volume snapshots, disk images, crash-consistent copies, immutable/WORM snapshots, backup vault copies, and disaster-recovery copies.
+3. **Replication and failover:** replicas, read replicas, replica snapshots, failover nodes, standby regions, and any service-managed copies not visible in the primary adapter.
+4. **Object storage:** object versions, delete markers, versioned buckets, lifecycle archives, replication targets, backup buckets, and exported/downloaded artifacts.
+5. **Other tenant-derived stores:** legacy/external caches, search indexes, vector stores, learning artifacts, external providers, analytics/materialized views, and copies owned by downstream processors.
+6. **Operational exports:** temporary exports, restore-test data, staging fixtures derived from real data, and administrator-created copies. Synthetic CI fixtures must be identified separately from customer data.
+
+Do not assume a class is absent merely because it is not returned by the live-store adapter. For every class, record one of: supported and enumerated; explicitly not applicable with evidence; or unresolved/unsupported. An unresolved or unenumerated class blocks a whole-tenant **VERIFIED** outcome.
+
+Each copy identity should use a stable opaque provider/resource locator plus an immutable version, snapshot, generation, or backup identifier where available. Record the tenant/request binding, data category, provider and account/region boundary, copy class, policy version, creation/expiry metadata, legal-hold disposition, responsible owner, adapter/procedure version, and evidence reference. Do not put credentials, connection strings, tokens, raw customer payloads, or encryption keys into manifests, logs, tickets, or evidence packs.
+
+## Machine-enforced copy-class coverage
+
+Every requested category must have a current, independently reviewed decision for each required store kind: `OBJECT_STORAGE`, `CACHE`, `SEARCH_INDEX`, `VECTOR_STORE`, `LEARNING_ARTIFACT`, `EXTERNAL_PROVIDER`, `REPLICA`, and `BACKUP`. In addition, every requested category must have a signed `UNCLASSIFIED_EXTERNAL_STORE` catch-all decision. It is a coverage sentinel, not an executable provider adapter: only `NOT_APPLICABLE` is eligible for acceptance, and its evidence must be an exhaustive current inventory signed by the accountable data or infrastructure owner. When an inventory discovers a provider store type outside the catalog, record the sentinel as `UNRESOLVED`; that accepted decision still blocks propagation until the store is classified, a dedicated catalog kind and adapter are implemented, normal store coverage and target evidence are reviewed, and a later sentinel revision attests that no unclassified stores remain. The API and signer reject `SUPPORTED` for the sentinel, the SQL constraint rejects it independently, and propagation rechecks the sentinel at every preflight, resume and provider checkpoint. Submit evidence through `POST /v2/saas/data-retention/external-copy-coverage`, inspect the current category matrix through `GET /v2/saas/data-retention/external-copy-coverage/:categoryCode/current`, and review via `POST /v2/saas/data-retention/external-copy-coverage/:decisionId/review`.
+
+Each decision is revisioned, tenant-scoped, idempotent, digest-bound, and immutable after independent review.
+
+The submission DTO also requires `attestation_key_id`, `attestation_owner_reference` and `attestation_signature`. Generate the API body with `node scripts/security/sign-external-copy-coverage-evidence.mjs --payload <api-body.json> --evidence-file <evidence-pack> --private-key-file <ed25519-private.pem> --tenant-id <tenant-uuid>`. Configure the signer's public key in `FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON` and the deployment-owned read-only evidence directory in `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR`. The signer key must remain with the evidence owner and must never be deployed to the API process. Submission requires an Ed25519 attestation whose canonical v1 claims bind the tenant, category, store kind, disposition, evidence reference/digest/time, data owner, infrastructure owner, policy reference and reason. The signer key must be present in the deployment-controlled trusted-key registry and its owner must match a declared data or infrastructure owner. Evidence bytes must first be staged under the deployment-owned read-only evidence root; the API reads the exact opaque artifact ID, computes SHA-256 itself, and rejects paths/URLs, symlinks, writable files, hard links or paths not verified to be covered by a read-only mount. Independent ACCEPT review rechecks the signer and rereads the same artifact bytes; a caller-supplied digest is not treated as proof by itself. Evidence must be no more than 30 days old at submission and approval; accepted decisions expire within 90 days. Historical unsigned rows remain visible for audit but cannot be accepted or authorize propagation. `SUPPORTED` requires a current active required target/adapter. Every registered target whose categories overlap the erasure request must be active and marked required; an optional or inactive matching target blocks `VERIFIED` rather than being silently ignored. `NOT_APPLICABLE` is consistent only when no category-matching target is registered and must still have evidence plus data-owner, infrastructure-owner and policy references. `UNRESOLVED`, missing, pending, rejected, expired, tampered or contradictory decisions block erasure.
+
+A database-level run fence takes the tenant lock and rejects inserts/updates/deletes to the coverage registry or required-target inventory while any propagation run is `RUNNING`. This closes the check-then-mutate window between an application-side recheck and a provider call; once the run is `PARTIAL` or terminal, reviewers can submit a new revision.
+
+The accepted category/store-kind decisions and target bindings are included in the propagation manifest digest. The service rechecks coverage before adapter preparation/recovery, before mutation, before verification and during finalization under the tenant governance lock. A changed review revision or target inventory blocks additional mutation and prevents a run from reaching `VERIFIED`; a separately reviewed run is required. Human review of a reference/digest is a governance gate, not automatic authentication of source evidence.
+
+## Granular backup copy-class acceptance
+
+The generic `BACKUP` store is not a complete inventory of backup copies. Each requested data category now requires current, independently reviewed evidence for every class below through `/v2/saas/data-retention/backup-copy-classes`.
+
+| Copy class | Scope | Adapter status |
+|---|---|---|
+| `S3_OBJECT_VERSIONS` | Versioned S3 objects and delete markers for the tenant/category prefix | Adapter exists; production acceptance remains disabled |
+| `POSTGRESQL_BASE_BACKUP` | Base/database backups | No reviewed erasure adapter |
+| `POSTGRESQL_WAL_PITR` | WAL archives and point-in-time recovery copies | No reviewed erasure adapter |
+| `REDIS_AOF_BACKUP` | AOF files and exported AOF copies | No reviewed erasure adapter |
+| `REDIS_RDB_BACKUP` | RDB snapshots and exported RDB copies | No reviewed erasure adapter |
+| `FILESYSTEM_SNAPSHOT` | Filesystem snapshots and snapshot-derived copies | No reviewed erasure adapter |
+| `BLOCK_VOLUME_SNAPSHOT` | Volume/block snapshots and clones | No reviewed erasure adapter |
+| `MANAGED_BACKUP_VAULT` | Provider-managed backup vaults and retention copies | No reviewed erasure adapter |
+| `REPLICA_FAILOVER_COPY` | Replica, failover and promoted-copy histories | No reviewed erasure adapter |
+| `EXTERNAL_DR_COPY` | External disaster-recovery copies and secondary sites | No reviewed erasure adapter |
+
+Submit with `POST /v2/saas/data-retention/backup-copy-classes`, inspect the current matrix at `GET /v2/saas/data-retention/backup-copy-classes/:categoryCode/current`, and independently review with `POST /v2/saas/data-retention/backup-copy-classes/:decisionId/review`. Each decision records an evidence reference and digest, data owner, infrastructure owner, policy reference and reason. A reviewer different from the submitter must accept/reject the revision. Evidence older than 30 days is rejected at submission/review; accepted decisions expire within 90 days.
+
+A missing, pending, rejected, expired, unresolved or contradictory row blocks whole-tenant erasure. `S3_OBJECT_VERSIONS` must bind the reviewed `s3.tenant-backup.v1` target. Marking any other class `SUPPORTED` fails closed until a class-specific adapter is implemented and independently accepted. `NOT_APPLICABLE` needs deployment-specific, source-derived evidence; missing integration, configuration or owner response is not proof that the class is absent.
+
+The decisions are tenant-isolated by forced RLS, immutable after review, frozen by the database during `RUNNING` propagation, and bound into the propagation manifest digest. This is an evidence-backed governance control, not automatic discovery of cloud accounts/vaults, and a stored digest does not independently authenticate the source artifact.
+
+## Legal holds and retention policy
+
+- A designated legal/compliance owner must approve the legal basis, jurisdiction, minimum/maximum retention, expiry trigger, deletion method, exception process, and policy version for each copy class before production enforcement.
+- Do **not** invent a universal retention duration. A missing, ambiguous, or unapproved policy means the copy cannot be automatically deleted or declared expired.
+- A matching active legal hold takes precedence over routine erasure for the categories and copies it covers. Mark the specific copy as retained/blocked with a reason and review reference; keep the request incomplete and escalate the overlap. Do not remove or narrow a hold merely to make an erasure pass.
+- If an immutable backup cannot be selectively purged, follow the approved provider-specific retention/cryptographic-erasure policy. Record the enforced expiry and scope, restrict restore/use as policy permits, and schedule a fresh inventory and verification after expiry. Do not treat “will expire later” as “deleted now.”
+- Before any restore or disaster-recovery operation, determine whether it can reintroduce erased tenant data. A restore process must reapply the applicable erasure/tombstone ledger before the restored environment can serve tenant traffic. The `RELEASE_GATE` PostgreSQL rehearsal now blocks restored-schema smoke and API readiness until an externally sourced ledger replay and a separate read-only verification pass; configure the protected runner SQL files and ledger digest as specified in [the DR rehearsal contract](production-disaster-recovery-rehearsal.md#restore-time-tenant-erasure-tombstone-replay). Capture evidence that this control ran successfully. This is still only a PostgreSQL restore reconciliation step; it does not purge or verify external provider backups.
+- Retention policy changes do not retroactively rewrite completed evidence. Preserve the policy version and approval that governed each decision.
+
+## Execution procedure
+
+### 1. Bind the request and freeze the copy set
+
+Verify the authorized tenant, erasure request/version, requested categories, source-export digest, active legal holds, and the policy version. Establish an immutable run ID and a controlled execution window. Do not derive the tenant scope from a user-supplied provider locator alone.
+
+Enumerate all copies under the approved scope, including all pages and regions. Reconcile provider inventory totals and pagination/completeness indicators. If enumeration is partial, access is denied, a required region is unreachable, a provider's semantics are unknown, or the identity set changes unexpectedly, stop destructive execution and record the unresolved condition.
+
+### 2. Seal the plan before mutation
+
+Persist the exact resource identities, stable version/generation references, applicable content digests, policy versions, and planned-copy count before any deletion call. Use the resource-level ledger and append-only transitions defined by [the external-erasure resource ledger](external-erasure-resource-ledger.md). Never silently widen a sealed plan during retry; a newly discovered copy requires a separately reviewed plan/attempt bound to the same approved request or a new request version as appropriate.
+
+### 3. Apply the approved retention disposition
+
+For each planned copy, choose one of these evidence-backed outcomes:
+
+- **Delete now:** policy authorizes deletion, no applicable hold prevents it, the provider supports a reviewed and tenant-safe operation, and the resource is within the sealed plan.
+- **Retain/blocked:** a legal hold, mandatory retention, immutable lock, provider restriction, or unresolved ownership prevents deletion. Record a precise reason and next review/expiry trigger. The request remains incomplete.
+- **Unsupported/unresolved:** the provider or copy class cannot be fully enumerated or safely mutated. Fail closed; do not substitute a best-effort primary-only deletion and call it whole-store erasure.
+- **Retryable failure:** preserve the request fence and the sealed identities; recover the same plan. Do not remove a cache fence or invent success receipts to restore normal writes.
+
+Use provider-supported deletion/expiry controls and the least-privileged identity that can perform the reviewed task. Do not disable immutability, replication, audit logging, or retention safeguards outside an explicitly approved policy procedure.
+
+### 4. Verify independently
+
+After deletion, query the provider through an independent read/list path and enumerate the complete relevant boundary again (including regions, versions, backup catalogues, replicas, or vault copies where applicable). Compare observed residual identities/counts and copy digests with the sealed manifest. Verify the expected expiry/deletion status against provider semantics; an accepted API request alone is insufficient.
+
+Record provider-issued receipts only when the provider actually supplies them. Adapter-generated correlation identifiers are not provider-issued receipts. If the provider exposes no signed receipt, record the exact API outcome, timestamp, resource/version identity, response classification, and independent read-back evidence, and label the proof type accurately.
+
+A zero-residual result from the primary cache or object store proves only that enumerated boundary. It does not establish historical-backup purge unless those backup systems were separately inventoried and verified. Any residual, inaccessible copy, ambiguous version, failed independent check, or unsupported class prevents a whole-request **VERIFIED** result.
+
+### 5. Restore and expiry re-checks
+
+For retention-locked or time-based copies, maintain a due review keyed by the approved expiry timestamp and policy version. After the expiry/deletion window, perform a new provider inventory and independent absence check. If the provider retains the copy longer than expected, escalate and keep the result incomplete. Where a backup is restored, run and evidence the erasure replay/tombstone reconciliation before reopening tenant access.
+
+## Required evidence pack
+
+Retain a tenant-scoped, access-controlled evidence pack containing:
+
+- Request/version/run ID and authorized categories; approval and legal-hold decision references.
+- Approved retention-policy identifier/version and owner sign-off; never raw secrets.
+- Copy-class inventory, provider/account/region boundary, enumeration timestamps, pagination/completeness evidence, and any documented not-applicable decisions.
+- Sealed manifest digest, planned count, opaque resource/version identifiers, optional SHA-256 content digests, and adapter/procedure version.
+- Per-copy intent and outcome, retry/exception reason, provider receipt type, independent verification result, residual count/list digest, expiry follow-up date, and actor/system identity.
+- Evidence of restore reconciliation and any provider escalation or policy exception.
+
+Keep the manifest and audit trail protected from generic tenant-data erasure in accordance with the external-erasure resource ledger. Evidence should be sufficient for independent review without reproducing deleted customer content.
+
+### Canonical tenant backup-copy-class catalog
+
+Every requested dataset category must have a current, independently reviewed decision for **each** canonical class below. The class catalog is enforced by the API propagation gate; a class is not considered covered merely because it appears in an operator's narrative inventory.
+
+| Copy-class key | Inventory boundary |
+|---|---|
+| `S3_OBJECT_VERSIONS` | Versioned S3-compatible tenant backup objects and delete markers |
+| `POSTGRESQL_BASE_BACKUP` | PostgreSQL base/full backups and exported database snapshots |
+| `POSTGRESQL_WAL_PITR` | WAL archives, continuous archiving and point-in-time recovery segments |
+| `REDIS_AOF_BACKUP` | Redis AOF persistence backups and archived AOF copies |
+| `REDIS_RDB_BACKUP` | Redis RDB snapshots and archived RDB copies |
+| `FILESYSTEM_SNAPSHOT` | Filesystem, persistent-volume and file-level snapshots |
+| `BLOCK_VOLUME_SNAPSHOT` | Block-volume, disk and storage-array snapshots |
+| `MANAGED_BACKUP_VAULT` | Provider-managed backup vaults and immutable backup services |
+| `REPLICA_FAILOVER_COPY` | Read replicas, replicas, failover copies and delayed replica queues |
+| `EXTERNAL_DR_COPY` | External disaster-recovery regions, accounts and recovery environments |
+| `SEARCH_INDEX_COPY` | Search indexes, index snapshots, reindex sources and retained search segments |
+| `VECTOR_STORE_COPY` | Vector databases, embeddings, vector snapshots and retained vector collections |
+| `LEARNING_ARTIFACT_COPY` | Model-training, evaluation, feature and learning artifacts |
+| `EXTERNAL_PROVIDER_COPY` | Copies held by external SaaS, integration or managed service providers |
+| `EXTERNAL_CACHE_COPY` | Legacy, application-managed and other external caches not proven to use the reviewed tenant-cache namespace |
+| `UNCLASSIFIED_EXTERNAL_COPY` | Fail-closed catch-all for any discovered copy that does not map to another catalog key |
+
+A `NOT_APPLICABLE` decision is valid only when the signed evidence pack proves the relevant inventory scope was exhaustively enumerated and found to contain no copy of that class. The pack must identify the tenant/category and all in-scope accounts, projects, regions, providers and control planes; list the authoritative discovery sources and owner identities queried; record enumeration timestamps, pagination/continuation completion and result counts; and account for direct, scheduled, replicated, delayed-retry and restore/DR writers. Missing sources, inaccessible accounts, incomplete pagination or an unknown producer must be recorded as `UNRESOLVED`, never inferred as not applicable.
+
+`UNCLASSIFIED_EXTERNAL_COPY` must also receive an explicit decision. If a discovered copy cannot be mapped safely, mark it `UNRESOLVED`; do not use the catch-all key as an erasure adapter. For the external-store sentinel, `NOT_APPLICABLE` also requires the structured `factoryos.external-store-inventory/v2` JSON manifest and seven complete, scope-bound, pagination-exhausted discovery source receipts described in [External store inventory evidence](external-store-inventory-evidence.md). Every discovery-source row must also carry a separate Ed25519 collector receipt whose key is independently allowlisted by source kind in `FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON`; each query must start within the 24 hours preceding manifest generation. The outer evidence-owner signature does not replace collector authentication or refresh a stale source receipt. When a new copy system is discovered, add a dedicated catalog key through a reviewed migration before claiming whole-tenant coverage. No catalog can prove completeness without authenticated source enumeration and independent owner review.
+
+## Supported adapter boundary
+
+At the current PR scope, the registered S3-compatible POD adapter covers only WMS POD evidence objects in the configured unversioned bucket. The registered BACKUP adapter provides a version-level S3 primitive for exact object versions and delete markers in a separate, tenant/category-exclusive S3-compatible archive under `factoryos-backups/{tenant UUID}/{DATASET_CATEGORY}/...`; it requires versioning and Object Lock to be enabled, inventories every version, checks each live version's provider legal-hold/retention state, hashes its persisted bytes, deletes explicit version IDs, and performs a fresh version inventory. Its `isConfigured()` remains fail-closed unless the durable writer-fence coordinator, reviewed writer inventory, and current provider-acceptance gates are valid. The propagation runner now acquires and reads back the fence before any target adapter inventory, and keeps it held through verification; production activation remains blocked until the acceptance records are backed by independently reviewed real-provider evidence and the complete external producer/principal set is covered. Its plan is bounded to 20,000 versions and the configured per-object streaming digest limit. See [the S3 tenant backup adapter contract](s3-tenant-backup-erasure-adapter.md). This is not an adapter for monolithic database dumps, PostgreSQL backup/PITR archives, RDB/AOF files, filesystem/volume snapshots, replicas, managed backup vaults, or other disaster-recovery copies. The Redis adapter covers only the new `TenantCacheService` namespace on a standalone primary with no replicas/cluster and reviewed AOF/noeviction settings. Its post-delete AOF rewrite is not a purge of separately retained AOF backups, filesystem or volume snapshots, backup vaults, or media copies.
+
+The canonical catalog now also requires explicit `SEARCH_INDEX_COPY`, `VECTOR_STORE_COPY`, `LEARNING_ARTIFACT_COPY`, `EXTERNAL_PROVIDER_COPY`, `EXTERNAL_CACHE_COPY` and `UNCLASSIFIED_EXTERNAL_COPY` decisions. These classes remain unsupported by a production erasure adapter in this scope: record `UNRESOLVED` while they exist or remain uncertain, and use `NOT_APPLICABLE` only with signed, independently reviewed exhaustive discovery evidence. `REPLICA_FAILOVER_COPY` and `EXTERNAL_DR_COPY` are also required catalog decisions even when their current configured store target is represented through the external-copy coverage registry. The `BACKUP` class has a partial S3 version-level primitive, but is **not production-accepted**: a provider/control-plane write-freeze for every backup writer is not implemented/verified here, and PostgreSQL base/WAL backups, Redis AOF/RDB archives, filesystem/volume snapshots, backup vaults and DR copies remain outside that adapter. Do not register a required target as production-ready simply because a generic interface or synthetic test exists.
+
+## Go-live checklist
+
+- [ ] Data owner maps every required copy class and records evidence for any not-applicable class.
+- [ ] Legal/compliance owner approves copy-class retention policy and hold handling; no duration is inferred by engineering.
+- [ ] Infrastructure/provider owner verifies enumeration, expiry, versioning, replica, snapshot, restore and deletion semantics for the exact deployed configuration.
+- [ ] Secret manager and production configuration are reviewed; evidence packs contain no credentials.
+- [ ] The complete sealed-plan/delete/independent-verify flow passes against controlled staging with synthetic data and the actual provisioned topology.
+- [ ] Failure-injection covers inaccessible inventories, active legal holds, immutable backups, partial pagination, provider errors, residual copies, retries, and restore/tombstone reconciliation.
+- [ ] A reviewer confirms that no unsupported or retained copy is reported as deleted, and that all residual/expiry follow-ups have owners.
+- [ ] Production rollout is separately approved. CI success alone is not production acceptance.
+
+Until these criteria and all required external-store adapters pass, AS-137 / NFR-PROD-14 must remain **PARTIAL**. This document defines the operational bar; it does not assert that production secrets, provider backups, customer copies, or controlled staging have already been tested or erased.
+
+
+### Additional release block: concurrent backup writers
+
+The S3 tenant backup adapter does not itself pause external writers. Object Lock does not prevent a new object version from being created, and a post-delete inventory cannot prevent a write after its final scan. Before production acceptance, integrate and test a provider/control-plane fence that excludes **all** backup writer identities for the selected tenant/category scope from before enumeration through durable completion. The fence must survive process failure and have a reviewed recovery flow. A manual pause or static environment flag is not equivalent to a runtime fence. Until this exists, the S3 BACKUP adapter remains a tested primitive, not a production whole-tenant erasure capability.
+
+
+### Durable application-side backup writer-fence ledger
+
+Migration 222 and SaasTenantBackupWriterFenceService define tenant/category-scoped operation intents and a persistent lifecycle (DRAINING → FENCING → FENCED → ERASING → ERASURE_VERIFIED → RELEASED, with RECOVERY_REQUIRED for uncertainty). An ambiguous provider write remains active; no TTL automatically lets erasure overtake it. SQL triggers and RLS protect the fence and operation ledgers, and release evidence must include an independently reviewed tombstone-reconciled next writer epoch.
+
+The durable ledger/state-machine, S3 bucket-policy apply/read-back provider, reviewed writer-inventory/acceptance registries, and propagation-runner acquisition checks are implemented in the current PR branch. They do not by themselves prove that every direct S3 credential, scheduled job, source replication identity, access point, or external backup system is covered. Independent real-provider staging, exclusive bucket-policy ownership, complete external writer/principal coverage, provider-backed recovery, delayed-retry reconciliation, and restore/tombstone replay remain open. Keep the S3 BACKUP target inactive until those gates have reviewed evidence.
+
+
+### S3 bucket-policy writer-fence provider
+
+The S3 control-plane adapter `S3TenantBackupWriterFenceProvider` applies a least-scope explicit `Deny` for `s3:PutObject`, `s3:ReplicateObject` and `s3:ReplicateDelete` under only the requested tenant/category prefix. Object replication and replicated delete-marker operations use distinct permissions, so all three actions are explicitly denied. It uses separate policy credentials; it does not reuse the object-erasure credential. It reads the existing bucket policy, preserves unrelated statements, detects policy changes on a second read before mutation, applies the policy, then performs an independent read-back and validates the complete canonical policy digest.
+
+The post-apply read inventories unfinished multipart uploads under that prefix. A non-zero inventory means the policy may already be denying new writes, but the durable fence must remain at `FENCING`; reconcile the outstanding upload outcomes and retry before recording `FENCED`. Do not manually delete multipart state or bypass provider retention/legal-hold controls as an operational shortcut.
+
+Before using this controller, the infrastructure owner must explicitly acknowledge that it is the exclusive bucket-policy writer for the bucket. `PutBucketPolicy` does not provide a compare-and-swap precondition; any out-of-band policy writer can race a read-modify-write operation. The API's second read catches some races but cannot establish exclusivity by itself. Use a separate least-privilege policy credential and matching reviewed config reference. Controller mutation is disabled by default in `.env.example`.
+
+Release is deliberately ordered as: preview the exact policy with the fence statement removed; commit that policy digest, independent review and next writer epoch to the durable lifecycle; then remove only the matching statement; read back the final policy and verify the digest. If the process crashes after the durable release but before policy removal, retry reconciliation. The policy remaining installed causes temporary write unavailability, not an erasure race. Any unplanned policy digest, altered statement or failed read-back blocks the operation.
+
+Important limitations remain: the adapter does not enumerate IAM users/roles, S3 Access Points, replication/service principals or out-of-process identities and cannot establish that every producer uses the application gate by itself. BACKUP remains inactive by default; it can pass `isConfigured()` only when every explicit acceptance gate is supplied. These references are operator assertions, not independent evidence. Real-provider staging must prove deny behavior for normal PutObject, CopyObject, multipart completion and replication/delete-marker paths, verify restore/tombstone replay and demonstrate that stale writer generations cannot recreate erased copies before production activation. The propagation runner acquires and reads back the fence before inventory and does not release it automatically; a separately reviewed release reconciler is still required.
+
+
+## Signed backup copy-class evidence
+
+The backup copy-class submission endpoint now requires an Ed25519 source-owner attestation in addition to the opaque evidence reference and SHA-256 digest. The signature binds the tenant, category, copy class, disposition, evidence reference/digest/timestamp, data-owner and infrastructure-owner references, policy reference, reason, key ID, and attesting owner. The signing wire format is versioned as `factoryos.backup-copy-class-evidence-attestation/v1`; do not change field order or normalization without a new schema version.
+
+The API trusts only deployment-configured Ed25519 public keys in `FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON`. Each key is bound to one reviewed owner reference, which must equal the decision's declared data owner or infrastructure owner. An absent/empty trust store, malformed key set, unknown key ID, wrong owner, non-Ed25519 key, non-canonical signature, or changed claim rejects the submission; no compatibility bypass exists. The example trust configuration intentionally contains an empty list and therefore cannot accept evidence until an operator installs reviewed public keys.
+
+Use `scripts/security/sign-backup-copy-class-evidence.mjs` from a controlled evidence-owner environment. It hashes the exact evidence-pack file and refuses to sign if its digest differs from `evidence_sha256`. Keep the private key outside the repository and API runtime, preferably in an organization-approved signing service or hardened operator environment; do not place key material in CI artifacts, issue comments, the payload or logs. The source owner must authenticate the evidence and key-to-owner binding before signing.
+
+The signature proves that a trusted key signed the canonical claims and that the signer utility's local evidence-pack digest matched the claim at signing time. It does **not** make the API fetch the evidence reference or independently authenticate a remote artifact. A distinct authorized reviewer must still inspect the source evidence and accept/reject the decision. Synthetic CI signatures are test-only and are not provider acceptance evidence. See [the operational attestation guide](backup-copy-class-evidence-attestation.md).
+
+
+## Required source artifact read-back
+
+Signed evidence now also has to resolve to the exact source bytes. Configure `FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR` to an absolute deployment-owned evidence directory mounted read-only into the API runtime. Each `evidence_reference` is a single opaque filename matching `[A-Za-z0-9][A-Za-z0-9._-]{0,199}`; URLs, path separators and traversal strings are rejected. The API opens files without following symlinks, requires a non-empty regular file no larger than 16 MiB, streams the bytes with a bounded buffer, and independently computes SHA-256. The file digest must match the signed claim during submission, ACCEPT review, and each propagation preflight/recovery/provider checkpoint. A missing artifact, digest mismatch, changed file, unsafe root, writable POSIX mode, multiply-linked artifact or unsupported secure-open platform blocks the operation. The root must have no POSIX write bits (`0555` is a typical directory mode); evidence files must have no write bits (`0444` is typical), and a file with more than one hard link is rejected. The runtime reads Linux `/proc/self/mountinfo` and requires the deepest mount covering both the root and exact artifact path to have per-mount VFS option `ro`; a writable nested bind/file mount, unavailable mount metadata, unsupported platform, or unmatched mount blocks read-back. The API identity must also be unable to write to or remount the volume, with publication owned by a separate pipeline. The runtime check is not protection against privileged host/storage administrators, so deployment mount and identity controls still require independent verification.
+
+The signing utility's `--evidence-file` may be a protected source path on the evidence-owner workstation. Place the identical bytes into the configured read-only API evidence root under the opaque `evidence_reference` before submitting the signed payload. Use a new reference/revision when the pack changes. The evidence root must be controlled outside the API process; no user-supplied URL is fetched, and the API does not interpret references as filesystem paths. This is not an automatic remote-provider adapter or proof of complete backup enumeration. Real provider staging/read-back and independent reviewer acceptance remain mandatory.
+
+
+### Deployment admission gate for the evidence source
+
+A deployment must enforce the evidence-root mount before the API workload is rolled out. For Kubernetes v1.30+, use `deploy/security/backup-copy-evidence-readonly-policy.yaml` and `deploy/security/backup-copy-evidence-readonly-binding.yaml`. The binding is intentionally inactive until the API production namespace has the label `factoryos.io/backup-evidence-enforcement=required`. Install and wait for the policy to be Accepted, install the binding, apply the namespace label, then restart/roll out the API Pods. Existing Pods are not retroactively re-admitted by a Namespace label change.
+
+The admission CEL gate rejects a configured evidence root unless the exact absolute environment path has one corresponding read-only mount of the dedicated PVC claim `factoryos-backup-evidence`; both `persistentVolumeClaim.readOnly` and `volumeMount.readOnly` must be `true`, and `subPath`/`subPathExpr` are forbidden. A second validation forces every use of that PVC in the selected namespace to be read-only for regular, init and ephemeral containers, including aliases from other Pods. The API container must be non-root with a read-only root filesystem, no privilege escalation, no privileged mode and all capabilities dropped. The evidence publisher must stage bytes outside this API namespace/workload before the PVC is sealed read-only. This complements the runtime `/proc/self/mountinfo` check; it does not replace it.
+
+For non-Kubernetes Linux deployments, provide an equivalent workload-level control and independently review the active mount/identity policy. In either case the API identity must be unable to write to or remount the evidence volume, and a separate publisher identity must stage artifacts. Record the active enforcement policy reference, volume reference, configured absolute path, independent mount-probe result and exact candidate SHA in the production security attestation. A missing control or failed probe blocks acceptance. Do not claim that repository manifests have been applied to a live cluster unless the operator supplies the deployment evidence.
+
+## Operator-enforced deployment provisioning
+
+See [the deployment provisioning runbook](backup-copy-evidence-deployment-provisioning.md). The operator provisioner verifies the expected cluster context and Kubernetes version, requires the local checkout, Deployment annotation and every Ready API Pod to match one immutable candidate SHA, pins the API image to an immutable sha256 digest and checks each Pod's runtime imageID, preflights the bound PVC and Deployment template, installs and waits for the read-only Pod, tokenless ServiceAccount, legacy token-Secret and namespace-lock admission policies, activates bindings and namespace enrollment, restarts the API, executes negative admission probes and performs the real mount/write/capability probe in every Ready API replica. Its output is operator-run evidence for a separate infrastructure reviewer; it does not assert that any live cluster has been provisioned until the operator runs it and supplies the candidate-bound output.
+
+## Control boundary and remaining acceptance
+
+The four fail-closed policies protect read-only PVC use, all regular/init/ephemeral containers, the dedicated tokenless API ServiceAccount, legacy token Secrets and the namespace enrollment label. The admission policies and bindings themselves remain controlled by cluster-admin RBAC. A privileged host or storage administrator can still change node mount state, CSI behavior or underlying storage outside the API process boundary; independently restrict and audit those privileges.
+
+The application runtime check confirms the deepest covering mount is read-only and the API identity cannot create a file there. It also confirms no `CAP_SYS_ADMIN` in effective/permitted/bounding/inheritable/ambient capability sets and `NoNewPrivs=1`, which removes the normal remount capability. This is not a guarantee against privileged host/storage administrators and is not a direct host-level syscall test.
+
+Real-provider staging is still required for the S3 writer-fence scenarios. Complete writer-principal inventory and enumeration of every backup/copy class, plus independent infrastructure verification of the deployed namespace, CSI/storage configuration, policy ownership, IAM and audit evidence, remain separate release blockers. AS-137 / NFR-PROD-14 remain **PARTIAL** until those evidence artifacts are reviewed.

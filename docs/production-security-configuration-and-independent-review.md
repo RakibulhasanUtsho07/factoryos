@@ -231,3 +231,32 @@ Rollback must cover application config and secret-version references, not only t
 - approval_utc: <pending>
 
 The approval register must be updated only by authorized release personnel once evidence is complete. Do not mark the release approved from the implementation branch or this report draft.
+
+
+## 10. Backup-copy evidence volume deployment gate
+
+Signed backup-copy-class evidence is accepted only when the API can read exact evidence bytes from a deployment-owned Linux read-only mount. POSIX mode checks and the runtime `/proc/self/mountinfo` per-mount `ro` check are necessary runtime controls, but production provisioning must also prevent the API identity from writing to or remounting that volume. The evidence publisher must be a separate identity and the volume reference must identify the exact immutable evidence source.
+
+For Kubernetes v1.30+, install the `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` in `deploy/security/backup-copy-evidence-readonly-policy.yaml` and `deploy/security/backup-copy-evidence-readonly-binding.yaml`. Label the intended production API namespace `factoryos.io/backup-evidence-enforcement=required` only after the policy has been accepted and the binding is installed; restart all API Pods so they are re-admitted under the policy. The policy enforces one direct absolute evidence-root environment path backed by the dedicated `factoryos-backup-evidence` PVC, requires source-level and container-mount read-only flags, forbids subPath, and checks that no regular/init/ephemeral container in the selected production namespace reuses the PVC read-write. It also requires non-root execution, a read-only container root filesystem, no privilege escalation/privileged mode, and dropped capabilities. The publisher must stage evidence outside the API namespace/workload. The manifest requires Kubernetes v1.30+; a different platform needs an equivalent enforced workload control.
+
+The release validator requires both the application evidence record and a separate `backup_copy_evidence.deployment_provisioning` record. The deployment record is exact-candidate-SHA-bound and requires accepted policies, active Deny bindings, namespace enrollment, a fully observed/updated/available Deployment, a bound read-only PVC, every container security context, tokenless ServiceAccount, API-identity RBAC absence across namespaces, an immutable sha256-pinned API image with matching per-Pod runtime imageID, per-replica write-denial and remount-capability evidence, negative admission probes, and a distinct infrastructure reviewer. The checked-in template keeps these fields empty/false/NOT_RUN. Do not turn them into passing values without operator-run evidence and independent review. CI validates policy/configuration contracts; it does not apply the policy to a live cluster or attest an actual production mount.
+
+## Admission policy lock and deployment provisioning
+
+The evidence namespace uses four fail-closed Kubernetes v1.30+ ValidatingAdmissionPolicies: read-only Pod/PVC enforcement, dedicated tokenless ServiceAccount protection, denial of legacy ServiceAccount-token Secrets, and namespace enrollment lock. Four Deny bindings activate the controls; the API's dedicated ServiceAccount has `automountServiceAccountToken: false`. All Pod containers (regular, init and ephemeral) must be non-root, no-escalation, read-only-rootfs, drop all capabilities, add none, avoid unmasked proc and use RuntimeDefault seccomp. Evidence PVC aliases must remain read-only with no subPath or mount propagation.
+
+Use the single operator provisioning entry point rather than the earlier two-policy manual sequence:
+
+```sh
+EXPECTED_KUBE_CONTEXT=prod-eu-1 \
+API_NAMESPACE=factoryos-api \
+API_DEPLOYMENT=factoryos-api \
+API_CONTAINER=api \
+CANDIDATE_SHA="$(git rev-parse HEAD)" \
+PROVISIONING_EVIDENCE_OUTPUT=./backup-evidence-provisioning.json \
+./deploy/security/provision-backup-copy-evidence-enforcement.sh
+```
+
+See [Backup evidence volume deployment provisioning](backup-copy-evidence-deployment-provisioning.md) for the required Deployment annotation/PVC shape, preflight, rollout and per-replica runtime probes, the expected negative admission results, and the evidence-handling procedure. It checks every Ready API Pod carries the exact candidate SHA and probes each replica's real mount namespace.
+
+The provisioner output is operator-run evidence, not independent infrastructure approval. A separate reviewer must inspect policy/binding protection, CSI/storage configuration, node and privileged host/storage-administrator boundaries, IAM roles and audit logs. A cluster administrator who can change the admission policies/bindings or underlying storage remains outside the API-process guarantee. Real-provider staging and full backup/copy class and writer-principal enumeration remain separate release blockers.

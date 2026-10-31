@@ -1,0 +1,198 @@
+name: External Erasure Copy Retention Contract
+
+on:
+  pull_request:
+    paths:
+      - 'docs/external-erasure-backup-copy-retention-runbook.md'
+      - 'docs/backup-copy-class-evidence-attestation.md'
+      - 'docs/external-store-inventory-evidence.md'
+      - 'docs/external-erasure-resource-ledger.md'
+      - 'docs/tenant-cache-erasure-adapter.md'
+      - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
+      - 'scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.test.mjs'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.spec.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
+      - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
+      - 'migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql'
+      - 'migrations/231_saas_external_copy_coverage_evidence_attestation.sql'
+      - 'migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql'
+      - 'services/api/src/saas/saas-tenant-propagation.adapters.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.service.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.saga.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
+      - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.test.mjs'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.service.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.saga.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts'
+      - 'migrations/228_saas_tenant_backup_copy_class_coverage.sql'
+      - 'services/api/test/saas-tenant-propagation-contract.sql'
+      - 'services/api/.env.example'
+      - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'docs/backup-copy-evidence-deployment-provisioning.md'
+      - 'deploy/security/backup-copy-evidence-api-service-account.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-binding.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/validate-backup-copy-evidence-deployment.mjs'
+      - 'scripts/security/probe-backup-copy-evidence-runtime.mjs'
+      - 'scripts/security/backup-copy-evidence-deployment.test.mjs'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.test.mjs'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.mjs'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.test.mjs'
+      - '.github/workflows/backup-evidence-kubernetes-admission-ci.yml'
+      - 'scripts/security/require-supported-kubernetes-version.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.test.mjs'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.mjs'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.test.mjs'
+      - '.github/workflows/backup-evidence-kubernetes-admission-ci.yml'
+      - 'deploy/security/production-security-baseline.yml'
+      - 'scripts/security/validate-production-security-baseline.mjs'
+      - 'scripts/security/production-security-baseline-validator.test.mjs'
+      - '.github/workflows/external-erasure-copy-retention-contract.yml'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'docs/external-erasure-backup-copy-retention-runbook.md'
+      - 'docs/backup-copy-class-evidence-attestation.md'
+      - 'docs/external-store-inventory-evidence.md'
+      - 'docs/external-erasure-resource-ledger.md'
+      - 'docs/tenant-cache-erasure-adapter.md'
+      - 'scripts/audit/external-erasure-copy-retention-contract.test.mjs'
+      - 'scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.mjs'
+      - 'scripts/security/sign-backup-copy-class-evidence.test.mjs'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-artifact-reader.spec.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.ts'
+      - 'services/api/src/saas/external-store-inventory-manifest.spec.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
+      - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
+      - 'migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql'
+      - 'migrations/231_saas_external_copy_coverage_evidence_attestation.sql'
+      - 'migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql'
+      - 'services/api/src/saas/saas-tenant-propagation.adapters.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.service.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.saga.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
+      - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.mjs'
+      - 'scripts/security/sign-external-store-inventory-source-receipt.test.mjs'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.service.ts'
+      - 'services/api/src/saas/saas-tenant-propagation.saga.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-backup-copy-class-coverage.dto.ts'
+      - 'migrations/228_saas_tenant_backup_copy_class_coverage.sql'
+      - 'services/api/test/saas-tenant-propagation-contract.sql'
+      - 'services/api/.env.example'
+      - 'deploy/security/backup-copy-evidence-trust.env.example'
+      - 'docs/backup-copy-evidence-deployment-provisioning.md'
+      - 'deploy/security/backup-copy-evidence-api-service-account.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-service-account-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-api-token-secret-binding.yaml'
+      - 'deploy/security/provision-backup-copy-evidence-enforcement.sh'
+      - 'scripts/security/validate-backup-copy-evidence-deployment.mjs'
+      - 'scripts/security/probe-backup-copy-evidence-runtime.mjs'
+      - 'scripts/security/backup-copy-evidence-deployment.test.mjs'
+      - 'deploy/security/backup-copy-evidence-readonly-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-readonly-binding.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-policy.yaml'
+      - 'deploy/security/backup-copy-evidence-namespace-lock-binding.yaml'
+      - 'scripts/security/backup-copy-evidence-readonly-admission.test.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.mjs'
+      - 'scripts/security/require-supported-kubernetes-version.test.mjs'
+      - 'scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.mjs'
+      - 'scripts/security/validate-kubernetes-admission-policy-status.test.mjs'
+      - '.github/workflows/backup-evidence-kubernetes-admission-ci.yml'
+      - 'deploy/security/production-security-baseline.yml'
+      - 'scripts/security/validate-production-security-baseline.mjs'
+      - 'scripts/security/production-security-baseline-validator.test.mjs'
+      - '.github/workflows/external-erasure-copy-retention-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-erasure-copy-retention-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Parse Kubernetes admission manifests
+        run: |
+          ruby -ryaml -e 'ARGV.each { |path| YAML.load_file(path) }' \
+            deploy/security/backup-copy-evidence-readonly-policy.yaml \
+            deploy/security/backup-copy-evidence-readonly-binding.yaml \
+            deploy/security/backup-copy-evidence-api-service-account.yaml \
+            deploy/security/backup-copy-evidence-api-service-account-policy.yaml \
+            deploy/security/backup-copy-evidence-api-service-account-binding.yaml \
+            deploy/security/backup-copy-evidence-api-token-secret-policy.yaml \
+            deploy/security/backup-copy-evidence-api-token-secret-binding.yaml \
+            deploy/security/backup-copy-evidence-namespace-lock-policy.yaml \
+            deploy/security/backup-copy-evidence-namespace-lock-binding.yaml
+
+      - name: Validate provisioning script syntax
+        run: |
+          bash -n deploy/security/provision-backup-copy-evidence-enforcement.sh
+          bash -n scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh
+
+      - name: Verify backup-copy retention and signed evidence contracts
+        run: |
+          node --check scripts/security/require-supported-kubernetes-version.mjs
+          node --check scripts/security/require-supported-kubernetes-version.test.mjs
+          node --check scripts/security/validate-kubernetes-admission-policy-status.mjs
+          node --check scripts/security/validate-kubernetes-admission-policy-status.test.mjs
+          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/sign-external-store-inventory-source-receipt.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs

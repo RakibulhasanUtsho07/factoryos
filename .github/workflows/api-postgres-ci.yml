@@ -165,6 +165,59 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/160_saas_external_erasure_propagation_and_finance_retention.sql
 
+          echo "Reapplying durable external resource identity manifests and per-resource receipts to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/219_saas_external_erasure_resource_manifest_receipts.sql
+
+          echo "Reapplying the legal-hold/external-propagation race fence to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/220_saas_legal_hold_propagation_fence.sql
+
+          echo "Reapplying the reciprocal external-run legal-hold fence to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/221_saas_external_propagation_legal_hold_fence.sql
+
+          echo "Reapplying the tenant backup writer-fence ledger to verify epoch, policy and lifecycle idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/222_saas_tenant_backup_writer_fence_ledger.sql
+
+          echo "Reapplying the reviewed backup writer-principal inventory to verify snapshot/entry/ownership idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/223_saas_backup_writer_principal_inventory.sql
+
+          echo "Reapplying provider-release confirmation gate to verify writer epoch remains blocked until policy read-back"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/225_saas_backup_writer_release_confirmation.sql
+
+          echo "Reapplying reviewed external copy-class coverage to verify immutable review and RLS guards"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/226_saas_external_copy_class_coverage.sql
+
+          echo "Reapplying external copy-coverage run fence to verify inventory cannot drift during propagation"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/227_saas_external_copy_coverage_run_fence.sql
+
+          echo "Reapplying granular backup copy-class registry to verify immutability and tenant RLS"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/228_saas_tenant_backup_copy_class_coverage.sql
+
+          echo "Reapplying backup evidence reference hardening to verify opaque-ID constraints are idempotent"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/229_saas_backup_copy_class_evidence_reference.sql
+
+          echo "Reapplying canonical backup copy-class catalog expansion to verify fail-closed class constraints"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql
+
+          echo "Reapplying external copy-coverage signed-evidence guard to verify legacy and new-row immutability"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/231_saas_external_copy_coverage_evidence_attestation.sql
+
+          echo "Reapplying unclassified external-store catch-all coverage guard"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql
+
+
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/159_inventory_location_cycle_count_workflow.sql
@@ -550,6 +603,21 @@ jobs:
             ('e7140000-0000-4000-8000-000000000001','e7110000-0000-4000-8000-000000000001','e7120000-0000-4000-8000-000000000001','RECOVERY_REHEARSAL','RESTORE_CONTINUITY','TENANT','e7110000-0000-4000-8000-000000000001','INTERNAL','{"fixture":"backup-restore-audit-continuity","tenant":"A"}'::jsonb,clock_timestamp()),
             ('e7140000-0000-4000-8000-000000000002','e7110000-0000-4000-8000-000000000002','e7120000-0000-4000-8000-000000000002','RECOVERY_REHEARSAL','RESTORE_CONTINUITY','TENANT','e7110000-0000-4000-8000-000000000002','INTERNAL','{"fixture":"backup-restore-audit-continuity","tenant":"B"}'::jsonb,clock_timestamp())
           ON CONFLICT (id) DO UPDATE SET payload=EXCLUDED.payload,created_at=EXCLUDED.created_at;
+          CREATE SCHEMA factoryos_ci;
+          CREATE TABLE factoryos_ci.erasure_replay_fixture (
+            fixture_id text PRIMARY KEY,
+            tenant_id uuid NOT NULL,
+            payload_marker text NOT NULL
+          );
+          CREATE TABLE factoryos_ci.erasure_replay_ledger (
+            tombstone_id text PRIMARY KEY,
+            fixture_id text NOT NULL,
+            tenant_id uuid NOT NULL
+          );
+          INSERT INTO factoryos_ci.erasure_replay_fixture (fixture_id,tenant_id,payload_marker)
+          VALUES ('ci-restore-erasure-row-001','e7110000-0000-4000-8000-000000000001','MUST_NOT_REAPPEAR_AFTER_RESTORE');
+          INSERT INTO factoryos_ci.erasure_replay_ledger (tombstone_id,fixture_id,tenant_id)
+          VALUES ('ci-tombstone-after-snapshot-001','ci-restore-erasure-row-001','e7110000-0000-4000-8000-000000000001');
           COMMIT;
           SQL
 
@@ -599,6 +667,8 @@ jobs:
           connect_timeout=5
           PGSERVICE
           chmod 600 "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
+          erasure_ledger_sha256="$(sha256sum scripts/recovery/ci-erasure-tombstone-ledger.jsonl | awk '{print $1}')"
+          export FACTORYOS_CI_EXPECTED_ERASURE_LEDGER_SHA256="$erasure_ledger_sha256"
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE factoryos_recovery_restore_test_ci'
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
@@ -621,6 +691,10 @@ jobs:
           FACTORYOS_RECOVERY_OPERATOR="GitHub Actions CI" \
           FACTORYOS_RECOVERY_APPROVER="Automated CI contract" \
           FACTORYOS_CANDIDATE_SHA="$GITHUB_SHA" \
+          FACTORYOS_RESTORE_ERASURE_REPLAY_SQL="$GITHUB_WORKSPACE/scripts/recovery/ci-erasure-tombstone-replay.sql" \
+          FACTORYOS_RESTORE_ERASURE_VERIFY_SQL="$GITHUB_WORKSPACE/scripts/recovery/ci-erasure-tombstone-verify.sql" \
+          FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE=ci-erasure-ledger-fixture-v1 \
+          FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256="$erasure_ledger_sha256" \
           bash scripts/recovery/postgres-backup-restore-rehearsal.sh
           rm -rf "$recovery_home"
           rm -f "$RUNNER_TEMP/factoryos-ci-recovery-key.params" "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
@@ -652,6 +726,16 @@ jobs:
           assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
           assert.equal(receipt.verification.tenantIsolationStatus, 'PASS');
           assert.equal(receipt.verification.auditContinuityStatus, 'PASS');
+          assert.equal(receipt.verification.erasureReplayStatus, 'PASS');
+          assert.equal(receipt.verification.erasureReplayLedgerReference, 'ci-erasure-ledger-fixture-v1');
+          assert.equal(receipt.verification.erasureReplayLedgerSha256, process.env.FACTORYOS_CI_EXPECTED_ERASURE_LEDGER_SHA256);
+          assert.equal(receipt.verification.erasureReplayRequests, 1);
+          assert.equal(receipt.verification.erasureVerificationRequests, 1);
+          assert.equal(receipt.verification.erasureVerificationResiduals, 0);
+          assert.equal(receipt.verification.erasureReplayResiduals, 0);
+          assert.equal(receipt.verification.erasureVerificationMethod, 'INDEPENDENT_READ_ONLY');
+          assert.match(receipt.verification.erasureReplaySqlSha256, /^[a-f0-9]{64}$/);
+          assert.match(receipt.verification.erasureVerificationSqlSha256, /^[a-f0-9]{64}$/);
           assert.ok(Number.isSafeInteger(receipt.measured.observedRpoSeconds));
           assert.ok(Number.isSafeInteger(receipt.measured.observedRtoSeconds));
           assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');

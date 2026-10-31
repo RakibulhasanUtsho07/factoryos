@@ -1,7 +1,10 @@
 import { BadRequestException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
+import {
+  deleteWmsPodObjectAndVerifyGone, listWmsPodTenantObjects,
+  uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest,
+} from './wms-pod-storage';
 
 type ConfigValues = Record<string, string | undefined>;
 
@@ -19,6 +22,52 @@ function testConfig(overrides: ConfigValues = {}) {
   };
   return { get: (name: string) => values[name] } as never;
 }
+
+describe('WMS tenant-scoped POD inventory', () => {
+  it('follows signed ListObjectsV2 continuation tokens until the complete inventory is read', async () => {
+    const tenantId = 'a8000000-0000-4000-8000-000000000001';
+    const keyOne = 'pod/' + tenantId
+      + '/a8000000-0000-4000-8000-000000000002'
+      + '/a8000000-0000-4000-8000-000000000003'
+      + '/a8000000-0000-4000-8000-000000000004';
+    const keyTwo = 'pod/' + tenantId
+      + '/a8000000-0000-4000-8000-000000000002'
+      + '/a8000000-0000-4000-8000-000000000003'
+      + '/a8000000-0000-4000-8000-000000000005';
+    const fetcher = jest.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('<VersioningConfiguration/>', { status: 200 }))
+      .mockResolvedValueOnce(new Response(
+        '<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>opaque+/=</NextContinuationToken>'
+          + '<Contents><Key>' + keyOne + '</Key></Contents></ListBucketResult>',
+        { status: 200 },
+      ))
+      .mockResolvedValueOnce(new Response(
+        '<ListBucketResult><IsTruncated>false</IsTruncated>'
+          + '<Contents><Key>' + keyTwo + '</Key></Contents></ListBucketResult>',
+        { status: 200 },
+      ));
+
+    expect(await listWmsPodTenantObjects(testConfig(), tenantId, fetcher)).toEqual([keyOne, keyTwo]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const [secondPageUrl, secondPageInit] = fetcher.mock.calls[2] as unknown as [URL, RequestInit];
+    expect(secondPageUrl.search).toContain('continuation-token=opaque%2B%2F%3D');
+    expect(secondPageInit.method).toBe('GET');
+    expect(secondPageInit.redirect).toBe('error');
+    expect((secondPageInit.headers as Record<string, string>).Authorization).toContain('SignedHeaders=host;x-amz-content-sha256;x-amz-date');
+  });
+
+  it('fails closed rather than accepting a malformed tenant inventory page', async () => {
+    const tenantId = 'a9000000-0000-4000-8000-000000000001';
+    const fetcher = jest.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('<VersioningConfiguration/>', { status: 200 }))
+      .mockResolvedValueOnce(new Response(
+        '<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>',
+        { status: 200 },
+      ));
+    await expect(listWmsPodTenantObjects(testConfig(), tenantId, fetcher))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+});
 
 describe('WMS proof-of-delivery object verification', () => {
   it('signs a bounded S3-compatible GET and verifies the actual bytes', async () => {
@@ -149,6 +198,44 @@ describe('WMS proof-of-delivery object verification', () => {
       'pod/tenant/factory/shipment/object-4', bytes, 'image/png', fetcher as never,
     )).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+
+  it.each(['Enabled', 'Suspended'])(
+    'blocks object deletion when bucket versioning is %s',
+    async (versioningStatus) => {
+      const tenantId = 'a4000000-0000-4000-8000-000000000001';
+      const objectKey = 'pod/' + tenantId
+        + '/a4000000-0000-4000-8000-000000000002'
+        + '/a4000000-0000-4000-8000-000000000003'
+        + '/a4000000-0000-4000-8000-000000000004';
+      const fetcher = jest.fn(async () => new Response(
+        '<VersioningConfiguration><Status>' + versioningStatus + '</Status></VersioningConfiguration>',
+        { status: 200, headers: { 'content-type': 'application/xml' } },
+      ));
+
+      await expect(deleteWmsPodObjectAndVerifyGone(
+        testConfig(), tenantId, objectKey, 'a'.repeat(64), fetcher as never,
+      )).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const [url, init] = fetcher.mock.calls[0] as unknown as [URL, RequestInit];
+      expect(String(url)).toContain('?versioning=');
+      expect(init.method).toBe('GET');
+    },
+  );
+
+  it('blocks deletion when bucket versioning cannot be independently read', async () => {
+    const tenantId = 'a5000000-0000-4000-8000-000000000001';
+    const objectKey = 'pod/' + tenantId
+      + '/a5000000-0000-4000-8000-000000000002'
+      + '/a5000000-0000-4000-8000-000000000003'
+      + '/a5000000-0000-4000-8000-000000000004';
+    const fetcher = jest.fn(async () => new Response(null, { status: 403 }));
+
+    await expect(deleteWmsPodObjectAndVerifyGone(
+      testConfig(), tenantId, objectKey, 'a'.repeat(64), fetcher as never,
+    )).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
 });

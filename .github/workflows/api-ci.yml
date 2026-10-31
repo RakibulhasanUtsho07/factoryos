@@ -11,6 +11,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/audit/**'
       - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'deploy/event-bus/**'
@@ -35,6 +36,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/audit/**'
       - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
@@ -72,6 +74,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -79,6 +90,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Enforce tenant-cache application access boundary
+        run: node --test scripts/audit/tenant-cache-access-contract.test.mjs
       - name: Test durable Edge agent spool and package-control sync contracts
         run: node --test services/edge-agent/test/durable-observation-spool.test.mjs services/edge-agent/test/package-control-sync.test.mjs
       - name: Prepare AI Tool Registry RLS integration database
@@ -155,6 +168,19 @@ jobs:
       - name: Run API unit tests
         working-directory: services/api
         run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand --testPathIgnorePatterns='\.integration\.spec\.ts$|\.postgres\.integration\.spec\.ts$'
+      - name: Configure isolated Redis erasure-fence persistence
+        env:
+          CI: "true"
+          FACTORYOS_CACHE_URL: redis://127.0.0.1:6379/0
+        run: node scripts/integrations/prepare-tenant-cache-redis-ci.mjs
+      - name: Run isolated Redis tenant-cache erasure acceptance
+        working-directory: services/api
+        env:
+          NODE_ENV: test
+          FACTORYOS_CACHE_URL: redis://127.0.0.1:6379/0
+          FACTORYOS_CACHE_CONFIG_REFERENCE: ci-tenant-cache-v1
+          FACTORYOS_CACHE_CONNECT_TIMEOUT_MS: 5000
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand src/saas/redis-cache-erasure.integration.spec.ts
       - name: Start isolated S3-compatible POD test storage
         run: |
           docker run --detach --name factoryos-pod-storage-ci \
