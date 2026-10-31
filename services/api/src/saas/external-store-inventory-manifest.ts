@@ -272,7 +272,7 @@ export function validateExternalStoreInventoryManifest(
   const sourceContext = {
     tenantId: expectedTenantId,
     categoryCode: expectedCategoryCode,
-    manifestId: manifest.manifest_id,
+    manifestId: manifest.manifest_id as string,
   };
   const sources = new Map<string, Record<string, unknown>>();
   const collectionRuns = new Set<string>();
