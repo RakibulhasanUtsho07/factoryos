@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,8 +14,31 @@ const inventorySourceKinds = [
   'RESTORE_AND_DR_PATHS', 'SECONDARY_EXTERNAL_STORES',
 ];
 
+function sourceReceiptClaims(receipt, context) {
+  return JSON.stringify({
+    schema: 'factoryos.external-store-inventory-source-receipt/v1',
+    attestationKeyId: receipt.attestation_key_id,
+    attestationOwnerReference: receipt.attestation_owner_reference,
+    tenantId: context.tenantId.toLowerCase(),
+    categoryCode: context.categoryCode,
+    manifestId: context.manifestId.toLowerCase(),
+    sourceKind: receipt.source_kind,
+    sourceReference: receipt.source_reference,
+    collectionRunReference: receipt.collection_run_reference,
+    status: receipt.status,
+    paginationExhausted: receipt.pagination_exhausted,
+    pagesFetched: receipt.pages_fetched,
+    itemCount: receipt.item_count,
+    resultSha256: receipt.result_sha256,
+    scopeSha256: receipt.scope_sha256,
+    startedAt: receipt.started_at,
+    completedAt: receipt.completed_at,
+  });
+}
+
 function completeInventoryEvidence(categoryCode = 'BUSINESS_DATA') {
   const now = new Date().toISOString();
+  const manifestId = '28000000-0000-4000-8000-000000000099';
   const scope = {
     provider_references: ['provider.aws-account-001'],
     account_references: ['account.001'],
@@ -23,19 +46,21 @@ function completeInventoryEvidence(categoryCode = 'BUSINESS_DATA') {
     region_references: ['region.ap-southeast-1'],
   };
   const scopeSha256 = createHash('sha256').update(JSON.stringify(scope), 'utf8').digest('hex');
-  return Buffer.from(JSON.stringify({
-    schema: 'factoryos.external-store-inventory/v2',
-    tenant_id: tenantId,
-    category_code: categoryCode,
-    generated_at: now,
-    scope,
-    scope_sha256: scopeSha256,
-    inventory_complete: true,
-    unclassified_store_count: 0,
-    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'BACKUP'],
-    sources: inventorySourceKinds.map((sourceKind) => ({
+  const trustedKeys = [];
+  const sources = inventorySourceKinds.map((sourceKind) => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const keyId = 'collector.' + sourceKind.toLowerCase();
+    const ownerReference = 'owner.collector.' + sourceKind.toLowerCase();
+    trustedKeys.push({
+      keyId,
+      ownerReference,
+      sourceKinds: [sourceKind],
+      publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+    });
+    const receipt = {
       source_kind: sourceKind,
       source_reference: 'discovery.' + sourceKind.toLowerCase(),
+      collection_run_reference: 'collector-run.' + sourceKind.toLowerCase(),
       status: 'COMPLETE',
       pagination_exhausted: true,
       pages_fetched: 1,
@@ -44,8 +69,32 @@ function completeInventoryEvidence(categoryCode = 'BUSINESS_DATA') {
       scope_sha256: scopeSha256,
       started_at: now,
       completed_at: now,
-    })),
-  }), 'utf8');
+      attestation_key_id: keyId,
+      attestation_owner_reference: ownerReference,
+    };
+    receipt.attestation_signature = sign(
+      null,
+      Buffer.from(sourceReceiptClaims(receipt, { tenantId, categoryCode, manifestId }), 'utf8'),
+      privateKey,
+    ).toString('base64url');
+    return receipt;
+  });
+  return {
+    bytes: Buffer.from(JSON.stringify({
+      schema: 'factoryos.external-store-inventory/v2',
+      manifest_id: manifestId,
+      tenant_id: tenantId,
+      category_code: categoryCode,
+      generated_at: now,
+      scope,
+      scope_sha256: scopeSha256,
+      inventory_complete: true,
+      unclassified_store_count: 0,
+      discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'BACKUP'],
+      sources,
+    }), 'utf8'),
+    trustJson: JSON.stringify(trustedKeys),
+  };
 }
 
 function canonicalClaims(body) {
@@ -151,6 +200,7 @@ test('external coverage signer rejects unknown store kinds and path-like evidenc
 
 test('external coverage signer allows only fail-closed dispositions for an unclassified external store', () => {
   const directory = mkdtempSync(join(tmpdir(), 'factoryos-external-copy-attestation-unclassified-'));
+  const priorSourceTrust = process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
   try {
     const { privateKey } = generateKeyPairSync('ed25519');
     const keyPath = join(directory, 'owner-private.pem');
@@ -191,13 +241,36 @@ test('external coverage signer allows only fail-closed dispositions for an uncla
     assert.match(result.stderr, /complete, current, scope-bound external inventory manifest/);
 
     const completeEvidence = completeInventoryEvidence();
-    writeFileSync(evidencePath, completeEvidence);
+    process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = completeEvidence.trustJson;
+    const invalidSourceManifest = JSON.parse(completeEvidence.bytes.toString('utf8'));
+    invalidSourceManifest.sources[0].item_count = 7;
+    const tamperedBytes = Buffer.from(JSON.stringify(invalidSourceManifest), 'utf8');
+    writeFileSync(evidencePath, tamperedBytes);
     const acceptedPayload = {
       ...payload,
       disposition: 'NOT_APPLICABLE',
-      evidence_sha256: createHash('sha256').update(completeEvidence).digest('hex'),
+      evidence_sha256: createHash('sha256').update(tamperedBytes).digest('hex'),
     };
     writeFileSync(payloadPath, JSON.stringify(acceptedPayload));
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /source receipt signature does not match its claims/);
+
+    writeFileSync(evidencePath, completeEvidence.bytes);
+    acceptedPayload.evidence_sha256 = createHash('sha256').update(completeEvidence.bytes).digest('hex');
+    writeFileSync(payloadPath, JSON.stringify(acceptedPayload));
+    delete process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /independent source receipt trust is not configured/);
+
+    process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = completeEvidence.trustJson;
     result = spawnSync(process.execPath, [
       script, '--payload', payloadPath, '--evidence-file', evidencePath,
       '--private-key-file', keyPath, '--tenant-id', tenantId,
@@ -205,6 +278,8 @@ test('external coverage signer allows only fail-closed dispositions for an uncla
     assert.equal(result.status, 0, result.stderr);
     assert.match(JSON.parse(result.stdout).attestation_signature, /^[A-Za-z0-9_-]{86}$/);
   } finally {
+    if (priorSourceTrust === undefined) delete process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+    else process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = priorSourceTrust;
     rmSync(directory, { recursive: true, force: true });
   }
 });
