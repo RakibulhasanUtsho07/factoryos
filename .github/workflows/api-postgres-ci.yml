@@ -205,6 +205,14 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/229_saas_backup_copy_class_evidence_reference.sql
 
+          echo "Reapplying canonical backup copy-class catalog expansion to verify fail-closed class constraints"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql
+
+          echo "Reapplying external copy-coverage signed-evidence guard to verify legacy and new-row immutability"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/231_saas_external_copy_coverage_evidence_attestation.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \

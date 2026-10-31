@@ -3,7 +3,10 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import {
   canonicalizeBackupCopyClassEvidenceAttestation,
   verifyBackupCopyClassEvidenceAttestation,
+  canonicalizeExternalCopyCoverageEvidenceAttestation,
+  verifyExternalCopyCoverageEvidenceAttestation,
   type BackupCopyClassEvidenceAttestationPayload,
+  type ExternalCopyCoverageEvidenceAttestationPayload,
 } from './backup-copy-class-evidence-attestation';
 
 describe('backup copy-class evidence attestation', () => {
@@ -81,5 +84,63 @@ describe('backup copy-class evidence attestation', () => {
       { keyId, ownerReference, publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString() },
       { keyId, ownerReference, publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString() },
     ]))).toThrow(ServiceUnavailableException);
+  });
+});
+
+
+describe('external copy-coverage evidence attestation', () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const keyId = 'external-copy-owner-ed25519-v1';
+  const ownerReference = 'owner.infrastructure.v1';
+  const trustedKeys = JSON.stringify([{
+    keyId,
+    ownerReference,
+    publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  }]);
+  const payload: ExternalCopyCoverageEvidenceAttestationPayload = {
+    attestationKeyId: keyId,
+    attestationOwnerReference: ownerReference,
+    tenantId: '28000000-0000-4000-8000-000000000001',
+    categoryCode: 'BUSINESS_DATA',
+    storeKind: 'OBJECT_STORAGE',
+    disposition: 'NOT_APPLICABLE',
+    evidenceReference: 'external.inventory.object-storage.v1',
+    evidenceSha256: 'c'.repeat(64),
+    evidenceAt: '2026-10-29T04:00:00.000Z',
+    dataOwnerReference: 'owner.data.v1',
+    infrastructureOwnerReference: ownerReference,
+    policyReference: 'policy.retention.v1',
+    reason: 'Authoritative provider inventory found no matching copies',
+  };
+
+  function signatureFor(claims: ExternalCopyCoverageEvidenceAttestationPayload): string {
+    return sign(null, Buffer.from(canonicalizeExternalCopyCoverageEvidenceAttestation(claims), 'utf8'), privateKey)
+      .toString('base64url');
+  }
+
+  it('accepts a trusted signature bound to store kind, disposition, scope and evidence digest', () => {
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), trustedKeys)).not.toThrow();
+  });
+
+  it('rejects replay against a different store type or evidence digest', () => {
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(
+      { ...payload, storeKind: 'VECTOR_STORE' }, signatureFor(payload), trustedKeys,
+    )).toThrow(BadRequestException);
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(
+      { ...payload, evidenceSha256: 'd'.repeat(64) }, signatureFor(payload), trustedKeys,
+    )).toThrow(BadRequestException);
+  });
+
+  it('fails closed when the configured signer is revoked or the trust store is unavailable', () => {
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), '[]'))
+      .toThrow(BadRequestException);
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(payload, signatureFor(payload), undefined))
+      .toThrow(ServiceUnavailableException);
+  });
+
+  it('requires the signer to be one of the declared data or infrastructure owners', () => {
+    const unrelated = { ...payload, attestationOwnerReference: 'owner.unrelated.v1' };
+    expect(() => verifyExternalCopyCoverageEvidenceAttestation(unrelated, signatureFor(unrelated), trustedKeys))
+      .toThrow(BadRequestException);
   });
 });

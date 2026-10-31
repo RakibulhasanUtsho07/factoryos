@@ -18,7 +18,8 @@ import {
   REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
 } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
-import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
+import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
+  verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
@@ -45,7 +46,8 @@ type CopyCoverageRow = QueryResultRow & {
   decision_id: string; tenant_id: string; category_code: SaasTransferDatasetCategory;
   store_kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]; revision: string | number;
   disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
-  evidence_reference: string; evidence_sha256: string; evidence_at: string;
+  evidence_reference: string; evidence_sha256: string; evidence_at: string; reason: string;
+  attestation_key_id: string | null; attestation_owner_reference: string | null; attestation_signature: string | null;
   data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
   reviewed_by_user_id: string | null; valid_until: string | null;
@@ -325,7 +327,7 @@ export class SaasTenantPropagationService {
          ORDER BY category_code,store_kind,revision DESC`,
         [tenantId, categories],
       );
-      this.assertTargetCoverage(categories, targets, coverageResult.rows);
+      await this.assertTargetCoverage(categories, targets, coverageResult.rows);
       const copyCoverageManifest = this.copyCoverageManifest(coverageResult.rows);
       const copyCoverageDigest = this.hash(copyCoverageManifest);
       const backupCopyClassResult = await client.query<BackupCopyClassCoverageRow>(
@@ -756,7 +758,7 @@ export class SaasTenantPropagationService {
       );
       let coverageSnapshotValid = finalTargetsActive;
       try {
-        this.assertTargetCoverage(finalCategories, finalTargets, finalCoverageResult.rows);
+        await this.assertTargetCoverage(finalCategories, finalTargets, finalCoverageResult.rows);
         this.assertBackupCopyClassCoverage(finalCategories, finalTargets, finalBackupCopyClassResult.rows);
       } catch {
         coverageSnapshotValid = false;
@@ -1079,19 +1081,53 @@ export class SaasTenantPropagationService {
     return { tenantId: row.tenant_id, targetId: row.target_id, storeKind: row.store_kind, adapterKey: row.adapter_key,
       configReference: row.config_reference, categories: this.parseCategories(row.categories), required: row.required };
   }
-  private assertTargetCoverage(categories: SaasTransferDatasetCategory[], targets: SaasTenantExternalDataTarget[], decisions: CopyCoverageRow[]) {
+  private async assertTargetCoverage(
+    categories: SaasTransferDatasetCategory[],
+    targets: SaasTenantExternalDataTarget[],
+    decisions: CopyCoverageRow[],
+  ): Promise<void> {
     const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.store_kind, decision]));
     for (const category of categories) for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) {
       const decision = latest.get(category + ':' + kind);
+      const evidenceAge = decision ? Date.now() - new Date(decision.evidence_at).getTime() : Number.POSITIVE_INFINITY;
       if (!decision || decision.status !== 'ACCEPTED' || !decision.reviewed_by_user_id
         || decision.reviewed_by_user_id === decision.submitted_by_user_id || !decision.valid_until
         || new Date(decision.valid_until).getTime() <= Date.now()
-        || !HEX_DIGEST.test(decision.evidence_sha256) || !SAFE_REFERENCE.test(decision.evidence_reference)
+        || evidenceAge < -5 * 60 * 1000 || evidenceAge > 30 * 24 * 60 * 60 * 1000
+        || !HEX_DIGEST.test(decision.evidence_sha256) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(decision.evidence_reference)
         || !SAFE_REFERENCE.test(decision.data_owner_reference) || !SAFE_REFERENCE.test(decision.infrastructure_owner_reference)
-        || !SAFE_REFERENCE.test(decision.policy_reference)) {
-        throw new ConflictException('External propagation requires current independently reviewed copy-class coverage for ' + category + '/' + kind);
+        || !SAFE_REFERENCE.test(decision.policy_reference)
+        || !decision.attestation_key_id || !decision.attestation_owner_reference || !decision.attestation_signature) {
+        throw new ConflictException('External propagation requires current independently reviewed signed copy-class coverage for ' + category + '/' + kind);
       }
-      if (decision.disposition === 'UNRESOLVED') throw new ConflictException('Unresolved external copy class blocks whole-tenant erasure: ' + category + '/' + kind);
+      const attestation: ExternalCopyCoverageEvidenceAttestationPayload = {
+        attestationKeyId: decision.attestation_key_id,
+        attestationOwnerReference: decision.attestation_owner_reference,
+        tenantId: decision.tenant_id,
+        categoryCode: decision.category_code,
+        storeKind: decision.store_kind,
+        disposition: decision.disposition,
+        evidenceReference: decision.evidence_reference,
+        evidenceSha256: decision.evidence_sha256,
+        evidenceAt: new Date(decision.evidence_at).toISOString(),
+        dataOwnerReference: decision.data_owner_reference,
+        infrastructureOwnerReference: decision.infrastructure_owner_reference,
+        policyReference: decision.policy_reference,
+        reason: decision.reason,
+      };
+      try {
+        // The deployment trust store is read on each preflight, resume and provider checkpoint.
+        verifyExternalCopyCoverageEvidenceAttestation(attestation, decision.attestation_signature);
+      } catch (error) {
+        if (error instanceof ServiceUnavailableException) throw error;
+        throw new ConflictException('External copy-coverage evidence attestation is invalid or its signer is no longer trusted for '
+          + category + '/' + kind);
+      }
+      // Re-read the same evidence bytes from the read-only deployment evidence root each time.
+      await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+      if (decision.disposition === 'UNRESOLVED') {
+        throw new ConflictException('Unresolved external copy class blocks whole-tenant erasure: ' + category + '/' + kind);
+      }
       const matching = targets.filter((target) => target.storeKind === kind && target.categories.includes(category));
       if (decision.disposition === 'SUPPORTED' && matching.length === 0) {
         throw new ConflictException('Copy class is marked supported but has no active required target: ' + category + '/' + kind);
@@ -1107,8 +1143,10 @@ export class SaasTenantPropagationService {
       decisionId: d.decision_id, categoryCode: d.category_code, storeKind: d.store_kind,
       revision: String(d.revision), disposition: d.disposition, status: d.status,
       evidenceReference: d.evidence_reference, evidenceSha256: d.evidence_sha256,
-      evidenceAt: new Date(d.evidence_at).toISOString(), dataOwnerReference: d.data_owner_reference,
-      infrastructureOwnerReference: d.infrastructure_owner_reference, policyReference: d.policy_reference,
+      evidenceAt: new Date(d.evidence_at).toISOString(), attestationKeyId: d.attestation_key_id,
+      attestationOwnerReference: d.attestation_owner_reference, attestationSignature: d.attestation_signature,
+      dataOwnerReference: d.data_owner_reference, infrastructureOwnerReference: d.infrastructure_owner_reference,
+      policyReference: d.policy_reference, reason: d.reason,
       submittedByUserId: d.submitted_by_user_id, reviewedByUserId: d.reviewed_by_user_id,
       validUntil: d.valid_until ? new Date(d.valid_until).toISOString() : null,
     })).sort((a, b) => {
@@ -1235,7 +1273,7 @@ export class SaasTenantPropagationService {
         'SELECT DISTINCT ON (category_code,store_kind) * FROM public.saas_tenant_external_copy_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,store_kind,revision DESC',
         [tenantId, categories],
       );
-      this.assertTargetCoverage(categories, targets, result.rows);
+      await this.assertTargetCoverage(categories, targets, result.rows);
       const backupCopyClasses = await client.query<BackupCopyClassCoverageRow>(
         'SELECT DISTINCT ON (category_code,copy_class_code) * FROM public.saas_tenant_backup_copy_class_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,copy_class_code,revision DESC',
         [tenantId, categories],

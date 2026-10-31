@@ -19,6 +19,14 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
       - 'migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql'
+      - 'migrations/231_saas_external_copy_coverage_evidence_attestation.sql'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
+      - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
       - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
       - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
       - 'services/api/src/saas/saas-tenant-propagation.service.ts'
@@ -78,6 +86,14 @@ on:
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
       - 'migrations/230_saas_tenant_backup_copy_class_catalog_expansion.sql'
+      - 'migrations/231_saas_external_copy_coverage_evidence_attestation.sql'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-external-copy-coverage.service.spec.ts'
+      - 'services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.ts'
+      - 'services/api/src/saas/backup-copy-class-evidence-attestation.spec.ts'
+      - 'scripts/security/sign-external-copy-coverage-evidence.mjs'
+      - 'scripts/security/sign-external-copy-coverage-evidence.test.mjs'
       - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
       - 'services/api/src/saas/backup-copy-class-coverage.constants.ts'
       - 'services/api/src/saas/saas-tenant-propagation.service.ts'
@@ -153,4 +169,4 @@ jobs:
           node --check scripts/security/require-supported-kubernetes-version.test.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.test.mjs
-          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
+          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs

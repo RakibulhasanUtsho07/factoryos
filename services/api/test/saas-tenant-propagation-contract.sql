@@ -195,14 +195,15 @@ INSERT INTO users (id,external_subject,email,display_name,status) VALUES
 
 INSERT INTO saas_tenant_external_copy_coverage_decisions
  (decision_id,tenant_id,category_code,store_kind,revision,disposition,evidence_reference,evidence_sha256,evidence_at,
+  attestation_key_id,attestation_owner_reference,attestation_signature,
   data_owner_reference,infrastructure_owner_reference,policy_reference,reason,status,idempotency_key,request_hash,submitted_by_user_id)
 VALUES
  ('16060000-0000-4000-8000-000000000001','16000000-0000-4000-8000-000000000001','BUSINESS_DATA','OBJECT_STORAGE',1,
-  'SUPPORTED','evidence-copycoverage-a-160',repeat('a',64),clock_timestamp(),'owner-data-a-160','owner-infra-a-160',
-  'policy-retention-a-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-a-160',repeat('e',64),'16010000-0000-4000-8000-000000000001'),
+  'SUPPORTED','evidence-copycoverage-a-160',repeat('a',64),clock_timestamp(),'copy-owner-key-ci-160','owner-infra-a-160',repeat('A',86),
+  'owner-data-a-160','owner-infra-a-160','policy-retention-a-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-a-160',repeat('e',64),'16010000-0000-4000-8000-000000000001'),
  ('16060000-0000-4000-8000-000000000002','16000000-0000-4000-8000-000000000002','BUSINESS_DATA','OBJECT_STORAGE',1,
-  'SUPPORTED','evidence-copycoverage-b-160',repeat('b',64),clock_timestamp(),'owner-data-b-160','owner-infra-b-160',
-  'policy-retention-b-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-b-160',repeat('f',64),'16010000-0000-4000-8000-000000000002');
+  'SUPPORTED','evidence-copycoverage-b-160',repeat('b',64),clock_timestamp(),'copy-owner-key-ci-160','owner-infra-b-160',repeat('A',86),
+  'owner-data-b-160','owner-infra-b-160','policy-retention-b-160','Synthetic pending copy-class fixture','PENDING','copy-coverage-b-160',repeat('f',64),'16010000-0000-4000-8000-000000000002');
 
 INSERT INTO saas_tenant_backup_copy_class_coverage_decisions
  (decision_id,tenant_id,category_code,copy_class_code,revision,disposition,evidence_reference,evidence_sha256,evidence_at,
@@ -318,6 +319,25 @@ BEGIN
     IF guard_message NOT LIKE '%external copy inventory is frozen while a propagation run is RUNNING%' THEN RAISE; END IF;
   END;
 END $$;
+
+-- External copy-coverage signing claims must also be immutable while pending.
+DO $
+DECLARE
+  guard_message text;
+BEGIN
+  BEGIN
+    UPDATE saas_tenant_external_copy_coverage_decisions
+       SET attestation_signature=repeat('B',86),status='REJECTED',
+           reviewed_by_user_id='16010000-0000-4000-8000-000000000002',
+           review_reason='Negative immutable-signature SQL test',reviewed_at=clock_timestamp()
+     WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+       AND decision_id='16060000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'pending external copy-coverage signature was mutable';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
+    IF guard_message NOT LIKE '%external copy-class evidence and scope are immutable after submission%' THEN RAISE; END IF;
+  END;
+END $;
 
 -- The evidence signer metadata is immutable even while a decision is still pending.
 DO $$

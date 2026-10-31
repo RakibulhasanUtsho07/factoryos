@@ -148,3 +148,78 @@ export function verifyBackupCopyClassEvidenceAttestation(
     throw new BadRequestException('backup copy-class evidence attestation signature does not match the submitted claims');
   }
 }
+
+
+export interface ExternalCopyCoverageEvidenceAttestationPayload {
+  attestationKeyId: string;
+  attestationOwnerReference: string;
+  tenantId: string;
+  categoryCode: string;
+  storeKind: string;
+  disposition: string;
+  evidenceReference: string;
+  evidenceSha256: string;
+  evidenceAt: string;
+  dataOwnerReference: string;
+  infrastructureOwnerReference: string;
+  policyReference: string;
+  reason: string;
+}
+
+/** Stable v1 signature contract for the external store-kind coverage registry. */
+export function canonicalizeExternalCopyCoverageEvidenceAttestation(
+  payload: ExternalCopyCoverageEvidenceAttestationPayload,
+): string {
+  return JSON.stringify({
+    schema: 'factoryos.external-copy-coverage-evidence-attestation/v1',
+    attestationKeyId: payload.attestationKeyId,
+    attestationOwnerReference: payload.attestationOwnerReference,
+    tenantId: payload.tenantId.toLowerCase(),
+    categoryCode: payload.categoryCode,
+    storeKind: payload.storeKind,
+    disposition: payload.disposition,
+    evidenceReference: payload.evidenceReference,
+    evidenceSha256: payload.evidenceSha256,
+    evidenceAt: payload.evidenceAt,
+    dataOwnerReference: payload.dataOwnerReference,
+    infrastructureOwnerReference: payload.infrastructureOwnerReference,
+    policyReference: payload.policyReference,
+    reason: payload.reason,
+  });
+}
+
+export function verifyExternalCopyCoverageEvidenceAttestation(
+  payload: ExternalCopyCoverageEvidenceAttestationPayload,
+  signatureValue: string,
+  trustedKeysJson: string | undefined = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON,
+): void {
+  if (!KEY_ID.test(payload.attestationKeyId)) {
+    throw new BadRequestException('attestation_key_id is invalid');
+  }
+  if (!SAFE_REFERENCE.test(payload.attestationOwnerReference) || payload.attestationOwnerReference.includes('://')) {
+    throw new BadRequestException('attestation_owner_reference is invalid');
+  }
+  if (payload.attestationOwnerReference !== payload.dataOwnerReference
+    && payload.attestationOwnerReference !== payload.infrastructureOwnerReference) {
+    throw new BadRequestException('attestation owner must match a declared data or infrastructure owner');
+  }
+  if (!SIGNATURE.test(signatureValue)) {
+    throw new BadRequestException('attestation_signature must be a canonical Ed25519 base64url signature');
+  }
+
+  const trustedKey = loadTrustedEvidenceKeys(trustedKeysJson).get(payload.attestationKeyId);
+  if (!trustedKey) throw new BadRequestException('attestation_key_id is not trusted by this deployment');
+  if (trustedKey.ownerReference !== payload.attestationOwnerReference) {
+    throw new BadRequestException('attestation key is not authorized for this evidence owner');
+  }
+
+  const signature = Buffer.from(signatureValue, 'base64url');
+  if (signature.length !== 64 || signature.toString('base64url') !== signatureValue) {
+    throw new BadRequestException('attestation_signature is not a canonical Ed25519 signature');
+  }
+  const publicKey = createPublicKey(trustedKey.publicKeyPem);
+  const message = Buffer.from(canonicalizeExternalCopyCoverageEvidenceAttestation(payload), 'utf8');
+  if (!verify(null, message, publicKey, signature)) {
+    throw new BadRequestException('external copy-coverage evidence attestation signature does not match the submitted claims');
+  }
+}

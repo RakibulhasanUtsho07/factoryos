@@ -6,6 +6,8 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import { verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import { CreateSaasExternalCopyCoverageDto } from './dto/create-saas-external-copy-coverage.dto';
 import { ReviewSaasExternalCopyCoverageDto } from './dto/review-saas-external-copy-coverage.dto';
@@ -14,7 +16,8 @@ type CoverageDisposition='SUPPORTED'|'NOT_APPLICABLE'|'UNRESOLVED';
 interface CoverageRow extends QueryResultRow {
  decision_id:string; tenant_id:string; category_code:SaasTransferDatasetCategory;
  store_kind:(typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]; revision:string|number; disposition:CoverageDisposition;
- evidence_reference:string; evidence_sha256:string; evidence_at:string; data_owner_reference:string;
+ evidence_reference:string; evidence_sha256:string; evidence_at:string; attestation_key_id:string|null;
+ attestation_owner_reference:string|null; attestation_signature:string|null; data_owner_reference:string;
  infrastructure_owner_reference:string; policy_reference:string; reason:string; status:CoverageStatus;
  idempotency_key:string; request_hash:string; submitted_by_user_id:string; reviewed_by_user_id:string|null;
  review_reason:string|null; submitted_at:string; reviewed_at:string|null; valid_until:string|null;
@@ -25,14 +28,15 @@ const EVIDENCE_MAX_AGE_MS=30*24*60*60*1000;
 const MAX_CLOCK_SKEW_MS=5*60*1000;
 @Injectable()
 export class SaasTenantExternalCopyCoverageService {
- constructor(private readonly database:DatabaseService,private readonly iamService:IamService,private readonly auditService:AuditService){}
+ constructor(private readonly database:DatabaseService,private readonly iamService:IamService,private readonly auditService:AuditService,
+  private readonly evidenceArtifactReader:BackupCopyClassEvidenceArtifactReader){}
  async createDecision(tenantValue:string,actorValue:string,input:CreateSaasExternalCopyCoverageDto){
   const tenantId=this.uuid(tenantValue,'tenantId'),actorUserId=this.uuid(actorValue,'actorUserId');
   await this.iamService.authorize(actorUserId,tenantId,'saas.data_retention.write');
   const category=this.category(input?.category_code),storeKind=input?.store_kind,disposition=input?.disposition;
   if(!REQUIRED_EXTERNAL_STORE_KINDS.includes(storeKind))throw new BadRequestException('store_kind is invalid');
   if(!['SUPPORTED','NOT_APPLICABLE','UNRESOLVED'].includes(disposition))throw new BadRequestException('disposition is invalid');
-  const evidenceReference=this.reference(input?.evidence_reference,'evidence_reference');
+  const evidenceReference=this.artifactReference(input?.evidence_reference);
   const evidenceSha256=this.digest(input?.evidence_sha256,'evidence_sha256');
   const evidenceAt=new Date(input?.evidence_at??'');
   if(!Number.isFinite(evidenceAt.getTime()))throw new BadRequestException('evidence_at must be a valid timestamp');
@@ -40,10 +44,19 @@ export class SaasTenantExternalCopyCoverageService {
   if(age < -MAX_CLOCK_SKEW_MS||age>EVIDENCE_MAX_AGE_MS)throw new BadRequestException('copy-class evidence must be no more than 30 days old and cannot be from the future');
   const dataOwnerReference=this.reference(input?.data_owner_reference,'data_owner_reference');
   const infrastructureOwnerReference=this.reference(input?.infrastructure_owner_reference,'infrastructure_owner_reference');
+  const attestationKeyId=this.keyId(input?.attestation_key_id);
+  const attestationOwnerReference=this.reference(input?.attestation_owner_reference,'attestation_owner_reference');
+  const attestationSignature=this.signature(input?.attestation_signature);
   const policyReference=this.reference(input?.policy_reference,'policy_reference');
   const reason=this.requiredString(input?.reason,'reason',1000,3),idempotencyKey=this.idempotencyKey(input?.idempotency_key);
-  const requestHash=this.hash({operation:'EXTERNAL_COPY_COVERAGE',category,storeKind,disposition,evidenceReference,evidenceSha256,
-   evidenceAt:evidenceAt.toISOString(),dataOwnerReference,infrastructureOwnerReference,policyReference,reason});
+  const attestation:ExternalCopyCoverageEvidenceAttestationPayload={
+   attestationKeyId,attestationOwnerReference,tenantId,categoryCode:category,storeKind,disposition,
+   evidenceReference,evidenceSha256,evidenceAt:evidenceAt.toISOString(),dataOwnerReference,
+   infrastructureOwnerReference,policyReference,reason,
+  };
+  verifyExternalCopyCoverageEvidenceAttestation(attestation,attestationSignature);
+  await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
+  const requestHash=this.hash({operation:'EXTERNAL_COPY_COVERAGE',...attestation,attestationSignature});
   const result=await this.database.transaction(async(client)=>{
    await this.lockTenant(client,tenantId);
    const replay=await client.query<CoverageRow>(
@@ -62,11 +75,14 @@ export class SaasTenantExternalCopyCoverageService {
    if(!Number.isSafeInteger(revision)||revision<1)throw new ConflictException('Copy-class coverage revision is outside supported bounds');
    const decisionId=randomUUID();
    const inserted=await client.query<CoverageRow>(
-    "INSERT INTO public.saas_tenant_external_copy_coverage_decisions (decision_id,tenant_id,category_code,store_kind,revision,disposition,evidence_reference,evidence_sha256,evidence_at,data_owner_reference,infrastructure_owner_reference,policy_reference,reason,status,idempotency_key,request_hash,submitted_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'PENDING',$14,$15,$16) RETURNING *",
-    [decisionId,tenantId,category,storeKind,revision,disposition,evidenceReference,evidenceSha256,evidenceAt.toISOString(),dataOwnerReference,infrastructureOwnerReference,policyReference,reason,idempotencyKey,requestHash,actorUserId]);
+    "INSERT INTO public.saas_tenant_external_copy_coverage_decisions (decision_id,tenant_id,category_code,store_kind,revision,disposition,evidence_reference,evidence_sha256,evidence_at,attestation_key_id,attestation_owner_reference,attestation_signature,data_owner_reference,infrastructure_owner_reference,policy_reference,reason,status,idempotency_key,request_hash,submitted_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'PENDING',$17,$18,$19) RETURNING *",
+    [decisionId,tenantId,category,storeKind,revision,disposition,evidenceReference,evidenceSha256,evidenceAt.toISOString(),
+     attestationKeyId,attestationOwnerReference,attestationSignature,dataOwnerReference,infrastructureOwnerReference,policyReference,reason,idempotencyKey,requestHash,actorUserId]);
    await this.auditService.recordWithClient(client,{tenantId,factoryId:null,actorUserId,eventType:'SAAS_DATA_GOVERNANCE',
     action:'EXTERNAL_COPY_COVERAGE_SUBMITTED',resourceType:'SAAS_EXTERNAL_COPY_COVERAGE',resourceId:decisionId,correlationId:null,requestId:null,dataClass:'RESTRICTED',
-    payload:{category,storeKind,disposition,revision,evidenceReference,evidenceSha256,evidenceAt:evidenceAt.toISOString(),dataOwnerReference,infrastructureOwnerReference,policyReference}});
+    payload:{category,storeKind,disposition,revision,evidenceReference,evidenceSha256,evidenceAt:evidenceAt.toISOString(),
+     attestationKeyId,attestationOwnerReference,attestationSignatureSha256:createHash('sha256').update(attestationSignature).digest('hex'),
+     dataOwnerReference,infrastructureOwnerReference,policyReference}});
    return {row:inserted.rows[0]!,replayed:false};
   },{tenantId,userId:actorUserId,advisoryLockKey:'saas-external-copy-coverage:'+tenantId+':'+category+':'+storeKind});
   return {decision:this.map(result.row),replayed:result.replayed};
@@ -89,6 +105,18 @@ export class SaasTenantExternalCopyCoverageService {
    if(latest.rows[0]?.decision_id!==current.decision_id)throw new ConflictException('A newer copy-class coverage revision exists; reload before review');
    const age=Date.now()-new Date(current.evidence_at).getTime();
    if(age < -MAX_CLOCK_SKEW_MS||age>EVIDENCE_MAX_AGE_MS)throw new ConflictException('Copy-class evidence expired before review');
+   if(input.decision==='ACCEPT'){
+    if(!current.attestation_key_id||!current.attestation_owner_reference||!current.attestation_signature)
+     throw new ConflictException('Unsigned legacy external copy-coverage evidence cannot be accepted');
+    verifyExternalCopyCoverageEvidenceAttestation({
+     attestationKeyId:current.attestation_key_id,attestationOwnerReference:current.attestation_owner_reference,
+     tenantId:current.tenant_id,categoryCode:current.category_code,storeKind:current.store_kind,disposition:current.disposition,
+     evidenceReference:current.evidence_reference,evidenceSha256:current.evidence_sha256,
+     evidenceAt:new Date(current.evidence_at).toISOString(),dataOwnerReference:current.data_owner_reference,
+     infrastructureOwnerReference:current.infrastructure_owner_reference,policyReference:current.policy_reference,reason:current.reason,
+    },current.attestation_signature);
+    await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+   }
    const status:CoverageStatus=input.decision==='ACCEPT'?'ACCEPTED':'REJECTED';
    const validUntil=status==='ACCEPTED'?new Date(Date.now()+89*24*60*60*1000).toISOString():null;
    const updated=await client.query<CoverageRow>(
@@ -116,6 +144,7 @@ export class SaasTenantExternalCopyCoverageService {
   return {decisionId:row.decision_id,categoryCode:row.category_code,storeKind:row.store_kind,revision:Number(row.revision),
    disposition:row.disposition,status:row.status,evidenceReference:row.evidence_reference,evidenceSha256:row.evidence_sha256,
    evidenceAt:new Date(row.evidence_at).toISOString(),dataOwnerReference:row.data_owner_reference,infrastructureOwnerReference:row.infrastructure_owner_reference,
+   attestationKeyId:row.attestation_key_id,attestationOwnerReference:row.attestation_owner_reference,
    policyReference:row.policy_reference,reason:row.reason,submittedByUserId:row.submitted_by_user_id,reviewedByUserId:row.reviewed_by_user_id,
    reviewReason:row.review_reason,submittedAt:new Date(row.submitted_at).toISOString(),reviewedAt:row.reviewed_at?new Date(row.reviewed_at).toISOString():null,
    validUntil:row.valid_until?new Date(row.valid_until).toISOString():null};
@@ -123,6 +152,15 @@ export class SaasTenantExternalCopyCoverageService {
  private category(value:unknown):SaasTransferDatasetCategory{
   if(typeof value!=='string'||!Object.values(SaasTransferDatasetCategory).includes(value as SaasTransferDatasetCategory))throw new BadRequestException('category_code is invalid');
   return value as SaasTransferDatasetCategory;
+ }
+ private artifactReference(value:unknown):string{
+  if(typeof value!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value))throw new BadRequestException('evidence_reference must be a single opaque artifact identifier, not a path or URL');return value;
+ }
+ private keyId(value:unknown):string{
+  if(typeof value!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(value))throw new BadRequestException('attestation_key_id is invalid');return value;
+ }
+ private signature(value:unknown):string{
+  if(typeof value!=='string'||!/^[A-Za-z0-9_-]{86}$/.test(value))throw new BadRequestException('attestation_signature must be a canonical Ed25519 base64url signature');return value;
  }
  private reference(value:unknown,name:string):string{
   if(typeof value!=='string'||!SAFE_REFERENCE.test(value)||value.includes('://')||/(secret|password|credential|access[-_]?key|token)/i.test(value))throw new BadRequestException(name+' must be a non-secret opaque reference');

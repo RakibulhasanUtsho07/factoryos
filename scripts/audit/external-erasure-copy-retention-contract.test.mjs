@@ -412,3 +412,36 @@ test('canonical backup copy-class catalog covers documented backup and secondary
   assert.match(runbook, /NOT_APPLICABLE` decision is valid only when the signed evidence pack proves the relevant inventory scope was exhaustively enumerated/);
   assert.match(runbook, /UNCLASSIFIED_EXTERNAL_COPY/);
 });
+
+
+test('external copy-coverage decisions require trusted signatures and exact source-byte read-back', async () => {
+  const migration = await readRepoFile('migrations/231_saas_external_copy_coverage_evidence_attestation.sql');
+  const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
+  const apiWorkflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
+  const sqlContract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
+  const source = await readRepoFile('services/api/src/saas/saas-tenant-external-copy-coverage.service.ts');
+  const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+  const attestation = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
+  const dto = await readRepoFile('services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts');
+  const signer = await readRepoFile('scripts/security/sign-external-copy-coverage-evidence.mjs');
+  const runbook = await readRepoFile(RUNBOOK);
+  assert.ok(migration.includes('attestation_key_id') && migration.includes('attestation_owner_reference') && migration.includes('attestation_signature'));
+  assert.ok(migration.includes('new external copy-class coverage requires signed opaque evidence'));
+  assert.ok(migration.includes('unsigned legacy external copy-class evidence cannot be accepted'));
+  assert.ok(migration.includes('IS DISTINCT FROM'));
+  assert.ok(manifest.split(/\r?\n/).includes('migrations/231_saas_external_copy_coverage_evidence_attestation.sql'));
+  assert.ok(apiWorkflow.includes('migrations/231_saas_external_copy_coverage_evidence_attestation.sql'));
+  assert.ok(sqlContract.includes('attestation_key_id,attestation_owner_reference,attestation_signature'));
+  assert.ok(sqlContract.includes('pending external copy-coverage signature was mutable'));
+  assert.ok(migration.includes('attestation_key_id IS NOT NULL') && migration.includes('attestation_signature IS NOT NULL'));
+  assert.ok(dto.includes('attestation_signature') && dto.includes('attestation_key_id'));
+  assert.ok(source.includes('verifyExternalCopyCoverageEvidenceAttestation'));
+  assert.ok(source.includes('evidenceArtifactReader.verifyArtifact'));
+  assert.ok(source.includes('Unsigned legacy external copy-coverage evidence cannot be accepted'));
+  assert.ok(propagation.includes('await this.assertTargetCoverage'));
+  assert.ok(propagation.includes('External copy-coverage evidence attestation is invalid'));
+  assert.ok(propagation.includes('await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256)'));
+  assert.ok(attestation.includes('factoryos.external-copy-coverage-evidence-attestation/v1'));
+  assert.ok(signer.includes('store_kind') && signer.includes('evidence_sha256'));
+  assert.ok(runbook.includes('Ed25519') && runbook.includes('read-back'));
+});

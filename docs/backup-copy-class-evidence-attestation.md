@@ -131,3 +131,20 @@ The signed `copy_class_code` is restricted to the API's required catalog, applie
 - `UNCLASSIFIED_EXTERNAL_COPY`
 
 The evidence artifact must provide exhaustive discovery scope and completion evidence, not just an inventory of known resources. Identify all relevant accounts/projects/regions/providers/control planes, source APIs and inventory tools, owner identities, query timestamps, pagination/continuation completion, resource counts, direct and indirect writer identities, delayed retries, replication and restore/DR paths. Reconcile every discovered resource to exactly one catalog class. A new or unmapped resource is `UNCLASSIFIED_EXTERNAL_COPY` and must remain `UNRESOLVED` until a reviewed catalog extension and class-specific procedure exists. A `NOT_APPLICABLE` assertion requires signed evidence that every authoritative source in the declared scope was queried successfully and returned no matching resources; missing or inaccessible sources, incomplete pagination, unknown writers or ambiguous ownership are not proof of absence. The API's static catalog and successful CI checks do not independently discover cloud/provider resources.
+
+
+## External store-kind coverage attestations
+
+The external copy-coverage registry uses a separate v1 schema, `factoryos.external-copy-coverage-evidence-attestation/v1`. Its signed claims bind tenant, category, store kind, disposition, opaque evidence artifact ID and SHA-256 digest, evidence timestamp, data/infrastructure owners, policy reference and reason. Do not reuse a backup `copy_class_code` signature for a `store_kind` decision.
+
+Generate the API body with:
+
+```sh
+node scripts/security/sign-external-copy-coverage-evidence.mjs \
+  --payload ./external-copy-coverage-request.json \
+  --evidence-file ./external-copy-inventory.json \
+  --private-key-file ./external-owner-ed25519-private.pem \
+  --tenant-id 00000000-0000-4000-8000-000000000001
+```
+
+The signer verifies the local artifact digest and rejects URL/path references. The API independently verifies the deployment trust registry and rereads the artifact from the read-only evidence root at submission, ACCEPT review and every propagation preflight, resume, finalization and provider checkpoint. A legacy unsigned external coverage row remains available for audit but cannot be accepted or authorize propagation. The signing key must remain with the evidence owner and must never be deployed to the API process.

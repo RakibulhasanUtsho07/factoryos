@@ -8,7 +8,8 @@ import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evide
 import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
-import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
+import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
+  canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
@@ -40,6 +41,26 @@ const backupEvidenceTrust = JSON.stringify([{
   ownerReference: backupEvidenceOwner,
   publicKeyPem: backupEvidencePublicKey.export({ type: 'spki', format: 'pem' }).toString(),
 }]);
+function signExternalCopyCoverageRow(row: Record<string, unknown>) {
+  const payload: ExternalCopyCoverageEvidenceAttestationPayload = {
+    attestationKeyId: String(row.attestation_key_id),
+    attestationOwnerReference: String(row.attestation_owner_reference),
+    tenantId: String(row.tenant_id),
+    categoryCode: String(row.category_code),
+    storeKind: String(row.store_kind),
+    disposition: String(row.disposition),
+    evidenceReference: String(row.evidence_reference),
+    evidenceSha256: String(row.evidence_sha256),
+    evidenceAt: new Date(row.evidence_at as string | Date).toISOString(),
+    dataOwnerReference: String(row.data_owner_reference),
+    infrastructureOwnerReference: String(row.infrastructure_owner_reference),
+    policyReference: String(row.policy_reference),
+    reason: String(row.reason),
+  };
+  row.attestation_signature = sign(null, Buffer.from(canonicalizeExternalCopyCoverageEvidenceAttestation(payload), 'utf8'), backupEvidencePrivateKey)
+    .toString('base64url');
+}
+
 function signBackupCopyClassRow(row: Record<string, unknown>) {
   const payload: BackupCopyClassEvidenceAttestationPayload = {
     attestationKeyId: String(row.attestation_key_id),
@@ -85,6 +106,7 @@ describe('SaasTenantPropagationService external saga', () => {
   const storedResourceItems: Record<string, unknown>[] = [];
   const storedResourceEvents: Record<string, unknown>[] = [];
   let backupCopyClassRows: Record<string, unknown>[] = [];
+  let externalCopyCoverageRows: Record<string, unknown>[] = [];
   let operationSequence = 0;
   let firstFenceOrder = 0;
   let firstPrepareOrder = 0;
@@ -153,6 +175,7 @@ describe('SaasTenantPropagationService external saga', () => {
     storedResourceItems.length = 0;
     storedResourceEvents.length = 0;
     backupCopyClassRows = [];
+    externalCopyCoverageRows = [];
     operationSequence = 0;
     firstFenceOrder = 0;
     firstPrepareOrder = 0;
@@ -170,24 +193,26 @@ describe('SaasTenantPropagationService external saga', () => {
       reviewed_at: '2026-10-20T10:00:00.000Z', review_reason: 'Approved for integration test',
       created_at: '2026-10-20T09:00:00.000Z', updated_at: '2026-10-20T10:00:00.000Z',
     }));
-    const copyCoverageRows = REQUIRED_EXTERNAL_STORE_KINDS.map((kind, index) => ({
-      decision_id: `16060000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
-      tenant_id: tenant,
-      category_code: 'BUSINESS_DATA',
-      store_kind: kind,
-      revision: 1,
-      disposition: 'SUPPORTED',
-      evidence_reference: `evidence.copy-coverage.${kind.toLowerCase()}`,
-      evidence_sha256: 'a'.repeat(64),
-      evidence_at: new Date().toISOString(),
-      data_owner_reference: `owner.data.${kind.toLowerCase()}`,
-      infrastructure_owner_reference: `owner.infra.${kind.toLowerCase()}`,
-      policy_reference: `policy.retention.${kind.toLowerCase()}`,
-      status: 'ACCEPTED',
-      submitted_by_user_id: requester,
-      reviewed_by_user_id: reviewer,
-      valid_until: '2099-01-01T00:00:00.000Z',
-    }));
+    externalCopyCoverageRows = REQUIRED_EXTERNAL_STORE_KINDS.map((kind, index) => {
+      const evidenceReference = `evidence.external-copy-coverage.${kind.toLowerCase()}`;
+      const evidenceBytes = Buffer.from(`Synthetic external copy coverage evidence for ${kind}; tenant ${tenant}; fixture v1`, 'utf8');
+      const evidencePath = join(backupEvidenceRoot, evidenceReference);
+      writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
+      chmodSync(evidencePath, 0o444);
+      const row: Record<string, unknown> = {
+        decision_id: `16060000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        tenant_id: tenant, category_code: 'BUSINESS_DATA', store_kind: kind, revision: 1,
+        disposition: 'SUPPORTED', evidence_reference: evidenceReference,
+        evidence_sha256: createHash('sha256').update(evidenceBytes).digest('hex'), evidence_at: new Date().toISOString(),
+        attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
+        data_owner_reference: `owner.data.${kind.toLowerCase()}`, infrastructure_owner_reference: backupEvidenceOwner,
+        policy_reference: `policy.retention.${kind.toLowerCase()}`, reason: 'Synthetic signed external inventory fixture',
+        status: 'ACCEPTED', submitted_by_user_id: requester, reviewed_by_user_id: reviewer,
+        valid_until: '2099-01-01T00:00:00.000Z',
+      };
+      signExternalCopyCoverageRow(row);
+      return row;
+    });
     backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => {
       const evidenceReference = `evidence.backup-copy-class.${copyClass.toLowerCase()}`;
       const evidenceBytes = Buffer.from(`Synthetic evidence pack for ${copyClass}; tenant ${tenant}; fixture v1`, 'utf8');
@@ -247,7 +272,7 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
-      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: copyCoverageRows };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: externalCopyCoverageRows };
       if (sql.includes('FROM public.saas_tenant_backup_copy_class_coverage_decisions')) return { rows: backupCopyClassRows };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifests')) {
@@ -336,6 +361,35 @@ describe('SaasTenantPropagationService external saga', () => {
     });
     const testMountVerifier: BackupCopyEvidenceMountVerifier = { assertPathMountedReadOnly: async () => undefined };
     service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(testMountVerifier as never), adapterMocks as never, backupFenceCoordinator as never);
+  });
+
+  it('blocks propagation when an accepted external copy-coverage signature is tampered with', async () => {
+    const first = externalCopyCoverageRows[0];
+    const signature = String(first?.attestation_signature ?? '');
+    if (!signature) throw new Error('Signed external copy-coverage fixture is missing a signature');
+    first!.attestation_signature = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Tampered external copy coverage must block provider execution',
+      idempotency_key: 'external-propagation-tampered-copy-coverage-signature',
+    })).rejects.toThrow('External copy-coverage evidence attestation is invalid or its signer is no longer trusted');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks propagation when external copy-coverage evidence bytes no longer match the signed digest', async () => {
+    const first = externalCopyCoverageRows[0];
+    if (!first) throw new Error('External copy-coverage fixture is missing');
+    const evidenceReference = String(first.evidence_reference);
+    chmodSync(backupEvidenceRoot, 0o755);
+    writeFileSync(join(backupEvidenceRoot, evidenceReference), 'tampered external inventory bytes', { mode: 0o444 });
+    chmodSync(join(backupEvidenceRoot, evidenceReference), 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Changed external evidence bytes must block provider execution',
+      idempotency_key: 'external-propagation-tampered-copy-coverage-bytes',
+    })).rejects.toThrow('Backup copy-class evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
   it('fails closed when a backup copy class is unresolved', async () => {
