@@ -16,7 +16,8 @@ The manifest must include:
 - `scope`: four arrays of opaque, non-secret references: `provider_references`, `account_references`, `project_references`, and `region_references`. At least one provider, account or project reference is required.
 - `scope_sha256`: SHA-256 of the canonical scope object. Each discovery-source result must carry this same digest.
 - `inventory_complete: true`, `unclassified_store_count: 0`, and `discovered_store_kinds` containing only unique entries from the eight known store kinds.
-- `manifest_id`: a UUID unique to this inventory run. Every signed source receipt binds to this ID to prevent replay into another manifest.\n- `sources`: exactly one COMPLETE row for every required source kind below. Every row must say `pagination_exhausted: true`, report a positive `pages_fetched`, a non-negative `item_count`, an opaque source reference, a unique `collection_run_reference`, a SHA-256 result digest, the same `scope_sha256`, start/completion timestamps, `attestation_key_id`, `attestation_owner_reference`, and a canonical base64url Ed25519 `attestation_signature`.
+- `manifest_id`: a UUID unique to this inventory run. Every signed source receipt binds to this ID to prevent replay into another manifest.
+- `sources`: exactly one COMPLETE row for every required source kind below. Every row must say `pagination_exhausted: true`, report a positive `pages_fetched`, a non-negative `item_count`, an opaque source reference, a unique `collection_run_reference`, a SHA-256 result digest, the same `scope_sha256`, start/completion timestamps, `attestation_key_id`, `attestation_owner_reference`, and a canonical base64url Ed25519 `attestation_signature`.
 
 Required source kinds:
 
