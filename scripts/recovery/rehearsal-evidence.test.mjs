@@ -67,6 +67,7 @@ function sampleEvidence() {
       erasureReplayResiduals: 0,
       erasureReplaySqlSha256: 'e'.repeat(64),
       erasureVerificationSqlSha256: 'f'.repeat(64),
+      erasureVerificationMethod: 'INDEPENDENT_READ_ONLY',
       migrationRecoveryStatus: 'PASS',
     },
     measured: {
@@ -118,6 +119,7 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS: '0',
       FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256: 'e'.repeat(64),
       FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256: 'f'.repeat(64),
+      FACTORYOS_DR_ERASURE_VERIFY_METHOD: 'INDEPENDENT_READ_ONLY',
       FACTORYOS_DR_BACKUP_DURATION_SECONDS: '45',
       FACTORYOS_DR_RESTORE_DURATION_SECONDS: '120',
       FACTORYOS_DR_SOURCE_WATERMARK_UTC: '2026-10-20T09:59:50Z',
