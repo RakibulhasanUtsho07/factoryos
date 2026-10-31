@@ -26,7 +26,7 @@ function validateExternalInventoryManifest(bytes, body, tenantId) {
   let manifest;
   try { manifest = JSON.parse(bytes.toString('utf8')); } catch { fail('evidence is not valid JSON'); }
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)
-    || manifest.schema !== 'factoryos.external-store-inventory/v1'
+    || manifest.schema !== 'factoryos.external-store-inventory/v2'
     || typeof manifest.tenant_id !== 'string' || manifest.tenant_id.toLowerCase() !== tenantId.toLowerCase()
     || manifest.category_code !== body.category_code) fail('schema, tenant or category mismatch');
   const now = Date.now();
