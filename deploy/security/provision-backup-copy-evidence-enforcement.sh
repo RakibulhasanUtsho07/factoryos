@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 VALIDATOR="${REPO_ROOT}/scripts/security/validate-backup-copy-evidence-deployment.mjs"
 RUNTIME_PROBE="${REPO_ROOT}/scripts/security/probe-backup-copy-evidence-runtime.mjs"
+KUBERNETES_VERSION_CHECKER="${REPO_ROOT}/scripts/security/require-supported-kubernetes-version.mjs"
 SA_NAME="factoryos-backup-evidence-api"
 LABEL_KEY="factoryos.io/backup-evidence-enforcement"
 LABEL_VALUE="required"
@@ -28,7 +29,7 @@ actual_checkout_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   echo "Refusing checkout SHA '$actual_checkout_sha'; expected candidate '$CANDIDATE_SHA'" >&2
   exit 2
 }
-[[ -f "$VALIDATOR" && -f "$RUNTIME_PROBE" ]] || { echo "Run this script from a complete FactoryOS checkout" >&2; exit 2; }
+[[ -f "$VALIDATOR" && -f "$RUNTIME_PROBE" && -f "$KUBERNETES_VERSION_CHECKER" ]] || { echo "Run this script from a complete FactoryOS checkout" >&2; exit 2; }
 
 actual_context="$(kubectl config current-context)"
 [[ "$actual_context" == "$EXPECTED_KUBE_CONTEXT" ]] || {
@@ -36,19 +37,7 @@ actual_context="$(kubectl config current-context)"
   exit 2
 }
 
-kubectl version -o json | node -e '
-let input = "";
-process.stdin.on("data", (chunk) => input += chunk);
-process.stdin.on("end", () => {
-  const version = JSON.parse(input).serverVersion;
-  const major = Number(version.major);
-  const minor = Number.parseInt(version.minor, 10);
-  if (major !== 1 || !Number.isFinite(minor) || minor < 30) {
-    console.error("Kubernetes server v1.30+ is required for ValidatingAdmissionPolicy");
-    process.exit(1);
-  }
-});
-'
+kubectl version -o json | node "$KUBERNETES_VERSION_CHECKER"
 
 kubectl get namespace "$API_NAMESPACE" >/dev/null
 SA_MANIFEST="$SCRIPT_DIR/backup-copy-evidence-api-service-account.yaml"
