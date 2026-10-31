@@ -1135,7 +1135,8 @@ export class SaasTenantPropagationService {
         );
         try {
           validateExternalStoreInventoryManifest(inventoryArtifact.bytes, decision.tenant_id, category);
-        } catch {
+        } catch (error) {
+          if (error instanceof ServiceUnavailableException) throw error;
           throw new ConflictException('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest for ' + category);
         }
         // The catch-all is governance evidence only and never an executable adapter.
