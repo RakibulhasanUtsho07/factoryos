@@ -174,6 +174,7 @@ need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 [[ ! -e "${backup_file}.sha256" && ! -L "${backup_file}.sha256" ]] || die "checksum output already exists; refusing to overwrite evidence"
 [[ -f "$smoke_sql" && -r "$smoke_sql" ]] || die "restore verification SQL must be a readable reviewed file"
 [[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "confirm the restore target is disposable and isolated before continuing"
+for tool in pg_dump pg_restore psql gpg sha256sum mktemp date stat readlink grep sed awk git; do need_command "$tool"; done
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
@@ -231,7 +232,6 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
 fi
 
-for tool in pg_dump pg_restore psql gpg sha256sum mktemp date stat readlink grep sed awk git; do need_command "$tool"; done
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
 partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
