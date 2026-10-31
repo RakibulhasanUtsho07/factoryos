@@ -38,7 +38,6 @@ test('Kubernetes admission policy binds the API identity and evidence root to a 
     'object.spec.initContainers.all(container',
     'object.spec.ephemeralContainers.all(container',
     '!container.volumeDevices.exists(device',
-    'object.spec.initContainers.all(container',,
     'container.securityContext.runAsNonRoot == true',
     'container.securityContext.runAsUser > 0',
     'container.securityContext.allowPrivilegeEscalation == false',
