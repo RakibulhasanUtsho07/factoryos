@@ -381,8 +381,11 @@ describe('SaasTenantPropagationService external saga', () => {
     if (!first) throw new Error('External copy-coverage fixture is missing');
     const evidenceReference = String(first.evidence_reference);
     chmodSync(backupEvidenceRoot, 0o755);
-    writeFileSync(join(backupEvidenceRoot, evidenceReference), 'tampered external inventory bytes', { mode: 0o444 });
-    chmodSync(join(backupEvidenceRoot, evidenceReference), 0o444);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    // Make the sealed fixture writable only for the controlled tamper setup.
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, 'tampered external inventory bytes', { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
     chmodSync(backupEvidenceRoot, 0o555);
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Changed external evidence bytes must block provider execution',

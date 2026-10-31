@@ -321,7 +321,7 @@ BEGIN
 END $$;
 
 -- External copy-coverage signing claims must also be immutable while pending.
-DO $
+DO $$
 DECLARE
   guard_message text;
 BEGIN
@@ -337,7 +337,7 @@ BEGIN
     GET STACKED DIAGNOSTICS guard_message = MESSAGE_TEXT;
     IF guard_message NOT LIKE '%external copy-class evidence and scope are immutable after submission%' THEN RAISE; END IF;
   END;
-END $;
+END $$;
 
 -- The evidence signer metadata is immutable even while a decision is still pending.
 DO $$
