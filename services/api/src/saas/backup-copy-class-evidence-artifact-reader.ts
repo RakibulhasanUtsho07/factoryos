@@ -15,6 +15,11 @@ export interface VerifiedBackupCopyClassEvidenceArtifact {
   reference: string;
   sha256: string;
   sizeBytes: number;
+  bytes?: Buffer;
+}
+
+export interface VerifiedBackupCopyClassEvidenceBytes extends VerifiedBackupCopyClassEvidenceArtifact {
+  bytes: Buffer;
 }
 
 /**
@@ -29,6 +34,21 @@ export class BackupCopyClassEvidenceArtifactReader {
   constructor(private readonly mountVerifier: LinuxReadOnlyEvidenceMountVerifier) {}
 
   async verifyArtifact(referenceValue: string, expectedDigestValue: string): Promise<VerifiedBackupCopyClassEvidenceArtifact> {
+    return this.readArtifact(referenceValue, expectedDigestValue, false) as Promise<VerifiedBackupCopyClassEvidenceArtifact>;
+  }
+
+  async readVerifiedArtifact(
+    referenceValue: string,
+    expectedDigestValue: string,
+  ): Promise<VerifiedBackupCopyClassEvidenceBytes> {
+    return this.readArtifact(referenceValue, expectedDigestValue, true) as Promise<VerifiedBackupCopyClassEvidenceBytes>;
+  }
+
+  private async readArtifact(
+    referenceValue: string,
+    expectedDigestValue: string,
+    includeBytes: boolean,
+  ): Promise<VerifiedBackupCopyClassEvidenceArtifact | VerifiedBackupCopyClassEvidenceBytes> {
     if (typeof referenceValue !== 'string' || !SAFE_ARTIFACT_REFERENCE.test(referenceValue)) {
       throw new ConflictException('Backup copy-class evidence artifact reference is invalid or cannot be resolved');
     }
@@ -83,6 +103,7 @@ export class BackupCopyClassEvidenceArtifactReader {
       }
 
       const hash = createHash('sha256');
+      const chunks: Buffer[] = [];
       const buffer = Buffer.alloc(READ_CHUNK_BYTES);
       let position = 0;
       while (true) {
@@ -91,6 +112,7 @@ export class BackupCopyClassEvidenceArtifactReader {
         position += bytesRead;
         if (position > MAX_ARTIFACT_BYTES) throw new Error('Evidence artifact exceeds the size bound');
         hash.update(buffer.subarray(0, bytesRead));
+        if (includeBytes) chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
       }
 
       const after = await handle.stat({ bigint: true });
@@ -103,7 +125,12 @@ export class BackupCopyClassEvidenceArtifactReader {
       if (actualDigest !== expectedDigestValue) {
         throw new Error('Evidence artifact bytes do not match the claimed digest');
       }
-      return { reference: referenceValue, sha256: actualDigest, sizeBytes: position };
+      return {
+        reference: referenceValue,
+        sha256: actualDigest,
+        sizeBytes: position,
+        ...(includeBytes ? { bytes: Buffer.concat(chunks, position) } : {}),
+      };
     } catch {
       throw new ConflictException(
         'Backup copy-class evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest',
