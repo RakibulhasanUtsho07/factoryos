@@ -208,7 +208,7 @@ test('provisioner checks cluster context, policy acceptance, namespace enrollmen
     'probe-backup-copy-evidence-runtime.mjs',
     'CANDIDATE_SHA',
     'independent_infrastructure_review',
-    'deployment selector',
+    'Deployment requires a non-empty matchLabels selector',
     'Every Ready API replica',
     'imageID',
     'sha256:',
