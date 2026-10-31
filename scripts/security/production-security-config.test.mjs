@@ -81,7 +81,9 @@ test('production backup evidence policy is installed as a deny binding in select
   assert.match(policy, /volume\.persistentVolumeClaim/);
   assert.match(policy, /factoryos-backup-evidence/);
   assert.match(policy, /persistentVolumeClaim.readOnly == true/);
-  assert.match(policy, /object.spec.ephemeralContainers.all/);
+  assert.match(policy, /variables\.ephemeralContainers\.all/);
+  assert.match(policy, /variables\.initContainers\.all/);
+  assert.match(policy, /has\(object\.spec\.initContainers\) \? object\.spec\.initContainers : object\.spec\.\?initContainers\.orValue\(\[\]\)/);
   assert.match(binding, /kind: ValidatingAdmissionPolicyBinding/);
   assert.match(binding, /validationActions:\s*\n\s*- Deny/);
   assert.match(binding, /factoryos\.io\/backup-evidence-enforcement: required/);
