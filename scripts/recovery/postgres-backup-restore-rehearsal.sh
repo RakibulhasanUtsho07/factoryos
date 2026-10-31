@@ -232,7 +232,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
 fi
 
-for tool in pg_dump pg_restore psql gpg mktemp; do need_command "$tool"; done
+for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
 partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
