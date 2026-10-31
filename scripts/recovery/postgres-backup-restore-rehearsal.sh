@@ -265,7 +265,9 @@ read_single_marker() {
   count="$(grep -c "^${marker}=" "$marker_file" || true)"
   [[ "$count" == "1" ]] || die "restore erasure SQL must emit exactly one ${marker} marker"
   value="$(sed -n "s/^${marker}=//p" "$marker_file")"
-  [[ -n "$value" && "$value" != *
+  [[ -n "$value" ]] || die "restore erasure SQL emitted an empty ${marker} marker"
+  printf '%s' "$value"
+}
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   current_stage="source_watermark"
   source_watermark_utc="$(run_watermark_query "$source_service" "$watermark_sql")"
