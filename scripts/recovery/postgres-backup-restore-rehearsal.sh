@@ -376,6 +376,62 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
   (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes the restored durable-write watermark"
   observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
+  current_stage="erasure_tombstone_replay"
+  erasure_replay_sql_sha256="$(sha256sum -- "$erasure_replay_sql" | awk '{print $1}')"
+  erasure_verify_sql_sha256="$(sha256sum -- "$erasure_verify_sql" | awk '{print $1}')"
+  replay_log="$tmpdir/erasure-replay.log"
+  verify_log="$tmpdir/erasure-verify.log"
+  if ! psql -w "service=$target_service" -X -qAt -1 -v ON_ERROR_STOP=1 \
+      -v "candidate_sha=$candidate_sha" \
+      -v "target_database_identity=$target_identity" \
+      -v "snapshot_watermark_utc=$restored_watermark_utc" \
+      -v "incident_cutoff_utc=$event_time_utc" \
+      -v "ledger_reference=$erasure_ledger_reference" \
+      -v "ledger_sha256=$erasure_ledger_sha256" \
+      -f "$erasure_replay_sql" > "$replay_log" 2>&1; then
+    die "out-of-band erasure tombstone replay SQL failed; restore target remains quarantined"
+  fi
+  [[ "$(sha256sum -- "$erasure_replay_sql" | awk '{print $1}')" == "$erasure_replay_sql_sha256" ]] || die "erasure replay SQL changed while being executed"
+  replay_status_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_STATUS "$replay_log")"
+  replay_ledger_marker="$(read_single_marker FACTORYOS_ERASURE_LEDGER_SHA256 "$replay_log")"
+  replay_candidate_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_CANDIDATE_SHA "$replay_log")"
+  replay_target_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_TARGET_IDENTITY "$replay_log")"
+  erasure_ledger_watermark_utc="$(read_single_marker FACTORYOS_ERASURE_LEDGER_WATERMARK_UTC "$replay_log")"
+  erasure_replayed_requests="$(read_single_marker FACTORYOS_ERASURE_REPLAYED_REQUESTS "$replay_log")"
+  erasure_replay_residuals="$(read_single_marker FACTORYOS_ERASURE_REPLAY_RESIDUALS "$replay_log")"
+  [[ "$replay_status_marker" == "PASS" ]] || die "erasure replay SQL did not report PASS"
+  [[ "$replay_ledger_marker" == "$erasure_ledger_sha256" ]] || die "erasure replay ledger digest does not match the approved external ledger"
+  [[ "$replay_candidate_marker" == "$candidate_sha" ]] || die "erasure replay receipt is bound to a different candidate SHA"
+  [[ "$replay_target_marker" == "$target_identity" ]] || die "erasure replay receipt is bound to a different restore database"
+  [[ "$erasure_replayed_requests" =~ ^(0|[1-9][0-9]*)$ ]] || die "erasure replay request count is invalid"
+  [[ "$erasure_replay_residuals" == "0" ]] || die "erasure tombstone replay left unresolved residuals"
+  [[ "$erasure_ledger_watermark_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "erasure replay ledger watermark must be UTC RFC 3339"
+  date -u -d "$erasure_ledger_watermark_utc" +%s >/dev/null 2>&1 || die "erasure replay ledger watermark is invalid"
+  ledger_watermark_epoch="$(date -u -d "$erasure_ledger_watermark_utc" +%s)"
+  current_epoch="$(epoch_now)"
+  (( ledger_watermark_epoch >= event_epoch && ledger_watermark_epoch <= current_epoch )) || die "erasure tombstone ledger must cover the incident cutoff and cannot be from the future"
+
+  current_stage="erasure_tombstone_verification"
+  if ! PGOPTIONS="-c default_transaction_read_only=on" psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
+      -v "candidate_sha=$candidate_sha" \
+      -v "target_database_identity=$target_identity" \
+      -v "snapshot_watermark_utc=$restored_watermark_utc" \
+      -v "incident_cutoff_utc=$event_time_utc" \
+      -v "ledger_reference=$erasure_ledger_reference" \
+      -v "ledger_sha256=$erasure_ledger_sha256" \
+      -f "$erasure_verify_sql" > "$verify_log" 2>&1; then
+    die "independent read-only erasure replay verification SQL failed; restore target remains quarantined"
+  fi
+  [[ "$(sha256sum -- "$erasure_verify_sql" | awk '{print $1}')" == "$erasure_verify_sql_sha256" ]] || die "erasure verification SQL changed while being executed"
+  verify_status_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_STATUS "$verify_log")"
+  verify_ledger_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_LEDGER_SHA256 "$verify_log")"
+  verify_candidate_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_CANDIDATE_SHA "$verify_log")"
+  verify_target_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_TARGET_IDENTITY "$verify_log")"
+  verify_requests_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_REPLAYED_REQUESTS "$verify_log")"
+  verify_residuals_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_RESIDUALS "$verify_log")"
+  verify_method_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_METHOD "$verify_log")"
+  [[ "$verify_status_marker" == "PASS" && "$verify_ledger_marker" == "$erasure_ledger_sha256" && "$verify_candidate_marker" == "$candidate_sha" && "$verify_target_marker" == "$target_identity" && "$verify_requests_marker" == "$erasure_replayed_requests" && "$verify_residuals_marker" == "0" && "$verify_method_marker" == "INDEPENDENT_READ_ONLY" ]] || die "independent erasure replay verification did not reconcile to the exact ledger, candidate and restore target"
+  erasure_replay_status="PASS"
 fi
 
 current_stage="schema_smoke"
