@@ -175,7 +175,7 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
       || publicKeyPem.includes('PRIVATE KEY') || keys.has(keyId)) {
       throw new Error('external inventory source trusted-key configuration is invalid');
     }
-    let publicKey;
+    let publicKey: ReturnType<typeof createPublicKey>;
     try {
       publicKey = createPublicKey(publicKeyPem);
       if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('source receipt keys must use Ed25519');
