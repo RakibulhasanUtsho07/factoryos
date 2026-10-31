@@ -12,7 +12,7 @@ The manifest must include:
 
 - `schema`: `factoryos.external-store-inventory/v2`.
 - `tenant_id` and `category_code`: exact values from the signed API claim.
-- `generated_at`: a current timestamp no more than 30 days old and no more than five minutes in the future.
+- `generated_at`: a current timestamp no more than 30 days old and no more than five minutes in the future. Every source query's `started_at` must be within the 24 hours preceding manifest generation; `completed_at` must not be later than manifest generation plus five minutes.
 - `scope`: four arrays of opaque, non-secret references: `provider_references`, `account_references`, `project_references`, and `region_references`. At least one provider, account or project reference is required.
 - `scope_sha256`: SHA-256 of the canonical scope object. Each discovery-source result must carry this same digest.
 - `inventory_complete: true`, `unclassified_store_count: 0`, and `discovered_store_kinds` containing only unique entries from the eight known store kinds.
@@ -56,7 +56,7 @@ Sign each completed source receipt in the collector-controlled environment:
 node scripts/security/sign-external-store-inventory-source-receipt.mjs --receipt .\\unsigned-source-receipt.json --private-key-file C:\\secure\\keys\\iam-writer-collector-ed25519-private.pem > .\\signed-source-receipt.json
 ```
 
-The receipt must be created after the collector has completed pagination and persisted the exact query result artifact. The signer rejects non-COMPLETE/incomplete-pagination claims, stale timestamps, invalid source kinds and non-Ed25519 keys. The resulting receipt is then embedded unchanged in the manifest before the outer owner signs the complete evidence file. A source receipt cannot be moved to another tenant, category, scope, collection run or manifest ID without invalidating its signature.
+The receipt must be created after the collector has completed pagination and persisted the exact query result artifact. Its source query must have started within the 24 hours preceding manifest generation; stale receipts cannot be refreshed by creating a new outer owner signature. The signer rejects non-COMPLETE/incomplete-pagination claims, stale timestamps, invalid source kinds and non-Ed25519 keys. The resulting receipt is then embedded unchanged in the manifest before the outer owner signs the complete evidence file. A source receipt cannot be moved to another tenant, category, scope, collection run or manifest ID without invalidating its signature.
 
 The trusted key registry authenticates the configured collector identity and its signed claims. It does **not** independently authenticate a provider API response, prove the collector had read-only provider permissions, or prove that the collector queried every authoritative account/control plane. Those requirements still need provider-native audit/query receipts, externally enforced read-only identities and independent infrastructure review.
 
