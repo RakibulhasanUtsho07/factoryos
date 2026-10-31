@@ -23,6 +23,7 @@ const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_SOURCE_COMPLETION_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const MAX_SOURCE_TRUSTED_KEYS = 200;
 
@@ -247,7 +248,7 @@ export function validateExternalStoreInventoryManifest(
   if (typeof manifest.manifest_id !== 'string' || !UUID.test(manifest.manifest_id)) {
     throw new Error('external-store inventory manifest manifest_id must be a UUID');
   }
-  timestamp(manifest.generated_at, 'generated_at', now);
+  const generatedAt = timestamp(manifest.generated_at, 'generated_at', now);
 
   const scope = canonicalizeExternalStoreInventoryScope(manifest.scope);
   const scopeDigest = digestExternalStoreInventoryScope(scope);
@@ -308,6 +309,10 @@ export function validateExternalStoreInventoryManifest(
     const startedAt = timestamp(source.started_at, 'source.started_at', now);
     const completedAt = timestamp(source.completed_at, 'source.completed_at', now);
     if (completedAt < startedAt) throw new Error('discovery source completion cannot precede its start');
+    if (startedAt < generatedAt - MAX_SOURCE_COMPLETION_AGE_MS
+      || completedAt > generatedAt + MAX_CLOCK_SKEW_MS) {
+      throw new Error('discovery source receipts must complete within 24 hours before manifest generation');
+    }
     verifyExternalStoreInventorySourceReceipt(source as unknown as ExternalStoreInventorySourceReceipt, sourceContext, trustedKeys);
     sources.set(source.source_kind, source);
   }
