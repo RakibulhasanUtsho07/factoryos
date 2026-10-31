@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
-import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
+import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
+  EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
@@ -193,7 +194,7 @@ describe('SaasTenantPropagationService external saga', () => {
       reviewed_at: '2026-10-20T10:00:00.000Z', review_reason: 'Approved for integration test',
       created_at: '2026-10-20T09:00:00.000Z', updated_at: '2026-10-20T10:00:00.000Z',
     }));
-    externalCopyCoverageRows = REQUIRED_EXTERNAL_STORE_KINDS.map((kind, index) => {
+    externalCopyCoverageRows = EXTERNAL_COPY_COVERAGE_STORE_KINDS.map((kind, index) => {
       const evidenceReference = `evidence.external-copy-coverage.${kind.toLowerCase()}`;
       const evidenceBytes = Buffer.from(`Synthetic external copy coverage evidence for ${kind}; tenant ${tenant}; fixture v1`, 'utf8');
       const evidencePath = join(backupEvidenceRoot, evidenceReference);
@@ -202,7 +203,7 @@ describe('SaasTenantPropagationService external saga', () => {
       const row: Record<string, unknown> = {
         decision_id: `16060000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
         tenant_id: tenant, category_code: 'BUSINESS_DATA', store_kind: kind, revision: 1,
-        disposition: 'SUPPORTED', evidence_reference: evidenceReference,
+        disposition: kind === UNCLASSIFIED_EXTERNAL_STORE_KIND ? 'NOT_APPLICABLE' : 'SUPPORTED', evidence_reference: evidenceReference,
         evidence_sha256: createHash('sha256').update(evidenceBytes).digest('hex'), evidence_at: new Date().toISOString(),
         attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
         data_owner_reference: `owner.data.${kind.toLowerCase()}`, infrastructure_owner_reference: backupEvidenceOwner,
@@ -391,6 +392,32 @@ describe('SaasTenantPropagationService external saga', () => {
       expected_version: 4, reason: 'Changed external evidence bytes must block provider execution',
       idempotency_key: 'external-propagation-tampered-copy-coverage-bytes',
     })).rejects.toThrow('Backup copy-class evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks propagation when the complete-inventory sentinel reports a newly discovered unknown store', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    sentinel.disposition = 'UNRESOLVED';
+    signExternalCopyCoverageRow(sentinel);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A newly discovered store must block propagation until classified',
+      idempotency_key: 'external-propagation-unclassified-store-block',
+    })).rejects.toThrow('An unclassified external store type was discovered or remains unresolved');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks a signed SUPPORTED assertion for the unclassified catch-all', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    sentinel.disposition = 'SUPPORTED';
+    signExternalCopyCoverageRow(sentinel);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'The catch-all sentinel is never an executable store kind',
+      idempotency_key: 'external-propagation-unclassified-store-forged-supported',
+    })).rejects.toThrow('An unclassified external store type was discovered or remains unresolved');
     expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });

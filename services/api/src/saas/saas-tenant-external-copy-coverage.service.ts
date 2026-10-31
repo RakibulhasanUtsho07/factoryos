@@ -5,7 +5,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
-import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
+import { EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import { verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
@@ -15,7 +15,7 @@ type CoverageStatus='PENDING'|'ACCEPTED'|'REJECTED';
 type CoverageDisposition='SUPPORTED'|'NOT_APPLICABLE'|'UNRESOLVED';
 interface CoverageRow extends QueryResultRow {
  decision_id:string; tenant_id:string; category_code:SaasTransferDatasetCategory;
- store_kind:(typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]; revision:string|number; disposition:CoverageDisposition;
+ store_kind:(typeof EXTERNAL_COPY_COVERAGE_STORE_KINDS)[number]; revision:string|number; disposition:CoverageDisposition;
  evidence_reference:string; evidence_sha256:string; evidence_at:string; attestation_key_id:string|null;
  attestation_owner_reference:string|null; attestation_signature:string|null; data_owner_reference:string;
  infrastructure_owner_reference:string; policy_reference:string; reason:string; status:CoverageStatus;
@@ -34,8 +34,10 @@ export class SaasTenantExternalCopyCoverageService {
   const tenantId=this.uuid(tenantValue,'tenantId'),actorUserId=this.uuid(actorValue,'actorUserId');
   await this.iamService.authorize(actorUserId,tenantId,'saas.data_retention.write');
   const category=this.category(input?.category_code),storeKind=input?.store_kind,disposition=input?.disposition;
-  if(!REQUIRED_EXTERNAL_STORE_KINDS.includes(storeKind))throw new BadRequestException('store_kind is invalid');
+  if(!EXTERNAL_COPY_COVERAGE_STORE_KINDS.includes(storeKind))throw new BadRequestException('store_kind is invalid');
   if(!['SUPPORTED','NOT_APPLICABLE','UNRESOLVED'].includes(disposition))throw new BadRequestException('disposition is invalid');
+  if(storeKind===UNCLASSIFIED_EXTERNAL_STORE_KIND&&disposition==='SUPPORTED')
+   throw new BadRequestException('Unclassified external store coverage cannot be marked SUPPORTED; classify the discovered store and register its dedicated provider adapter');
   const evidenceReference=this.artifactReference(input?.evidence_reference);
   const evidenceSha256=this.digest(input?.evidence_sha256,'evidence_sha256');
   const evidenceAt=new Date(input?.evidence_at??'');

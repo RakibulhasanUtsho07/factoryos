@@ -3,6 +3,8 @@ import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibil
 export const SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS = Symbol('SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS');
 export const SAAS_TENANT_FINANCE_RETENTION_ADAPTER = Symbol('SAAS_TENANT_FINANCE_RETENTION_ADAPTER');
 
+export const UNCLASSIFIED_EXTERNAL_STORE_KIND = 'UNCLASSIFIED_EXTERNAL_STORE' as const;
+
 export const REQUIRED_EXTERNAL_STORE_KINDS = [
   'OBJECT_STORAGE',
   'CACHE',
@@ -14,7 +16,13 @@ export const REQUIRED_EXTERNAL_STORE_KINDS = [
   'BACKUP',
 ] as const;
 
+export const EXTERNAL_COPY_COVERAGE_STORE_KINDS = [
+  ...REQUIRED_EXTERNAL_STORE_KINDS,
+  UNCLASSIFIED_EXTERNAL_STORE_KIND,
+] as const;
+
 export type SaasExternalStoreKind = typeof REQUIRED_EXTERNAL_STORE_KINDS[number];
+export type SaasExternalCopyCoverageStoreKind = typeof EXTERNAL_COPY_COVERAGE_STORE_KINDS[number];
 
 export interface SaasTenantExternalDataTarget {
   tenantId: string;

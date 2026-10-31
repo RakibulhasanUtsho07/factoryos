@@ -213,6 +213,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/231_saas_external_copy_coverage_evidence_attestation.sql
 
+          echo "Reapplying unclassified external-store catch-all coverage guard"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql
+
 
           echo "Reapplying bin cycle-count migration to verify snapshot/approval schema idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \

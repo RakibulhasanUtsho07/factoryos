@@ -110,6 +110,50 @@ test('external coverage signer rejects unknown store kinds and path-like evidenc
   }
 });
 
+test('external coverage signer allows only fail-closed dispositions for an unclassified external store', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-external-copy-attestation-unclassified-'));
+  try {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const keyPath = join(directory, 'owner-private.pem');
+    const evidencePath = join(directory, 'evidence-pack.bin');
+    const payloadPath = join(directory, 'payload.json');
+    const evidence = Buffer.from('unclassified external source inventory', 'utf8');
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    writeFileSync(evidencePath, evidence);
+    const payload = {
+      category_code: 'BUSINESS_DATA', store_kind: 'UNCLASSIFIED_EXTERNAL_STORE',
+      disposition: 'SUPPORTED', evidence_reference: 'external.inventory.unclassified.v1',
+      evidence_sha256: createHash('sha256').update(evidence).digest('hex'),
+      evidence_at: new Date().toISOString(), attestation_key_id: 'external-copy-test-v1',
+      attestation_owner_reference: 'owner.infrastructure.v1', data_owner_reference: 'owner.data.v1',
+      infrastructure_owner_reference: 'owner.infrastructure.v1', policy_reference: 'policy.retention.v1',
+      reason: 'A newly discovered provider store has not been classified', idempotency_key: 'unclassified-supported-v1',
+    };
+    writeFileSync(payloadPath, JSON.stringify(payload));
+    let result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /cannot be marked SUPPORTED/);
+    writeFileSync(payloadPath, JSON.stringify({ ...payload, disposition: 'UNRESOLVED' }));
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).attestation_signature, /^[A-Za-z0-9_-]{86}$/);
+    writeFileSync(payloadPath, JSON.stringify({ ...payload, disposition: 'NOT_APPLICABLE' }));
+    result = spawnSync(process.execPath, [
+      script, '--payload', payloadPath, '--evidence-file', evidencePath,
+      '--private-key-file', keyPath, '--tenant-id', tenantId,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('external coverage signer refuses a mismatched evidence digest', () => {
   const directory = mkdtempSync(join(tmpdir(), 'factoryos-external-copy-attestation-digest-'));
   try {

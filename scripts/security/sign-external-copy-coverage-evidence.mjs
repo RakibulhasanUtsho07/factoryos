@@ -4,7 +4,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 
 const STORE_KINDS = new Set([
   'OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE',
-  'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP',
+  'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP', 'UNCLASSIFIED_EXTERNAL_STORE',
 ]);
 
 function usage() {
@@ -63,6 +63,9 @@ function canonicalClaims(body, tenantId) {
   if (!STORE_KINDS.has(storeKind)) throw new Error('store_kind is not in the required external-store catalog');
   const disposition = requiredString(body.disposition, 'disposition');
   if (!['SUPPORTED', 'NOT_APPLICABLE', 'UNRESOLVED'].includes(disposition)) throw new Error('Invalid disposition');
+  if (storeKind === 'UNCLASSIFIED_EXTERNAL_STORE' && disposition === 'SUPPORTED') {
+    throw new Error('UNCLASSIFIED_EXTERNAL_STORE cannot be marked SUPPORTED; classify the discovered store and register its dedicated provider adapter');
+  }
 
   return {
     schema: 'factoryos.external-copy-coverage-evidence-attestation/v1',

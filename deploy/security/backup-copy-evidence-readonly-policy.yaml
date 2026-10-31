@@ -197,3 +197,14 @@ spec:
         ))
       message: Every regular, init, and ephemeral container must be non-root, no-escalation, read-only-rootfs, drop ALL/add no capabilities, avoid unmasked proc, and use RuntimeDefault seccomp.
       reason: Invalid
+
+    - expression: >-
+        !has(object.spec.initContainers) ||
+        object.spec.initContainers.all(container,
+          !has(container.volumeMounts) ||
+          container.volumeMounts.all(mount,
+            has(mount.readOnly) && mount.readOnly == true
+          )
+        )
+      message: Init containers must not attach writable volume mounts; pre-start aliases are forbidden.
+      reason: Invalid

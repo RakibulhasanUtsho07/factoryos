@@ -148,3 +148,8 @@ node scripts/security/sign-external-copy-coverage-evidence.mjs \
 ```
 
 The signer verifies the local artifact digest and rejects URL/path references. The API independently verifies the deployment trust registry and rereads the artifact from the read-only evidence root at submission, ACCEPT review and every propagation preflight, resume, finalization and provider checkpoint. A legacy unsigned external coverage row remains available for audit but cannot be accepted or authorize propagation. The signing key must remain with the evidence owner and must never be deployed to the API process.
+
+
+## Unclassified external store inventory sentinel
+
+Every erasure category also needs a separate `UNCLASSIFIED_EXTERNAL_STORE` evidence decision. This sentinel is not a provider adapter and must never be marked `SUPPORTED`. Use `NOT_APPLICABLE` only when a current exhaustive external-provider inventory establishes that no store type exists outside the eight registered store kinds. When a new or unknown store appears, sign an `UNRESOLVED` sentinel decision; it remains valid audit evidence but deliberately blocks propagation. After the new store has been classified, added as a dedicated store kind with its own adapter and normal signed coverage, submit a newer signed sentinel revision that attests the unclassified inventory is empty. The database independently rejects a `SUPPORTED` sentinel disposition.

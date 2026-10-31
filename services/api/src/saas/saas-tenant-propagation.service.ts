@@ -15,7 +15,8 @@ import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import {
   canonicalizeSaasExternalPropagationResources, digestSaasExternalPropagationResources,
-  REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
+  REQUIRED_EXTERNAL_STORE_KINDS, EXTERNAL_COPY_COVERAGE_STORE_KINDS,
+  UNCLASSIFIED_EXTERNAL_STORE_KIND, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
 } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
 import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
@@ -44,7 +45,7 @@ type TargetRow = QueryResultRow & {
 };
 type CopyCoverageRow = QueryResultRow & {
   decision_id: string; tenant_id: string; category_code: SaasTransferDatasetCategory;
-  store_kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]; revision: string | number;
+  store_kind: (typeof EXTERNAL_COPY_COVERAGE_STORE_KINDS)[number]; revision: string | number;
   disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
   evidence_reference: string; evidence_sha256: string; evidence_at: string; reason: string;
   attestation_key_id: string | null; attestation_owner_reference: string | null; attestation_signature: string | null;
@@ -1087,7 +1088,7 @@ export class SaasTenantPropagationService {
     decisions: CopyCoverageRow[],
   ): Promise<void> {
     const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.store_kind, decision]));
-    for (const category of categories) for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) {
+    for (const category of categories) for (const kind of EXTERNAL_COPY_COVERAGE_STORE_KINDS) {
       const decision = latest.get(category + ':' + kind);
       const evidenceAge = decision ? Date.now() - new Date(decision.evidence_at).getTime() : Number.POSITIVE_INFINITY;
       if (!decision || decision.status !== 'ACCEPTED' || !decision.reviewed_by_user_id
@@ -1125,6 +1126,14 @@ export class SaasTenantPropagationService {
       }
       // Re-read the same evidence bytes from the read-only deployment evidence root each time.
       await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+      if (kind === UNCLASSIFIED_EXTERNAL_STORE_KIND) {
+        if (decision.disposition !== 'NOT_APPLICABLE') {
+          throw new ConflictException('An unclassified external store type was discovered or remains unresolved; classify it and submit a new signed coverage revision before propagation: ' + category);
+        }
+        // This catch-all row is an attested complete-inventory assertion, not
+        // an executable provider class. It intentionally has no adapter.
+        continue;
+      }
       if (decision.disposition === 'UNRESOLVED') {
         throw new ConflictException('Unresolved external copy class blocks whole-tenant erasure: ' + category + '/' + kind);
       }

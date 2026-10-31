@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { SaasTenantExternalCopyCoverageService } from './saas-tenant-external-copy-coverage.service';
+import { UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 const tenant='26000000-0000-4000-8000-000000000001';
 const submitter='26010000-0000-4000-8000-000000000001';
 const reviewer='26010000-0000-4000-8000-000000000002';
@@ -76,4 +77,12 @@ describe('SaasTenantExternalCopyCoverageService',()=>{
   } as never)).rejects.toBeInstanceOf(BadRequestException);
   expect(evidenceReader.verifyArtifact).not.toHaveBeenCalled();
  });
+ it('rejects SUPPORTED for the unclassified external-store catch-all before persistence',async()=>{
+  await expect(service.createDecision(tenant,submitter,{
+   category_code:'BUSINESS_DATA',store_kind:UNCLASSIFIED_EXTERNAL_STORE_KIND,disposition:'SUPPORTED',
+  } as never)).rejects.toBeInstanceOf(BadRequestException);
+  expect(database.transaction).not.toHaveBeenCalled();
+  expect(evidenceReader.verifyArtifact).not.toHaveBeenCalled();
+ });
+
 });

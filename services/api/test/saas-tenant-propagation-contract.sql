@@ -60,6 +60,15 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_copy_coverage_run_fence' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'external copy-class decisions must be frozen during RUNNING propagation'; END IF;
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    WHERE c.conrelid='public.saas_tenant_external_copy_coverage_decisions'::regclass
+      AND c.conname='chk_saas_external_copy_coverage_unclassified_disposition'
+      AND pg_get_constraintdef(c.oid) ILIKE '%UNCLASSIFIED_EXTERNAL_STORE%'
+      AND pg_get_constraintdef(c.oid) ILIKE '%NOT_APPLICABLE%'
+      AND pg_get_constraintdef(c.oid) ILIKE '%UNRESOLVED%'
+  ) THEN RAISE EXCEPTION 'unclassified external store sentinel must be represented and may never be marked SUPPORTED'; END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_external_data_targets_run_fence' AND NOT tgisinternal
   ) THEN RAISE EXCEPTION 'required target inventory must be frozen during RUNNING propagation'; END IF;
 

@@ -416,10 +416,14 @@ test('canonical backup copy-class catalog covers documented backup and secondary
 
 test('external copy-coverage decisions require trusted signatures and exact source-byte read-back', async () => {
   const migration = await readRepoFile('migrations/231_saas_external_copy_coverage_evidence_attestation.sql');
+  const unclassifiedMigration = await readRepoFile('migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql');
   const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
   const apiWorkflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
   const sqlContract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
   const source = await readRepoFile('services/api/src/saas/saas-tenant-external-copy-coverage.service.ts');
+  const adapters = await readRepoFile('services/api/src/saas/saas-tenant-propagation.adapters.ts');
+  const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
+  const policy = await readRepoFile('deploy/security/backup-copy-evidence-readonly-policy.yaml');
   const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
   const attestation = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
   const dto = await readRepoFile('services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts');
@@ -444,4 +448,10 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(attestation.includes('factoryos.external-copy-coverage-evidence-attestation/v1'));
   assert.ok(signer.includes('store_kind') && signer.includes('evidence_sha256'));
   assert.ok(runbook.includes('Ed25519') && runbook.includes('read-back'));
+  assert.ok(unclassifiedMigration.includes('UNCLASSIFIED_EXTERNAL_STORE'));
+  assert.ok(unclassifiedMigration.includes("disposition IN ('NOT_APPLICABLE','UNRESOLVED')"));
+  assert.ok(adapters.includes('UNCLASSIFIED_EXTERNAL_STORE_KIND'));
+  assert.ok(adapters.includes('EXTERNAL_COPY_COVERAGE_STORE_KINDS'));
+  assert.ok(propagation.includes('An unclassified external store type was discovered or remains unresolved'));
+  assert.ok(policy.includes('Init containers must not attach writable volume mounts'));
 });

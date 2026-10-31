@@ -14,7 +14,7 @@ test('Kubernetes admission policy binds the API identity and evidence root to a 
   assert.ok(policy.includes('failurePolicy: Fail'));
   assert.ok(policy.includes('operations: ["CREATE", "UPDATE"]'));
   assert.ok(policy.includes('resources: ["pods", "pods/ephemeralcontainers"]'));
-  assert.equal((policy.match(/^    - expression:/gm) ?? []).length, 3);
+  assert.equal((policy.match(/^    - expression:/gm) ?? []).length, 4);
 
   for (const required of [
     "object.spec.serviceAccountName == 'factoryos-backup-evidence-api'",
@@ -47,6 +47,9 @@ test('Kubernetes admission policy binds the API identity and evidence root to a 
     'container.securityContext.capabilities.add.size() == 0',
     "!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked'",
     "container.securityContext.seccompProfile.type == 'RuntimeDefault'",
+    '!has(object.spec.initContainers) ||',
+    'container.volumeMounts.all(mount,',
+    'has(mount.readOnly) && mount.readOnly == true',
   ]) assert.ok(policy.includes(required), 'policy missing check: ' + required);
 });
 
