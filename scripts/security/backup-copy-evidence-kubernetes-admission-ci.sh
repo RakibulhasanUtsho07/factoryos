@@ -233,6 +233,64 @@ expect_denied \
   "The factoryos-backup-evidence PVC must be read-only" \
   kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/writable-init-pod.yaml"
 
+cat > "$WORK_DIR/block-device-init-pod.yaml" <<'POD'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: factoryos-evidence-negative-block-device-init
+spec:
+  serviceAccountName: factoryos-backup-evidence-api
+  automountServiceAccountToken: false
+  volumes:
+    - name: evidence
+      persistentVolumeClaim:
+        claimName: factoryos-backup-evidence
+        readOnly: true
+  initContainers:
+    - name: block-device-alias
+      image: registry.k8s.io/pause:3.10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop: ["ALL"]
+          add: []
+        seccompProfile:
+          type: RuntimeDefault
+      volumeDevices:
+        - name: evidence
+          devicePath: /dev/factoryos-evidence
+  containers:
+    - name: api
+      image: registry.k8s.io/pause:3.10
+      env:
+        - name: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR
+          value: /evidence
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop: ["ALL"]
+          add: []
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence
+          readOnly: true
+POD
+
+expect_denied \
+  "init-container block-device alias" \
+  "block-device aliases are forbidden" \
+  kubectl create --dry-run=server -n "$NAMESPACE" -f "$WORK_DIR/block-device-init-pod.yaml"
+
 expect_denied \
   "CAP_SYS_ADMIN in an API container" \
   "Every regular, init, and ephemeral container" \
