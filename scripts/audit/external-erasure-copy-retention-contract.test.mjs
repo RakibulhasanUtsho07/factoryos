@@ -460,7 +460,7 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(sourceReceiptSignerTest.includes('valid Ed25519 signature'));
   assert.ok(sourceReceiptSignerTest.includes('rejects incomplete pagination'));
   assert.ok(sourceTrustExample.includes('FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON=[]'));
-  assert.ok(inventoryEvidenceDoc.includes('factoryos.external-store-inventory/v1'));
+  assert.ok(inventoryEvidenceDoc.includes('factoryos.external-store-inventory/v2'));
   assert.ok(inventoryEvidenceDoc.includes('Independently trusted source receipts'));
   assert.ok(inventoryEvidenceDoc.includes('does **not** independently call cloud provider APIs'));
   assert.ok(propagation.includes('validateExternalStoreInventoryManifest'));
