@@ -424,7 +424,6 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   const adapters = await readRepoFile('services/api/src/saas/saas-tenant-propagation.adapters.ts');
   const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
   const policy = await readRepoFile('deploy/security/backup-copy-evidence-readonly-policy.yaml');
-  const propagation = await readRepoFile('services/api/src/saas/saas-tenant-propagation.service.ts');
   const attestation = await readRepoFile('services/api/src/saas/backup-copy-class-evidence-attestation.ts');
   const dto = await readRepoFile('services/api/src/saas/dto/create-saas-external-copy-coverage.dto.ts');
   const signer = await readRepoFile('scripts/security/sign-external-copy-coverage-evidence.mjs');
@@ -434,7 +433,9 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(migration.includes('unsigned legacy external copy-class evidence cannot be accepted'));
   assert.ok(migration.includes('IS DISTINCT FROM'));
   assert.ok(manifest.split(/\r?\n/).includes('migrations/231_saas_external_copy_coverage_evidence_attestation.sql'));
+  assert.ok(manifest.split(/\r?\n/).includes('migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql'));
   assert.ok(apiWorkflow.includes('migrations/231_saas_external_copy_coverage_evidence_attestation.sql'));
+  assert.ok(apiWorkflow.includes('migrations/232_saas_external_copy_coverage_unclassified_store_guard.sql'));
   assert.ok(sqlContract.includes('attestation_key_id,attestation_owner_reference,attestation_signature'));
   assert.ok(sqlContract.includes('pending external copy-coverage signature was mutable'));
   assert.ok(migration.includes('attestation_key_id IS NOT NULL') && migration.includes('attestation_signature IS NOT NULL'));
