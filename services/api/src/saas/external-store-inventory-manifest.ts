@@ -156,6 +156,7 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
   }
 
   const keys = new Map<string, TrustedSourceKey>();
+  const publicKeyFingerprints = new Set<string>();
   for (const candidate of parsed as unknown[]) {
     const entry = record(candidate);
     if (!entry) throw new Error('external inventory source trusted-key configuration is invalid');
@@ -174,12 +175,20 @@ function loadTrustedSourceKeys(raw: string | undefined): Map<string, TrustedSour
       || publicKeyPem.includes('PRIVATE KEY') || keys.has(keyId)) {
       throw new Error('external inventory source trusted-key configuration is invalid');
     }
+    let publicKey;
     try {
-      const publicKey = createPublicKey(publicKeyPem);
+      publicKey = createPublicKey(publicKeyPem);
       if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('source receipt keys must use Ed25519');
     } catch {
       throw new Error('external inventory source trusted-key configuration is invalid');
     }
+    const fingerprint = createHash('sha256')
+      .update(publicKey.export({ type: 'spki', format: 'der' }))
+      .digest('hex');
+    if (publicKeyFingerprints.has(fingerprint)) {
+      throw new Error('external inventory source trusted-key configuration contains a duplicate public key');
+    }
+    publicKeyFingerprints.add(fingerprint);
     keys.set(keyId, { keyId, ownerReference, sourceKinds: sourceKinds as string[], publicKeyPem });
   }
   return keys;
