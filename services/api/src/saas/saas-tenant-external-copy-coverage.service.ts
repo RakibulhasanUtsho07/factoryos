@@ -7,6 +7,7 @@ import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import { validateExternalStoreInventoryManifest } from './external-store-inventory-manifest';
 import { verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import { CreateSaasExternalCopyCoverageDto } from './dto/create-saas-external-copy-coverage.dto';
@@ -57,7 +58,16 @@ export class SaasTenantExternalCopyCoverageService {
    infrastructureOwnerReference,policyReference,reason,
   };
   verifyExternalCopyCoverageEvidenceAttestation(attestation,attestationSignature);
-  await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
+  if (storeKind === UNCLASSIFIED_EXTERNAL_STORE_KIND && disposition === 'NOT_APPLICABLE') {
+   const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(evidenceReference,evidenceSha256);
+   try {
+    validateExternalStoreInventoryManifest(artifact.bytes,tenantId,category);
+   } catch {
+    throw new BadRequestException('UNCLASSIFIED_EXTERNAL_STORE NOT_APPLICABLE requires a complete, current, scope-bound external inventory manifest');
+   }
+  } else {
+   await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
+  }
   const requestHash=this.hash({operation:'EXTERNAL_COPY_COVERAGE',...attestation,attestationSignature});
   const result=await this.database.transaction(async(client)=>{
    await this.lockTenant(client,tenantId);
@@ -117,7 +127,16 @@ export class SaasTenantExternalCopyCoverageService {
      evidenceAt:new Date(current.evidence_at).toISOString(),dataOwnerReference:current.data_owner_reference,
      infrastructureOwnerReference:current.infrastructure_owner_reference,policyReference:current.policy_reference,reason:current.reason,
     },current.attestation_signature);
-    await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+    if (current.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND && current.disposition === 'NOT_APPLICABLE') {
+     const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(current.evidence_reference,current.evidence_sha256);
+     try {
+      validateExternalStoreInventoryManifest(artifact.bytes,current.tenant_id,current.category_code);
+     } catch {
+      throw new ConflictException('UNCLASSIFIED_EXTERNAL_STORE cannot be accepted without a complete, current, scope-bound external inventory manifest');
+     }
+    } else {
+     await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+    }
    }
    const status:CoverageStatus=input.decision==='ACCEPT'?'ACCEPTED':'REJECTED';
    const validUntil=status==='ACCEPTED'?new Date(Date.now()+89*24*60*60*1000).toISOString():null;
