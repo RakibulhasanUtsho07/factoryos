@@ -56,6 +56,9 @@ if (args.decision === 'PASS') {
   const restoredWatermark = utcEpochSeconds(evidence.timestamps?.restoredWatermarkUtc);
   const eventAt = utcEpochSeconds(evidence.timestamps?.simulatedIncidentAtUtc);
   const erasureLedgerWatermark = utcEpochSeconds(evidence.verification?.erasureReplayLedgerWatermarkUtc);
+  const erasureLedgerWatermarkMs = Date.parse(evidence.verification?.erasureReplayLedgerWatermarkUtc ?? '');
+  const eventAtMs = Date.parse(evidence.timestamps?.simulatedIncidentAtUtc ?? '');
+  const finishedAtMs = Date.parse(evidence.timestamps?.finishedAtUtc ?? '');
   const candidateManifestPath = evidence.candidate?.migrationManifestPath;
   const manifestPathIsSafe = typeof candidateManifestPath === 'string'
     && candidateManifestPath.length > 0
@@ -90,7 +93,7 @@ if (args.decision === 'PASS') {
     ['erasure ledger digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureReplayLedgerSha256 ?? '')],
     ['erasure replay SQL digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureReplaySqlSha256 ?? '')],
     ['erasure verification SQL digest', /^[a-f0-9]{64}$/.test(evidence.verification?.erasureVerificationSqlSha256 ?? '')],
-    ['erasure ledger watermark covers incident cutoff', erasureLedgerWatermark !== null && eventAt !== null && erasureLedgerWatermark >= eventAt && finishedAt !== null && erasureLedgerWatermark <= finishedAt],
+    ['erasure ledger watermark covers incident cutoff', erasureLedgerWatermark !== null && Number.isFinite(eventAtMs) && Number.isFinite(finishedAtMs) && Number.isFinite(erasureLedgerWatermarkMs) && erasureLedgerWatermarkMs >= eventAtMs && erasureLedgerWatermarkMs <= finishedAtMs],
     ['erasure replay request count', Number.isSafeInteger(evidence.verification?.erasureReplayRequests) && evidence.verification.erasureReplayRequests >= 0],
     ['zero erasure replay residuals', evidence.verification?.erasureReplayResiduals === 0],
   ];
