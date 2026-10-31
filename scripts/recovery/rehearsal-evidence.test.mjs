@@ -137,6 +137,10 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
     assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
     assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+    assert.equal(receipt.verification.erasureReplayStatus, 'PASS');
+    assert.equal(receipt.verification.erasureReplayLedgerSha256, 'd'.repeat(64));
+    assert.equal(receipt.verification.erasureReplayRequests, 3);
+    assert.equal(receipt.verification.erasureReplayResiduals, 0);
     assert.equal(receipt.candidate.migrationManifestMode, 'PENDING');
     assert.equal(receipt.candidate.migrationManifestSha256, 'b'.repeat(64));
     assert.equal(receipt.candidate.migrationCount, 8);
@@ -267,6 +271,28 @@ test('PASS sign-off rejects an idempotent CI replay receipt as a production migr
 });
 
 
+
+test('PASS sign-off rejects restore evidence with unresolved erasure replay residuals', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-erasure-residuals-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.verification.erasureReplayResiduals = 1;
+    writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Restore erasure residual gate regression test.',
+      '--reference', 'CHG-DR-ERASURE-101',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /zero erasure replay residuals/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('PASS sign-off rejects a missing or malformed candidate commit SHA', () => {
   for (const sha of [null, 'not-a-commit-sha', 'a'.repeat(39), 'g'.repeat(40)]) {
