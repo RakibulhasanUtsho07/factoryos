@@ -107,8 +107,12 @@ test('release-gate mode requires an externally reviewed erasure replay ledger be
   try {
     const smokeSql = join(directory, 'restore-smoke.sql');
     const watermarkSql = join(directory, 'watermark.sql');
+    const erasureReplaySql = join(directory, 'erasure-replay.sql');
+    const erasureVerifySql = join(directory, 'erasure-verify.sql');
     writeFileSync(smokeSql, 'SELECT 1;\\n', { mode: 0o600 });
     writeFileSync(watermarkSql, 'SELECT 1;\\n', { mode: 0o600 });
+    writeFileSync(erasureReplaySql, 'SELECT 1;\\n', { mode: 0o600 });
+    writeFileSync(erasureVerifySql, 'SELECT 1;\\n', { mode: 0o600 });
     const result = runScript(commonConfig(directory, {
       FACTORYOS_DR_MODE: 'RELEASE_GATE',
       FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE: 'I_HAVE_VERIFIED_EMPTY',
