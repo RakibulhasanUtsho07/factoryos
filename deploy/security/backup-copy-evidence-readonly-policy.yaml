@@ -12,14 +12,14 @@ spec:
         resources: ["pods", "pods/ephemeralcontainers"]
   validations:
     - expression: >-
-        object.spec.serviceAccountName == 'factoryos-backup-evidence-api' &&
+        has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'factoryos-backup-evidence-api' &&
         has(object.spec.automountServiceAccountToken) &&
         object.spec.automountServiceAccountToken == false &&
-        object.spec.hostPID != true &&
-        object.spec.hostIPC != true &&
-        object.spec.hostNetwork != true &&
-        object.spec.shareProcessNamespace != true &&
-        object.spec.volumes.all(volume,
+        (!has(object.spec.hostPID) || object.spec.hostPID != true) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC != true) &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork != true) &&
+        (!has(object.spec.shareProcessNamespace) || object.spec.shareProcessNamespace != true) &&
+        has(object.spec.volumes) && object.spec.volumes.all(volume,
           !has(volume.hostPath) &&
           (
             !has(volume.projected) ||
@@ -27,20 +27,20 @@ spec:
           )
         ) &&
         object.spec.containers.filter(container,
-          container.env.exists(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR')
+          has(container.env) && container.env.exists(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR')
         ).size() == 1 &&
         object.spec.containers.all(container,
-          container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 0 ||
+          !has(container.env) || container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 0 ||
           (
             container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').size() == 1 &&
             container.env.filter(variable, variable.name == 'FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR').all(variable,
               has(variable.value) &&
               variable.value.startsWith('/') &&
               variable.value != '/' &&
-              container.volumeMounts.filter(mount, mount.mountPath == variable.value).size() == 1 &&
+              has(container.volumeMounts) && container.volumeMounts.filter(mount, mount.mountPath == variable.value).size() == 1 &&
               container.volumeMounts.exists(mount,
                 mount.mountPath == variable.value &&
-                mount.readOnly == true &&
+                has(mount.readOnly) && mount.readOnly == true &&
                 !has(mount.subPath) &&
                 !has(mount.subPathExpr) &&
                 (!has(mount.mountPropagation) || mount.mountPropagation == 'None') &&
@@ -48,7 +48,7 @@ spec:
                   volume.name == mount.name &&
                   has(volume.persistentVolumeClaim) &&
                   volume.persistentVolumeClaim.claimName == 'factoryos-backup-evidence' &&
-                  volume.persistentVolumeClaim.readOnly == true
+                  has(volume.persistentVolumeClaim.readOnly) && volume.persistentVolumeClaim.readOnly == true
                 )
               )
             )
@@ -57,35 +57,48 @@ spec:
       message: The evidence API Pod must use the dedicated token-disabled ServiceAccount, avoid host namespaces/hostPath/projected tokens, and map one absolute evidence root to the dedicated read-only PVC.
       reason: Invalid
     - expression: >-
-        object.spec.volumes.all(volume,
+        has(object.spec.volumes) && object.spec.volumes.all(volume,
           !has(volume.persistentVolumeClaim) ||
           volume.persistentVolumeClaim.claimName != 'factoryos-backup-evidence' ||
           (
-            volume.persistentVolumeClaim.readOnly == true &&
+            has(volume.persistentVolumeClaim.readOnly) && volume.persistentVolumeClaim.readOnly == true &&
             object.spec.containers.all(container,
-              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                mount.readOnly == true &&
-                !has(mount.subPath) &&
-                !has(mount.subPathExpr) &&
-                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+              (!has(container.volumeMounts) ||
+                container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                  has(mount.readOnly) && mount.readOnly == true &&
+                  !has(mount.subPath) &&
+                  !has(mount.subPathExpr) &&
+                  (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+                )
               ) &&
-              container.volumeDevices.filter(device, device.name == volume.name).size() == 0
+              (!has(container.volumeDevices) ||
+                container.volumeDevices.filter(device, device.name == volume.name).size() == 0
+              )
             ) &&
-            object.spec.initContainers.all(container,
-              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                mount.readOnly == true &&
-                !has(mount.subPath) &&
-                !has(mount.subPathExpr) &&
-                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
-              ) &&
-              container.volumeDevices.filter(device, device.name == volume.name).size() == 0
+            (!has(object.spec.initContainers) ||
+              object.spec.initContainers.all(container,
+                (!has(container.volumeMounts) ||
+                  container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                    has(mount.readOnly) && mount.readOnly == true &&
+                    !has(mount.subPath) &&
+                    !has(mount.subPathExpr) &&
+                    (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+                  )
+                ) &&
+                (!has(container.volumeDevices) ||
+                  container.volumeDevices.filter(device, device.name == volume.name).size() == 0
+                )
+              )
             ) &&
-            object.spec.ephemeralContainers.all(container,
-              container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
-                mount.readOnly == true &&
-                !has(mount.subPath) &&
-                !has(mount.subPathExpr) &&
-                (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+            (!has(object.spec.ephemeralContainers) ||
+              object.spec.ephemeralContainers.all(container,
+                !has(container.volumeMounts) ||
+                container.volumeMounts.filter(mount, mount.name == volume.name).all(mount,
+                  has(mount.readOnly) && mount.readOnly == true &&
+                  !has(mount.subPath) &&
+                  !has(mount.subPathExpr) &&
+                  (!has(mount.mountPropagation) || mount.mountPropagation == 'None')
+                )
               )
             )
           )
@@ -95,48 +108,48 @@ spec:
     - expression: >-
         object.spec.containers.all(container,
           has(container.securityContext) &&
-          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsNonRoot) && container.securityContext.runAsNonRoot == true &&
           has(container.securityContext.runAsUser) &&
           container.securityContext.runAsUser > 0 &&
-          container.securityContext.allowPrivilegeEscalation == false &&
-          container.securityContext.readOnlyRootFilesystem == true &&
-          container.securityContext.privileged != true &&
+          has(container.securityContext.allowPrivilegeEscalation) && container.securityContext.allowPrivilegeEscalation == false &&
+          has(container.securityContext.readOnlyRootFilesystem) && container.securityContext.readOnlyRootFilesystem == true &&
+          (!has(container.securityContext.privileged) || container.securityContext.privileged != true) &&
           has(container.securityContext.capabilities) &&
-          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          has(container.securityContext.capabilities.drop) && container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
           (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
-          container.securityContext.procMount != 'Unmasked' &&
+          (!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked') &&
           has(container.securityContext.seccompProfile) &&
-          container.securityContext.seccompProfile.type == 'RuntimeDefault'
+          has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
         ) &&
-        object.spec.initContainers.all(container,
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(container,
           has(container.securityContext) &&
-          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsNonRoot) && container.securityContext.runAsNonRoot == true &&
           has(container.securityContext.runAsUser) &&
           container.securityContext.runAsUser > 0 &&
-          container.securityContext.allowPrivilegeEscalation == false &&
-          container.securityContext.readOnlyRootFilesystem == true &&
-          container.securityContext.privileged != true &&
+          has(container.securityContext.allowPrivilegeEscalation) && container.securityContext.allowPrivilegeEscalation == false &&
+          has(container.securityContext.readOnlyRootFilesystem) && container.securityContext.readOnlyRootFilesystem == true &&
+          (!has(container.securityContext.privileged) || container.securityContext.privileged != true) &&
           has(container.securityContext.capabilities) &&
-          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          has(container.securityContext.capabilities.drop) && container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
           (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
-          container.securityContext.procMount != 'Unmasked' &&
+          (!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked') &&
           has(container.securityContext.seccompProfile) &&
-          container.securityContext.seccompProfile.type == 'RuntimeDefault'
-        ) &&
-        object.spec.ephemeralContainers.all(container,
+          has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
+        )) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(container,
           has(container.securityContext) &&
-          container.securityContext.runAsNonRoot == true &&
+          has(container.securityContext.runAsNonRoot) && container.securityContext.runAsNonRoot == true &&
           has(container.securityContext.runAsUser) &&
           container.securityContext.runAsUser > 0 &&
-          container.securityContext.allowPrivilegeEscalation == false &&
-          container.securityContext.readOnlyRootFilesystem == true &&
-          container.securityContext.privileged != true &&
+          has(container.securityContext.allowPrivilegeEscalation) && container.securityContext.allowPrivilegeEscalation == false &&
+          has(container.securityContext.readOnlyRootFilesystem) && container.securityContext.readOnlyRootFilesystem == true &&
+          (!has(container.securityContext.privileged) || container.securityContext.privileged != true) &&
           has(container.securityContext.capabilities) &&
-          container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
+          has(container.securityContext.capabilities.drop) && container.securityContext.capabilities.drop.exists(capability, capability == 'ALL') &&
           (!has(container.securityContext.capabilities.add) || container.securityContext.capabilities.add.size() == 0) &&
-          container.securityContext.procMount != 'Unmasked' &&
+          (!has(container.securityContext.procMount) || container.securityContext.procMount != 'Unmasked') &&
           has(container.securityContext.seccompProfile) &&
-          container.securityContext.seccompProfile.type == 'RuntimeDefault'
-        )
+          has(container.securityContext.seccompProfile.type) && container.securityContext.seccompProfile.type == 'RuntimeDefault'
+        ))
       message: Every regular, init, and ephemeral container must be non-root, no-escalation, read-only-rootfs, drop ALL/add no capabilities, avoid unmasked proc, and use RuntimeDefault seccomp.
       reason: Invalid
