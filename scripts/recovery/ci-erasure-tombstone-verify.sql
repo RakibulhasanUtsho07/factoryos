@@ -11,7 +11,7 @@ BEGIN
   SELECT count(*) INTO residual_rows
   FROM public.factoryos_ci_erasure_replay_fixture AS fixture
   JOIN public.factoryos_ci_erasure_replay_ledger AS ledger
-    ON ledger.fixture_id = fixture.fixture_id
+    ON ledger.fixture_id = fixture.fixture_id AND ledger.tenant_id = fixture.tenant_id
   WHERE ledger.tombstone_id = 'ci-tombstone-after-snapshot-001';
   IF expected_tombstones <> 1 OR residual_rows <> 0 THEN
     RAISE EXCEPTION 'synthetic erasure replay reconciliation failed: expected %, residual %', expected_tombstones, residual_rows;
