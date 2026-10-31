@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
@@ -62,7 +62,8 @@ export class SaasTenantExternalCopyCoverageService {
    const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(evidenceReference,evidenceSha256);
    try {
     validateExternalStoreInventoryManifest(artifact.bytes,tenantId,category);
-   } catch {
+   } catch (error) {
+    if (error instanceof ServiceUnavailableException) throw error;
     throw new BadRequestException('UNCLASSIFIED_EXTERNAL_STORE NOT_APPLICABLE requires a complete, current, scope-bound external inventory manifest');
    }
   } else {
@@ -131,7 +132,8 @@ export class SaasTenantExternalCopyCoverageService {
      const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(current.evidence_reference,current.evidence_sha256);
      try {
       validateExternalStoreInventoryManifest(artifact.bytes,current.tenant_id,current.category_code);
-     } catch {
+     } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
       throw new ConflictException('UNCLASSIFIED_EXTERNAL_STORE cannot be accepted without a complete, current, scope-bound external inventory manifest');
      }
     } else {
