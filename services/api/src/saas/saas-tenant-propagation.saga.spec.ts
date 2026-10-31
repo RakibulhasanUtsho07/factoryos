@@ -9,6 +9,10 @@ import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-eviden
 import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
   EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
+import {
+  digestExternalStoreInventoryScope, EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
+  REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS,
+} from './external-store-inventory-manifest';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
@@ -19,6 +23,40 @@ const reviewer = '16010000-0000-4000-8000-000000000002';
 const postgresExecutor = '16010000-0000-4000-8000-000000000003';
 const propagationExecutor = '16010000-0000-4000-8000-000000000004';
 const independentAttestor = '16010000-0000-4000-8000-000000000005';
+
+function createExternalInventoryManifest(tenantId: string, categoryCode: string) {
+  const now = new Date().toISOString();
+  const scope = {
+    provider_references: ['provider.ci.account'],
+    account_references: ['account.ci.tenant'],
+    project_references: ['project.ci.factoryos'],
+    region_references: ['region.ci.primary'],
+  };
+  const scopeSha256 = digestExternalStoreInventoryScope(scope);
+  return {
+    schema: EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
+    tenant_id: tenantId,
+    category_code: categoryCode,
+    generated_at: now,
+    scope,
+    scope_sha256: scopeSha256,
+    inventory_complete: true,
+    unclassified_store_count: 0,
+    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE', 'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP'],
+    sources: REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => ({
+      source_kind: sourceKind,
+      source_reference: 'discovery.ci.' + sourceKind.toLowerCase(),
+      status: 'COMPLETE',
+      pagination_exhausted: true,
+      pages_fetched: 1,
+      item_count: 0,
+      result_sha256: createHash('sha256').update(sourceKind).digest('hex'),
+      scope_sha256: scopeSha256,
+      started_at: now,
+      completed_at: now,
+    })),
+  };
+}
 const { publicKey: backupEvidencePublicKey, privateKey: backupEvidencePrivateKey } = generateKeyPairSync('ed25519');
 const backupEvidenceKeyId = 'copy-owner-ed25519-test-v1';
 const backupEvidenceOwner = 'owner.infra.ci';
@@ -196,7 +234,9 @@ describe('SaasTenantPropagationService external saga', () => {
     }));
     externalCopyCoverageRows = EXTERNAL_COPY_COVERAGE_STORE_KINDS.map((kind, index) => {
       const evidenceReference = `evidence.external-copy-coverage.${kind.toLowerCase()}`;
-      const evidenceBytes = Buffer.from(`Synthetic external copy coverage evidence for ${kind}; tenant ${tenant}; fixture v1`, 'utf8');
+      const evidenceBytes = kind === UNCLASSIFIED_EXTERNAL_STORE_KIND
+        ? Buffer.from(JSON.stringify(createExternalInventoryManifest(tenant, 'BUSINESS_DATA')), 'utf8')
+        : Buffer.from(`Synthetic external copy coverage evidence for ${kind}; tenant ${tenant}; fixture v1`, 'utf8');
       const evidencePath = join(backupEvidenceRoot, evidenceReference);
       writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
       chmodSync(evidencePath, 0o444);
