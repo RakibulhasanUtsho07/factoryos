@@ -108,7 +108,7 @@ test('collector runs read-only, records six bounded diagnostics and never emits 
   assert.deepEqual(report.sources.map((item) => item.source_kind), REQUIRED_POSTGRESQL_WAL_PITR_SOURCES);
   assert.ok(client.calls.includes('BEGIN READ ONLY'));
   assert.ok(client.calls.includes('ROLLBACK'));
-  assert.ok(client.calls.every((sql) => !/\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|CALL)\b/i.test(sql)));
+  assert.ok(client.calls.every((sql) => ['SELECT', 'BEGIN', 'SET', 'ROLLBACK'].includes(sql.trim().split(' ')[0].toUpperCase())));
   assert.equal(report.connection_security.transaction_read_only, true);
   assert.equal(report.tenant_scoped, false);
   assert.equal(report.provider_native_inventory_complete, false);
