@@ -243,3 +243,68 @@ The four fail-closed policies protect read-only PVC use, all regular/init/epheme
 The application runtime check confirms the deepest covering mount is read-only and the API identity cannot create a file there. It also confirms no `CAP_SYS_ADMIN` in effective/permitted/bounding/inheritable/ambient capability sets and `NoNewPrivs=1`, which removes the normal remount capability. This is not a guarantee against privileged host/storage administrators and is not a direct host-level syscall test.
 
 Real-provider staging is still required for the S3 writer-fence scenarios. Complete writer-principal inventory and enumeration of every backup/copy class, plus independent infrastructure verification of the deployed namespace, CSI/storage configuration, policy ownership, IAM and audit evidence, remain separate release blockers. AS-137 / NFR-PROD-14 remain **PARTIAL** until those evidence artifacts are reviewed.
+## PostgreSQL WAL/PITR: read-only diagnostics and retention boundary
+
+The repository now includes a diagnostic-only PostgreSQL collector at
+`scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs`. Run it from the
+repository root with a dedicated read-only connection:
+
+- `FACTORYOS_POSTGRESQL_WAL_PITR_READONLY_DATABASE_URL`: a secret-manager supplied
+  connection URL; never put it in source control, a CI artifact, a ticket or shell history.
+- `FACTORYOS_POSTGRESQL_WAL_PITR_CLUSTER_REFERENCE`: a non-secret opaque cluster reference
+  such as `pg.cluster.primary`.
+
+The collector opens `BEGIN READ ONLY`, applies short statement/lock timeouts, confirms
+`transaction_read_only=on`, checks that the login is not superuser and has no database/role
+creation, replication or RLS-bypass privilege, and rolls the transaction back. For a
+non-local database host it requires TLS with certificate verification. It observes the
+connected cluster identity/version, `pg_stat_archiver` counters and non-secret configuration
+flags, a bounded sample of the local `pg_wal` directory, PostgreSQL login/replication roles,
+replication sender/receiver state, and restore-configuration presence. It never prints raw
+`archive_command`, `restore_command`, connection strings, passwords or provider credentials.
+
+Run:
+
+`node scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs`
+
+The JSON document is `factoryos.postgresql-wal-pitr-diagnostic/v1`. Exit code `2` is
+intentional: this tool reports observations but is not a complete provider inventory and
+does not create any signable source receipt. A source query that is inaccessible is recorded
+as `UNAVAILABLE`; local database observations stay `OBSERVED`/`PARTIAL`, never `COMPLETE`.
+The output must not be passed to the source-receipt signer or submitted as the accepted
+`factoryos.postgresql-wal-pitr-inventory/v1` artifact. This prevents a local PostgreSQL
+view from being mistaken for a complete cloud backup inventory.
+
+### WAL/PITR retention and erasure guard
+
+`POSTGRESQL_WAL_PITR` remains **UNRESOLVED**. The API now refuses both new submissions and
+review acceptance of a `SUPPORTED` class decision while no class-specific provider
+retention/deletion adapter and independent residual verification are registered. Do not
+use the generic S3 tenant-backup adapter for PostgreSQL WAL/PITR: it covers versioned S3
+objects only, not database WAL archives, managed backup vaults, cross-account replicas or
+PITR restore paths.
+
+WAL segments are cluster-level recovery material and may serve multiple tenants. They are
+not tenant-prefix objects. Do not issue tenant-scoped WAL deletion, manually remove files
+from `pg_wal`, or delete remote archive generations to satisfy a tenant-erasure request.
+Any future expiry controller must follow the database/provider retention policy and prove,
+for the complete provider/account/region scope, that all retention windows have elapsed,
+no legal hold is active or unknown, no replication or PITR restore path depends on the
+candidate segment, the approved restore horizon remains recoverable, and an independent
+post-expiry provider inventory reports zero residual copies. A restore rehearsal must also
+prove application tombstone replay before restored data is reopened.
+
+The diagnostic alone does **not** enumerate remote archive buckets/vaults, object versions,
+provider accounts or regions, IAM writer principals, scheduled archive producers, managed
+backup policies, cross-account replication, backup restore targets or successful PITR
+rehearsals. Those require provider-native read-only APIs and independently reviewed source
+evidence. Configure and review collector trust keys only after the provider query evidence,
+account/region discovery and external identity controls are available. The per-source
+Ed25519 receipt authenticates a configured collector's claims; it does not by itself prove
+that a provider API was queried or that the provider enforced read-only authorization.
+
+The remaining production acceptance work is therefore: provider-specific account/region and
+archive/vault collectors; complete writer/replication/restore discovery; a class-specific
+retention-expiry adapter; independent residual verification; and controlled staging PITR
+restore/tombstone-replay acceptance. Until those steps are complete, keep
+`POSTGRESQL_WAL_PITR` **UNRESOLVED**, and keep AS-137 / NFR-PROD-14 **PARTIAL**, not PASS.
