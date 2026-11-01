@@ -98,5 +98,6 @@ test('live admission CI waits for namespace-scoped Deny binding activation befor
   assert.ok(script.includes('Admission did not enforce the Deny binding after namespace enrollment'));
   assert.ok(script.includes('sleep 1'));
   assert.ok(script.includes('--dry-run=server'));
-  assert.ok(script.includes('PASS — denied writable init-container alias'));
+  assert.ok(script.includes('echo "PASS — denied $description"'));
+  assert.ok(script.includes('"writable init-container alias"'));
 });
