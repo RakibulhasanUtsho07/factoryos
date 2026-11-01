@@ -130,9 +130,33 @@ describe('S3TenantBackupWriterFenceProvider', () => {
       Sid: 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''),
       Effect: 'Deny',
       Principal: '*',
-      Action: ['s3:PutObject', 's3:ReplicateObject', 's3:ReplicateDelete'],
+      Action: [
+        's3:PutObject',
+        's3:PutObjectAcl',
+        's3:PutObjectVersionAcl',
+        's3:PutObjectTagging',
+        's3:PutObjectVersionTagging',
+        's3:DeleteObjectTagging',
+        's3:DeleteObjectVersionTagging',
+        's3:DeleteObject',
+        's3:BypassGovernanceRetention',
+        's3:ReplicateObject',
+        's3:ReplicateDelete',
+      ],
       Resource: 'arn:aws:s3:::factoryos-backups/' + keyPrefix + '*',
     });
+    const legalHoldFence = statements.find((statement) =>
+      statement.Sid === 'FactoryOSBackupWriterLegalHoldReleaseFence' + fenceId.replace(/-/g, ''));
+    expect(legalHoldFence).toEqual({
+      Sid: 'FactoryOSBackupWriterLegalHoldReleaseFence' + fenceId.replace(/-/g, ''),
+      Effect: 'Deny',
+      Principal: '*',
+      Action: 's3:PutObjectLegalHold',
+      Resource: 'arn:aws:s3:::factoryos-backups/' + keyPrefix + '*',
+      Condition: { StringEquals: { 's3:object-lock-legal-hold': 'OFF' } },
+    });
+    // The exact-version erasure permission is deliberately not denied.
+    expect((fence.Action as string[]).includes('s3:DeleteObjectVersion')).toBe(false);
     expect(statements.some((statement) => statement.Sid === 'ExistingReadOnly')).toBe(true);
     expect(evidence).toMatchObject({
       providerFenceReference: 's3-bucket-policy-fence.' + fenceId.replace(/-/g, ''),
@@ -180,6 +204,20 @@ describe('S3TenantBackupWriterFenceProvider', () => {
       s.Sid === 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''))).toBe(true);
   });
 
+  it('fails closed when only part of the multi-statement fence remains installed', async () => {
+    await provider.installFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
+    const statements = (policy as { Statement: Array<Record<string, unknown>> }).Statement;
+    policy = {
+      ...(policy as Record<string, unknown>),
+      Statement: statements.filter((statement) =>
+        statement.Sid !== 'FactoryOSBackupWriterLegalHoldReleaseFence' + fenceId.replace(/-/g, '')),
+    };
+    const inspected = await provider.inspectFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId });
+    expect(inspected.installed).toBe(false);
+    await expect(provider.planFenceRemoval({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
+      .rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('detects bucket-policy changes between preflight and mutation rather than overwriting them', async () => {
     mutateOnSecondPolicyRead = true;
     await expect(provider.installFence({ tenantId: tenant, category: Category.BUSINESS_DATA, fenceId }))
@@ -201,6 +239,7 @@ describe('S3TenantBackupWriterFenceProvider', () => {
     });
     const statements = (policy as { Statement: Array<Record<string, unknown>> }).Statement;
     expect(statements.some((statement) => statement.Sid === 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''))).toBe(false);
+    expect(statements.some((statement) => statement.Sid === 'FactoryOSBackupWriterLegalHoldReleaseFence' + fenceId.replace(/-/g, ''))).toBe(false);
     expect(statements.some((statement) => statement.Sid === 'ExistingReadOnly')).toBe(true);
     expect(result).toMatchObject({ policyAbsent: true, alreadyAbsent: false, providerPolicyDigest: plan.releasePolicyDigest });
     expect(policyWriteCount).toBe(2);

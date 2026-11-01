@@ -196,39 +196,44 @@ export class S3TenantBackupWriterFenceProvider {
     const category = this.category(input?.category);
     const fenceId = this.uuid(input?.fenceId, 'fenceId');
     const prefix = this.prefix(tenantId, category);
-    const statement = this.fenceStatement(storage.bucket, tenantId, category, fenceId);
+    const statements = this.fenceStatements(storage.bucket, tenantId, category, fenceId);
     const reference = this.reference(fenceId);
     const before = await this.getPolicy(storage);
-    const existing = before.policy.Statement.find((entry) => entry.Sid === statement.Sid);
-
-    let expectedPolicy = before.policy;
-    if (existing) {
-      if (canonicalJson(existing) !== canonicalJson(statement)) {
-        throw new ConflictException('S3 bucket policy already uses the writer-fence statement ID for different content');
+    const matching = statements.map((statement) =>
+      before.policy.Statement.filter((entry) => entry.Sid === statement.Sid));
+    for (let index = 0; index < statements.length; index += 1) {
+      const entries = matching[index]!;
+      if (entries.length > 1 || (entries.length === 1
+        && canonicalJson(entries[0]) !== canonicalJson(statements[index]))) {
+        throw new ConflictException('S3 bucket policy already uses a writer-fence statement ID for different content');
       }
-    } else {
+    }
+    const missing = statements.filter((statement, index) => matching[index]!.length === 0);
+    let expectedPolicy = before.policy;
+    if (missing.length > 0) {
       const latest = await this.getPolicy(storage);
       if (latest.exists !== before.exists || policyDigest(latest.policy) !== policyDigest(before.policy)) {
         throw new ConflictException('S3 bucket policy changed during writer-fence preflight; no policy mutation was attempted');
       }
       expectedPolicy = {
         ...before.policy,
-        Statement: [...before.policy.Statement, statement],
+        Statement: [...before.policy.Statement, ...missing],
       };
       await this.putPolicy(storage, expectedPolicy);
     }
 
     const readback = await this.getPolicy(storage);
-    const readbackStatement = readback.policy.Statement.find((entry) => entry.Sid === statement.Sid);
-    if (!readback.exists || !readbackStatement || canonicalJson(readbackStatement) !== canonicalJson(statement)
-      || policyDigest(readback.policy) !== policyDigest(expectedPolicy)) {
+    const readbackComplete = statements.every((statement) => {
+      const entries = readback.policy.Statement.filter((entry) => entry.Sid === statement.Sid);
+      return entries.length === 1 && canonicalJson(entries[0]) === canonicalJson(statement);
+    });
+    if (!readback.exists || !readbackComplete || policyDigest(readback.policy) !== policyDigest(expectedPolicy)) {
       throw new ServiceUnavailableException('S3 write-deny policy did not match the independently read-back policy; keep the application fence closed');
     }
 
-    // Denying PutObject blocks new object puts and multipart upload/complete
-    // actions covered by that authorization. Any already-open multipart upload
-    // remains unresolved until it is reconciled; callers must not mark FENCED
-    // while this count is non-zero.
+    // PutObject permission also authorizes multipart creation, part uploads and
+    // completion. Existing multipart uploads remain unresolved until reconciled;
+    // callers must not mark FENCED while this count is non-zero.
     const multipart = await this.listMultipartUploads(storage, prefix);
     return {
       providerFenceReference: reference,
@@ -249,10 +254,12 @@ export class S3TenantBackupWriterFenceProvider {
     const tenantId = this.uuid(input?.tenantId, 'tenantId');
     const category = this.category(input?.category);
     const fenceId = this.uuid(input?.fenceId, 'fenceId');
-    const statement = this.fenceStatement(storage.bucket, tenantId, category, fenceId);
+    const statements = this.fenceStatements(storage.bucket, tenantId, category, fenceId);
     const policy = await this.getPolicy(storage);
-    const installed = policy.exists && policy.policy.Statement.some((entry) =>
-      entry.Sid === statement.Sid && canonicalJson(entry) === canonicalJson(statement));
+    const installed = policy.exists && statements.every((statement) => {
+      const entries = policy.policy.Statement.filter((entry) => entry.Sid === statement.Sid);
+      return entries.length === 1 && canonicalJson(entries[0]) === canonicalJson(statement);
+    });
     const prefix = this.prefix(tenantId, category);
     const multipart = await this.listMultipartUploads(storage, prefix);
     return {
@@ -275,13 +282,19 @@ export class S3TenantBackupWriterFenceProvider {
     const tenantId = this.uuid(input?.tenantId, 'tenantId');
     const category = this.category(input?.category);
     const fenceId = this.uuid(input?.fenceId, 'fenceId');
-    const statement = this.fenceStatement(storage.bucket, tenantId, category, fenceId);
+    const statements = this.fenceStatements(storage.bucket, tenantId, category, fenceId);
     const current = await this.getPolicy(storage);
-    const existing = current.policy.Statement.find((entry) => entry.Sid === statement.Sid);
-    if (existing && canonicalJson(existing) !== canonicalJson(statement)) {
-      throw new ConflictException('S3 bucket policy writer-fence statement was modified outside its reviewed lifecycle');
+    const matching = statements.map((statement) =>
+      current.policy.Statement.filter((entry) => entry.Sid === statement.Sid));
+    for (let index = 0; index < statements.length; index += 1) {
+      const entries = matching[index]!;
+      if (entries.length > 1 || (entries.length === 1
+        && canonicalJson(entries[0]) !== canonicalJson(statements[index]))) {
+        throw new ConflictException('S3 bucket policy writer-fence statement was modified outside its reviewed lifecycle');
+      }
     }
-    if (!existing) {
+    const presentCount = matching.filter((entries) => entries.length === 1).length;
+    if (presentCount === 0) {
       return {
         providerFenceReference: this.reference(fenceId),
         currentPolicyDigest: policyDigest(current.policy),
@@ -289,9 +302,13 @@ export class S3TenantBackupWriterFenceProvider {
         policyPresent: false,
       };
     }
+    if (presentCount !== statements.length) {
+      throw new ConflictException('S3 bucket policy contains only part of the required writer-fence statement set');
+    }
+    const statementIds = new Set(statements.map((statement) => String(statement.Sid)));
     const next: BucketPolicy = {
       ...current.policy,
-      Statement: current.policy.Statement.filter((entry) => entry.Sid !== statement.Sid),
+      Statement: current.policy.Statement.filter((entry) => !statementIds.has(String(entry.Sid))),
     };
     return {
       providerFenceReference: this.reference(fenceId),
@@ -318,12 +335,20 @@ export class S3TenantBackupWriterFenceProvider {
     const fenceId = this.uuid(input?.fenceId, 'fenceId');
     const expectedCurrent = this.digest(input?.expectedCurrentPolicyDigest, 'expectedCurrentPolicyDigest');
     const expectedRelease = this.digest(input?.expectedReleasePolicyDigest, 'expectedReleasePolicyDigest');
-    const statement = this.fenceStatement(storage.bucket, tenantId, category, fenceId);
+    const statements = this.fenceStatements(storage.bucket, tenantId, category, fenceId);
     const reference = this.reference(fenceId);
     const current = await this.getPolicy(storage);
-    const existing = current.policy.Statement.find((entry) => entry.Sid === statement.Sid);
-
-    if (!existing) {
+    const matching = statements.map((statement) =>
+      current.policy.Statement.filter((entry) => entry.Sid === statement.Sid));
+    for (let index = 0; index < statements.length; index += 1) {
+      const entries = matching[index]!;
+      if (entries.length > 1 || (entries.length === 1
+        && canonicalJson(entries[0]) !== canonicalJson(statements[index]))) {
+        throw new ConflictException('S3 bucket policy writer-fence statement was modified outside its reviewed lifecycle');
+      }
+    }
+    const presentCount = matching.filter((entries) => entries.length === 1).length;
+    if (presentCount === 0) {
       if (policyDigest(current.policy) !== expectedRelease) {
         throw new ConflictException('Writer-fence policy is absent but bucket policy digest does not match the durable release plan');
       }
@@ -334,16 +359,17 @@ export class S3TenantBackupWriterFenceProvider {
         alreadyAbsent: true,
       };
     }
-    if (canonicalJson(existing) !== canonicalJson(statement)) {
-      throw new ConflictException('S3 bucket policy writer-fence statement was modified outside its reviewed lifecycle');
+    if (presentCount !== statements.length) {
+      throw new ConflictException('S3 bucket policy contains only part of the required writer-fence statement set');
     }
     if (policyDigest(current.policy) !== expectedCurrent) {
       throw new ConflictException('S3 bucket policy changed after release was sealed; the fence statement was not removed');
     }
 
+    const statementIds = new Set(statements.map((statement) => String(statement.Sid)));
     const next: BucketPolicy = {
       ...current.policy,
-      Statement: current.policy.Statement.filter((entry) => entry.Sid !== statement.Sid),
+      Statement: current.policy.Statement.filter((entry) => !statementIds.has(String(entry.Sid))),
     };
     if (policyDigest(next) !== expectedRelease) {
       throw new ConflictException('S3 writer-fence release plan no longer matches the current bucket policy');
@@ -354,7 +380,8 @@ export class S3TenantBackupWriterFenceProvider {
     }
     await this.putPolicy(storage, next);
     const readback = await this.getPolicy(storage);
-    const stillPresent = readback.policy.Statement.some((entry) => entry.Sid === statement.Sid);
+    const statementIds = new Set(statements.map((statement) => String(statement.Sid)));
+    const stillPresent = readback.policy.Statement.some((entry) => statementIds.has(String(entry.Sid)));
     if (stillPresent || policyDigest(readback.policy) !== expectedRelease) {
       throw new ServiceUnavailableException('S3 writer-fence removal could not be confirmed by policy read-back');
     }
@@ -406,16 +433,52 @@ export class S3TenantBackupWriterFenceProvider {
     };
   }
 
-  private fenceStatement(bucket: string, tenantId: string, category: SaasTransferDatasetCategory, fenceId: string): JsonObject {
-    return {
-      Sid: 'FactoryOSBackupWriterFence' + fenceId.replace(/-/g, ''),
-      Effect: 'Deny',
-      Principal: '*',
-      // Replication writes use a separate S3 authorization action; PutObject alone
-      // does not fence an S3 replication role from recreating objects in this prefix.
-      Action: ['s3:PutObject', 's3:ReplicateObject', 's3:ReplicateDelete'],
-      Resource: 'arn:aws:s3:::' + bucket + '/' + this.prefix(tenantId, category) + '*',
-    };
+  private fenceStatements(
+    bucket: string,
+    tenantId: string,
+    category: SaasTransferDatasetCategory,
+    fenceId: string,
+  ): JsonObject[] {
+    const suffix = fenceId.replace(/-/g, '');
+    const resource = 'arn:aws:s3:::' + bucket + '/' + this.prefix(tenantId, category) + '*';
+    return [
+      {
+        Sid: 'FactoryOSBackupWriterFence' + suffix,
+        Effect: 'Deny',
+        Principal: '*',
+        // Freeze content writes, object ACL/tag mutations, new delete markers,
+        // governance-retention bypass, and replication under this exact prefix.
+        // Exact-version erasure remains available through DeleteObjectVersion.
+        Action: [
+          's3:PutObject',
+          's3:PutObjectAcl',
+          's3:PutObjectVersionAcl',
+          's3:PutObjectTagging',
+          's3:PutObjectVersionTagging',
+          's3:DeleteObjectTagging',
+          's3:DeleteObjectVersionTagging',
+          's3:DeleteObject',
+          's3:BypassGovernanceRetention',
+          's3:ReplicateObject',
+          's3:ReplicateDelete',
+        ],
+        Resource: resource,
+      },
+      {
+        Sid: 'FactoryOSBackupWriterLegalHoldReleaseFence' + suffix,
+        Effect: 'Deny',
+        Principal: '*',
+        // Permit adding a legal hold (ON), but never clearing one (OFF) while
+        // the writer fence is active.
+        Action: 's3:PutObjectLegalHold',
+        Resource: resource,
+        Condition: {
+          StringEquals: {
+            's3:object-lock-legal-hold': 'OFF',
+          },
+        },
+      },
+    ];
   }
 
   private async getPolicy(storage: PolicyConfig): Promise<ReadPolicy> {

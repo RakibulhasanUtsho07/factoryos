@@ -175,14 +175,35 @@ test('backup writer-fence and inventory migrations are in replay and PostgreSQL 
 });
 
 
-test('S3 writer fence denies direct object writes, replication and replication delete markers', async () => {
+test('S3 writer fence freezes object creation, mutable metadata, delete markers and unsafe retention changes', async () => {
   const provider = await readRepoFile(S3_WRITER_FENCE_PROVIDER);
   const providerSpec = await readRepoFile('services/api/src/saas/s3-tenant-backup-writer-fence.provider.spec.ts');
   const doc = await readRepoFile(BACKUP_WRITER_FENCE_DOC);
 
-  assert.match(provider, /Action:\s*\[['"]s3:PutObject['"],\s*['"]s3:ReplicateObject['"],\s*['"]s3:ReplicateDelete['"]\]/);
-  assert.ok(providerSpec.includes("Action: ['s3:PutObject', 's3:ReplicateObject', 's3:ReplicateDelete']"));
-  assert.match(doc, /s3:PutObject.*s3:ReplicateObject.*s3:ReplicateDelete/);
+  const requiredActions = [
+    's3:PutObject',
+    's3:PutObjectAcl',
+    's3:PutObjectVersionAcl',
+    's3:PutObjectTagging',
+    's3:PutObjectVersionTagging',
+    's3:DeleteObjectTagging',
+    's3:DeleteObjectVersionTagging',
+    's3:DeleteObject',
+    's3:BypassGovernanceRetention',
+    's3:ReplicateObject',
+    's3:ReplicateDelete',
+  ];
+  const actionBlock = provider.match(/Sid:\s*'FactoryOSBackupWriterFence'[\s\S]*?Action:\s*\[([\s\S]*?)\]/);
+  assert.ok(actionBlock, 'the scoped writer-fence Deny action list must exist');
+  for (const action of requiredActions) {
+    assert.ok(actionBlock[1].includes("'" + action + "'"), 'writer fence must deny ' + action);
+    assert.ok(providerSpec.includes("'" + action + "'"), 'provider regression test must cover ' + action);
+  }
+  assert.doesNotMatch(actionBlock[1], /s3:DeleteObjectVersion/);
+  assert.match(provider, /Action:\s*'s3:PutObjectLegalHold'[\s\S]*?Condition:\s*\{[\s\S]*?'s3:object-lock-legal-hold':\s*'OFF'/);
+  assert.match(providerSpec, /s3:object-lock-legal-hold': 'OFF'/);
+  assert.match(doc, /s3:PutObject.*s3:DeleteObject.*s3:ReplicateObject.*s3:ReplicateDelete/);
+  assert.match(doc, /legal hold.*OFF.*ON/i);
   assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
 });
 
