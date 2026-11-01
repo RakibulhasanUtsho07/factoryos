@@ -23,6 +23,7 @@ import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceA
   verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import { validateExternalStoreInventoryManifest } from './external-store-inventory-manifest';
+import { validatePostgresqlWalPitrInventoryManifest } from './postgresql-wal-pitr-inventory-manifest';
 import type {
   SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
   SaasExternalPropagationPlan, SaasExternalPropagationResourceIdentity,
@@ -1229,7 +1230,21 @@ export class SaasTenantPropagationService {
         }
         // Re-read source bytes at every preflight/resume/provider checkpoint. A once-valid
         // reference cannot silently disappear or be replaced by a different evidence pack.
-        await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+        if (copyClass === 'POSTGRESQL_WAL_PITR') {
+          const artifact = await this.backupEvidenceArtifactReader.readVerifiedArtifact(
+            decision.evidence_reference, decision.evidence_sha256,
+          );
+          try {
+            validatePostgresqlWalPitrInventoryManifest(
+              artifact.bytes, decision.tenant_id, category, decision.disposition,
+            );
+          } catch {
+            throw new ConflictException('PostgreSQL WAL/PITR coverage lacks a complete, current, scope-reconciled inventory manifest for '
+              + category);
+          }
+        } else {
+          await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+        }
         if (decision.disposition === 'UNRESOLVED') {
           throw new ConflictException('Unresolved backup copy class blocks whole-tenant erasure: ' + category + '/' + copyClass);
         }
