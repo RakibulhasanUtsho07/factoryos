@@ -1,4 +1,7 @@
+import { ServiceUnavailableException } from '@nestjs/common';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import {
+  canonicalizePostgresqlWalPitrSourceReceipt,
   digestPostgresqlWalPitrInventoryScope,
   REQUIRED_POSTGRESQL_WAL_PITR_SOURCES,
   validatePostgresqlWalPitrInventoryManifest,
@@ -6,6 +9,15 @@ import {
 
 const tenant = '31000000-0000-4000-8000-000000000001';
 const now = Date.parse('2026-11-01T12:00:00.000Z');
+const collectorKeys = new Map(REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((sourceKind) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [sourceKind, { keyId: 'collector.' + sourceKind.toLowerCase(), ownerReference: 'owner.collector.' + sourceKind.toLowerCase(),
+    publicKey: pair.publicKey, privateKey: pair.privateKey }] as const;
+}));
+const trustedSourceKeysJson = JSON.stringify([...collectorKeys.entries()].map(([sourceKind, key]) => ({
+  keyId: key.keyId, ownerReference: key.ownerReference, sourceKinds: [sourceKind],
+  publicKeyPem: key.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+})));
 
 function makeManifest(disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED' = 'SUPPORTED') {
   const hasArchive = disposition !== 'NOT_APPLICABLE';
@@ -54,6 +66,9 @@ function makeManifest(disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED'
       scope_sha256: digestPostgresqlWalPitrInventoryScope(scope),
       started_at: startedAt,
       completed_at: completedAt,
+      attestation_key_id: collectorKeys.get(source_kind)!.keyId,
+      attestation_owner_reference: collectorKeys.get(source_kind)!.ownerReference,
+      attestation_signature: '',
     })),
     clusters: [{
       cluster_reference: 'pg.cluster.primary',
@@ -104,7 +119,14 @@ function makeManifest(disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED'
       tombstone_replay_evidence_reference: 'evidence.pg.restore.tombstone.v1',
     }] : [],
   };
+  manifest.sources.forEach((source) => resignSource(source, manifest));
   return manifest;
+}
+function resignSource(source: ReturnType<typeof makeManifest>['sources'][number], inventory: ReturnType<typeof makeManifest>) {
+  const collector = collectorKeys.get(source.source_kind as typeof REQUIRED_POSTGRESQL_WAL_PITR_SOURCES[number])!;
+  source.attestation_signature = sign(null, Buffer.from(canonicalizePostgresqlWalPitrSourceReceipt(
+    source, { tenantId: inventory.tenant_id, categoryCode: inventory.category_code, inventoryId: inventory.inventory_id },
+  ), 'utf8'), collector.privateKey).toString('base64url');
 }
 
 function validate(manifest: unknown, disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED' = 'SUPPORTED') {
@@ -114,6 +136,7 @@ function validate(manifest: unknown, disposition: 'SUPPORTED' | 'NOT_APPLICABLE'
     'BUSINESS_DATA',
     disposition,
     now,
+    trustedSourceKeysJson,
   );
 }
 
@@ -134,6 +157,7 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
     empty.scope.region_references = ['cloud.region.primary'];
     empty.scope_sha256 = digestPostgresqlWalPitrInventoryScope(empty.scope);
     empty.sources.forEach((source) => { source.scope_sha256 = empty.scope_sha256; });
+    empty.sources.forEach((source) => resignSource(source, empty));
     empty.sources[0].item_count = 0;
     empty.clusters = [];
     expect(() => validate(empty, 'NOT_APPLICABLE')).not.toThrow();
@@ -231,4 +255,28 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
     badTime.segments[0].archived_at = '2026-11-01';
     expect(() => validate(badTime)).toThrow(/canonical ISO-8601/i);
   });
+
+  it('rejects tampered source claims and cross-inventory receipt replay', () => {
+    const tampered = makeManifest(); tampered.sources[0].item_count += 1;
+    expect(() => validate(tampered)).toThrow(/source receipt signature does not match/i);
+    const replayed = makeManifest(); replayed.inventory_id = '31000000-0000-4000-8000-000000000099';
+    expect(() => validate(replayed)).toThrow(/source receipt signature does not match/i);
+    const unsigned = makeManifest(); unsigned.sources[0].attestation_signature = '';
+    expect(() => validate(unsigned)).toThrow(/signing metadata is invalid/i);
+  });
+  it('fails closed when collector trust is absent, malformed, duplicated or outside the source allowlist', () => {
+    const valid = makeManifest();
+    expect(() => validatePostgresqlWalPitrInventoryManifest(Buffer.from(JSON.stringify(valid)), tenant, 'BUSINESS_DATA', 'SUPPORTED', now, '')).toThrow(ServiceUnavailableException);
+    expect(() => validatePostgresqlWalPitrInventoryManifest(Buffer.from(JSON.stringify(valid)), tenant, 'BUSINESS_DATA', 'SUPPORTED', now, '{invalid')).toThrow(ServiceUnavailableException);
+    const trusted = JSON.parse(trustedSourceKeysJson) as Array<Record<string, unknown>>;
+    const duplicate = [...trusted, { ...trusted[0], keyId: 'collector.alias.same.public.key' }];
+    expect(() => validatePostgresqlWalPitrInventoryManifest(Buffer.from(JSON.stringify(valid)), tenant, 'BUSINESS_DATA', 'SUPPORTED', now, JSON.stringify(duplicate))).toThrow(/duplicate public key/i);
+    const wrongAllowlist = trusted.map((entry, index) => index === 0 ? { ...entry, sourceKinds: ['WAL_SEGMENT_CATALOG'] } : entry);
+    expect(() => validatePostgresqlWalPitrInventoryManifest(Buffer.from(JSON.stringify(valid)), tenant, 'BUSINESS_DATA', 'SUPPORTED', now, JSON.stringify(wrongAllowlist))).toThrow(/not trusted for POSTGRESQL_CLUSTER_CATALOG/i);
+  });
+  it('reconciles counts only after verifying the corresponding collector signature', () => {
+    const wrongCount = makeManifest(); wrongCount.sources[2].item_count = 2; resignSource(wrongCount.sources[2], wrongCount);
+    expect(() => validate(wrongCount)).toThrow(/item_count does not match/i);
+  });
+
 });
