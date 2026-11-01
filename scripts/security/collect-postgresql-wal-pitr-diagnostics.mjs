@@ -201,15 +201,18 @@ export async function collectPostgresqlWalPitrDiagnostics({
       'This is a bounded local pg_wal directory sample, not a remote WAL archive inventory or complete PITR segment history.',
       { bounded_limit: MAX_WAL_DIRECTORY_ROWS },
     );
-    if (walSource.item_count > MAX_WAL_DIRECTORY_ROWS) {
-      walSource.records = walSource.records.slice(0, MAX_WAL_DIRECTORY_ROWS);
-      walSource.item_count = walSource.records.length;
-      walSource.pagination_exhausted = false;
-      walSource.status = 'PARTIAL';
-      walSource.result_sha256 = digest(walSource.records);
-    } else {
-      walSource.status = 'PARTIAL';
-      walSource.pagination_exhausted = false;
+    if (walSource.status === 'OBSERVED') {
+      if (walSource.item_count > MAX_WAL_DIRECTORY_ROWS) {
+        walSource.records = walSource.records.slice(0, MAX_WAL_DIRECTORY_ROWS);
+        walSource.item_count = walSource.records.length;
+        walSource.pagination_exhausted = false;
+        walSource.status = 'PARTIAL';
+        walSource.result_sha256 = digest(walSource.records);
+      } else {
+        // A single bounded sample cannot prove that historical/archive WAL is complete.
+        walSource.status = 'PARTIAL';
+        walSource.pagination_exhausted = false;
+      }
     }
 
     const writerSource = await observe(
