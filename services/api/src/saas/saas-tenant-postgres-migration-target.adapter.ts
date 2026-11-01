@@ -381,12 +381,12 @@ export class SaasTenantPostgresMigrationTargetAdapter
       if (tableColumnsInBundle.get('research_knowledge_releases')?.includes('evaluation_id')) {
         await client.query(
           'UPDATE public.research_knowledge_releases AS target_row ' +
-            'SET evaluation_id = (staged.row_payload->>\\'evaluation_id\\')::uuid, ' +
-            'status = staged.row_payload->>\\'status\\' ' +
+            `SET evaluation_id = (staged.row_payload->>'evaluation_id')::uuid, ` +
+            `status = staged.row_payload->>'status' ` +
             'FROM pg_temp.factoryos_transfer_stage AS staged ' +
-            'WHERE staged.table_name = \\'research_knowledge_releases\\' ' +
-            'AND target_row.id = (staged.row_payload->>\\'id\\')::uuid ' +
-            'AND staged.row_payload->>\\'evaluation_id\\' IS NOT NULL',
+            `WHERE staged.table_name = 'research_knowledge_releases' ` +
+            `AND target_row.id = (staged.row_payload->>'id')::uuid ` +
+            `AND staged.row_payload->>'evaluation_id' IS NOT NULL`,
         );
       }
 
