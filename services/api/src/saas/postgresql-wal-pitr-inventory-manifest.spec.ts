@@ -126,6 +126,19 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
     expect(() => validate(makeManifest('NOT_APPLICABLE'), 'NOT_APPLICABLE')).not.toThrow();
   });
 
+  it('accepts NOT_APPLICABLE when authoritative provider/account scope proves no PostgreSQL clusters exist', () => {
+    const empty = makeManifest('NOT_APPLICABLE');
+    empty.scope.cluster_references = [];
+    empty.scope.provider_references = ['cloud.provider'];
+    empty.scope.account_references = ['cloud.account.prod'];
+    empty.scope.region_references = ['cloud.region.primary'];
+    empty.scope_sha256 = digestPostgresqlWalPitrInventoryScope(empty.scope);
+    empty.sources.forEach((source) => { source.scope_sha256 = empty.scope_sha256; });
+    empty.sources[0].item_count = 0;
+    empty.clusters = [];
+    expect(() => validate(empty, 'NOT_APPLICABLE')).not.toThrow();
+  });
+
   it('allows a complete inventory to remain UNRESOLVED while no class adapter exists', () => {
     expect(() => validate(makeManifest('UNRESOLVED'), 'UNRESOLVED')).not.toThrow();
   });
