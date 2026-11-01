@@ -89,6 +89,15 @@ The `IAM_ACCESS` source uses a dedicated tenant-scoped logical adapter rather th
 
 Migration 156 includes the two direct relations `tenant_memberships` and `roles` in its direct inventory allowlist. Migration 159 permits the derived `user_roles` and `role_permissions` records only for this logical remapping path; the generic ownership ledger keeps new FK-derived relations excluded from generic export and blocked from generic erasure.
 
+## Foreign-key export and restore ordering
+
+The source reader streams the reviewed table arrays inside one read-only `REPEATABLE READ` snapshot. Stream order is not treated as a referential-integrity guarantee: the target importer stages and validates all rows before inserting any destination table.
+
+For each import, the target adapter reads the target database's actual `pg_constraint` catalog and derives a stable parent-before-child order from non-deferrable foreign keys whose two endpoints are in the current import set. It does not trust a second hand-maintained preferred-order list. Deferrable constraints are deferred with `SET CONSTRAINTS ALL DEFERRED` and are checked by PostgreSQL at commit. References to relations outside the import set must already be provisioned in the destination (for example, the tenant's shared identity principals); the destination FK remains authoritative.
+
+The one reviewed immediate cycle is `business_blueprints.current_version_id` → `business_blueprint_versions`, while each version references its blueprint. The first blueprint insert explicitly projects `current_version_id = NULL`; after all versions have been inserted, the importer restores the original pointer from the staged payload. The PostgreSQL dependency contract verifies that this exact immediate FK still exists and checks the live adapter-table graph for any other non-deferrable cycle.
+
+An unrecognized non-deferrable cycle or malformed catalog response fails closed before any table insert. The import transaction rolls back; it does not guess an order or silently skip a constraint. The dependency-order algorithm has unit coverage for parent ordering, multiple FKs, deferrable edges, the exact blueprint pointer exception and unexpected cycles.
 ## Explicitly unsupported categories
 
 - `INTEGRATION_METADATA` — no PostgreSQL source adapter is registered.

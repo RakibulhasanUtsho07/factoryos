@@ -15,6 +15,7 @@ import type {
   SaasTenantTransferExportManifest,
 } from './saas-tenant-data-transfer.adapters';
 import { SAAS_TENANT_DATASET_TABLES } from './saas-tenant-postgres-dataset-source';
+import { resolveSaasTenantImportOrder } from './saas-tenant-transfer-dependency-order';
 import { assertSaasTenantTransferFieldSafe } from './saas-tenant-transfer-field-guard';
 import { assertSaasTenantIamEffectiveAccess, buildSaasTenantIamRemappingPlan } from './saas-tenant-iam-remapping.plan';
 import type { SaasTenantIamPortableSnapshot, SaasTenantIamTargetDirectory, SaasIamTransferStatus, SaasTenantMembershipStatus } from './saas-tenant-iam-remapping.plan';
@@ -317,8 +318,9 @@ export class SaasTenantPostgresMigrationTargetAdapter
         throw new ConflictException('Source bundle exceeds the supported record-count limit');
       }
 
+      const orderedTables = await this.dependencyOrder(client, allTables);
       await client.query('SET CONSTRAINTS ALL DEFERRED');
-      for (const table of this.dependencyOrder(allTables)) {
+      for (const table of orderedTables) {
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
@@ -542,32 +544,42 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return columns;
   }
 
-  private dependencyOrder(tables: string[]): string[] {
-    const preferred = [
-      'legal_entities', 'factories',
-      'business_blueprints', 'business_blueprint_versions',
-      'business_entities', 'business_relations',
-      'business_processes', 'business_process_steps',
-      'business_rules', 'business_terms', 'business_exceptions',
-      'business_change_proposals', 'business_conflicts', 'business_feedback',
-      'orders', 'order_lines', 'order_event_projections',
-      'inventory_items', 'inventory_stock_balances', 'inventory_movements',
-      'growth_opportunities', 'growth_scenarios', 'growth_experiments',
-      'risk_classes', 'policies', 'approvals',
-      'saas_usage_rate_cards', 'saas_usage_events', 'saas_usage_adjustments',
-      'saas_usage_reconciliations', 'saas_usage_budgets', 'saas_budget_evaluations',
-      'saas_workload_control_events', 'saas_budget_alerts', 'saas_budget_alert_acknowledgements',
-      'saas_provider_cost_events', 'saas_provider_cost_reconciliations',
-      'ai_decision_envelopes', 'ai_context_packages', 'ai_verification_runs',
-      'research_sources', 'research_claims', 'research_claim_links',
-      'research_knowledge_releases', 'research_relevance_mappings',
-      'research_release_evaluations',
-      'business_evidence', 'business_evidence_links', 'growth_opportunity_evidence',
-      'growth_experiment_results', 'growth_opportunity_outcomes',
-      'audit_events',
-    ];    const ordered = preferred.filter((table) => tables.includes(table));
-    for (const table of tables) if (!ordered.includes(table)) ordered.push(table);
-    return ordered;
+
+  /**
+   * Derive parent-before-child insert order from the destination schema itself.
+   * Only FKs whose child and parent are both in this import are ordering edges.
+   * Deferrable FKs are checked at COMMIT after SET CONSTRAINTS ALL DEFERRED.
+   * The one known immediate cycle is handled by inserting business_blueprints
+   * with current_version_id=NULL and restoring that pointer after versions exist.
+   */
+  private async dependencyOrder(client: PoolClient, tables: string[]): Promise<string[]> {
+    if (tables.length === 0) return [];
+    const result = await client.query<{
+      child_table: string;
+      parent_table: string;
+      constraint_name: string;
+      deferrable: boolean;
+      child_columns: string[];
+    }>(
+      'SELECT child.relname AS child_table, parent.relname AS parent_table, ' +
+        'con.conname AS constraint_name, con.condeferrable AS deferrable, ' +
+        'array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns ' +
+        'FROM pg_constraint con ' +
+        'INNER JOIN pg_class child ON child.oid = con.conrelid ' +
+        'INNER JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace ' +
+        'INNER JOIN pg_class parent ON parent.oid = con.confrelid ' +
+        'INNER JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace ' +
+        'INNER JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE ' +
+        'INNER JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid ' +
+        'AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped ' +
+        'WHERE con.contype = \'f\' AND child_namespace.nspname = \'public\' ' +
+        'AND parent_namespace.nspname = \'public\' ' +
+        'AND child.relname = ANY($1::text[]) AND parent.relname = ANY($1::text[]) ' +
+        'GROUP BY con.oid, child.relname, parent.relname, con.conname, con.condeferrable ' +
+        'ORDER BY child.relname, parent.relname, con.conname',
+      [tables],
+    );
+    return resolveSaasTenantImportOrder(tables, result.rows);
   }
 
   private validateIamPortableRow(table: string, row: Record<string, unknown>, tenantId: string): void {
