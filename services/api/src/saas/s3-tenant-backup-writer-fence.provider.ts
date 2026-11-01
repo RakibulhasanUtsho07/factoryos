@@ -380,7 +380,6 @@ export class S3TenantBackupWriterFenceProvider {
     }
     await this.putPolicy(storage, next);
     const readback = await this.getPolicy(storage);
-    const statementIds = new Set(statements.map((statement) => String(statement.Sid)));
     const stillPresent = readback.policy.Statement.some((entry) => statementIds.has(String(entry.Sid)));
     if (stillPresent || policyDigest(readback.policy) !== expectedRelease) {
       throw new ServiceUnavailableException('S3 writer-fence removal could not be confirmed by policy read-back');
