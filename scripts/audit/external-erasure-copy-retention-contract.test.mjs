@@ -505,3 +505,38 @@ test('external copy-coverage decisions require trusted signatures and exact sour
   assert.ok(propagation.includes('An unclassified external store type was discovered or remains unresolved'));
   assert.ok(policy.includes('Init containers must not attach writable volume mounts'));
 });
+
+test('PostgreSQL WAL/PITR diagnostics remain read-only, non-signable and retention-blocked', async () => {
+  const collector = await readRepoFile('scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs');
+  const collectorTests = await readRepoFile('scripts/security/collect-postgresql-wal-pitr-diagnostics.test.mjs');
+  const coverageService = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
+  const coverageTests = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.spec.ts');
+  const workflow = await readRepoFile('.github/workflows/external-erasure-copy-retention-contract.yml');
+  const runbook = await readRepoFile(RUNBOOK);
+
+  assert.match(collector, /BEGIN READ ONLY/);
+  assert.match(collector, /transaction_read_only/);
+  assert.match(collector, /rejectUnauthorized:\s*true/);
+  assert.match(collector, /rolsuper === true/);
+  assert.match(collector, /rolreplication === true/);
+  assert.match(collector, /rolbypassrls === true/);
+  assert.match(collector, /finally\s*\{[\s\S]*?ROLLBACK/);
+  assert.match(collector, /provider_native_inventory_complete:\s*false/);
+  assert.match(collector, /source_receipts_signable:\s*false/);
+  assert.match(collector, /retention_adapter_registered:\s*false/);
+  assert.match(collector, /tenant_scoped_delete_permitted:\s*false/);
+  assert.match(collector, /copy_class_disposition:\s*'UNRESOLVED'/);
+  assert.doesNotMatch(collector, /process\.env\.FACTORYOS_[A-Z0-9_]*(?:SECRET|PASSWORD|ACCESS_KEY|TOKEN)/);
+  assert.match(collectorTests, /runs read-only/);
+  assert.match(collectorTests, /rejects privileged identities/);
+  assert.match(collectorTests, /requires verified TLS/);
+  assert.match(collectorTests, /remain explicitly incomplete/);
+  assert.match(coverageService, /copyClass === 'POSTGRESQL_WAL_PITR' && disposition === 'SUPPORTED'/);
+  assert.match(coverageService, /input\.decision==='ACCEPT'&&current\.copy_class_code==='POSTGRESQL_WAL_PITR'/);
+  assert.match(coverageTests, /blocks SUPPORTED WAL\/PITR coverage before evidence submission/);
+  assert.match(coverageTests, /blocks acceptance of a legacy SUPPORTED WAL\/PITR decision/);
+  assert.match(workflow, /scripts\/security\/collect-postgresql-wal-pitr-diagnostics\.test\.mjs/);
+  assert.match(runbook, /PostgreSQL WAL\/PITR: read-only diagnostics and retention boundary/);
+  assert.match(runbook, /WAL segments are cluster-level recovery material and may serve multiple tenants/);
+  assert.match(runbook, /POSTGRESQL_WAL_PITR` \*\*UNRESOLVED\*\*/);
+});
