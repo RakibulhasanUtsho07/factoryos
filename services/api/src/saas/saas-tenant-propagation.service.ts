@@ -762,7 +762,7 @@ export class SaasTenantPropagationService {
       let coverageSnapshotValid = finalTargetsActive;
       try {
         await this.assertTargetCoverage(finalCategories, finalTargets, finalCoverageResult.rows);
-        this.assertBackupCopyClassCoverage(finalCategories, finalTargets, finalBackupCopyClassResult.rows);
+        await this.assertBackupCopyClassCoverage(finalCategories, finalTargets, finalBackupCopyClassResult.rows);
       } catch {
         coverageSnapshotValid = false;
       }
