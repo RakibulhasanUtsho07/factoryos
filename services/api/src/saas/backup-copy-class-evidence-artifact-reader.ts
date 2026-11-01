@@ -123,7 +123,8 @@ export class BackupCopyClassEvidenceArtifactReader {
 
       const actualDigest = hash.digest('hex');
       if (actualDigest !== expectedDigestValue) {
-        throw new Error('Evidence artifact bytes do not match the claimed digest');
+        throw new Error('Evidence artifact bytes do not match the claimed digest; expected='
+          + expectedDigestValue.slice(0, 12) + ', actual=' + actualDigest.slice(0, 12));
       }
       return {
         reference: referenceValue,
@@ -139,7 +140,9 @@ export class BackupCopyClassEvidenceArtifactReader {
       } else if (error instanceof Error) {
         if (error.message.startsWith('Evidence artifact must be')) failureCode = 'FILE_POLICY';
         else if (error.message === 'Evidence artifact changed during verification') failureCode = 'FILE_CHANGED';
-        else if (error.message === 'Evidence artifact bytes do not match the claimed digest') failureCode = 'DIGEST_MISMATCH';
+        else if (error.message.startsWith('Evidence artifact bytes do not match the claimed digest')) {
+          failureCode = 'DIGEST_MISMATCH ' + error.message.slice(error.message.indexOf(';') + 2);
+        }
         else if (error.message === 'Evidence artifact exceeds the size bound') failureCode = 'SIZE_LIMIT';
       }
       throw new ConflictException(
