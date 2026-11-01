@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
@@ -665,6 +665,10 @@ describe('SaasTenantPropagationService external saga', () => {
   });
 
   it('fails closed when a prepared plan was produced by a different adapter version', async () => {
+    const walEvidence = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
+    if (!walEvidence) throw new Error('WAL/PITR evidence fixture is missing');
+    const walBytes = readFileSync(join(backupEvidenceRoot, String(walEvidence.evidence_reference)));
+    expect(createHash('sha256').update(walBytes).digest('hex')).toBe(walEvidence.evidence_sha256);
     adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
       const resources = [
