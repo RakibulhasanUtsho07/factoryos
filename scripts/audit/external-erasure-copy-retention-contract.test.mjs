@@ -205,7 +205,7 @@ test('S3 writer fence freezes object creation, mutable metadata, delete markers 
   assert.doesNotMatch(provider, /s3:object-lock-legal-hold/);
   assert.match(providerSpec, /Action: 's3:PutObjectLegalHold'/);
   assert.match(doc, /s3:PutObject.*s3:DeleteObject.*s3:PutObjectRetention.*s3:ReplicateObject.*s3:ReplicateDelete/);
-  assert.match(doc, /legal-hold mutation window.*both applying and removing/i);
+  assert.match(doc, /freezes the single `s3:PutObjectLegalHold` permission entirely, so both setting and clearing legal holds are blocked while fenced/i);
   assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
 });
 
