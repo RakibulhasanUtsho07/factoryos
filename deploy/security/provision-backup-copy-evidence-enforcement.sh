@@ -83,8 +83,76 @@ echo "Validating the preconfigured Deployment, bound PVC, ServiceAccount and cur
 preflight_evidence="$(node "$VALIDATOR" --deployment "$API_DEPLOYMENT" --namespace "$API_NAMESPACE" --candidate-sha "$CANDIDATE_SHA")"
 printf '%s\n' "$preflight_evidence"
 
+wait_for_backup_evidence_admission() {
+  local attempt output
+  for attempt in {1..30}; do
+    if output="$(kubectl create --dry-run=server -n "$API_NAMESPACE" -f - 2>&1 <<'POD'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: factoryos-evidence-negative-writable-alias-readiness
+spec:
+  serviceAccountName: factoryos-backup-evidence-api
+  automountServiceAccountToken: false
+  volumes:
+    - name: evidence
+      persistentVolumeClaim:
+        claimName: factoryos-backup-evidence
+        readOnly: true
+  initContainers:
+    - name: writable-alias
+      image: busybox:1.36
+      command: ["sh", "-c", "true"]
+      securityContext: &restricted
+        runAsNonRoot: true
+        runAsUser: 10001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: []
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence-init
+          readOnly: false
+  containers:
+    - name: api
+      image: busybox:1.36
+      command: ["sh", "-c", "sleep 30"]
+      env:
+        - name: FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR
+          value: /evidence
+      securityContext: *restricted
+      volumeMounts:
+        - name: evidence
+          mountPath: /evidence
+          readOnly: true
+POD
+)"; then
+      if (( attempt == 30 )); then
+        echo "Admission Deny binding did not become active after namespace enrollment; refusing to restart the API Deployment" >&2
+        exit 1
+      fi
+      echo "Admission binding is not active yet (attempt $attempt/30); API Deployment remains untouched while the server-side dry-run is retried"
+      sleep 1
+      continue
+    fi
+    if ! grep -F "The factoryos-backup-evidence PVC must be read-only" <<<"$output" >/dev/null; then
+      echo "Admission readiness probe was denied for an unexpected reason: $output" >&2
+      exit 1
+    fi
+    echo "PASS — API server is actively denying writable evidence PVC aliases"
+    return 0
+  done
+  echo "Admission readiness loop ended without a Deny decision; refusing API Deployment restart" >&2
+  exit 1
+}
+
 echo "Enrolling namespace in fail-closed evidence admission"
 kubectl label namespace "$API_NAMESPACE" "$LABEL_KEY=$LABEL_VALUE" --overwrite
+wait_for_backup_evidence_admission
 kubectl rollout restart "deployment/$API_DEPLOYMENT" -n "$API_NAMESPACE"
 kubectl rollout status "deployment/$API_DEPLOYMENT" -n "$API_NAMESPACE" --timeout=180s
 
