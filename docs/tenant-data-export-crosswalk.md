@@ -106,6 +106,26 @@ Research release rows are also inserted in `release_key`/`version` order because
 The PostgreSQL dependency contract verifies that the three exact FK exceptions still exist in the live catalog, including the ordered child-to-parent column mapping on both sides of each composite constraint. Runtime cycle exceptions use the same exact ordered mappings; a matching constraint name with an added, reordered or redirected column is not exempt. The contract also checks the remaining adapter-table graph for any other non-deferrable cycle. The unit tests cover parent ordering, multiple/deferrable edges, all three reviewed exceptions, and unknown self or multi-table cycles.
 
 Any unrecognized cycle or malformed catalog response fails closed before table inserts. The import transaction rolls back; the importer does not guess an order or silently skip a constraint. This is a repository/CI acceptance contract, not evidence that a real provider migration or production tenant restore has been accepted.
+
+## Column-level export contract and schema-drift gate
+
+The generic PostgreSQL adapter still uses its reviewed table allowlist, but a table allowlist alone is not a column allowlist: a later migration could add a sensitive or otherwise unreviewed field to an already-approved table while `SELECT *` silently begins exporting it.
+
+Migration `233_tenant_export_column_contract.sql` closes that schema-drift path for the generic direct-table adapters:
+
+- It records a versioned JSONB snapshot for each generic export relation in `factoryos_governance.tenant_export_column_contracts`. The snapshot binds the data category and each live column's ordinal, name, PostgreSQL formatted type, nullability, identity/generated flags, default expression and collation.
+- Contract rows are append-only. A database trigger rejects UPDATE and DELETE; the API runtime role receives SELECT only. A new reviewed contract is a new version, not an in-place edit.
+- Before yielding any row for a generic category, the API reads the complete catalog shape for every table in that category and compares it with the latest reviewed version. Missing contracts, changed categories, added/dropped/renamed/reordered columns, type/nullability/default/identity/generated/collation drift, missing tables or unexpected catalog results block the category with a service-unavailable response. It does not export part of a category before discovering drift in a later table.
+- IAM remains on its dedicated stable-code logical remapping path and is not changed by this generic table snapshot.
+
+The PostgreSQL contract test verifies the baseline against the live catalog, confirms mutation protection, then adds a synthetic unreviewed column to `public.orders` inside a rollback-only subtransaction and proves the manifest comparison becomes false. The DDL probe is rolled back and cannot leave the test schema altered.
+
+### Safe schema-change procedure
+
+Do not refresh an existing manifest during application startup or ordinary migration replay. When a reviewed change to an exportable table is needed, use a later numbered migration to append a new contract version for only the affected table(s), after reviewing the field's data classification, tenant scope, serialization, portability, retention/erasure disposition and target-import behavior. Preserve the earlier version for audit. A routine column addition without that explicit review must fail closed.
+
+This contract protects against structural drift after its baseline. It is not a semantic data-classification system: it does not inspect JSONB keys or discover secrets inside existing fields, and a baseline is not a substitute for Security/Data-Owner review of the field meanings. Optional AI categories remain bounded as already described above; this gate does not turn them into required full AI lifecycle coverage.
+
 ## Explicitly unsupported categories
 
 - `INTEGRATION_METADATA` — no PostgreSQL source adapter is registered.

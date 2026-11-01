@@ -13,6 +13,10 @@ const PATHS = {
   dto: "services/api/src/saas/dto/create-saas-schema-compatibility-rule.dto.ts",
   doc: "docs/tenant-data-export-crosswalk.md",
   governanceDoc: "docs/tenant-data-governance-and-isolation.md",
+  columnContractMigration: "migrations/233_tenant_export_column_contract.sql",
+  columnContractSql: "services/api/test/tenant-data-export-column-contract.sql",
+  migrationManifest: "scripts/audit/migration-manifest.txt",
+  postgresWorkflow: ".github/workflows/api-postgres-ci.yml",
 };
 const BLOCKED_WITHOUT_ADAPTER = ["FILE_REFERENCES", "INTEGRATION_METADATA"];
 const DIRECT_IAM_TABLES = ["tenant_memberships", "roles"];
@@ -147,6 +151,38 @@ test("IAM exports only the dedicated logical remapping for direct and derived id
   assert.match(files.ownership,
     /item\.relation_name IN \('user_roles',\s*'role_permissions'\) THEN 'ALLOWLISTED'/,
     "migration 159 may allow derived IAM tables only for the dedicated logical remapping");
+});
+
+
+test("generic export requires an immutable, versioned column contract before SELECT *", async () => {
+  const files = await loadSources();
+  const migration = files.columnContractMigration;
+  const source = files.source;
+  const readerStart = source.indexOf("private async *readDatasetOnClient");
+  assert.ok(readerStart >= 0, "generic dataset reader is missing");
+  const reader = source.slice(readerStart);
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS factoryos_governance\.tenant_export_column_contracts/);
+  assert.match(migration, /jsonb_agg\([\s\S]*column_meta\.attisdropped/);
+  assert.match(migration, /format_type\(column_meta\.atttypid, column_meta\.atttypmod\)/);
+  assert.match(migration, /BEFORE UPDATE OR DELETE/);
+  assert.match(migration, /ON CONFLICT \(schema_name, relation_name, contract_version\) DO NOTHING/);
+  assert.match(migration, /GRANT SELECT ON factoryos_governance\.tenant_export_column_contracts TO factoryos_app/);
+
+  assert.match(reader, /await this\.assertExportColumnContracts\(client, category, tables\)/);
+  assert.ok(
+    reader.indexOf("await this.assertExportColumnContracts") < reader.indexOf("SELECT dataset_row\.\*"),
+    "column contract must be checked before SELECT * can emit any row",
+  );
+  assert.match(source, /latest_contracts\.column_manifest = live_manifests\.column_manifest/);
+  assert.match(source, /pg_catalog\.pg_attribute/);
+  assert.match(source, /pg_get_expr\(default_value\.adbin, default_value\.adrelid\)/);
+
+  assert.match(files.columnContractSql, /ALTER TABLE public\.orders ADD COLUMN factoryos_ci_unreviewed_export_probe text/);
+  assert.match(files.columnContractSql, /ROLLBACK_EXPORT_SCHEMA_DRIFT_PROBE/);
+  assert.match(files.columnContractSql, /tenant_export_column_contracts/);
+  assert.match(files.postgresWorkflow, /tenant-data-export-column-contract\.sql/);
+  assert.ok(files.migrationManifest.includes("migrations/233_tenant_export_column_contract.sql"));
 });
 
 test("crosswalk documentation lists every relation and preserves explicit unsupported boundaries", async () => {
