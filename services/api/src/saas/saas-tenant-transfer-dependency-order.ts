@@ -11,10 +11,11 @@ export interface SaasTenantImportForeignKey {
 /**
  * Parent-before-child ordering for one tenant import.
  *
- * This graph contains only non-deferrable FKs whose two endpoints are present
- * in the imported table set. FKs to rows provisioned outside this transfer are
- * enforced by PostgreSQL when the insert runs. Deferrable constraints are
- * intentionally deferred by the importer until transaction commit.
+ * The graph includes non-deferrable FKs whose endpoints are both in this import.
+ * Three migration-defined exceptions have dedicated two-phase or ordered-row
+ * handling in the importer: the blueprint current-version pointer, the research
+ * release evaluation pointer, and the business-evidence predecessor chain.
+ * Every other non-deferrable cycle remains a hard error.
  */
 export function resolveSaasTenantImportOrder(
   tables: readonly string[],
@@ -48,14 +49,26 @@ export function resolveSaasTenantImportOrder(
     }
     if (foreignKey.is_deferrable) continue;
 
-    // This one immediate circular pointer is deliberately omitted in the first
-    // INSERT projection and restored only after both relations have been loaded.
-    const deferredBlueprintPointer =
+    const childHas = (column: string) => foreignKey.child_columns.includes(column);
+    const reviewedBlueprintPointer =
+      foreignKey.constraint_name === 'fk_business_blueprints_current_version' &&
       foreignKey.child_table === 'business_blueprints' &&
       foreignKey.parent_table === 'business_blueprint_versions' &&
-      foreignKey.child_columns.length === 1 &&
-      foreignKey.child_columns[0] === 'current_version_id';
-    if (deferredBlueprintPointer) continue;
+      childHas('current_version_id');
+    const reviewedResearchEvaluationPointer =
+      foreignKey.constraint_name === 'fk_research_release_evaluation_owner' &&
+      foreignKey.child_table === 'research_knowledge_releases' &&
+      foreignKey.parent_table === 'research_release_evaluations' &&
+      childHas('evaluation_id');
+    const reviewedEvidencePredecessor =
+      foreignKey.constraint_name === 'fk_business_evidence_supersedes_scope' &&
+      foreignKey.child_table === 'business_evidence' &&
+      foreignKey.parent_table === 'business_evidence' &&
+      childHas('supersedes_evidence_id');
+
+    // These exact edges have importer-side preservation logic; do not make
+    // unrelated cycles disappear merely because their table names are similar.
+    if (reviewedBlueprintPointer || reviewedResearchEvaluationPointer || reviewedEvidencePredecessor) continue;
 
     // An edge parent -> child means the referenced row must exist first.
     const dependents = children.get(foreignKey.parent_table);
