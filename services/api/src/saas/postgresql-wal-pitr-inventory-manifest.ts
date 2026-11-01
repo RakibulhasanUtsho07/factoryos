@@ -235,7 +235,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
       throw new Error('archive.legal_hold_status is invalid');
     }
     const writerRefs = referenceArray(archive.writer_principal_references, 'archive.writer_principal_references');
-    if (!clusters.has(clusterReference) || !scope.provider_references.includes(providerReference)
+    if (writerRefs.length === 0 || !clusters.has(clusterReference) || !scope.provider_references.includes(providerReference)
       || !scope.account_references.includes(accountReference) || !scope.region_references.includes(regionReference)
       || !scope.archive_references.includes(archiveReference) || archives.has(archiveReference)
       || writerRefs.some((item) => !scope.writer_principal_references.includes(item))) {
@@ -265,7 +265,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
       || !segmentName.startsWith(timelineId)) {
       throw new Error('WAL segment identity does not match a discovered cluster and archive destination');
     }
-    const segmentKey = clusterReference + ':' + segmentName;
+    const segmentKey = archiveReference + ':' + clusterReference + ':' + segmentName;
     if (segmentKeys.has(segmentKey)) throw new Error('WAL segment inventory contains a duplicate segment identity');
     segmentKeys.add(segmentKey);
     const firstLsn = lsnValue(segment.first_lsn, 'segment.first_lsn');
@@ -305,7 +305,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
       throw new Error('WAL replication path is incomplete or outside the discovered cluster/archive scope');
     }
     const archiveRefs = referenceArray(path.archive_references, 'replication.archive_references');
-    if (archiveRefs.some((item) => !archives.has(item))) throw new Error('replication path references an unknown archive destination');
+    if (archiveRefs.length === 0 || archiveRefs.some((item) => !archives.has(item))) throw new Error('replication path must reference at least one known archive destination');
     isoTimestamp(path.last_verified_at, 'replication.last_verified_at');
     replicationRefs.push(pathReference);
   }
@@ -322,7 +322,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
     reference(path.target_reference, 'restore.target_reference');
     if (!clusters.has(sourceCluster)) throw new Error('PITR restore path references an unknown PostgreSQL cluster');
     const archiveRefs = referenceArray(path.archive_references, 'restore.archive_references');
-    if (archiveRefs.some((item) => !archives.has(item))) throw new Error('restore path references an unknown archive destination');
+    if (archiveRefs.length === 0 || archiveRefs.some((item) => !archives.has(item))) throw new Error('restore path must reference at least one known archive destination');
     const replayStatus = path.tombstone_replay_status;
     if (!['VERIFIED', 'NOT_RUN', 'FAILED'].includes(String(replayStatus))) {
       throw new Error('restore path tombstone_replay_status is invalid');
@@ -340,9 +340,6 @@ export function validatePostgresqlWalPitrInventoryManifest(
   const expectedScope = {
     cluster_references: sortedUnique([...clusters.keys()]),
     archive_references: sortedUnique([...archives.keys()]),
-    provider_references: sortedUnique([...new Set([...archives.values()].map(() => ''))].filter(Boolean)),
-    account_references: [] as string[],
-    region_references: [] as string[],
     writer_principal_references: sortedUnique([...archives.values()].flatMap((archive) => archive.writerRefs)),
     replication_path_references: sortedUnique(replicationRefs),
     restore_path_references: sortedUnique(restoreRefs),
@@ -384,8 +381,9 @@ export function validatePostgresqlWalPitrInventoryManifest(
   }
   if (expectedDisposition === 'SUPPORTED'
     && (archives.size === 0 || segmentKeys.size === 0
-      || [...archives.values()].some((archive) => archive.legalHoldStatus === 'UNKNOWN')
-      || (manifest.segments as unknown[]).some((item) => object(item, 'segment').legal_hold_status === 'UNKNOWN'))) {
+      || [...archives.values()].some((archive) => archive.legalHoldStatus !== 'NONE')
+      || (manifest.segments as unknown[]).some((item) => object(item, 'segment').legal_hold_status !== 'NONE')
+      || (manifest.restore_paths as unknown[]).some((item) => object(item, 'restore path').tombstone_replay_status !== 'VERIFIED'))) {
     throw new Error('SUPPORTED WAL/PITR disposition requires enumerated archives/segments and known legal-hold status');
   }
 }
