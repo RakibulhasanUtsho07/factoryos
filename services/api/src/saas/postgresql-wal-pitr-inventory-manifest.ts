@@ -283,7 +283,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
     }
     segmentCounts.set(archiveReference, (segmentCounts.get(archiveReference) ?? 0) + 1);
   }
-  for (const [archiveReference, archive] of archives) {
+  for (const [archiveReference, _archive] of archives) {
     const actual = segmentCounts.get(archiveReference) ?? 0;
     const declared = manifest.archives instanceof Array
       ? (manifest.archives.map((item) => object(item, 'archive')).find((item) => item.archive_reference === archiveReference)?.segment_count)
