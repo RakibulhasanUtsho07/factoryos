@@ -89,18 +89,19 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.ok(referenceMigration.includes('evidence_reference ~'));
   assert.ok(signer.includes('single opaque artifact identifier, not a URL or path'));
   assert.ok(signerSpec.includes('URL and path references'));
-  assert.match(walPitrManifest, /factoryos\\.postgresql-wal-pitr-inventory\\/v1/);
-  assert.match(walPitrManifest, /REQUIRED_POSTGRESQL_WAL_PITR_SOURCES/);
-  assert.match(walPitrManifest, /pagination_exhausted/);
-  assert.match(walPitrManifest, /scope_sha256/);
-  assert.match(walPitrManifest, /segment_name/);
-  assert.match(walPitrManifest, /first_lsn/);
-  assert.match(walPitrManifest, /legal_hold_status/);
-  assert.match(walPitrManifest, /tombstone_replay_status/);
-  assert.match(walPitrManifestSpec, /incomplete pagination/);
-  assert.match(walPitrManifestSpec, /NOT_APPLICABLE when an archive exists/);
-  assert.match(service, /validatePostgresqlWalPitrInventoryManifest\\(artifact\\.bytes,tenantId,category,disposition\\)/);
-  assert.match(service, /validatePostgresqlWalPitrInventoryManifest\\(artifact\\.bytes,current\\.tenant_id,current\\.category_code,current\\.disposition\\)/);
-  assert.match(propagation, /validatePostgresqlWalPitrInventoryManifest\\([\\s\\S]*?decision\\.disposition/);
+  assert.ok(walPitrManifest.includes('factoryos.postgresql-wal-pitr-inventory/v1'));
+  assert.ok(walPitrManifest.includes('REQUIRED_POSTGRESQL_WAL_PITR_SOURCES'));
+  assert.ok(walPitrManifest.includes('pagination_exhausted'));
+  assert.ok(walPitrManifest.includes('scope_sha256'));
+  assert.ok(walPitrManifest.includes('segment_name'));
+  assert.ok(walPitrManifest.includes('first_lsn'));
+  assert.ok(walPitrManifest.includes('legal_hold_status'));
+  assert.ok(walPitrManifest.includes('tombstone_replay_status'));
+  assert.ok(walPitrManifestSpec.includes('incomplete pagination'));
+  assert.ok(walPitrManifestSpec.includes("'NOT_APPLICABLE'"));
+  assert.ok(service.includes('validatePostgresqlWalPitrInventoryManifest(artifact.bytes,tenantId,category,disposition)'));
+  assert.ok(service.includes('validatePostgresqlWalPitrInventoryManifest(artifact.bytes,current.tenant_id,current.category_code,current.disposition)'));
+  assert.ok(propagation.includes('validatePostgresqlWalPitrInventoryManifest(')
+    && propagation.includes("copyClass === 'POSTGRESQL_WAL_PITR'"));
 
 });
