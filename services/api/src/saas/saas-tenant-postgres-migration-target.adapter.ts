@@ -558,11 +558,11 @@ export class SaasTenantPostgresMigrationTargetAdapter
       child_table: string;
       parent_table: string;
       constraint_name: string;
-      deferrable: boolean;
+      is_deferrable: boolean;
       child_columns: string[];
     }>(
       'SELECT child.relname AS child_table, parent.relname AS parent_table, ' +
-        'con.conname AS constraint_name, con.condeferrable AS deferrable, ' +
+        'con.conname AS constraint_name, con.condeferrable AS is_deferrable, ' +
         'array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns ' +
         'FROM pg_constraint con ' +
         'INNER JOIN pg_class child ON child.oid = con.conrelid ' +
