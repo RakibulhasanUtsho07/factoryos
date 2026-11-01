@@ -368,20 +368,17 @@ export class SaasTenantPostgresDatasetSource {
       live_manifests AS (
         SELECT
           requested.relation_name,
-          inventory.data_category,
+          latest_contracts.data_category,
           CASE
             WHEN live_columns.columns IS NULL THEN NULL
             ELSE jsonb_build_object(
-              'category', inventory.data_category,
+              'category', latest_contracts.data_category,
               'columns', live_columns.columns
             )
           END AS column_manifest
         FROM requested
-        LEFT JOIN factoryos_governance.tenant_relation_inventory inventory
-          ON inventory.schema_name = 'public'
-          AND inventory.relation_name = requested.relation_name
-          AND inventory.scope_model = 'DIRECT_TENANT_ID'
-          AND inventory.export_disposition = 'ALLOWLISTED'
+        LEFT JOIN latest_contracts
+          ON latest_contracts.relation_name = requested.relation_name
         LEFT JOIN live_columns
           ON live_columns.relation_name = requested.relation_name
       )
