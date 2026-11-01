@@ -230,4 +230,12 @@ test('provisioner checks cluster context, policy acceptance, namespace enrollmen
     'runtimeId.endsWith(expectedDigest)',
     'rev-parse HEAD',
   ]) assert.ok(script.includes(required), 'provisioner missing ' + required);
+  assert.ok(script.includes('wait_for_backup_evidence_admission'));
+  assert.ok(script.includes('for attempt in {1..30}'));
+  assert.ok(script.includes('Admission Deny binding did not become active'));
+  const enrollment = script.indexOf('kubectl label namespace "$API_NAMESPACE" "$LABEL_KEY=$LABEL_VALUE" --overwrite');
+  const readiness = script.indexOf('wait_for_backup_evidence_admission', enrollment);
+  const restart = script.indexOf('kubectl rollout restart "deployment/$API_DEPLOYMENT"', enrollment);
+  assert.ok(enrollment >= 0 && readiness > enrollment && restart > readiness,
+    'API Deployment restart must wait until a server-side negative probe confirms active Deny admission');
 });
