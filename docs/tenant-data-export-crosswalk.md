@@ -103,7 +103,7 @@ Three migration-defined immediate FK patterns have dedicated, narrowly named str
 
 Research release rows are also inserted in `release_key`/`version` order because migration 142 enforces a monotonically increasing version sequence on every insert. These are row-level guard requirements in addition to the table-level FK graph.
 
-The PostgreSQL dependency contract verifies that the three exact FK exceptions still exist in the live catalog and checks the remaining adapter-table graph for any other non-deferrable cycle. The unit tests cover parent ordering, multiple/deferrable edges, all three reviewed exceptions, and unknown self or multi-table cycles.
+The PostgreSQL dependency contract verifies that the three exact FK exceptions still exist in the live catalog, including the ordered child-to-parent column mapping on both sides of each composite constraint. Runtime cycle exceptions use the same exact ordered mappings; a matching constraint name with an added, reordered or redirected column is not exempt. The contract also checks the remaining adapter-table graph for any other non-deferrable cycle. The unit tests cover parent ordering, multiple/deferrable edges, all three reviewed exceptions, and unknown self or multi-table cycles.
 
 Any unrecognized cycle or malformed catalog response fails closed before table inserts. The import transaction rolls back; the importer does not guess an order or silently skip a constraint. This is a repository/CI acceptance contract, not evidence that a real provider migration or production tenant restore has been accepted.
 ## Explicitly unsupported categories

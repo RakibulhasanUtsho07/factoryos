@@ -6,6 +6,7 @@ export interface SaasTenantImportForeignKey {
   constraint_name: string;
   is_deferrable: boolean;
   child_columns: string[];
+  parent_columns: string[];
 }
 
 /**
@@ -40,7 +41,12 @@ export function resolveSaasTenantImportOrder(
       typeof foreignKey.is_deferrable !== 'boolean' ||
       !Array.isArray(foreignKey.child_columns) ||
       foreignKey.child_columns.length === 0 ||
-      foreignKey.child_columns.some((column) => typeof column !== 'string' || column.length === 0)
+      foreignKey.child_columns.some((column) => typeof column !== 'string' || column.length === 0) ||
+      new Set(foreignKey.child_columns).size !== foreignKey.child_columns.length ||
+      !Array.isArray(foreignKey.parent_columns) ||
+      foreignKey.parent_columns.length !== foreignKey.child_columns.length ||
+      foreignKey.parent_columns.some((column) => typeof column !== 'string' || column.length === 0) ||
+      new Set(foreignKey.parent_columns).size !== foreignKey.parent_columns.length
     ) {
       throw new ServiceUnavailableException('Destination PostgreSQL returned incomplete foreign-key metadata');
     }
@@ -49,22 +55,29 @@ export function resolveSaasTenantImportOrder(
     }
     if (foreignKey.is_deferrable) continue;
 
-    const childHas = (column: string) => foreignKey.child_columns.includes(column);
+    // A cycle exception is valid only for the exact ordered FK mapping from the
+    // reviewed migration. A matching name and one matching column are not enough:
+    // widened, reordered or redirected composite FKs must remain graph edges.
+    const exactColumns = (actual: readonly string[], expected: readonly string[]) =>
+      actual.length === expected.length && actual.every((column, index) => column === expected[index]);
     const reviewedBlueprintPointer =
       foreignKey.constraint_name === 'fk_business_blueprints_current_version' &&
       foreignKey.child_table === 'business_blueprints' &&
       foreignKey.parent_table === 'business_blueprint_versions' &&
-      childHas('current_version_id');
+      exactColumns(foreignKey.child_columns, ['current_version_id', 'tenant_id', 'factory_id']) &&
+      exactColumns(foreignKey.parent_columns, ['id', 'tenant_id', 'factory_id']);
     const reviewedResearchEvaluationPointer =
       foreignKey.constraint_name === 'fk_research_release_evaluation_owner' &&
       foreignKey.child_table === 'research_knowledge_releases' &&
       foreignKey.parent_table === 'research_release_evaluations' &&
-      childHas('evaluation_id');
+      exactColumns(foreignKey.child_columns, ['evaluation_id', 'id']) &&
+      exactColumns(foreignKey.parent_columns, ['id', 'release_id']);
     const reviewedEvidencePredecessor =
       foreignKey.constraint_name === 'fk_business_evidence_supersedes_scope' &&
       foreignKey.child_table === 'business_evidence' &&
       foreignKey.parent_table === 'business_evidence' &&
-      childHas('supersedes_evidence_id');
+      exactColumns(foreignKey.child_columns, ['supersedes_evidence_id', 'tenant_id', 'factory_id']) &&
+      exactColumns(foreignKey.parent_columns, ['id', 'tenant_id', 'factory_id']);
 
     // These exact edges have importer-side preservation logic; do not make
     // unrelated cycles disappear merely because their table names are similar.

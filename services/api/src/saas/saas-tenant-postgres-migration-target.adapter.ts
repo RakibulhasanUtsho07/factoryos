@@ -615,10 +615,12 @@ export class SaasTenantPostgresMigrationTargetAdapter
       constraint_name: string;
       is_deferrable: boolean;
       child_columns: string[];
+      parent_columns: string[];
     }>(
       'SELECT child.relname AS child_table, parent.relname AS parent_table, ' +
         'con.conname AS constraint_name, con.condeferrable AS is_deferrable, ' +
-        'array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns ' +
+        'array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns, ' +
+        'array_agg(parent_column.attname::text ORDER BY parent_key.ordinality) AS parent_columns ' +
         'FROM pg_constraint con ' +
         'INNER JOIN pg_class child ON child.oid = con.conrelid ' +
         'INNER JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace ' +
@@ -627,6 +629,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
         'INNER JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE ' +
         'INNER JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid ' +
         'AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped ' +
+        'INNER JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS parent_key(attnum, ordinality) ' +
+        'ON parent_key.ordinality = child_key.ordinality ' +
+        'INNER JOIN pg_attribute parent_column ON parent_column.attrelid = con.confrelid ' +
+        'AND parent_column.attnum = parent_key.attnum AND NOT parent_column.attisdropped ' +
         'WHERE con.contype = \'f\' AND child_namespace.nspname = \'public\' ' +
         'AND parent_namespace.nspname = \'public\' ' +
         'AND child.relname = ANY($1::text[]) AND parent.relname = ANY($1::text[]) ' +

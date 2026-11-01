@@ -13,6 +13,7 @@ function fk(
     constraint_name: child_table + '_' + parent_table + '_fk',
     is_deferrable: false,
     child_columns: ['parent_id'],
+    parent_columns: ['id'],
     ...overrides,
   };
 }
@@ -52,22 +53,29 @@ describe('resolveSaasTenantImportOrder', () => {
         'research_knowledge_releases',
       ],
       [
-        fk('business_blueprint_versions', 'business_blueprints', { child_columns: ['blueprint_id', 'tenant_id', 'factory_id'] }),
+        fk('business_blueprint_versions', 'business_blueprints', {
+          child_columns: ['blueprint_id', 'tenant_id', 'factory_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id'],
+        }),
         fk('business_blueprints', 'business_blueprint_versions', {
           constraint_name: 'fk_business_blueprints_current_version',
           child_columns: ['current_version_id', 'tenant_id', 'factory_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id'],
         }),
         fk('research_release_evaluations', 'research_knowledge_releases', {
           constraint_name: 'fk_research_release_eval_release',
           child_columns: ['release_id', 'tenant_id', 'namespace'],
+          parent_columns: ['id', 'tenant_id', 'namespace'],
         }),
         fk('research_knowledge_releases', 'research_release_evaluations', {
           constraint_name: 'fk_research_release_evaluation_owner',
           child_columns: ['evaluation_id', 'id'],
+          parent_columns: ['id', 'release_id'],
         }),
         fk('business_evidence', 'business_evidence', {
           constraint_name: 'fk_business_evidence_supersedes_scope',
           child_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id'],
         }),
       ],
     );
@@ -75,6 +83,47 @@ describe('resolveSaasTenantImportOrder', () => {
     expect(ordered.indexOf('research_knowledge_releases')).toBeLessThan(ordered.indexOf('research_release_evaluations'));
     expect(ordered).toContain('business_evidence');
     expect(ordered).toHaveLength(5);
+  });
+
+  it('does not suppress reviewed constraint names when either ordered composite FK side drifts', () => {
+    expect(() => resolveSaasTenantImportOrder(
+      ['business_blueprints', 'business_blueprint_versions'],
+      [
+        fk('business_blueprint_versions', 'business_blueprints', {
+          child_columns: ['blueprint_id', 'tenant_id', 'factory_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id'],
+        }),
+        fk('business_blueprints', 'business_blueprint_versions', {
+          constraint_name: 'fk_business_blueprints_current_version',
+          child_columns: ['current_version_id', 'tenant_id', 'factory_id', 'owner_version_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id', 'owner_version_id'],
+        }),
+      ],
+    )).toThrow(/unhandled non-deferrable FK cycle/i);
+
+    expect(() => resolveSaasTenantImportOrder(
+      ['research_knowledge_releases', 'research_release_evaluations'],
+      [
+        fk('research_release_evaluations', 'research_knowledge_releases', {
+          constraint_name: 'fk_research_release_eval_release',
+          child_columns: ['release_id', 'tenant_id', 'namespace'],
+          parent_columns: ['id', 'tenant_id', 'namespace'],
+        }),
+        fk('research_knowledge_releases', 'research_release_evaluations', {
+          constraint_name: 'fk_research_release_evaluation_owner',
+          child_columns: ['evaluation_id', 'id'],
+          parent_columns: ['release_id', 'id'],
+        }),
+      ],
+    )).toThrow(/unhandled non-deferrable FK cycle/i);
+
+    expect(() => resolveSaasTenantImportOrder(['business_evidence'], [
+      fk('business_evidence', 'business_evidence', {
+        constraint_name: 'fk_business_evidence_supersedes_scope',
+        child_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
+        parent_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
+      }),
+    ])).toThrow(/unhandled non-deferrable FK cycle/i);
   });
 
   it('does not suppress a blueprint cycle on a different FK column or constraint', () => {
@@ -111,6 +160,8 @@ describe('resolveSaasTenantImportOrder', () => {
     expect(() => resolveSaasTenantImportOrder(['orders', 'orders'], []))
       .toThrow(ServiceUnavailableException);
     expect(() => resolveSaasTenantImportOrder(['orders'], [{ ...fk('orders', 'orders'), child_columns: [] }]))
+      .toThrow(ServiceUnavailableException);
+    expect(() => resolveSaasTenantImportOrder(['orders'], [{ ...fk('orders', 'orders'), parent_columns: [] }]))
       .toThrow(ServiceUnavailableException);
   });
 });

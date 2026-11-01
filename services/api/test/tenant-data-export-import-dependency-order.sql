@@ -23,7 +23,19 @@ BEGIN
   WHERE con.contype = 'f' AND con.conname = 'fk_business_blueprints_current_version'
     AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
     AND child.relname = 'business_blueprints' AND parent.relname = 'business_blueprint_versions'
-    AND child_column.attname = 'current_version_id' AND NOT con.condeferrable;
+    AND child_column.attname = 'current_version_id' AND NOT con.condeferrable
+    AND (
+      SELECT array_agg(child_attribute.attname::text ORDER BY child_key_check.ordinality)
+      FROM unnest(con.conkey) WITH ORDINALITY AS child_key_check(attnum, ordinality)
+      JOIN pg_attribute child_attribute ON child_attribute.attrelid = con.conrelid
+        AND child_attribute.attnum = child_key_check.attnum AND NOT child_attribute.attisdropped
+    ) = ARRAY['current_version_id', 'tenant_id', 'factory_id']::text[]
+    AND (
+      SELECT array_agg(parent_attribute.attname::text ORDER BY parent_key_check.ordinality)
+      FROM unnest(con.confkey) WITH ORDINALITY AS parent_key_check(attnum, ordinality)
+      JOIN pg_attribute parent_attribute ON parent_attribute.attrelid = con.confrelid
+        AND parent_attribute.attnum = parent_key_check.attnum AND NOT parent_attribute.attisdropped
+    ) = ARRAY['id', 'tenant_id', 'factory_id']::text[];
   IF blueprint_pointer_count <> 1 THEN
     RAISE EXCEPTION 'Expected exactly one immediate business_blueprints.current_version_id FK to business_blueprint_versions';
   END IF;
@@ -40,7 +52,19 @@ BEGIN
   WHERE con.contype = 'f' AND con.conname = 'fk_research_release_evaluation_owner'
     AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
     AND child.relname = 'research_knowledge_releases' AND parent.relname = 'research_release_evaluations'
-    AND child_column.attname = 'evaluation_id' AND NOT con.condeferrable;
+    AND child_column.attname = 'evaluation_id' AND NOT con.condeferrable
+    AND (
+      SELECT array_agg(child_attribute.attname::text ORDER BY child_key_check.ordinality)
+      FROM unnest(con.conkey) WITH ORDINALITY AS child_key_check(attnum, ordinality)
+      JOIN pg_attribute child_attribute ON child_attribute.attrelid = con.conrelid
+        AND child_attribute.attnum = child_key_check.attnum AND NOT child_attribute.attisdropped
+    ) = ARRAY['evaluation_id', 'id']::text[]
+    AND (
+      SELECT array_agg(parent_attribute.attname::text ORDER BY parent_key_check.ordinality)
+      FROM unnest(con.confkey) WITH ORDINALITY AS parent_key_check(attnum, ordinality)
+      JOIN pg_attribute parent_attribute ON parent_attribute.attrelid = con.confrelid
+        AND parent_attribute.attnum = parent_key_check.attnum AND NOT parent_attribute.attisdropped
+    ) = ARRAY['id', 'release_id']::text[];
   IF research_evaluation_pointer_count <> 1 THEN
     RAISE EXCEPTION 'Expected exactly one immediate research release evaluation pointer FK';
   END IF;
@@ -57,7 +81,19 @@ BEGIN
   WHERE con.contype = 'f' AND con.conname = 'fk_business_evidence_supersedes_scope'
     AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
     AND child.relname = 'business_evidence' AND parent.relname = 'business_evidence'
-    AND child_column.attname = 'supersedes_evidence_id' AND NOT con.condeferrable;
+    AND child_column.attname = 'supersedes_evidence_id' AND NOT con.condeferrable
+    AND (
+      SELECT array_agg(child_attribute.attname::text ORDER BY child_key_check.ordinality)
+      FROM unnest(con.conkey) WITH ORDINALITY AS child_key_check(attnum, ordinality)
+      JOIN pg_attribute child_attribute ON child_attribute.attrelid = con.conrelid
+        AND child_attribute.attnum = child_key_check.attnum AND NOT child_attribute.attisdropped
+    ) = ARRAY['supersedes_evidence_id', 'tenant_id', 'factory_id']::text[]
+    AND (
+      SELECT array_agg(parent_attribute.attname::text ORDER BY parent_key_check.ordinality)
+      FROM unnest(con.confkey) WITH ORDINALITY AS parent_key_check(attnum, ordinality)
+      JOIN pg_attribute parent_attribute ON parent_attribute.attrelid = con.confrelid
+        AND parent_attribute.attnum = parent_key_check.attnum AND NOT parent_attribute.attisdropped
+    ) = ARRAY['id', 'tenant_id', 'factory_id']::text[];
   IF evidence_predecessor_count <> 1 THEN
     RAISE EXCEPTION 'Expected exactly one immediate business-evidence predecessor self-FK';
   END IF;
@@ -75,7 +111,8 @@ BEGIN
            parent.relname AS parent_table,
            con.conname AS constraint_name,
            con.condeferrable AS is_deferrable,
-           array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns
+           array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns,
+           array_agg(parent_column.attname::text ORDER BY parent_key.ordinality) AS parent_columns
     FROM pg_constraint con
     JOIN pg_class child ON child.oid = con.conrelid
     JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
@@ -84,6 +121,10 @@ BEGIN
     JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE
     JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid
       AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped
+    JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS parent_key(attnum, ordinality)
+      ON parent_key.ordinality = child_key.ordinality
+    JOIN pg_attribute parent_column ON parent_column.attrelid = con.confrelid
+      AND parent_column.attnum = parent_key.attnum AND NOT parent_column.attisdropped
     WHERE con.contype = 'f'
       AND child_namespace.nspname = 'public'
       AND parent_namespace.nspname = 'public'
@@ -99,19 +140,22 @@ BEGIN
         constraint_name = 'fk_business_blueprints_current_version'
         AND child_table = 'business_blueprints'
         AND parent_table = 'business_blueprint_versions'
-        AND child_columns @> ARRAY['current_version_id']::text[]
+        AND child_columns = ARRAY['current_version_id', 'tenant_id', 'factory_id']::text[]
+        AND parent_columns = ARRAY['id', 'tenant_id', 'factory_id']::text[]
       )
       AND NOT (
         constraint_name = 'fk_research_release_evaluation_owner'
         AND child_table = 'research_knowledge_releases'
         AND parent_table = 'research_release_evaluations'
-        AND child_columns @> ARRAY['evaluation_id']::text[]
+        AND child_columns = ARRAY['evaluation_id', 'id']::text[]
+        AND parent_columns = ARRAY['id', 'release_id']::text[]
       )
       AND NOT (
         constraint_name = 'fk_business_evidence_supersedes_scope'
         AND child_table = 'business_evidence'
         AND parent_table = 'business_evidence'
-        AND child_columns @> ARRAY['supersedes_evidence_id']::text[]
+        AND child_columns = ARRAY['supersedes_evidence_id', 'tenant_id', 'factory_id']::text[]
+        AND parent_columns = ARRAY['id', 'tenant_id', 'factory_id']::text[]
       )
   ),
   walk(start_table, current_table, path, has_cycle) AS (

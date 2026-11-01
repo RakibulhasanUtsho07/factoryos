@@ -32,7 +32,7 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
     const adapter = new SaasTenantPostgresMigrationTargetAdapter(config as never, sourceDb as never);
     const clientQuery = jest.fn(async (_sql: string, _values?: unknown[]) => ({
       rows: [{ child_table: 'orders', parent_table: 'factories', constraint_name: 'orders_factory_fk',
-        is_deferrable: false, child_columns: ['factory_id'] }],
+        is_deferrable: false, child_columns: ['factory_id'], parent_columns: ['id'] }],
     }));
     const dependencyOrder = (adapter as unknown as {
       dependencyOrder(client: unknown, tables: string[]): Promise<string[]>;
@@ -43,6 +43,8 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
     expect(clientQuery.mock.calls[0]?.[1]).toEqual([['orders', 'factories']]);
     expect(String(clientQuery.mock.calls[0]?.[0])).toContain('pg_constraint');
     expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.condeferrable AS is_deferrable');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.confkey');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('parent_columns');
   });
 
   it('orders trigger-bound evidence revisions and research release versions explicitly', () => {
