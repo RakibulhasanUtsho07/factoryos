@@ -62,6 +62,9 @@ export class SaasTenantBackupCopyClassCoverageService {
    evidenceReference,evidenceSha256,evidenceAt:evidenceAt.toISOString(),dataOwnerReference,
    infrastructureOwnerReference,policyReference,reason,
   };
+  if (copyClass === 'POSTGRESQL_WAL_PITR' && disposition === 'SUPPORTED') {
+   throw new ConflictException('No PostgreSQL WAL/PITR class-specific retention/deletion adapter is registered; keep this copy class UNRESOLVED until provider-specific expiry and residual verification are independently accepted');
+  }
   verifyBackupCopyClassEvidenceAttestation(attestation,attestationSignature);
   if (copyClass === 'POSTGRESQL_WAL_PITR') {
    const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(evidenceReference,evidenceSha256);
@@ -118,6 +121,7 @@ export class SaasTenantBackupCopyClassCoverageService {
    if(!current)throw new NotFoundException('Backup copy-class decision not found');
    if(current.status!=='PENDING')throw new ConflictException('Only pending backup copy-class decisions can be reviewed');
    if(current.submitted_by_user_id===actorUserId)throw new ConflictException('Backup copy-class submission and review require different actors');
+   if(input.decision==='ACCEPT'&&current.copy_class_code==='POSTGRESQL_WAL_PITR'&&current.disposition==='SUPPORTED')throw new ConflictException('PostgreSQL WAL/PITR cannot be accepted as SUPPORTED until a class-specific provider retention/deletion adapter and independent residual verification are registered');
    const latest=await client.query<{decision_id:string}>(
     'SELECT decision_id FROM public.saas_tenant_backup_copy_class_coverage_decisions WHERE tenant_id=$1 AND category_code=$2 AND copy_class_code=$3 ORDER BY revision DESC LIMIT 1 FOR UPDATE',
     [tenantId,current.category_code,current.copy_class_code]);
