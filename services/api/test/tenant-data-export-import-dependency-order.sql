@@ -4,6 +4,8 @@ DO $$
 DECLARE
   cycle_path text;
   blueprint_pointer_count integer;
+  research_evaluation_pointer_count integer;
+  evidence_predecessor_count integer;
 BEGIN
   IF to_regclass('factoryos_governance.tenant_relation_inventory') IS NULL THEN
     RAISE EXCEPTION 'Tenant export dependency contract requires the migration 156 relation inventory';
@@ -18,15 +20,46 @@ BEGIN
   JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE
   JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid
     AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped
-  WHERE con.contype = 'f'
-    AND child_namespace.nspname = 'public'
-    AND parent_namespace.nspname = 'public'
-    AND child.relname = 'business_blueprints'
-    AND parent.relname = 'business_blueprint_versions'
-    AND child_column.attname = 'current_version_id'
-    AND NOT con.condeferrable;
+  WHERE con.contype = 'f' AND con.conname = 'fk_business_blueprints_current_version'
+    AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
+    AND child.relname = 'business_blueprints' AND parent.relname = 'business_blueprint_versions'
+    AND child_column.attname = 'current_version_id' AND NOT con.condeferrable;
   IF blueprint_pointer_count <> 1 THEN
-    RAISE EXCEPTION 'Expected exactly one immediate business_blueprints.current_version_id FK to business_blueprint_versions; review the explicit cycle-break contract';
+    RAISE EXCEPTION 'Expected exactly one immediate business_blueprints.current_version_id FK to business_blueprint_versions';
+  END IF;
+
+  SELECT count(*) INTO research_evaluation_pointer_count
+  FROM pg_constraint con
+  JOIN pg_class child ON child.oid = con.conrelid
+  JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+  JOIN pg_class parent ON parent.oid = con.confrelid
+  JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+  JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE
+  JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid
+    AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped
+  WHERE con.contype = 'f' AND con.conname = 'fk_research_release_evaluation_owner'
+    AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
+    AND child.relname = 'research_knowledge_releases' AND parent.relname = 'research_release_evaluations'
+    AND child_column.attname = 'evaluation_id' AND NOT con.condeferrable;
+  IF research_evaluation_pointer_count <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one immediate research release evaluation pointer FK';
+  END IF;
+
+  SELECT count(*) INTO evidence_predecessor_count
+  FROM pg_constraint con
+  JOIN pg_class child ON child.oid = con.conrelid
+  JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+  JOIN pg_class parent ON parent.oid = con.confrelid
+  JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+  JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE
+  JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid
+    AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped
+  WHERE con.contype = 'f' AND con.conname = 'fk_business_evidence_supersedes_scope'
+    AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
+    AND child.relname = 'business_evidence' AND parent.relname = 'business_evidence'
+    AND child_column.attname = 'supersedes_evidence_id' AND NOT con.condeferrable;
+  IF evidence_predecessor_count <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one immediate business-evidence predecessor self-FK';
   END IF;
 
   WITH RECURSIVE adapter_tables AS (
@@ -40,6 +73,7 @@ BEGIN
   raw_edges AS (
     SELECT child.relname AS child_table,
            parent.relname AS parent_table,
+           con.conname AS constraint_name,
            con.condeferrable AS is_deferrable,
            array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns
     FROM pg_constraint con
@@ -55,16 +89,29 @@ BEGIN
       AND parent_namespace.nspname = 'public'
       AND child.relname IN (SELECT relation_name FROM adapter_tables)
       AND parent.relname IN (SELECT relation_name FROM adapter_tables)
-    GROUP BY con.oid, child.relname, parent.relname, con.condeferrable
+    GROUP BY con.oid, child.relname, parent.relname, con.conname, con.condeferrable
   ),
   insert_edges AS (
     SELECT parent_table, child_table
     FROM raw_edges
     WHERE NOT is_deferrable
       AND NOT (
-        child_table = 'business_blueprints'
+        constraint_name = 'fk_business_blueprints_current_version'
+        AND child_table = 'business_blueprints'
         AND parent_table = 'business_blueprint_versions'
-        AND child_columns = ARRAY['current_version_id']::text[]
+        AND child_columns @> ARRAY['current_version_id']::text[]
+      )
+      AND NOT (
+        constraint_name = 'fk_research_release_evaluation_owner'
+        AND child_table = 'research_knowledge_releases'
+        AND parent_table = 'research_release_evaluations'
+        AND child_columns @> ARRAY['evaluation_id']::text[]
+      )
+      AND NOT (
+        constraint_name = 'fk_business_evidence_supersedes_scope'
+        AND child_table = 'business_evidence'
+        AND parent_table = 'business_evidence'
+        AND child_columns @> ARRAY['supersedes_evidence_id']::text[]
       )
   ),
   walk(start_table, current_table, path, has_cycle) AS (
@@ -83,7 +130,7 @@ BEGIN
   WHERE has_cycle;
 
   IF cycle_path IS NOT NULL THEN
-    RAISE EXCEPTION 'Non-deferrable FK cycles remain after the reviewed blueprint pointer break:%s%s', E'\\n', cycle_path;
+    RAISE EXCEPTION 'Unreviewed non-deferrable FK cycles remain after the three reviewed importer strategies:%s%s', E'\\n', cycle_path;
   END IF;
 END
 $$;
