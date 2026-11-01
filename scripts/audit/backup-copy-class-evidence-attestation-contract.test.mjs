@@ -108,7 +108,7 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.ok(walPitrManifestSpec.includes('source receipt signature does not match'));
   assert.ok(walPitrManifestSpec.includes('ServiceUnavailableException'));
   assert.ok(walPitrSourceSigner.includes('factoryos.postgresql-wal-pitr-source-receipt/v1'));
-  assert.ok(walPitrSourceSigner.includes("privateKey.asymmetricKeyType!=='ed25519'"));
+  assert.ok(walPitrSourceSigner.includes("key.asymmetricKeyType!=='ed25519'"));
   assert.ok(walPitrSourceSignerSpec.includes('valid Ed25519 signature'));
   assert.match(apiEnv, /FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON=\[\]/);
   assert.match(runbook, /FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON/);
