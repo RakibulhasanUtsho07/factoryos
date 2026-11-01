@@ -45,6 +45,22 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
     expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.condeferrable AS is_deferrable');
   });
 
+  it('orders trigger-bound evidence revisions and research release versions explicitly', () => {
+    const adapter = new SaasTenantPostgresMigrationTargetAdapter(
+      { get: jest.fn(() => undefined) } as never,
+      { query: jest.fn() } as never,
+    );
+    const insertOrderBy = (adapter as unknown as { insertOrderBy(table: string): string })
+      .insertOrderBy.bind(adapter);
+
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'factory_id'");
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'source_key'");
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'revision_no'");
+    expect(insertOrderBy('research_knowledge_releases')).toContain("staged.row_payload->>'release_key'");
+    expect(insertOrderBy('research_knowledge_releases')).toContain("staged.row_payload->>'version'");
+    expect(insertOrderBy('orders')).toBe('staged.sequence ASC');
+  });
+
   it('rejects nested action-token hashes in target JSON data before accepting an import', () => {
     const adapter = new SaasTenantPostgresMigrationTargetAdapter(
       { get: jest.fn(() => undefined) } as never,
