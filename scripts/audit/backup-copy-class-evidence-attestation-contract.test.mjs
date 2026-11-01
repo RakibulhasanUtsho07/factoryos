@@ -24,6 +24,8 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   const signingDoc = await readRepoFile('docs/backup-copy-class-evidence-attestation.md');
   const signer = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.mjs');
   const signerSpec = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.test.mjs');
+  const walPitrManifest = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-inventory-manifest.ts');
+  const walPitrManifestSpec = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-inventory-manifest.spec.ts');
 
   assert.match(helper, /factoryos\.backup-copy-class-evidence-attestation\/v1/);
   assert.match(helper, /publicKey\.asymmetricKeyType !== 'ed25519'/);
@@ -87,4 +89,18 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.ok(referenceMigration.includes('evidence_reference ~'));
   assert.ok(signer.includes('single opaque artifact identifier, not a URL or path'));
   assert.ok(signerSpec.includes('URL and path references'));
+  assert.match(walPitrManifest, /factoryos\\.postgresql-wal-pitr-inventory\\/v1/);
+  assert.match(walPitrManifest, /REQUIRED_POSTGRESQL_WAL_PITR_SOURCES/);
+  assert.match(walPitrManifest, /pagination_exhausted/);
+  assert.match(walPitrManifest, /scope_sha256/);
+  assert.match(walPitrManifest, /segment_name/);
+  assert.match(walPitrManifest, /first_lsn/);
+  assert.match(walPitrManifest, /legal_hold_status/);
+  assert.match(walPitrManifest, /tombstone_replay_status/);
+  assert.match(walPitrManifestSpec, /incomplete pagination/);
+  assert.match(walPitrManifestSpec, /NOT_APPLICABLE when an archive exists/);
+  assert.match(service, /validatePostgresqlWalPitrInventoryManifest\\(artifact\\.bytes,tenantId,category,disposition\\)/);
+  assert.match(service, /validatePostgresqlWalPitrInventoryManifest\\(artifact\\.bytes,current\\.tenant_id,current\\.category_code,current\\.disposition\\)/);
+  assert.match(propagation, /validatePostgresqlWalPitrInventoryManifest\\([\\s\\S]*?decision\\.disposition/);
+
 });
