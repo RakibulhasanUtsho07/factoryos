@@ -50,7 +50,7 @@ BEGIN
           'default', pg_get_expr(default_value.adbin, default_value.adrelid),
           'collation', CASE
             WHEN column_meta.attcollation = 0 THEN NULL
-            ELSE collation_schema.nspname || '.' || collation.collname
+            ELSE collation_schema.nspname || '.' || collation_row.collname
           END
         )
         ORDER BY column_meta.attnum
@@ -63,9 +63,9 @@ BEGIN
       AND NOT column_meta.attisdropped
     LEFT JOIN pg_catalog.pg_attrdef default_value
       ON default_value.adrelid = relation.oid AND default_value.adnum = column_meta.attnum
-    LEFT JOIN pg_catalog.pg_collation collation
-      ON collation.oid = column_meta.attcollation AND column_meta.attcollation <> 0
-    LEFT JOIN pg_catalog.pg_namespace collation_schema ON collation_schema.oid = collation.collnamespace
+    LEFT JOIN pg_catalog.pg_collation collation_row
+      ON collation_row.oid = column_meta.attcollation AND column_meta.attcollation <> 0
+    LEFT JOIN pg_catalog.pg_namespace collation_schema ON collation_schema.oid = collation_row.collnamespace
     WHERE relation_schema.nspname = 'public'
       AND relation.relkind IN ('r', 'p')
       AND relation.relname IN (SELECT relation_name FROM latest_contracts)
@@ -159,7 +159,7 @@ BEGIN
           'default', pg_get_expr(default_value.adbin, default_value.adrelid),
           'collation', CASE
             WHEN column_meta.attcollation = 0 THEN NULL
-            ELSE collation_schema.nspname || '.' || collation.collname
+            ELSE collation_schema.nspname || '.' || collation_row.collname
           END
         )
         ORDER BY column_meta.attnum
@@ -172,9 +172,9 @@ BEGIN
         AND NOT column_meta.attisdropped
       LEFT JOIN pg_catalog.pg_attrdef default_value
         ON default_value.adrelid = relation.oid AND default_value.adnum = column_meta.attnum
-      LEFT JOIN pg_catalog.pg_collation collation
-        ON collation.oid = column_meta.attcollation AND column_meta.attcollation <> 0
-      LEFT JOIN pg_catalog.pg_namespace collation_schema ON collation_schema.oid = collation.collnamespace
+      LEFT JOIN pg_catalog.pg_collation collation_row
+        ON collation_row.oid = column_meta.attcollation AND column_meta.attcollation <> 0
+      LEFT JOIN pg_catalog.pg_namespace collation_schema ON collation_schema.oid = collation_row.collnamespace
       WHERE relation_schema.nspname = 'public' AND relation.relname = 'orders'
       GROUP BY relation.relname
     )
