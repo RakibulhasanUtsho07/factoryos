@@ -157,9 +157,9 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
     empty.scope.region_references = ['cloud.region.primary'];
     empty.scope_sha256 = digestPostgresqlWalPitrInventoryScope(empty.scope);
     empty.sources.forEach((source) => { source.scope_sha256 = empty.scope_sha256; });
-    empty.sources.forEach((source) => resignSource(source, empty));
     empty.sources[0].item_count = 0;
     empty.clusters = [];
+    empty.sources.forEach((source) => resignSource(source, empty));
     expect(() => validate(empty, 'NOT_APPLICABLE')).not.toThrow();
   });
 
@@ -231,6 +231,7 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
     duplicate.sources[2].item_count = 2;
     duplicate.scope_sha256 = digestPostgresqlWalPitrInventoryScope(duplicate.scope);
     duplicate.sources.forEach((source) => { source.scope_sha256 = duplicate.scope_sha256; });
+    duplicate.sources.forEach((source) => resignSource(source, duplicate));
     expect(() => validate(duplicate)).toThrow(/duplicate segment identity/i);
 
     const reversed = makeManifest();
