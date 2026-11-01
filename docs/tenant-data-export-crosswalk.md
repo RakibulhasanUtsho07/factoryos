@@ -120,6 +120,8 @@ Migration `233_tenant_export_column_contract.sql` closes that schema-drift path 
 
 The PostgreSQL contract test verifies the baseline against the live catalog, confirms mutation protection, then adds a synthetic unreviewed column to `public.orders` inside a rollback-only subtransaction and proves the manifest comparison becomes false. The DDL probe is rolled back and cannot leave the test schema altered.
 
+The runtime database role needs only `USAGE` on `factoryos_governance` and `SELECT` on `tenant_export_column_contracts`; it does not receive access to the broader ownership or privacy inventory. Migration 233 grants these when `factoryos_app` already exists. Where infrastructure provisions the application login after migration replay, run `scripts/security/grant-tenant-export-column-contract-runtime-access.sql` after role creation. The script fails when the expected role or manifest table is absent, so provisioning cannot silently skip the grant.
+
 ### Safe schema-change procedure
 
 Do not refresh an existing manifest during application startup or ordinary migration replay. When a reviewed change to an exportable table is needed, use a later numbered migration to append a new contract version for only the affected table(s), after reviewing the field's data classification, tenant scope, serialization, portability, retention/erasure disposition and target-import behavior. Preserve the earlier version for audit. A routine column addition without that explicit review must fail closed.

@@ -519,6 +519,11 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
 
+          # The runtime role is deliberately created after migrations in this isolated CI fixture.
+          # Grant only schema lookup plus read access to the sealed export-column contract.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/security/grant-tenant-export-column-contract-runtime-access.sql
+
           echo "Reapplying Kafka event-bus migration after runtime role creation to exercise least-privilege grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/169_kafka_event_bus_transport.sql

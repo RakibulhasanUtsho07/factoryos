@@ -16,6 +16,7 @@ const PATHS = {
   columnContractMigration: "migrations/233_tenant_export_column_contract.sql",
   columnContractSql: "services/api/test/tenant-data-export-column-contract.sql",
   migrationManifest: "scripts/audit/migration-manifest.txt",
+  runtimeGrantScript: "scripts/security/grant-tenant-export-column-contract-runtime-access.sql",
   postgresWorkflow: ".github/workflows/api-postgres-ci.yml",
 };
 const BLOCKED_WITHOUT_ADAPTER = ["FILE_REFERENCES", "INTEGRATION_METADATA"];
@@ -168,6 +169,13 @@ test("generic export requires an immutable, versioned column contract before SEL
   assert.match(migration, /BEFORE UPDATE OR DELETE/);
   assert.match(migration, /ON CONFLICT \(schema_name, relation_name, contract_version\) DO NOTHING/);
   assert.match(migration, /GRANT SELECT ON factoryos_governance\.tenant_export_column_contracts TO factoryos_app/);
+  assert.match(files.runtimeGrantScript, /GRANT USAGE ON SCHEMA factoryos_governance TO factoryos_app/);
+  assert.match(files.runtimeGrantScript, /GRANT SELECT ON TABLE factoryos_governance\.tenant_export_column_contracts TO factoryos_app/);
+  assert.match(files.runtimeGrantScript, /factoryos_app role is missing/i);
+  const roleBootstrap = files.postgresWorkflow.indexOf("CREATE ROLE factoryos_app");
+  const runtimeGrant = files.postgresWorkflow.indexOf("grant-tenant-export-column-contract-runtime-access.sql");
+  assert.ok(roleBootstrap >= 0 && runtimeGrant > roleBootstrap,
+    "runtime grant script must execute after the factoryos_app role is created");
 
   assert.match(reader, /await this\.assertExportColumnContracts\(client, category, tables\)/);
   assert.ok(
