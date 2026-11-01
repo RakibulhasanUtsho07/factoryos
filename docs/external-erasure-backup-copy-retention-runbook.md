@@ -59,6 +59,16 @@ A missing, pending, rejected, expired, unresolved or contradictory row blocks wh
 
 The decisions are tenant-isolated by forced RLS, immutable after review, frozen by the database during `RUNNING` propagation, and bound into the propagation manifest digest. This is an evidence-backed governance control, not automatic discovery of cloud accounts/vaults, and a stored digest does not independently authenticate the source artifact.
 
+### PostgreSQL WAL/PITR inventory evidence contract
+
+For `POSTGRESQL_WAL_PITR`, an opaque signed evidence file is not sufficient. The source artifact must use `factoryos.postgresql-wal-pitr-inventory/v1` and be validated from its exact read-only artifact bytes at submission, independent ACCEPT review, and every propagation preflight/recovery/provider checkpoint.
+
+The manifest binds the tenant, requested data category, copy-class key, inventory UUID and canonical scope digest. Its scope must reconcile cluster, archive destination, provider, account, region, WAL writer principal, replication path and PITR restore-path references. It records every discovered PostgreSQL cluster/system identifier/major version/timeline, archive destination and retention policy, each WAL segment's 24-hex segment identity and increasing LSN range, archive timestamp, retention expiry and legal-hold state, plus replication and restore path status.
+
+Exactly six current source receipts are required: `POSTGRESQL_CLUSTER_CATALOG`, `WAL_ARCHIVE_DESTINATION_CATALOG`, `WAL_SEGMENT_CATALOG`, `WAL_WRITER_PRINCIPAL_CATALOG`, `WAL_REPLICATION_PATH_CATALOG`, and `PITR_RESTORE_PATH_CATALOG`. Each must be COMPLETE, fully paginated, scope-bound, timestamped and digest-bound; source item counts must reconcile exactly to the structured inventory. Missing, stale, duplicate, partial, out-of-scope or contradictory evidence fails closed. `NOT_APPLICABLE` requires a complete cluster inventory and zero archive destinations, WAL segments, writer identities, replication paths and PITR restore paths.
+
+These source references and digests are included in the owner-signed exact artifact, but this validator does not call PostgreSQL/cloud control planes or independently authenticate provider-native query receipts. Source query artifacts, read-only collector identities, independent provider receipts and infrastructure review remain mandatory for production acceptance. No PostgreSQL WAL/PITR deletion adapter is registered by this change; keep this class `UNRESOLVED` until a class-specific delete/retention procedure and independent verification are implemented and accepted.
+
 ## Legal holds and retention policy
 
 - A designated legal/compliance owner must approve the legal basis, jurisdiction, minimum/maximum retention, expiry trigger, deletion method, exception process, and policy version for each copy class before production enforcement.
