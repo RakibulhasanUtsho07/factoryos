@@ -11,7 +11,7 @@ function fk(
     child_table,
     parent_table,
     constraint_name: child_table + '_' + parent_table + '_fk',
-    deferrable: false,
+    is_deferrable: false,
     child_columns: ['parent_id'],
     ...overrides,
   };
@@ -36,7 +36,7 @@ describe('resolveSaasTenantImportOrder', () => {
       [
         fk('child', 'parent', { constraint_name: 'child_parent_fk_a' }),
         fk('child', 'parent', { constraint_name: 'child_parent_fk_b', child_columns: ['other_parent_id'] }),
-        fk('child', 'independent', { deferrable: true }),
+        fk('child', 'independent', { is_deferrable: true }),
       ],
     );
     expect(ordered).toEqual(['independent', 'parent', 'child']);
