@@ -26,6 +26,8 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   const signerSpec = await readRepoFile('scripts/security/sign-backup-copy-class-evidence.test.mjs');
   const walPitrManifest = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-inventory-manifest.ts');
   const walPitrManifestSpec = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-inventory-manifest.spec.ts');
+  const walPitrSourceSigner = await readRepoFile('scripts/security/sign-postgresql-wal-pitr-source-receipt.mjs');
+  const walPitrSourceSignerSpec = await readRepoFile('scripts/security/sign-postgresql-wal-pitr-source-receipt.test.mjs');
 
   assert.match(helper, /factoryos\.backup-copy-class-evidence-attestation\/v1/);
   assert.match(helper, /publicKey\.asymmetricKeyType !== 'ed25519'/);
@@ -99,6 +101,18 @@ test('backup copy-class evidence requires a trusted owner signature bound to the
   assert.ok(walPitrManifest.includes('tombstone_replay_status'));
   assert.ok(walPitrManifestSpec.includes('incomplete pagination'));
   assert.ok(walPitrManifestSpec.includes("'NOT_APPLICABLE'"));
+  assert.ok(walPitrManifest.includes('factoryos.postgresql-wal-pitr-source-receipt/v1'));
+  assert.ok(walPitrManifest.includes('FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON'));
+  assert.ok(walPitrManifest.includes('createPublicKey') && walPitrManifest.includes('verify(null, message, key.publicKey, signature)'));
+  assert.ok(walPitrManifestSpec.includes('cross-inventory receipt replay'));
+  assert.ok(walPitrManifestSpec.includes('source receipt signature does not match'));
+  assert.ok(walPitrManifestSpec.includes('ServiceUnavailableException'));
+  assert.ok(walPitrSourceSigner.includes('factoryos.postgresql-wal-pitr-source-receipt/v1'));
+  assert.ok(walPitrSourceSigner.includes("privateKey.asymmetricKeyType!=='ed25519'"));
+  assert.ok(walPitrSourceSignerSpec.includes('valid Ed25519 signature'));
+  assert.match(apiEnv, /FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON=\[\]/);
+  assert.match(runbook, /FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON/);
+  assert.match(runbook, /sign-postgresql-wal-pitr-source-receipt\.mjs/);
   assert.ok(service.includes('validatePostgresqlWalPitrInventoryManifest(artifact.bytes,tenantId,category,disposition)'));
   assert.ok(service.includes('validatePostgresqlWalPitrInventoryManifest(artifact.bytes,current.tenant_id,current.category_code,current.disposition)'));
   assert.ok(propagation.includes('validatePostgresqlWalPitrInventoryManifest(')
