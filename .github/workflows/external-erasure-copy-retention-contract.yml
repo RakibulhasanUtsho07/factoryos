@@ -22,6 +22,10 @@ on:
       - 'services/api/src/saas/postgresql-wal-pitr-inventory-manifest.spec.ts'
       - 'scripts/security/sign-postgresql-wal-pitr-source-receipt.mjs'
       - 'scripts/security/sign-postgresql-wal-pitr-source-receipt.test.mjs'
+      - 'scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs'
+      - 'scripts/security/collect-postgresql-wal-pitr-diagnostics.test.mjs'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
@@ -106,6 +110,10 @@ on:
       - 'services/api/src/saas/postgresql-wal-pitr-inventory-manifest.spec.ts'
       - 'scripts/security/sign-postgresql-wal-pitr-source-receipt.mjs'
       - 'scripts/security/sign-postgresql-wal-pitr-source-receipt.test.mjs'
+      - 'scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs'
+      - 'scripts/security/collect-postgresql-wal-pitr-diagnostics.test.mjs'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts'
+      - 'services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.spec.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.ts'
       - 'services/api/src/saas/backup-copy-class-evidence-mount-verifier.spec.ts'
       - 'migrations/229_saas_backup_copy_class_evidence_reference.sql'
@@ -203,4 +211,6 @@ jobs:
           node --check scripts/security/require-supported-kubernetes-version.test.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.mjs
           node --check scripts/security/validate-kubernetes-admission-policy-status.test.mjs
-          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/sign-external-store-inventory-source-receipt.test.mjs scripts/security/sign-postgresql-wal-pitr-source-receipt.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
+          node --check scripts/security/collect-postgresql-wal-pitr-diagnostics.mjs
+          node --check scripts/security/collect-postgresql-wal-pitr-diagnostics.test.mjs
+          node --test scripts/audit/external-erasure-copy-retention-contract.test.mjs scripts/audit/backup-copy-class-evidence-attestation-contract.test.mjs scripts/security/sign-backup-copy-class-evidence.test.mjs scripts/security/sign-external-copy-coverage-evidence.test.mjs scripts/security/sign-external-store-inventory-source-receipt.test.mjs scripts/security/sign-postgresql-wal-pitr-source-receipt.test.mjs scripts/security/collect-postgresql-wal-pitr-diagnostics.test.mjs scripts/security/backup-copy-evidence-readonly-admission.test.mjs scripts/security/backup-copy-evidence-deployment.test.mjs scripts/security/require-supported-kubernetes-version.test.mjs scripts/security/validate-kubernetes-admission-policy-status.test.mjs
