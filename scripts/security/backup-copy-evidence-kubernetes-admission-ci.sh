@@ -60,17 +60,28 @@ expect_denied() {
   local description="$1"
   local expected_message="$2"
   shift 2
-  local output
-  if output="$("$@" 2>&1)"; then
-    echo "Admission unexpectedly ALLOWED: $description" >&2
-    exit 1
-  fi
-  if ! grep -F "$expected_message" <<<"$output" >/dev/null; then
-    echo "Admission denied for an unexpected reason: $description" >&2
-    printf '%s\n' "$output" >&2
-    exit 1
-  fi
-  echo "PASS — denied $description"
+  local output=""
+  local attempt
+  for attempt in {1..30}; do
+    if output="$("$@" 2>&1)"; then
+      if (( attempt == 30 )); then
+        echo "Admission did not enforce the Deny binding after namespace enrollment: $description" >&2
+        exit 1
+      fi
+      echo "Admission binding is not active yet for $description (attempt $attempt/30); retrying server-side dry-run"
+      sleep 1
+      continue
+    fi
+    if ! grep -F "$expected_message" <<<"$output" >/dev/null; then
+      echo "Admission denied for an unexpected reason: $description" >&2
+      printf '%s\n' "$output" >&2
+      exit 1
+    fi
+    echo "PASS — denied $description"
+    return 0
+  done
+  echo "Admission readiness loop ended without a Deny decision: $description" >&2
+  exit 1
 }
 
 cat > "$WORK_DIR/valid-pod.yaml" <<'POD'
