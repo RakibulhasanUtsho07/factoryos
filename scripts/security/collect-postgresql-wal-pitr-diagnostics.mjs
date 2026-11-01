@@ -36,9 +36,9 @@ function source(kind, records, status, reason, extra = {}) {
   return {
     source_kind: kind,
     status,
-    pages_fetched: bounded.length || status === 'UNAVAILABLE' ? 0 : 1,
+    pages_fetched: status === 'UNAVAILABLE' ? 0 : 1,
     item_count: bounded.length,
-    pagination_exhausted: status === 'OBSERVED',
+    pagination_exhausted: false,
     result_sha256: digest(bounded),
     records: bounded,
     reason,
@@ -48,10 +48,10 @@ function source(kind, records, status, reason, extra = {}) {
 function hashOpaqueReference(value) {
   return 'ref.' + createHash('sha256').update(String(value ?? ''), 'utf8').digest('hex').slice(0, 24);
 }
-async function observe(kind, operation, reason) {
+async function observe(kind, operation, reason, extra = {}) {
   try {
     const result = await operation();
-    return source(kind, result, 'OBSERVED', reason);
+    return source(kind, result, 'OBSERVED', reason, extra);
   } catch {
     return source(kind, [], 'UNAVAILABLE', 'The database-native query was unavailable; no completeness claim is made.');
   }
@@ -190,7 +190,7 @@ export async function collectPostgresqlWalPitrDiagnostics({
       'WAL_SEGMENT_CATALOG',
       async () => {
         const result = await client.query(sql.wal);
-        return (result.rows ?? []).slice(0, MAX_WAL_DIRECTORY_ROWS).map((row) => ({
+        return (result.rows ?? []).map((row) => ({
           filename: String(row.name),
           size_bytes: String(row.size_bytes),
           modification: row.modification instanceof Date
