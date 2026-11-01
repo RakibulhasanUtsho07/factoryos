@@ -70,7 +70,7 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
   assert.match(backupDoc, /Object Lock/i);
   assert.match(backupDoc, /does not cover|does not prove|out of scope/i);
   assert.match(backupDoc, /freeze must be acquired|write-freeze mechanism/i);
-  assert.match(runbook, /provider\/control-plane fence/i);
+  assert.match(runbook, /provider\/control-plane fence|provider bucket-policy writer-fence controller/i);
 });
 
 test('BACKUP target stays inactive unless runtime writer-fence acceptance gates are complete', async () => {
@@ -189,6 +189,7 @@ test('S3 writer fence freezes object creation, mutable metadata, delete markers 
     's3:DeleteObjectTagging',
     's3:DeleteObjectVersionTagging',
     's3:DeleteObject',
+    's3:PutObjectRetention',
     's3:BypassGovernanceRetention',
     's3:ReplicateObject',
     's3:ReplicateDelete',
@@ -199,7 +200,7 @@ test('S3 writer fence freezes object creation, mutable metadata, delete markers 
     assert.ok(actionBlock[1].includes("'" + action + "'"), 'writer fence must deny ' + action);
     assert.ok(providerSpec.includes("'" + action + "'"), 'provider regression test must cover ' + action);
   }
-  assert.doesNotMatch(actionBlock[1], /s3:DeleteObjectVersion/);
+  assert.equal(actionBlock[1].includes("'s3:DeleteObjectVersion'"), false);
   assert.match(provider, /Action:\s*'s3:PutObjectLegalHold'[\s\S]*?Condition:\s*\{[\s\S]*?'s3:object-lock-legal-hold':\s*'OFF'/);
   assert.match(providerSpec, /s3:object-lock-legal-hold': 'OFF'/);
   assert.match(doc, /s3:PutObject.*s3:DeleteObject.*s3:ReplicateObject.*s3:ReplicateDelete/);

@@ -139,6 +139,7 @@ describe('S3TenantBackupWriterFenceProvider', () => {
         's3:DeleteObjectTagging',
         's3:DeleteObjectVersionTagging',
         's3:DeleteObject',
+        's3:PutObjectRetention',
         's3:BypassGovernanceRetention',
         's3:ReplicateObject',
         's3:ReplicateDelete',
