@@ -40,7 +40,7 @@ BEGIN
   raw_edges AS (
     SELECT child.relname AS child_table,
            parent.relname AS parent_table,
-           con.condeferrable AS deferrable,
+           con.condeferrable AS is_deferrable,
            array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns
     FROM pg_constraint con
     JOIN pg_class child ON child.oid = con.conrelid
@@ -60,7 +60,7 @@ BEGIN
   insert_edges AS (
     SELECT parent_table, child_table
     FROM raw_edges
-    WHERE NOT deferrable
+    WHERE NOT is_deferrable
       AND NOT (
         child_table = 'business_blueprints'
         AND parent_table = 'business_blueprint_versions'
