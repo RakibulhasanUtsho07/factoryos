@@ -206,6 +206,7 @@ describe('PostgreSQL WAL/PITR inventory manifest', () => {
 
     const wrongCount = makeManifest();
     wrongCount.sources[2].item_count = 2;
+    resignSource(wrongCount.sources[2], wrongCount);
     expect(() => validate(wrongCount)).toThrow(/item_count does not match/i);
   });
 
