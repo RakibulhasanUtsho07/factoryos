@@ -42,25 +42,62 @@ describe('resolveSaasTenantImportOrder', () => {
     expect(ordered).toEqual(['independent', 'parent', 'child']);
   });
 
-  it('breaks only the reviewed blueprint current-version pointer cycle', () => {
+  it('handles only the reviewed blueprint, release-evaluation and evidence-revision cycles', () => {
     const ordered = resolveSaasTenantImportOrder(
-      ['business_blueprints', 'business_blueprint_versions'],
       [
-        fk('business_blueprint_versions', 'business_blueprints', { child_columns: ['blueprint_id'] }),
-        fk('business_blueprints', 'business_blueprint_versions', { child_columns: ['current_version_id'] }),
+        'research_release_evaluations',
+        'business_blueprints',
+        'business_evidence',
+        'business_blueprint_versions',
+        'research_knowledge_releases',
+      ],
+      [
+        fk('business_blueprint_versions', 'business_blueprints', { child_columns: ['blueprint_id', 'tenant_id', 'factory_id'] }),
+        fk('business_blueprints', 'business_blueprint_versions', {
+          constraint_name: 'fk_business_blueprints_current_version',
+          child_columns: ['current_version_id', 'tenant_id', 'factory_id'],
+        }),
+        fk('research_release_evaluations', 'research_knowledge_releases', {
+          constraint_name: 'fk_research_release_eval_release',
+          child_columns: ['release_id', 'tenant_id', 'namespace'],
+        }),
+        fk('research_knowledge_releases', 'research_release_evaluations', {
+          constraint_name: 'fk_research_release_evaluation_owner',
+          child_columns: ['evaluation_id', 'id'],
+        }),
+        fk('business_evidence', 'business_evidence', {
+          constraint_name: 'fk_business_evidence_supersedes_scope',
+          child_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
+        }),
       ],
     );
-    expect(ordered).toEqual(['business_blueprints', 'business_blueprint_versions']);
+    expect(ordered.indexOf('business_blueprints')).toBeLessThan(ordered.indexOf('business_blueprint_versions'));
+    expect(ordered.indexOf('research_knowledge_releases')).toBeLessThan(ordered.indexOf('research_release_evaluations'));
+    expect(ordered).toContain('business_evidence');
+    expect(ordered).toHaveLength(5);
   });
 
-  it('does not suppress a different blueprint FK cycle', () => {
+  it('does not suppress a blueprint cycle on a different FK column or constraint', () => {
     expect(() => resolveSaasTenantImportOrder(
       ['business_blueprints', 'business_blueprint_versions'],
       [
         fk('business_blueprint_versions', 'business_blueprints', { child_columns: ['blueprint_id'] }),
-        fk('business_blueprints', 'business_blueprint_versions', { child_columns: ['owner_version_id'] }),
+        fk('business_blueprints', 'business_blueprint_versions', {
+          constraint_name: 'fk_unreviewed_blueprint_pointer', child_columns: ['owner_version_id'],
+        }),
       ],
     )).toThrow(ServiceUnavailableException);
+  });
+
+  it('does not suppress an unknown self-reference or unknown research release cycle', () => {
+    expect(() => resolveSaasTenantImportOrder(['business_evidence'], [
+      fk('business_evidence', 'business_evidence', { constraint_name: 'fk_unreviewed_evidence_self', child_columns: ['parent_id'] }),
+    ])).toThrow(ServiceUnavailableException);
+
+    expect(() => resolveSaasTenantImportOrder(['research_knowledge_releases', 'research_release_evaluations'], [
+      fk('research_release_evaluations', 'research_knowledge_releases', { constraint_name: 'fk_research_release_eval_release' }),
+      fk('research_knowledge_releases', 'research_release_evaluations', { constraint_name: 'fk_unreviewed_release_pointer', child_columns: ['evaluation_id'] }),
+    ])).toThrow(ServiceUnavailableException);
   });
 
   it('fails closed on any remaining non-deferrable FK cycle', () => {
