@@ -7,6 +7,7 @@ import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
 import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
+import { validatePostgresqlWalPitrInventoryManifest } from './postgresql-wal-pitr-inventory-manifest';
 import {
   verifyBackupCopyClassEvidenceAttestation,
   type BackupCopyClassEvidenceAttestationPayload,
@@ -62,7 +63,16 @@ export class SaasTenantBackupCopyClassCoverageService {
    infrastructureOwnerReference,policyReference,reason,
   };
   verifyBackupCopyClassEvidenceAttestation(attestation,attestationSignature);
-  await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
+  if (copyClass === 'POSTGRESQL_WAL_PITR') {
+   const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(evidenceReference,evidenceSha256);
+   try {
+    validatePostgresqlWalPitrInventoryManifest(artifact.bytes,tenantId,category,disposition);
+   } catch {
+    throw new BadRequestException('PostgreSQL WAL/PITR coverage requires a complete, current, tenant-bound inventory manifest');
+   }
+  } else {
+   await this.evidenceArtifactReader.verifyArtifact(evidenceReference,evidenceSha256);
+  }
   const requestHash=this.hash({operation:'BACKUP_COPY_CLASS_COVERAGE',...attestation,attestationSignature});
   const result=await this.database.transaction(async(client)=>{
    await this.lockTenant(client,tenantId);
@@ -122,7 +132,16 @@ export class SaasTenantBackupCopyClassCoverageService {
      evidenceAt:new Date(current.evidence_at).toISOString(),dataOwnerReference:current.data_owner_reference,
      infrastructureOwnerReference:current.infrastructure_owner_reference,policyReference:current.policy_reference,reason:current.reason},
      current.attestation_signature);
-    await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+    if (current.copy_class_code === 'POSTGRESQL_WAL_PITR') {
+     const artifact = await this.evidenceArtifactReader.readVerifiedArtifact(current.evidence_reference,current.evidence_sha256);
+     try {
+      validatePostgresqlWalPitrInventoryManifest(artifact.bytes,current.tenant_id,current.category_code,current.disposition);
+     } catch {
+      throw new ConflictException('PostgreSQL WAL/PITR inventory changed or is incomplete; the coverage decision cannot be accepted');
+     }
+    } else {
+     await this.evidenceArtifactReader.verifyArtifact(current.evidence_reference,current.evidence_sha256);
+    }
    }
    const status:CoverageStatus=input.decision==='ACCEPT'?'ACCEPTED':'REJECTED';
    const validUntil=status==='ACCEPTED'?new Date(Date.now()+89*24*60*60*1000).toISOString():null;
