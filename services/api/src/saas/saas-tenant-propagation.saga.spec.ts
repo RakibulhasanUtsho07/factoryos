@@ -15,7 +15,6 @@ import {
 } from './external-store-inventory-manifest';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
-import { POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA, digestPostgresqlWalPitrInventoryScope, REQUIRED_POSTGRESQL_WAL_PITR_SOURCES } from './postgresql-wal-pitr-inventory-manifest';
 import { POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA, digestPostgresqlWalPitrInventoryScope,
   REQUIRED_POSTGRESQL_WAL_PITR_SOURCES } from './postgresql-wal-pitr-inventory-manifest';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
