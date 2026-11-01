@@ -133,7 +133,8 @@ export class BackupCopyClassEvidenceArtifactReader {
       };
     } catch {
       throw new ConflictException(
-        'Backup copy-class evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest',
+        'Backup copy-class evidence artifact ' + referenceValue
+          + ' is not a stable, readable regular file matching the claimed SHA-256 digest',
       );
     } finally {
       await handle?.close().catch(() => undefined);
