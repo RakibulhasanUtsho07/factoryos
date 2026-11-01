@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 export const POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA = 'factoryos.postgresql-wal-pitr-inventory/v1';
+export const POSTGRESQL_WAL_PITR_SOURCE_RECEIPT_SCHEMA = 'factoryos.postgresql-wal-pitr-source-receipt/v1';
 
 export const REQUIRED_POSTGRESQL_WAL_PITR_SOURCES = [
   'POSTGRESQL_CLUSTER_CATALOG',
@@ -17,6 +19,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_SOURCE_AGE_MS = 24 * 60 * 60 * 1000;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
+const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
+const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+const MAX_SOURCE_TRUSTED_KEYS = 200;
 
 export interface PostgresqlWalPitrInventoryScope {
   cluster_references: string[];
@@ -90,6 +95,97 @@ export function digestPostgresqlWalPitrInventoryScope(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonicalScope(value)), 'utf8').digest('hex');
 }
 
+
+export interface PostgresqlWalPitrSourceReceipt {
+  source_kind: string; source_reference: string; collection_run_reference: string;
+  status: string; pagination_exhausted: boolean; pages_fetched: number; item_count: number;
+  result_sha256: string; scope_sha256: string; started_at: string; completed_at: string;
+  attestation_key_id: string; attestation_owner_reference: string; attestation_signature: string;
+}
+interface TrustedPostgresqlWalPitrSourceKey {
+  keyId: string; ownerReference: string; sourceKinds: string[];
+  publicKey: ReturnType<typeof createPublicKey>;
+}
+export function canonicalizePostgresqlWalPitrSourceReceipt(
+  source: PostgresqlWalPitrSourceReceipt,
+  context: { tenantId: string; categoryCode: string; inventoryId: string },
+): string {
+  return JSON.stringify({
+    schema: POSTGRESQL_WAL_PITR_SOURCE_RECEIPT_SCHEMA,
+    attestationKeyId: source.attestation_key_id,
+    attestationOwnerReference: source.attestation_owner_reference,
+    tenantId: context.tenantId.toLowerCase(), categoryCode: context.categoryCode,
+    copyClassCode: 'POSTGRESQL_WAL_PITR', inventoryId: context.inventoryId.toLowerCase(),
+    sourceKind: source.source_kind, sourceReference: source.source_reference,
+    collectionRunReference: source.collection_run_reference, status: source.status,
+    paginationExhausted: source.pagination_exhausted, pagesFetched: source.pages_fetched,
+    itemCount: source.item_count, resultSha256: source.result_sha256, scopeSha256: source.scope_sha256,
+    startedAt: source.started_at, completedAt: source.completed_at,
+  });
+}
+function loadTrustedPostgresqlWalPitrSourceKeys(raw: string | undefined): Map<string, TrustedPostgresqlWalPitrSourceKey> {
+  if (!raw?.trim()) throw new ServiceUnavailableException('PostgreSQL WAL/PITR source attestation trust is not configured');
+  if (raw.length > 256 * 1024) throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration exceeds the supported size limit');
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration is invalid'); }
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_SOURCE_TRUSTED_KEYS) {
+    throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration is invalid');
+  }
+  const keys = new Map<string, TrustedPostgresqlWalPitrSourceKey>();
+  const fingerprints = new Set<string>();
+  for (const candidate of parsed as unknown[]) {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration is invalid');
+    }
+    const entry = candidate as Record<string, unknown>;
+    const { keyId, ownerReference, sourceKinds, publicKeyPem } = entry;
+    if (typeof keyId !== 'string' || !KEY_ID.test(keyId)
+      || typeof ownerReference !== 'string' || !SAFE_REFERENCE.test(ownerReference)
+      || ownerReference.includes('://') || /(secret|password|credential|access[-_]?key|token)/i.test(ownerReference)
+      || !Array.isArray(sourceKinds) || sourceKinds.length < 1
+      || sourceKinds.some((kind) => typeof kind !== 'string'
+        || !REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.includes(kind as typeof REQUIRED_POSTGRESQL_WAL_PITR_SOURCES[number]))
+      || new Set(sourceKinds).size !== sourceKinds.length
+      || typeof publicKeyPem !== 'string' || publicKeyPem.length > 4096
+      || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----') || publicKeyPem.includes('PRIVATE KEY')
+      || keys.has(keyId)) {
+      throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration is invalid');
+    }
+    let publicKey: ReturnType<typeof createPublicKey>;
+    try { publicKey = createPublicKey(publicKeyPem); if (publicKey.asymmetricKeyType !== 'ed25519') throw new Error('wrong key'); }
+    catch { throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration is invalid'); }
+    const fingerprint = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
+    if (fingerprints.has(fingerprint)) throw new ServiceUnavailableException('PostgreSQL WAL/PITR source trusted-key configuration contains a duplicate public key');
+    fingerprints.add(fingerprint);
+    keys.set(keyId, { keyId, ownerReference, sourceKinds: sourceKinds as string[], publicKey });
+  }
+  return keys;
+}
+function verifyPostgresqlWalPitrSourceReceipt(
+  source: PostgresqlWalPitrSourceReceipt,
+  context: { tenantId: string; categoryCode: string; inventoryId: string },
+  trustedKeys: Map<string, TrustedPostgresqlWalPitrSourceKey>,
+): void {
+  if (typeof source.attestation_key_id !== 'string' || !KEY_ID.test(source.attestation_key_id)
+    || typeof source.attestation_owner_reference !== 'string' || !SAFE_REFERENCE.test(source.attestation_owner_reference)
+    || source.attestation_owner_reference.includes('://')
+    || /(secret|password|credential|access[-_]?key|token)/i.test(source.attestation_owner_reference)
+    || typeof source.attestation_signature !== 'string' || !SIGNATURE.test(source.attestation_signature)) {
+    throw new Error('PostgreSQL WAL/PITR source receipt signing metadata is invalid');
+  }
+  const key = trustedKeys.get(source.attestation_key_id);
+  if (!key || key.ownerReference !== source.attestation_owner_reference || !key.sourceKinds.includes(source.source_kind)) {
+    throw new Error('PostgreSQL WAL/PITR source receipt signer is not trusted for ' + source.source_kind);
+  }
+  const signature = Buffer.from(source.attestation_signature, 'base64url');
+  if (signature.length !== 64 || signature.toString('base64url') !== source.attestation_signature) {
+    throw new Error('PostgreSQL WAL/PITR source receipt signature is not canonical');
+  }
+  const message = Buffer.from(canonicalizePostgresqlWalPitrSourceReceipt(source, context), 'utf8');
+  if (!verify(null, message, key.publicKey, signature)) throw new Error('PostgreSQL WAL/PITR source receipt signature does not match its claims');
+}
+
 function sourceCount(sources: Map<string, Record<string, unknown>>, kind: string): number {
   const source = sources.get(kind);
   if (!source) throw new Error('required WAL/PITR source is missing: ' + kind);
@@ -119,6 +215,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
   expectedCategoryCode: string,
   expectedDisposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED',
   nowValue: Date | number = Date.now(),
+  trustedSourceKeysJson: string | undefined = process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON,
 ): void {
   const now = nowValue instanceof Date ? nowValue.getTime() : nowValue;
   if (!Number.isFinite(now)) throw new Error('validation clock is invalid');
@@ -160,6 +257,8 @@ export function validatePostgresqlWalPitrInventoryManifest(
   if (!Array.isArray(manifest.sources) || manifest.sources.length !== REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.length) {
     throw new Error('WAL/PITR inventory must contain exactly the required source receipt set');
   }
+  const trustedSourceKeys = loadTrustedPostgresqlWalPitrSourceKeys(trustedSourceKeysJson);
+  const sourceContext = { tenantId: expectedTenantId, categoryCode: expectedCategoryCode, inventoryId: manifest.inventory_id as string };
   const sources = new Map<string, Record<string, unknown>>();
   const runReferences = new Set<string>();
   for (const candidate of manifest.sources) {
@@ -188,6 +287,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
       || completedAt > generatedAt + CLOCK_SKEW_MS) {
       throw new Error('WAL/PITR source receipts must complete within 24 hours before inventory generation');
     }
+    verifyPostgresqlWalPitrSourceReceipt(source as unknown as PostgresqlWalPitrSourceReceipt, sourceContext, trustedSourceKeys);
     sources.set(source.source_kind, source);
   }
   for (const kind of REQUIRED_POSTGRESQL_WAL_PITR_SOURCES) {
