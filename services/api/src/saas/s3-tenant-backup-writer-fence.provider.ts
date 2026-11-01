@@ -468,15 +468,13 @@ export class S3TenantBackupWriterFenceProvider {
         Sid: 'FactoryOSBackupWriterLegalHoldReleaseFence' + suffix,
         Effect: 'Deny',
         Principal: '*',
-        // Permit adding a legal hold (ON), but never clearing one (OFF) while
-        // the writer fence is active.
+        // S3 uses one PutObjectLegalHold permission for both applying and
+        // removing a legal hold; the event-hold condition key applies to
+        // PutObjectRetention, not this API. Freeze both transitions while fenced.
+        // Existing holds are inventoried before execution; no new hold may be
+        // added until the approved writer-fence window has ended.
         Action: 's3:PutObjectLegalHold',
         Resource: resource,
-        Condition: {
-          StringEquals: {
-            's3:object-lock-legal-hold': 'OFF',
-          },
-        },
       },
     ];
   }

@@ -201,10 +201,11 @@ test('S3 writer fence freezes object creation, mutable metadata, delete markers 
     assert.ok(providerSpec.includes("'" + action + "'"), 'provider regression test must cover ' + action);
   }
   assert.equal(actionBlock[1].includes("'s3:DeleteObjectVersion'"), false);
-  assert.match(provider, /Action:\s*'s3:PutObjectLegalHold'[\s\S]*?Condition:\s*\{[\s\S]*?'s3:object-lock-legal-hold':\s*'OFF'/);
-  assert.match(providerSpec, /s3:object-lock-legal-hold': 'OFF'/);
+  assert.match(provider, /Action:\s*'s3:PutObjectLegalHold'[\s\S]*?Resource:\s*resource/);
+  assert.doesNotMatch(provider, /s3:object-lock-legal-hold/);
+  assert.match(providerSpec, /Action: 's3:PutObjectLegalHold'/);
   assert.match(doc, /s3:PutObject.*s3:DeleteObject.*s3:PutObjectRetention.*s3:ReplicateObject.*s3:ReplicateDelete/);
-  assert.match(doc, /legal hold.*OFF.*ON/i);
+  assert.match(doc, /legal-hold mutation window.*both applying and removing/i);
   assert.match(doc, /S3 BACKUP erasure adapter remains fail-closed/i);
 });
 

@@ -154,7 +154,6 @@ describe('S3TenantBackupWriterFenceProvider', () => {
       Principal: '*',
       Action: 's3:PutObjectLegalHold',
       Resource: 'arn:aws:s3:::factoryos-backups/' + keyPrefix + '*',
-      Condition: { StringEquals: { 's3:object-lock-legal-hold': 'OFF' } },
     });
     // The exact-version erasure permission is deliberately not denied.
     expect((fence.Action as string[]).includes('s3:DeleteObjectVersion')).toBe(false);
