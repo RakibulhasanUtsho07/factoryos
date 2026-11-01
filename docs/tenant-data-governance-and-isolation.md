@@ -2,7 +2,7 @@
 
 **Status:** implementation/acceptance matrix; policy owners must approve durations before production enforcement.
 **Scope:** tenant export and migration, deletion/erasure requests, retention controls, audit coverage, and cross-tenant isolation.
-**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–156, especially 149–156.
+**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–159, especially 149–159. See the canonical [Tenant export crosswalk](tenant-data-export-crosswalk.md) for the bidirectional TypeScript/SQL adapter inventory.
 
 ## Security invariants
 

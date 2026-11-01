@@ -126,12 +126,17 @@ describe('SaasTenantPostgresDatasetSource', () => {
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {
     const { source, database } = createSource();
-    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
-      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.FILE_REFERENCES)) {
-        // The unsupported category must fail before producing records.
-      }
-    })).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(database.getClient).toHaveBeenCalledTimes(1);
+    for (const category of [
+      SaasTransferDatasetCategory.INTEGRATION_METADATA,
+      SaasTransferDatasetCategory.FILE_REFERENCES,
+    ]) {
+      await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+        for await (const row of snapshot.readDataset(category)) {
+          throw new Error('Unsupported category unexpectedly emitted a row: ' + JSON.stringify(row));
+        }
+      })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    }
+    expect(database.getClient).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a row whose tenant scope violates the explicit query scope', async () => {
