@@ -386,7 +386,6 @@ describe('SaasTenantPropagationService external saga', () => {
       const evidenceReference = `evidence.backup-copy-class.${copyClass.toLowerCase()}`;
       const evidenceBytes = copyClass === 'POSTGRESQL_WAL_PITR'
         ? Buffer.from(JSON.stringify(createWalPitrNotApplicableManifest(tenant, 'BUSINESS_DATA')), 'utf8')
-        ? Buffer.from(JSON.stringify(createWalPitrNotApplicableManifest(tenant, 'BUSINESS_DATA')), 'utf8')
         : Buffer.from(`Synthetic evidence pack for ${copyClass}; tenant ${tenant}; fixture v1`, 'utf8');
       const evidencePath = join(backupEvidenceRoot, evidenceReference);
       writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
