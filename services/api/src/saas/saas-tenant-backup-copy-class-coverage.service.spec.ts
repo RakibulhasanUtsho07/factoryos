@@ -44,6 +44,25 @@ describe('SaasTenantBackupCopyClassCoverageService',()=>{
   expect(evidenceReader.verifyArtifact).not.toHaveBeenCalled();
   expect(database.transaction).not.toHaveBeenCalled();
  });
+ it('blocks acceptance of a legacy SUPPORTED WAL/PITR decision without a class-specific adapter',async()=>{
+  clientQuery.mockImplementation(async(...args:unknown[])=>{
+   const sql=String(args[0]);
+   if(sql.includes('FROM public.tenants'))return {rows:[{id:tenant}]};
+   if(sql.includes('WHERE tenant_id=$1 AND decision_id=$2 FOR UPDATE'))return {rows:[{
+    decision_id:decisionId,tenant_id:tenant,category_code:'BUSINESS_DATA',copy_class_code:'POSTGRESQL_WAL_PITR',
+    revision:1,disposition:'SUPPORTED',evidence_reference:'backup.inventory.wal.v1',evidence_sha256:'a'.repeat(64),
+    evidence_at:new Date().toISOString(),data_owner_reference:'owner.data.v1',infrastructure_owner_reference:'owner.infrastructure.v1',
+    policy_reference:'policy.retention.v1',reason:'Legacy WAL inventory decision',status:'PENDING',
+    idempotency_key:'wal-pitr-legacy-v1',request_hash:'b'.repeat(64),submitted_by_user_id:submitter,reviewed_by_user_id:null,
+    review_reason:null,submitted_at:new Date().toISOString(),reviewed_at:null,valid_until:null,
+   }]};
+   throw new Error('unexpected SQL: '+sql);
+  });
+  await expect(service.reviewDecision(tenant,reviewer,decisionId,{decision:'ACCEPT',reason:'Independent review attempted'}))
+   .rejects.toBeInstanceOf(ConflictException);
+  expect(audit.recordWithClient).not.toHaveBeenCalled();
+  expect(evidenceReader.verifyArtifact).not.toHaveBeenCalled();
+ });
  it('rejects self-review before changing the decision',async()=>{
   clientQuery.mockImplementation(async(...args:unknown[])=>{
    const sql=String(args[0]);
