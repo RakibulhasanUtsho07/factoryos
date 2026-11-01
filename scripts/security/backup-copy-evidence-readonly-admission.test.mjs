@@ -90,3 +90,13 @@ test('namespace enrollment remains locked against label removal and ordinary del
   assert.ok(binding.includes('policyName: factoryos-backup-evidence-namespace-lock'));
   assert.ok(binding.includes('- Deny'));
 });
+
+
+test('live admission CI waits for namespace-scoped Deny binding activation before accepting probes', async () => {
+  const script = await read('scripts/security/backup-copy-evidence-kubernetes-admission-ci.sh');
+  assert.ok(script.includes('for attempt in {1..30}'));
+  assert.ok(script.includes('Admission did not enforce the Deny binding after namespace enrollment'));
+  assert.ok(script.includes('sleep 1'));
+  assert.ok(script.includes('--dry-run=server'));
+  assert.ok(script.includes('PASS — denied writable init-container alias'));
+});
