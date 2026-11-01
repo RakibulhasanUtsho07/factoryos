@@ -201,52 +201,6 @@ function createWalPitrNotApplicableManifest(tenantId: string, categoryCode: stri
     restore_paths: [],
   };
 }
-function createWalPitrNotApplicableManifest(tenantId: string, categoryCode: string) {
-  const generatedAt = new Date().toISOString();
-  const startedAt = new Date(Date.now() - 60_000).toISOString();
-  const scope = {
-    cluster_references: [],
-    archive_references: [],
-    provider_references: ['provider.pg.discovery'],
-    account_references: ['account.pg.production'],
-    region_references: ['region.pg.primary'],
-    writer_principal_references: [],
-    replication_path_references: [],
-    restore_path_references: [],
-  };
-  const scopeSha256 = digestPostgresqlWalPitrInventoryScope(scope);
-  return {
-    schema: POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA,
-    tenant_id: tenantId,
-    category_code: categoryCode,
-    copy_class_code: 'POSTGRESQL_WAL_PITR',
-    inventory_id: '16080000-0000-4000-8000-000000000001',
-    generated_at: generatedAt,
-    scope,
-    scope_sha256: scopeSha256,
-    inventory_complete: true,
-    pagination_exhausted: true,
-    unclassified_archive_count: 0,
-    sources: REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((source_kind) => ({
-      source_kind,
-      source_reference: 'source.pg.' + source_kind.toLowerCase(),
-      collection_run_reference: 'run.pg.' + source_kind.toLowerCase(),
-      status: 'COMPLETE',
-      pagination_exhausted: true,
-      pages_fetched: 1,
-      item_count: 0,
-      result_sha256: createHash('sha256').update(source_kind).digest('hex'),
-      scope_sha256: scopeSha256,
-      started_at: startedAt,
-      completed_at: generatedAt,
-    })),
-    clusters: [],
-    archives: [],
-    segments: [],
-    replication_paths: [],
-    restore_paths: [],
-  };
-}
 const requestId = '16020000-0000-4000-8000-000000000001';
 const sourceDigest = 'b'.repeat(64);
 const sqlDigest = 'c'.repeat(64);
