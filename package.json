@@ -16,9 +16,11 @@
   "overrides": {
     "handlebars": "4.7.10",
     "tmp": "0.2.7",
-    "undici": "6.29.0",
+    "undici": "6.29.1",
     "argparse": "2.0.1",
     "body-parser": "2.4.0",
-    "multer": "2.5.0"
+    "multer": "2.5.0",
+    "fast-uri": "3.1.9",
+    "zod": "4.6.7"
   }
 }
