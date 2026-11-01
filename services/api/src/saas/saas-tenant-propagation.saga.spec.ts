@@ -514,7 +514,7 @@ describe('SaasTenantPropagationService external saga', () => {
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Changed external evidence bytes must block provider execution',
       idempotency_key: 'external-propagation-tampered-copy-coverage-bytes',
-    })).rejects.toThrow('Backup copy-class evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest');
+    })).rejects.toThrow(/Backup copy-class evidence artifact .* is not a stable, readable regular file matching the claimed SHA-256 digest/);
     expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
@@ -658,7 +658,7 @@ describe('SaasTenantPropagationService external saga', () => {
     await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Source evidence bytes must still match the signed digest',
       idempotency_key: 'external-propagation-tampered-source-artifact',
-    })).rejects.toThrow('evidence artifact is not a stable, readable regular file matching the claimed SHA-256 digest');
+    })).rejects.toThrow(/evidence artifact .* is not a stable, readable regular file matching the claimed SHA-256 digest/);
     expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
     expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
