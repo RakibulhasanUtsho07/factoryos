@@ -32,6 +32,18 @@ describe('SaasTenantBackupCopyClassCoverageService',()=>{
   })).rejects.toBeInstanceOf(BadRequestException);
   expect(database.transaction).not.toHaveBeenCalled();
  });
+ it('blocks SUPPORTED WAL/PITR coverage before evidence submission while no erasure adapter exists',async()=>{
+  await expect(service.createDecision(tenant,submitter,{
+   category_code:'BUSINESS_DATA',copy_class_code:'POSTGRESQL_WAL_PITR',disposition:'SUPPORTED',
+   evidence_reference:'backup.inventory.wal.v1',evidence_sha256:'a'.repeat(64),
+   evidence_at:new Date().toISOString(),data_owner_reference:'owner.data.v1',
+   infrastructure_owner_reference:'owner.infrastructure.v1',policy_reference:'policy.retention.v1',
+   attestation_key_id:'test.collector',attestation_owner_reference:'owner.collector.v1',
+   attestation_signature:'A'.repeat(86),reason:'WAL archive class is inventoried',idempotency_key:'wal-pitr-supported-v1',
+  })).rejects.toBeInstanceOf(ConflictException);
+  expect(evidenceReader.verifyArtifact).not.toHaveBeenCalled();
+  expect(database.transaction).not.toHaveBeenCalled();
+ });
  it('rejects self-review before changing the decision',async()=>{
   clientQuery.mockImplementation(async(...args:unknown[])=>{
    const sql=String(args[0]);
