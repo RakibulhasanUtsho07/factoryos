@@ -669,6 +669,12 @@ describe('SaasTenantPropagationService external saga', () => {
     if (!walEvidence) throw new Error('WAL/PITR evidence fixture is missing');
     const walBytes = readFileSync(join(backupEvidenceRoot, String(walEvidence.evidence_reference)));
     expect(createHash('sha256').update(walBytes).digest('hex')).toBe(walEvidence.evidence_sha256);
+    const directReader = new BackupCopyClassEvidenceArtifactReader({
+      assertPathMountedReadOnly: async () => undefined,
+    } as never);
+    await expect(directReader.readVerifiedArtifact(
+      String(walEvidence.evidence_reference), String(walEvidence.evidence_sha256),
+    )).resolves.toMatchObject({ reference: walEvidence.evidence_reference, sha256: walEvidence.evidence_sha256 });
     adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
       const resources = [
