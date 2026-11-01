@@ -32,7 +32,7 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
     const adapter = new SaasTenantPostgresMigrationTargetAdapter(config as never, sourceDb as never);
     const clientQuery = jest.fn(async (_sql: string, _values?: unknown[]) => ({
       rows: [{ child_table: 'orders', parent_table: 'factories', constraint_name: 'orders_factory_fk',
-        deferrable: false, child_columns: ['factory_id'] }],
+        is_deferrable: false, child_columns: ['factory_id'] }],
     }));
     const dependencyOrder = (adapter as unknown as {
       dependencyOrder(client: unknown, tables: string[]): Promise<string[]>;
@@ -42,7 +42,7 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
     expect(clientQuery).toHaveBeenCalledTimes(1);
     expect(clientQuery.mock.calls[0]?.[1]).toEqual([['orders', 'factories']]);
     expect(String(clientQuery.mock.calls[0]?.[0])).toContain('pg_constraint');
-    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.condeferrable');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.condeferrable AS is_deferrable');
   });
 
   it('rejects nested action-token hashes in target JSON data before accepting an import', () => {
