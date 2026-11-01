@@ -4,7 +4,7 @@ export interface SaasTenantImportForeignKey {
   child_table: string;
   parent_table: string;
   constraint_name: string;
-  deferrable: boolean;
+  is_deferrable: boolean;
   child_columns: string[];
 }
 
@@ -36,7 +36,7 @@ export function resolveSaasTenantImportOrder(
       typeof foreignKey.child_table !== 'string' ||
       typeof foreignKey.parent_table !== 'string' ||
       typeof foreignKey.constraint_name !== 'string' ||
-      typeof foreignKey.deferrable !== 'boolean' ||
+      typeof foreignKey.is_deferrable !== 'boolean' ||
       !Array.isArray(foreignKey.child_columns) ||
       foreignKey.child_columns.length === 0 ||
       foreignKey.child_columns.some((column) => typeof column !== 'string' || column.length === 0)
@@ -46,7 +46,7 @@ export function resolveSaasTenantImportOrder(
     if (!tableOrder.has(foreignKey.child_table) || !tableOrder.has(foreignKey.parent_table)) {
       throw new ServiceUnavailableException('Destination PostgreSQL returned an FK outside the reviewed import table set');
     }
-    if (foreignKey.deferrable) continue;
+    if (foreignKey.is_deferrable) continue;
 
     // This one immediate circular pointer is deliberately omitted in the first
     // INSERT projection and restored only after both relations have been loaded.
