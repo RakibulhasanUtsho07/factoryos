@@ -79,8 +79,9 @@ function canonicalScope(value: unknown): PostgresqlWalPitrInventoryScope {
     replication_path_references: referenceArray(source.replication_path_references, 'scope.replication_path_references'),
     restore_path_references: referenceArray(source.restore_path_references, 'scope.restore_path_references'),
   };
-  if (scope.cluster_references.length === 0) {
-    throw new Error('WAL/PITR inventory must identify at least one PostgreSQL cluster');
+  if (scope.cluster_references.length + scope.provider_references.length
+    + scope.account_references.length + scope.region_references.length === 0) {
+    throw new Error('WAL/PITR inventory must identify a cluster or an authoritative provider/account/region discovery scope');
   }
   return scope;
 }
@@ -356,10 +357,10 @@ export function validatePostgresqlWalPitrInventoryManifest(
   const archiveProviders = sortedUnique((manifest.archives as unknown[]).map((item) => reference(object(item, 'archive').provider_reference, 'archive.provider_reference')));
   const archiveAccounts = sortedUnique((manifest.archives as unknown[]).map((item) => reference(object(item, 'archive').account_reference, 'archive.account_reference')));
   const archiveRegions = sortedUnique((manifest.archives as unknown[]).map((item) => reference(object(item, 'archive').region_reference, 'archive.region_reference')));
-  if (JSON.stringify(archiveProviders) !== JSON.stringify(scope.provider_references)
-    || JSON.stringify(archiveAccounts) !== JSON.stringify(scope.account_references)
-    || JSON.stringify(archiveRegions) !== JSON.stringify(scope.region_references)) {
-    throw new Error('WAL/PITR provider, account or region scope does not reconcile to discovered archives');
+  if (archiveProviders.some((item) => !scope.provider_references.includes(item))
+    || archiveAccounts.some((item) => !scope.account_references.includes(item))
+    || archiveRegions.some((item) => !scope.region_references.includes(item))) {
+    throw new Error('WAL/PITR archive provider, account or region is outside the declared discovery scope');
   }
 
   const writerCount = expectedScope.writer_principal_references.length;
@@ -380,7 +381,7 @@ export function validatePostgresqlWalPitrInventoryManifest(
     throw new Error('NOT_APPLICABLE WAL/PITR disposition contradicts discovered archives, writers or restore/replication paths');
   }
   if (expectedDisposition === 'SUPPORTED'
-    && (archives.size === 0 || segmentKeys.size === 0
+    && (clusters.size === 0 || archives.size === 0 || segmentKeys.size === 0
       || [...archives.values()].some((archive) => archive.legalHoldStatus !== 'NONE')
       || (manifest.segments as unknown[]).some((item) => object(item, 'segment').legal_hold_status !== 'NONE')
       || (manifest.restore_paths as unknown[]).some((item) => object(item, 'restore path').tombstone_replay_status !== 'VERIFIED'))) {
