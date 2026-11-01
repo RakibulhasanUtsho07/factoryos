@@ -15,8 +15,8 @@ import {
 } from './external-store-inventory-manifest';
 import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
   canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
-import { POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA, digestPostgresqlWalPitrInventoryScope,
-  REQUIRED_POSTGRESQL_WAL_PITR_SOURCES } from './postgresql-wal-pitr-inventory-manifest';
+import { canonicalizePostgresqlWalPitrSourceReceipt, POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA,
+  digestPostgresqlWalPitrInventoryScope, REQUIRED_POSTGRESQL_WAL_PITR_SOURCES } from './postgresql-wal-pitr-inventory-manifest';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
@@ -26,6 +26,17 @@ const postgresExecutor = '16010000-0000-4000-8000-000000000003';
 const propagationExecutor = '16010000-0000-4000-8000-000000000004';
 const independentAttestor = '16010000-0000-4000-8000-000000000005';
 const priorInventorySourceTrust = process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+const priorPostgresqlWalPitrSourceTrust = process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON;
+const postgresqlWalPitrCollectorKeys = new Map(REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((sourceKind) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [sourceKind, { keyId: 'collector.pg.' + sourceKind.toLowerCase(),
+    ownerReference: 'owner.collector.pg.' + sourceKind.toLowerCase(), publicKey: pair.publicKey, privateKey: pair.privateKey }] as const;
+}));
+const postgresqlWalPitrSourceTrust = JSON.stringify([...postgresqlWalPitrCollectorKeys.entries()].map(([sourceKind, key]) => ({
+  keyId: key.keyId, ownerReference: key.ownerReference, sourceKinds: [sourceKind],
+  publicKeyPem: key.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+})));
+process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON = postgresqlWalPitrSourceTrust;
 const inventoryCollectorKeys = new Map(REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => {
   const pair = generateKeyPairSync('ed25519');
   return [sourceKind, {
@@ -108,6 +119,8 @@ process.on('exit', () => {
   else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = priorBackupEvidenceRoot;
   if (priorInventorySourceTrust === undefined) delete process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
   else process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = priorInventorySourceTrust;
+  if (priorPostgresqlWalPitrSourceTrust === undefined) delete process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON = priorPostgresqlWalPitrSourceTrust;
   rmSync(backupEvidenceRoot, { recursive: true, force: true });
 });
 const backupEvidenceTrust = JSON.stringify([{
@@ -169,31 +182,33 @@ function createWalPitrNotApplicableManifest(tenantId: string, categoryCode: stri
     restore_path_references: [],
   };
   const scopeSha256 = digestPostgresqlWalPitrInventoryScope(scope);
+  const inventoryId = '16080000-0000-4000-8000-000000000001';
   return {
     schema: POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA,
     tenant_id: tenantId,
     category_code: categoryCode,
     copy_class_code: 'POSTGRESQL_WAL_PITR',
-    inventory_id: '16080000-0000-4000-8000-000000000001',
+    inventory_id: inventoryId,
     generated_at: generatedAt,
     scope,
     scope_sha256: scopeSha256,
     inventory_complete: true,
     pagination_exhausted: true,
     unclassified_archive_count: 0,
-    sources: REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((source_kind) => ({
-      source_kind,
-      source_reference: 'source.pg.' + source_kind.toLowerCase(),
-      collection_run_reference: 'run.pg.' + source_kind.toLowerCase(),
-      status: 'COMPLETE',
-      pagination_exhausted: true,
-      pages_fetched: 1,
-      item_count: 0,
-      result_sha256: createHash('sha256').update(source_kind).digest('hex'),
-      scope_sha256: scopeSha256,
-      started_at: startedAt,
-      completed_at: generatedAt,
-    })),
+    sources: REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((source_kind) => {
+      const collector = postgresqlWalPitrCollectorKeys.get(source_kind)!;
+      const receipt = { source_kind, source_reference: 'source.pg.' + source_kind.toLowerCase(),
+        collection_run_reference: 'run.pg.' + source_kind.toLowerCase(), status: 'COMPLETE',
+        pagination_exhausted: true, pages_fetched: 1, item_count: 0,
+        result_sha256: createHash('sha256').update(source_kind).digest('hex'), scope_sha256: scopeSha256,
+        started_at: startedAt, completed_at: generatedAt, attestation_key_id: collector.keyId,
+        attestation_owner_reference: collector.ownerReference, attestation_signature: '',
+      };
+      receipt.attestation_signature = sign(null, Buffer.from(canonicalizePostgresqlWalPitrSourceReceipt(
+        receipt, { tenantId, categoryCode, inventoryId },
+      ), 'utf8'), collector.privateKey).toString('base64url');
+      return receipt;
+    }),
     clusters: [],
     archives: [],
     segments: [],
