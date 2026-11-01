@@ -131,10 +131,20 @@ export class BackupCopyClassEvidenceArtifactReader {
         sizeBytes: position,
         ...(includeBytes ? { bytes: Buffer.concat(chunks, position) } : {}),
       };
-    } catch {
+    } catch (error) {
+      let failureCode = 'INTEGRITY_OR_FILE_POLICY';
+      if (error !== null && typeof error === 'object' && 'code' in error
+        && typeof (error as { code?: unknown }).code === 'string') {
+        failureCode = 'IO_' + (error as { code: string }).code;
+      } else if (error instanceof Error) {
+        if (error.message.startsWith('Evidence artifact must be')) failureCode = 'FILE_POLICY';
+        else if (error.message === 'Evidence artifact changed during verification') failureCode = 'FILE_CHANGED';
+        else if (error.message === 'Evidence artifact bytes do not match the claimed digest') failureCode = 'DIGEST_MISMATCH';
+        else if (error.message === 'Evidence artifact exceeds the size bound') failureCode = 'SIZE_LIMIT';
+      }
       throw new ConflictException(
         'Backup copy-class evidence artifact ' + referenceValue
-          + ' is not a stable, readable regular file matching the claimed SHA-256 digest',
+          + ' is not a stable, readable regular file matching the claimed SHA-256 digest (' + failureCode + ')',
       );
     } finally {
       await handle?.close().catch(() => undefined);
