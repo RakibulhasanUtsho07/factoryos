@@ -318,30 +318,52 @@ export class SaasTenantPostgresMigrationTargetAdapter
         throw new ConflictException('Source bundle exceeds the supported record-count limit');
       }
 
+      const stagedReleaseEvaluationPointers = await client.query(
+        "SELECT 1 FROM pg_temp.factoryos_transfer_stage " +
+          "WHERE table_name = 'research_knowledge_releases' " +
+          "AND row_payload->>'evaluation_id' IS NOT NULL LIMIT 1",
+      );
+      if (stagedReleaseEvaluationPointers.rows.length > 0 &&
+          !allTables.includes('research_release_evaluations')) {
+        throw new ConflictException(
+          'Research releases with attached evaluations must be imported together with their evaluation records',
+        );
+      }
+
       const orderedTables = await this.dependencyOrder(client, allTables);
       await client.query('SET CONSTRAINTS ALL DEFERRED');
       for (const table of orderedTables) {
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
-        const projectionSql = keys.map((key) =>
-          table === 'business_blueprints' && key === 'current_version_id'
-            ? 'NULL AS ' + this.quoteIdentifier(key)
-            : 'target_row.' + this.quoteIdentifier(key),
-        ).join(', ');
+        const projectionSql = keys.map((key) => {
+          if (table === 'business_blueprints' && key === 'current_version_id') {
+            return 'NULL AS ' + this.quoteIdentifier(key);
+          }
+          if (table === 'research_knowledge_releases' && key === 'evaluation_id') {
+            return 'NULL AS ' + this.quoteIdentifier(key);
+          }
+          if (table === 'research_knowledge_releases' && key === 'status') {
+            return "CASE WHEN target_row.evaluation_id IS NOT NULL THEN 'DRAFT' ELSE target_row.status END AS " +
+              this.quoteIdentifier(key);
+          }
+          return 'target_row.' + this.quoteIdentifier(key);
+        }).join(', ');
         await client.query(
           'INSERT INTO public.' + this.quoteIdentifier(table) + ' (' + columnSql + ') ' +
           'SELECT ' + projectionSql + ' ' +
           'FROM pg_temp.factoryos_transfer_stage AS staged ' +
           'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.' + this.quoteIdentifier(table) +
           ', staged.row_payload) AS target_row ' +
-          'WHERE staged.table_name = $1 ORDER BY staged.sequence',
+          'WHERE staged.table_name = $1 ORDER BY ' + this.insertOrderBy(table),
           [table],
         );
       }
 
       // business_blueprints and business_blueprint_versions have a circular, immediate FK.
       // Insert blueprints with a null current pointer, insert versions, then restore the pointer.
+      // Evidence predecessors are inserted by factory/source/revision order, and research
+      // release versions by release_key/version so their BEFORE INSERT guards see parents first.
       if (tableColumnsInBundle.get('business_blueprints')?.includes('current_version_id')) {
         await client.query(
           'UPDATE public.business_blueprints AS target_row ' +
@@ -350,6 +372,21 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'WHERE staged.table_name = \'business_blueprints\' ' +
             'AND target_row.id = (staged.row_payload->>\'id\')::uuid ' +
             'AND staged.row_payload->>\'current_version_id\' IS NOT NULL',
+        );
+      }
+
+      // Research releases and their evaluations have a second immediate FK cycle.
+      // Releases with an evaluation pointer were inserted as DRAFT with a null pointer;
+      // all evaluation rows now exist, so restore source status and pointer together.
+      if (tableColumnsInBundle.get('research_knowledge_releases')?.includes('evaluation_id')) {
+        await client.query(
+          'UPDATE public.research_knowledge_releases AS target_row ' +
+            'SET evaluation_id = (staged.row_payload->>\\'evaluation_id\\')::uuid, ' +
+            'status = staged.row_payload->>\\'status\\' ' +
+            'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+            'WHERE staged.table_name = \\'research_knowledge_releases\\' ' +
+            'AND target_row.id = (staged.row_payload->>\\'id\\')::uuid ' +
+            'AND staged.row_payload->>\\'evaluation_id\\' IS NOT NULL',
         );
       }
 
@@ -546,11 +583,29 @@ export class SaasTenantPostgresMigrationTargetAdapter
 
 
   /**
+   * Per-row ordering required by domain BEFORE INSERT guards. Other relations
+   * retain deterministic source sequence order after their table dependencies
+   * have been resolved from the target's foreign-key catalog.
+   */
+  private insertOrderBy(table: string): string {
+    if (table === 'business_evidence') {
+      return "(staged.row_payload->>'factory_id') ASC, " +
+        "(staged.row_payload->>'source_key') ASC NULLS FIRST, " +
+        "COALESCE((staged.row_payload->>'revision_no')::integer, 1) ASC, staged.sequence ASC";
+    }
+    if (table === 'research_knowledge_releases') {
+      return "(staged.row_payload->>'release_key') ASC, " +
+        "(staged.row_payload->>'version')::integer ASC, staged.sequence ASC";
+    }
+    return 'staged.sequence ASC';
+  }
+
+  /**
    * Derive parent-before-child insert order from the destination schema itself.
    * Only FKs whose child and parent are both in this import are ordering edges.
    * Deferrable FKs are checked at COMMIT after SET CONSTRAINTS ALL DEFERRED.
-   * The one known immediate cycle is handled by inserting business_blueprints
-   * with current_version_id=NULL and restoring that pointer after versions exist.
+   * The exact blueprint, research evaluation and evidence predecessor cycles
+   * have dedicated importer staging/row-order strategies; all others are rejected.
    */
   private async dependencyOrder(client: PoolClient, tables: string[]): Promise<string[]> {
     if (tables.length === 0) return [];
