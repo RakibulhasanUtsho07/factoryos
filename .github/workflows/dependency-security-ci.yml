@@ -62,7 +62,7 @@ jobs:
         run: npm ci
 
       - name: Test workspace dependency audit reporting
-        run: node --test scripts/security/workspace-dependency-audit-report.test.mjs
+        run: node --test scripts/security/workspace-dependency-audit-report.test.mjs scripts/security/workspace-dependency-overrides.test.mjs
 
       - name: Report full workspace dependency advisory paths
         run: node scripts/security/workspace-dependency-audit-report.mjs
