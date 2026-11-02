@@ -322,7 +322,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   max_total_pages: number;
   max_total_items: number;
   request_timeout_ms: number;
-  external_id?: string;
+  external_id: string;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
 } {
@@ -345,7 +345,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     return fail('AWS pagination, item or request timeout bounds are outside supported limits');
   }
   if (typeof config.external_id !== 'string' || config.external_id.length < 2 || config.external_id.length > 1224
-    || /[\\r\\n]/.test(config.external_id)) {
+    || /[\r\n]/.test(config.external_id)) {
     return fail('a valid non-empty external ID is required by the cross-account trust policy');
   }
   if (config.read_only_policy_sha256 !== undefined && !SHA256.test(config.read_only_policy_sha256)) {
