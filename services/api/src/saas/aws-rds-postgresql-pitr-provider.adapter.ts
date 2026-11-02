@@ -6,6 +6,11 @@ import type {
   AwsRdsDatabasePrincipalReaderConfig,
   AwsRdsDatabasePrincipalTarget,
 } from './aws-rds-postgresql-database-principal-inventory';
+import {
+  captureAwsRdsExternalIamPrincipalInventory,
+  type AwsIamPartition,
+  type AwsRdsExternalIamPrincipalInventory,
+} from './aws-rds-postgresql-external-iam-principal-inventory';
 
 export const AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA =
   'factoryos.aws-rds-postgresql-pitr-inventory/v1';
@@ -42,6 +47,12 @@ export interface AwsRdsPitrDatabasePrincipalReaderConfig extends AwsRdsDatabaseP
   policy_review_reference?: string;
 }
 
+export interface AwsRdsPitrExternalIamPrincipalReaderConfig {
+  role_name: string;
+  policy_sha256?: string;
+  policy_review_reference?: string;
+}
+
 export interface AwsRdsPitrProviderConfig {
   organization_account_id: string;
   read_only_role_name: string;
@@ -54,6 +65,7 @@ export interface AwsRdsPitrProviderConfig {
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
   database_principal_reader?: AwsRdsPitrDatabasePrincipalReaderConfig;
+  external_iam_principal_reader?: AwsRdsPitrExternalIamPrincipalReaderConfig;
 }
 
 export interface AwsRdsPitrProviderScope {
@@ -158,6 +170,17 @@ export interface AwsRdsPostgresqlPitrInventory {
   database_principal_targets_scanned: number;
   database_principal_databases_discovered: number;
   database_principal_databases_scanned: number;
+  external_iam_principal_reader_role_name: string | null;
+  external_iam_principal_reader_policy_sha256: string | null;
+  external_iam_principal_reader_policy_review_reference: string | null;
+  external_iam_principal_reader_policy_independently_verified: false;
+  external_iam_principal_catalog_status: 'COMPLETE' | 'PARTIAL' | 'NOT_ENUMERATED';
+  external_iam_principal_catalogs: AwsRdsExternalIamPrincipalInventory[];
+  external_iam_principal_catalog_blockers: string[];
+  external_iam_principal_catalog_receipt_references: string[];
+  external_iam_principals_potentially_allowed_rds_db_connect: number;
+  external_iam_effective_authorization_verified: false;
+  external_iam_actual_database_connections_enumerated: false;
   source_receipts_signable: false;
   manifest_eligible: false;
   deletion_authorized: false;
@@ -328,6 +351,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
   database_principal_reader?: AwsRdsPitrDatabasePrincipalReaderConfig;
+  external_iam_principal_reader?: AwsRdsPitrExternalIamPrincipalReaderConfig;
 } {
   if (!isRecord(config) || !AWS_ACCOUNT_ID.test(config.organization_account_id)
     || !ROLE_NAME.test(config.read_only_role_name)) {
@@ -368,6 +392,18 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
       safeReference(databaseReader.policy_review_reference, 'database-principal policy review reference');
     }
   }
+  const externalIamReader = config.external_iam_principal_reader;
+  if (externalIamReader !== undefined) {
+    if (!isRecord(externalIamReader) || !ROLE_NAME.test(externalIamReader.role_name)
+      || externalIamReader.role_name === config.read_only_role_name
+      || externalIamReader.role_name === databaseReader?.role_name
+      || (externalIamReader.policy_sha256 !== undefined && !SHA256.test(externalIamReader.policy_sha256))) {
+      return fail('external IAM principal reader must be a separate, valid role with an optional SHA-256 policy digest');
+    }
+    if (externalIamReader.policy_review_reference !== undefined) {
+      safeReference(externalIamReader.policy_review_reference, 'external IAM principal reader policy review reference');
+    }
+  }
   return {
     organization_account_id: config.organization_account_id,
     read_only_role_name: config.read_only_role_name,
@@ -380,6 +416,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     read_only_policy_sha256: config.read_only_policy_sha256,
     policy_review_reference: config.policy_review_reference,
     database_principal_reader: databaseReader,
+    external_iam_principal_reader: externalIamReader,
   };
 }
 
@@ -821,6 +858,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
   ) {
     this.config = validateConfig(config);
     this.sourceCredentials = validateCredentials(sourceCredentials);
+    this.fetcher = fetcher;
     this.now = now;
     this.budget = { total: 0, maximum: this.config.max_total_pages };
     this.api = new AwsQueryApi(this.config.request_timeout_ms, fetcher, this.budget);
@@ -829,6 +867,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
   }
 
   private readonly now: () => Date;
+  private readonly fetcher: typeof fetch;
   private readonly budget: PageBudget;
   private readonly databasePrincipalClientFactory?: AwsRdsDatabasePrincipalPgClientFactory;
 
@@ -871,6 +910,33 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       + ':assumed-role/' + reader.role_name + '/';
     if (!principal.startsWith(expectedPrefix) || reader.role_name === this.config.read_only_role_name) {
       return fail('AWS database-principal reader identity is not the dedicated configured role');
+    }
+    return { credentials, arn: roleArn, principal };
+  }
+
+  private async assumeExternalIamPrincipalReaderRole(accountId: string): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
+    const reader = this.config.external_iam_principal_reader;
+    if (!reader) return fail('separate external IAM principal reader role is not configured');
+    const roleArn = 'arn:' + partitionForRegion(this.config.organization_region) + ':iam::' + accountId + ':role/' + reader.role_name;
+    const response = await this.api.call('sts', this.config.organization_region, this.sourceCredentials, 'AssumeRole', {
+      RoleArn: roleArn,
+      RoleSessionName: 'FactoryOSIamPrincipalScan',
+      DurationSeconds: '900',
+      ExternalId: this.config.external_id,
+    });
+    const credentialsBlock = xmlBlocks(response.xml, 'Credentials')[0];
+    if (!credentialsBlock) return fail('AWS STS external IAM reader role omitted temporary credentials');
+    const credentials = validateCredentials({
+      access_key_id: xmlText(credentialsBlock, 'AccessKeyId') ?? '',
+      secret_access_key: xmlText(credentialsBlock, 'SecretAccessKey') ?? '',
+      session_token: xmlText(credentialsBlock, 'SessionToken') ?? '',
+    });
+    const principal = await this.callerIdentity(credentials, accountId);
+    const expectedPrefix = 'arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + accountId
+      + ':assumed-role/' + reader.role_name + '/';
+    if (!principal.startsWith(expectedPrefix) || reader.role_name === this.config.read_only_role_name
+      || reader.role_name === this.config.database_principal_reader?.role_name) {
+      return fail('AWS external IAM reader identity is not the dedicated configured role');
     }
     return { credentials, arn: roleArn, principal };
   }
@@ -1058,6 +1124,48 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       sourceReceipts.set(kind, [...(sourceReceipts.get(kind) ?? []), ...receipts]);
       this.addItems(resources.length);
     };
+
+    const externalIamPrincipalCatalogs: AwsRdsExternalIamPrincipalInventory[] = [];
+    const externalIamPrincipalCatalogBlockers: string[] = [];
+    let externalIamPrincipalCatalogStatus: 'COMPLETE' | 'PARTIAL' | 'NOT_ENUMERATED' =
+      this.config.external_iam_principal_reader ? 'COMPLETE' : 'NOT_ENUMERATED';
+    if (this.config.external_iam_principal_reader) {
+      for (const account of accountResult.accounts) {
+        if (account.state !== 'ACTIVE') {
+          externalIamPrincipalCatalogStatus = 'PARTIAL';
+          externalIamPrincipalCatalogBlockers.push(account.id + ':ACCOUNT_NOT_ACTIVE_OR_NOT_SCANNED');
+          continue;
+        }
+        try {
+          const reader = await this.assumeExternalIamPrincipalReaderRole(account.id);
+          const scan = await captureAwsRdsExternalIamPrincipalInventory({
+            account_id: account.id,
+            partition: partitionForRegion(this.config.organization_region) as AwsIamPartition,
+            credentials: reader.credentials,
+            fetcher: this.fetcher,
+            max_pages: Math.max(1, Math.min(10000, this.config.max_total_pages - this.budget.total)),
+            max_items: Math.max(1, Math.min(20000, this.config.max_total_items - this.totalItems)),
+            request_timeout_ms: this.config.request_timeout_ms,
+            consume_request: () => {
+              if (this.budget.total >= this.budget.maximum) return fail('external IAM principal scan exceeded the shared AWS request budget');
+              this.budget.total += 1;
+            },
+          });
+          this.totalPaginationPages += scan.pages_fetched;
+          this.addItems(scan.roles_scanned + scan.users_scanned + scan.groups_scanned + scan.managed_policies_scanned);
+          externalIamPrincipalCatalogs.push(scan);
+          if (scan.status !== 'COMPLETE') {
+            externalIamPrincipalCatalogStatus = 'PARTIAL';
+            externalIamPrincipalCatalogBlockers.push(account.id + ':IAM_AUTHORIZATION_CATALOG_PARTIAL');
+          }
+        } catch {
+          externalIamPrincipalCatalogStatus = 'PARTIAL';
+          externalIamPrincipalCatalogBlockers.push(account.id + ':IAM_AUTHORIZATION_READER_OR_CATALOG_SCAN_FAILED');
+        }
+      }
+    } else {
+      externalIamPrincipalCatalogBlockers.push('EXTERNAL_IAM_PRINCIPAL_READER_NOT_CONFIGURED');
+    }
 
     for (const entry of scopes) {
       const scope = entry.scope;
@@ -1370,7 +1478,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
             : 'Database-native principal collection was attempted with a separate IAM reader role, but target, database, privilege, access or global budget blockers remain; no missing catalog is treated as empty.',
         databasePrincipalResources, databasePrincipalPages, databasePrincipalReceipts),
       sourceFromItems('WAL_REPLICATION_PATH_CATALOG', 'PARTIAL',
-        'RDS read-replica/global-cluster and automated-backup relationships plus database-native senders, slots, WAL receivers and logical subscriptions are captured; external IAM producers, queues and custom archive actors remain outside this catalog.',
+        'RDS read-replica/global-cluster and automated-backup relationships plus database-native senders, slots, WAL receivers, logical subscriptions and potential IAM rds-db:connect identity-policy statements are captured. Actual IAM DB-auth connections are not logged by CloudTrail; effective IAM authorization, external role chains, queues and custom archive actors remain outside this catalog.',
         [...(sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? []), ...databaseReplicationResources],
         (sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0) + databasePrincipalPages,
         [...(sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []), ...databasePrincipalReceipts]),
@@ -1429,6 +1537,18 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       database_principal_targets_scanned: databasePrincipalTargetsScanned,
       database_principal_databases_discovered: databasePrincipalDatabasesDiscovered,
       database_principal_databases_scanned: databasePrincipalDatabasesScanned,
+      external_iam_principal_reader_role_name: this.config.external_iam_principal_reader?.role_name ?? null,
+      external_iam_principal_reader_policy_sha256: this.config.external_iam_principal_reader?.policy_sha256 ?? null,
+      external_iam_principal_reader_policy_review_reference: this.config.external_iam_principal_reader?.policy_review_reference ?? null,
+      external_iam_principal_reader_policy_independently_verified: false,
+      external_iam_principal_catalog_status: externalIamPrincipalCatalogStatus,
+      external_iam_principal_catalogs: externalIamPrincipalCatalogs,
+      external_iam_principal_catalog_blockers: [...new Set(externalIamPrincipalCatalogBlockers)].sort(),
+      external_iam_principal_catalog_receipt_references: [...new Set(externalIamPrincipalCatalogs.flatMap((catalog) => catalog.receipt_references))].sort(),
+      external_iam_principals_potentially_allowed_rds_db_connect: externalIamPrincipalCatalogs.reduce((count, catalog) =>
+        count + catalog.principals.filter((principal) => principal.potential_statements.some((statement) => statement.effect === 'Allow')).length, 0),
+      external_iam_effective_authorization_verified: false,
+      external_iam_actual_database_connections_enumerated: false,
       source_receipts_signable: false,
       manifest_eligible: false,
       deletion_authorized: false,
