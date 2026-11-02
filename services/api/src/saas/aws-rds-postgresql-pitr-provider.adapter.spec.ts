@@ -334,6 +334,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
               in_recovery: false,
               has_pg_read_all_stats: true,
               has_rds_iam: true,
+              privileged_memberships: [],
               server_version_num: '160004',
             }] };
           }
