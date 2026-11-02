@@ -1110,10 +1110,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       const clusterResources = [
         ...instances.blocks.map((block) => resourceFromBlock(block, 'DBInstance', scope, 'RDS_DB_INSTANCE', 'DBInstanceArn',
           'DbiResourceId', ['DBInstanceIdentifier', 'DbiResourceId', 'DBInstanceStatus', 'BackupRetentionPeriod',
-            'LatestRestorableTime', 'ReadReplicaSourceDBInstanceIdentifier', 'MultiAZ', 'StorageEncrypted'])),
+            'LatestRestorableTime', 'ReadReplicaSourceDBInstanceIdentifier', 'MultiAZ', 'StorageEncrypted', 'IAMDatabaseAuthenticationEnabled'])),
         ...clusters.blocks.map((block) => resourceFromBlock(block, 'DBCluster', scope, 'RDS_DB_CLUSTER', 'DBClusterArn',
           'DBClusterIdentifier', ['DBClusterIdentifier', 'DBClusterStatus', 'GlobalClusterIdentifier',
-            'ReplicationSourceIdentifier', 'BackupRetentionPeriod', 'StorageEncrypted'])),
+            'ReplicationSourceIdentifier', 'BackupRetentionPeriod', 'StorageEncrypted', 'IAMDatabaseAuthenticationEnabled'])),
         ...globals.blocks.map((block) => resourceFromBlock(block, 'GlobalCluster', scope, 'RDS_GLOBAL_CLUSTER', 'GlobalClusterArn',
           'GlobalClusterIdentifier', ['GlobalClusterIdentifier', 'Engine', 'Status', 'EngineVersion'])),
       ].filter((resource) => postgresEngine(resource.engine));
@@ -1132,6 +1132,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
             const endpointHost = resource.attributes.DatabaseEndpointAddress;
             const endpointPort = Number(resource.attributes.DatabaseEndpointPort ?? 0);
+            if (resource.attributes.IAMDatabaseAuthenticationEnabled !== 'true') {
+              unavailableReason = 'IAM_DATABASE_AUTHENTICATION_DISABLED_OR_UNKNOWN';
+              throw new Error('IAM database authentication is disabled or unknown');
+            }
             if (!resource.resource_arn || !dbResourceId || !endpointHost || endpointPort !== 5432) {
               unavailableReason = 'DATABASE_ENDPOINT_OR_DB_RESOURCE_ID_MISSING';
               throw new Error('database endpoint metadata is incomplete');
