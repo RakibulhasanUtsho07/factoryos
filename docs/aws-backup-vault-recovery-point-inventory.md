@@ -74,6 +74,12 @@ AWS Backup service events and CloudTrail service events are best effort. CloudTr
 
 Neither archive backfills events from before activation. At deployment, capture the current ListCopyJobs 30-day baseline and, where available, the regional CloudTrail Event history (up to its rolling 90-day window); record gaps before the first confirmed archive/trail delivery. The EventBridge archive is a replay source, not a loss-free ledger or proof that every job emitted an event. Cross-check retained CloudTrail records and the overlapping API window and preserve unresolved source disagreements.
 
+## Audit retention SCP guardrail
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
 ## Request, pagination and evidence bounds
 
 AWS Backup uses API version \`2018-11-15\`, its REST-JSON protocol, regional HTTPS endpoints and SigV4. STS identity verification uses the regional STS endpoint. The adapter:
