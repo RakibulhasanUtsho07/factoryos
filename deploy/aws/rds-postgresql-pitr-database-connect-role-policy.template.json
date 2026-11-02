@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowOnlyTheConfiguredPostgreSQLIAMDatabaseLogin",
+      "Effect": "Allow",
+      "Action": "rds-db:connect",
+      "Resource": [
+        "arn:aws:rds-db:__REGION__:__ACCOUNT_ID__:dbuser:__DB_RESOURCE_ID__/__DATABASE_USERNAME__"
+      ]
+    },
+    {
+      "Sid": "DenyEveryOtherAWSAction",
+      "Effect": "Deny",
+      "NotAction": "rds-db:connect",
+      "Resource": "*"
+    }
+  ]
+}
