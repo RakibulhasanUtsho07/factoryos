@@ -426,7 +426,7 @@ class AwsQueryApi {
     const signedHeaders = signedNames.join(';');
     const canonicalRequest = ['POST', '/', '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
     const scope = dateStamp + '/' + region + '/' + service + '/aws4_request';
-    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256(canonicalRequest)].join('\\n');
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256(canonicalRequest)].join('\n');
     const signingKey = hmac(
       hmac(hmac(hmac('AWS4' + credentials.secret_access_key, dateStamp), region), service),
       'aws4_request',
