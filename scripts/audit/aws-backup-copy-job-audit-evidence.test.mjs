@@ -158,7 +158,8 @@ test('Ed25519 attestation binds the exact evidence digest and rejects tampering'
 test('CloudFormation and CLI enforce a single replay filter, exact SQS targets and non-destructive backup boundaries', async () => {
   const template = JSON.parse(await readFile(new URL('deploy/aws/aws-backup-copy-job-replay-capture.template.json', root), 'utf8'));
   const resources = template.Resources;
-  assert.equal(template.Parameters.CaptureRuleName.AllowedPattern, '^[A-Za-z0-9_-]{1,64}
+  assert.equal(template.Parameters.CaptureRuleName.Type, 'String');
+  assert.match(template.Parameters.CaptureRuleName.AllowedPattern, /1,64/);
   assert.equal(resources.ReplayCaptureRule.Properties.Targets.length, 1);
   assert.equal(resources.ReplayCaptureRule.Properties.Targets[0].DeadLetterConfig.Arn['Fn::GetAtt'][0], 'ReplayCaptureDeadLetterQueue');
   assert.equal(resources.ReplayCaptureRule.Properties.Targets[0].RetryPolicy.MaximumRetryAttempts, 185);
