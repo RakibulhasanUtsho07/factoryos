@@ -39,6 +39,7 @@ function createClientFactory(options: {
   databases?: Array<Record<string, unknown>>;
   deniedSqlFragment?: string;
   elevatedReader?: boolean;
+  elevatedReadOnly?: boolean;
   excessRoleRows?: boolean;
 } = {}) {
   const clientOptions: Array<Record<string, unknown>> = [];
@@ -62,6 +63,7 @@ function createClientFactory(options: {
           return {
             rows: [{
               database_user: config.database_username,
+              authenticated_database_user: config.database_username,
               database_name: database,
               transaction_read_only: 'on',
               rolcanlogin: true,
@@ -74,6 +76,8 @@ function createClientFactory(options: {
               has_pg_monitor: true,
               has_rds_superuser: false,
               has_rds_replication: false,
+              has_pg_read_all_data: options.elevatedReadOnly === true,
+              has_pg_read_server_files: false,
               has_pg_write_all_data: options.elevatedReader === true,
               has_pg_write_server_files: false,
               has_pg_execute_server_program: false,
@@ -97,6 +101,9 @@ function createClientFactory(options: {
         }
         if (sql.includes('FROM pg_catalog.pg_auth_members')) {
           return { rows: [{ granted_role: 'pg_monitor', member_role: 'factoryos_db_inventory_reader' }] };
+        }
+        if (sql.includes('FROM pg_catalog.pg_stat_activity')) {
+          return { rows: [{ pid: 102, usename: 'orders_app', application_name: 'orders-app|opaque-label' }] };
         }
         if (sql.includes('FROM pg_catalog.pg_stat_replication')) {
           return { rows: [{ pid: 101, usename: 'replication_writer', application_name: 'orders-replica' }] };
@@ -163,6 +170,9 @@ describe('AWS RDS PostgreSQL database-native principal inventory', () => {
     expect(result.records.some((record) => record.resource_type === 'POSTGRESQL_LOGICAL_SUBSCRIPTION')).toBe(true);
     expect(result.replication_records.some((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SLOT')).toBe(true);
     expect(result.replication_records.some((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SENDER')).toBe(true);
+    const sessionRecord = result.records.find((record) => record.resource_type === 'POSTGRESQL_ACTIVE_DATABASE_SESSION');
+    expect(sessionRecord?.attributes.application_name).toBeUndefined();
+    expect(sessionRecord?.attributes.application_name_sha256).toMatch(/^[a-f0-9]{64}$/);
 
     expect(mock.clientOptions).toHaveLength(3);
     for (const options of mock.clientOptions) {
@@ -206,6 +216,16 @@ describe('AWS RDS PostgreSQL database-native principal inventory', () => {
 
   it('rejects an assumed reader with write, server-file, replication or superuser-equivalent role membership', async () => {
     const mock = createClientFactory({ elevatedReader: true });
+    const result = await captureAwsRdsDatabasePrincipalInventory(
+      [target], credentials, config, mock.factory,
+    );
+    expect(result.coverage_complete).toBe(false);
+    expect(result.blockers).toContain('db-ABCDEFGHIJKLMNOP:DATABASE_CATALOG_ACCESS_DENIED_OR_FAILED');
+    expect(mock.queries.some((query) => query.sql.includes('FROM pg_catalog.pg_roles ORDER BY'))).toBe(false);
+  });
+
+  it('rejects a reader with broader read-all-data or server-file access', async () => {
+    const mock = createClientFactory({ elevatedReadOnly: true });
     const result = await captureAwsRdsDatabasePrincipalInventory(
       [target], credentials, config, mock.factory,
     );
