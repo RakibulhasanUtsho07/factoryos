@@ -290,7 +290,12 @@ function validateTarget(value: AwsRdsPitrDatabaseTarget): AwsRdsPitrDatabaseTarg
   }
   const arn = new RegExp('^arn:' + expectedPartition(value.region)
     + ':rds:' + value.region + ':' + value.account_id + ':(db|cluster):[A-Za-z0-9:_-]+$');
-  if (!arn.test(value.resource_arn)) return refuse('database ARN does not match the expected account and region');
+  const arnMatch = arn.exec(value.resource_arn);
+  if (!arnMatch || (value.engine === 'postgres' && arnMatch[1] !== 'db')
+    || (arnMatch[1] === 'db' && !value.db_resource_id.startsWith('db-'))
+    || (arnMatch[1] === 'cluster' && !value.db_resource_id.startsWith('cluster-'))) {
+    return refuse('database ARN kind/resource ID does not match the PostgreSQL target account and region');
+  }
   const host = value.endpoint_host.toLowerCase();
   const suffix = value.region + '.rds.amazonaws.com' + (value.region.startsWith('cn-') ? '.cn' : '');
   if (!/^[a-z0-9.-]{1,253}$/.test(host) || !host.endsWith('.' + suffix)
