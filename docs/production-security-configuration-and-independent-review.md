@@ -231,3 +231,20 @@ Rollback must cover application config and secret-version references, not only t
 - approval_utc: <pending>
 
 The approval register must be updated only by authorized release personnel once evidence is complete. Do not mark the release approved from the implementation branch or this report draft.
+
+
+## AWS RDS PostgreSQL PITR reader-role separation
+
+The repository defines three separate AWS reader identities for the RDS PostgreSQL/Aurora PostgreSQL PITR inventory. They must not be combined with the application, archive-writer, backup-publisher or deletion identities:
+
+| Role | Repository template | Allowed purpose | Release status |
+|---|---|---|---|
+| `FactoryOSRdsPitrReadOnly` | `deploy/aws/rds-postgresql-pitr-readonly-role-policy.json` | AWS Organizations/EC2/RDS/AWS Backup catalog reads through the approved source identity | Template only; effective permission review pending |
+| `FactoryOSRdsDbPrincipalReader` | `deploy/aws/rds-postgresql-db-principal-reader-role-policy.template.json` | Exact `rds-db:connect` DB-user ARNs for the dedicated `factoryos_db_inventory_reader` login | Template only; exact account/resource bindings and DBA grants pending |
+| `FactoryOSIamPrincipalReader` | `deploy/aws/rds-postgresql-iam-principal-reader-role-policy.template.json` | `iam:GetAccountAuthorizationDetails` only, to collect role/user/group identity-policy documents | Template only; account trust and effective policy review pending |
+
+Each role uses a separate trust template and the approved source role plus a unique ExternalId. The source role's `sts:AssumeRole` resource list names only these three roles. The IAM identity reader policy explicitly denies every action other than `iam:GetAccountAuthorizationDetails`. The API verifies the assumed-role account/name before use, bounds IAM response bytes, pages, items and timeout, and holds temporary credentials only in memory.
+
+The IAM inventory stores policy statement patterns, policy digests, principal ARNs, group-inherited statements, available role-trust digests and permissions-boundary statements. It does not calculate the final authorization decision. Security must independently inspect the actual trust and attached/inline policies, boundary policy, SCP/organization policies, session policies, any resource-policy interaction and database grants. The API deliberately keeps `external_iam_principal_reader_policy_independently_verified` and `external_iam_effective_authorization_verified` false.
+
+CloudTrail does not record RDS IAM DB-auth token-generation/authentication calls. CloudWatch IAM DB-auth metrics are aggregate; optional `iam-db-auth-error` exports provide diagnostic failure logs, not complete successful per-principal connection evidence. A durable database audit source and provider-side staging evidence remain separate acceptance requirements. Repository templates and mocked CI do not prove a production role's effective privilege or configuration.
