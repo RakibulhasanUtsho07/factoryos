@@ -428,6 +428,74 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/per-page or total account item budget/i);
   });
 
+
+  it('enumerates active AWS Backup legal-hold recovery points and blocks a matching retention candidate', async () => {
+    const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
+    const mock = makeFetch({
+      legalHoldPages: [JSON.stringify({ LegalHolds: [{
+        LegalHoldId: 'hold-2026-001',
+        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:legal-hold:hold-2026-001',
+        Status: 'ACTIVE',
+        CreationDate: '2026-10-31T00:00:00.000Z',
+      }] })],
+      legalHoldRecoveryPointPages: {
+        'hold-2026-001': [
+          JSON.stringify({ RecoveryPoints: [], NextToken: 'empty-hold-page' }),
+          JSON.stringify({ RecoveryPoints: [{ RecoveryPointArn: recoveryPointArn }] }),
+        ],
+      },
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    expect(inventory.aws_backup_legal_holds_enumerated).toBe(true);
+    expect(inventory.aws_backup_legal_holds).toHaveLength(1);
+    expect(inventory.aws_backup_legal_holds[0]?.status).toBe('ACTIVE');
+    expect(inventory.aws_backup_legal_hold_recovery_point_arns).toEqual([recoveryPointArn]);
+
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    expect(recoveryPoint?.resource_arn).toBe(recoveryPointArn);
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPointArn,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.provider_delete_identity_kind).toBe('AWS_BACKUP_RECOVERY_POINT_ARN');
+    expect(plan.blockers).toContain('Candidate recovery point is covered by an active AWS Backup legal hold.');
+  });
+
+  it('blocks retention planning while an AWS Backup legal hold is creating or canceling', async () => {
+    const mock = makeFetch({
+      legalHoldPages: [JSON.stringify({ LegalHolds: [{
+        LegalHoldId: 'hold-2026-uncertain',
+        Status: 'CREATING',
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    expect(inventory.aws_backup_legal_hold_scope_status_uncertain).toBe(true);
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.blockers).toContain('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
+  });
+
   it('exchanges a bounded OIDC token for short-lived STS credentials without signing or logging the token', async () => {
     const token = 'oidc.' + 'a'.repeat(120) + '.signature';
     const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
