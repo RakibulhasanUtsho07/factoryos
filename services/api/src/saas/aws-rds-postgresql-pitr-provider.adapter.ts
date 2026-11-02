@@ -928,6 +928,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
     }
     this.totalItems = 0;
     this.totalPaginationPages = 0;
+    this.budget.total = 0;
     const accountResult = await this.discoverAccounts();
     const scopes: AwsRdsPostgresqlPitrInventory['scopes'] = [];
     const excludedAccounts: AwsRdsPostgresqlPitrInventory['excluded_accounts'] = [];
@@ -1250,8 +1251,21 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         || !resource.provider_delete_identity_reference) {
         blockers.push('AWS Backup recovery point lacks its exact recovery-point ARN.');
       }
-      if (resource.attributes.BackupVaultLocked !== 'false') {
-        blockers.push('AWS Backup vault lock state is active or unknown.');
+      if (resource.attributes.BackupVaultLocked !== 'false' || resource.attributes.BackupVaultLockDate) {
+        blockers.push('AWS Backup vault lock is active, in grace-period configuration, or unknown.');
+      }
+      const scheduledDeleteAt = resource.attributes.LifecycleDeleteAt;
+      if (scheduledDeleteAt) {
+        const scheduledDeleteTime = Date.parse(scheduledDeleteAt);
+        if (!Number.isFinite(scheduledDeleteTime) || (expiry !== null && expiry < scheduledDeleteTime)) {
+          blockers.push('Requested retention expiry precedes the provider-reported AWS Backup lifecycle delete time.');
+        }
+      }
+      const vaultMinimumDays = Number(resource.attributes.BackupVaultMinRetentionDays);
+      const pointCreatedAt = resource.created_at ? Date.parse(resource.created_at) : Number.NaN;
+      if (Number.isSafeInteger(vaultMinimumDays) && vaultMinimumDays > 0 && Number.isFinite(pointCreatedAt)
+        && expiry !== null && expiry < pointCreatedAt + vaultMinimumDays * 86400000) {
+        blockers.push('Requested retention expiry violates the AWS Backup vault minimum retention period.');
       }
     } else if (resource.status?.toLowerCase() !== 'available'
       || resource.provider_delete_identity_kind !== 'SNAPSHOT_ARN'
