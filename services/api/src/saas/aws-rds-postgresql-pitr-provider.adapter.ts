@@ -1256,6 +1256,48 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       },
     }));
     const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
+    const databaseWriterPrincipalsComplete = Boolean(this.databasePrincipalReader)
+      && databasePrincipalCatalogs.length === databaseTargetsDiscovered
+      && databasePrincipalCatalogs.every((catalog) => catalog.status === 'COMPLETE');
+    const databasePrincipalSourceItems: AwsRdsPitrResource[] = databasePrincipalCatalogs.map((catalog) => ({
+      resource_arn: catalog.database_resource_arn,
+      provider_identity_reference: 'aws-rds-db-principals.' + sha256(catalog.database_resource_arn).slice(0, 40),
+      identity_kind: 'IMMUTABLE_RESOURCE_ARN',
+      provider_delete_identity_reference: null,
+      provider_delete_identity_kind: null,
+      replication_destination_arns: [],
+      resource_type: 'POSTGRESQL_DATABASE_PRINCIPAL_SNAPSHOT',
+      account_id: catalog.account_id,
+      region: catalog.region,
+      engine: 'postgresql',
+      source_database_reference: catalog.source_database_reference,
+      status: catalog.status,
+      created_at: catalog.observed_at,
+      earliest_restorable_time: null,
+      latest_restorable_time: null,
+      retention_days: null,
+      attributes: {
+        DatabaseName: catalog.database_name,
+        DatabaseUsername: catalog.database_username,
+        DatabaseAccessRoleArn: catalog.database_access_role_arn,
+        CatalogStatus: catalog.status,
+        CatalogSnapshotSha256: catalog.snapshot_sha256,
+        RolesObserved: String(catalog.database_roles.length),
+        RoleMembershipsObserved: String(catalog.role_memberships.length),
+        SchemaPrivilegesObserved: String(catalog.schema_privileges.length),
+        ObjectPrivilegesObserved: String(catalog.object_privileges.length),
+        FunctionPrivilegesObserved: String(catalog.function_privileges.length),
+        ActiveSessionsObserved: String(catalog.active_sessions.length),
+        ReplicationSendersObserved: String(catalog.replication_senders.length),
+        ReplicationSlotsObserved: String(catalog.replication_slots.length),
+        WalReceiversObserved: String(catalog.wal_receivers.length),
+        LogicalSubscriptionsObserved: String(catalog.logical_subscriptions.length),
+        PublicationsObserved: String(catalog.publications.length),
+        RowsObserved: String(catalog.rows_observed),
+        QueriesExecuted: String(catalog.queries_executed),
+        BlockerCount: String(catalog.blockers.length),
+      },
+    }));
     const sources: AwsRdsPitrCatalogSource[] = [
       sourceFromItems('POSTGRESQL_CLUSTER_CATALOG', accountDiscoveryComplete && regionDiscoveryComplete ? 'COMPLETE' : 'PARTIAL',
         'RDS DB instance, DB cluster and global-cluster catalogs were enumerated for every discovered enabled account/region scope.',
@@ -1268,9 +1310,19 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       sourceFromItems('WAL_SEGMENT_CATALOG', 'OPAQUE_PROVIDER_MANAGED',
         'RDS-managed PostgreSQL WAL/system-backup chains are provider-managed; AWS RDS Describe APIs do not expose every WAL segment as an independently addressable object generation.',
         [], 0, []),
-      sourceFromItems('WAL_WRITER_PRINCIPAL_CATALOG', 'NOT_ENUMERATED',
-        'IAM role discovery and database-native login/replication principal inventory are not included in this adapter and remain a hard release blocker.',
-        [], 0, []),
+      sourceFromItems(
+        'WAL_WRITER_PRINCIPAL_CATALOG',
+        databaseWriterPrincipalsComplete ? 'COMPLETE'
+          : this.databasePrincipalReader ? 'PARTIAL' : 'NOT_ENUMERATED',
+        databaseWriterPrincipalsComplete
+          ? 'Every discovered PostgreSQL RDS instance/Aurora cluster was inspected through a separate IAM DB-authenticated read-only role; database roles, memberships, effective write ACLs, current sessions and replication catalogs are recorded without subscription connection strings.'
+          : this.databasePrincipalReader
+            ? 'Database-native inspection was configured but at least one target was unavailable, over budget, truncated or denied; inspect per-target blockers. Writer-principal coverage remains incomplete.'
+            : 'Database-native IAM DB-authenticated inspection is not configured; database writer, grants and replication principals remain an explicit release blocker.',
+        databasePrincipalSourceItems,
+        databasePrincipalCatalogs.reduce((sum, catalog) => sum + catalog.catalog_status.length, 0),
+        databasePrincipalCatalogs.map((catalog) => 'aws-rds-db-principal.' + catalog.snapshot_sha256.slice(0, 32)),
+      ),
       sourceFromItems('WAL_REPLICATION_PATH_CATALOG', 'PARTIAL',
         'Read-replica, global-cluster and automated-backup cross-region relationships are captured; external delivery queues and database-side replication identities are not covered.',
         sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? [], sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0,
@@ -1302,6 +1354,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       scopes_discovered: scopes.length,
       total_pages_fetched: this.totalPaginationPages,
       total_provider_requests: this.budget.total,
+      total_database_queries: this.totalDatabaseQueries,
+      total_database_principal_rows: this.totalDatabasePrincipalRows,
       total_items_observed: this.totalItems,
       scopes,
       excluded_accounts: excludedAccounts,
@@ -1318,7 +1372,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       aws_backup_receipt_references: [...new Set(backupReceiptReferences)].sort(),
       unresolved_replication_destination_arns: unresolvedReplicationDestinationArns,
       provider_managed_wal_segments_individually_enumerated: false,
-      database_writer_principals_fully_enumerated: false,
+      database_writer_principals_fully_enumerated: databaseWriterPrincipalsComplete,
+      database_principal_catalogs: databasePrincipalCatalogs,
       source_receipts_signable: false,
       manifest_eligible: false,
       deletion_authorized: false,
