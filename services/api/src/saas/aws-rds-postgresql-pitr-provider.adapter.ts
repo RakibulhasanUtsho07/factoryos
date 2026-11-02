@@ -615,12 +615,12 @@ function resourceFromBlock(
   fieldNames: string[],
 ): AwsRdsPitrResource {
   const rawArn = xmlText(block, arnTag);
-  const arn = rawArn === null && resourceType === 'RDS_RETAINED_AUTOMATED_BACKUP'
+  const arn = rawArn === null && resourceType === 'RDS_AUTOMATED_BACKUP'
     ? null
     : requireAwsArn(rawArn, resourceType + ' ARN', scope);
   const sourceDatabaseReference = sourceDatabaseTag ? optionalString(xmlText(block, sourceDatabaseTag)) : null;
   const dbiResourceId = optionalString(xmlText(block, 'DbiResourceId'));
-  if (resourceType === 'RDS_RETAINED_AUTOMATED_BACKUP' && !arn && !dbiResourceId) {
+  if (resourceType === 'RDS_AUTOMATED_BACKUP' && !arn && !dbiResourceId) {
     return fail('RDS automated backup omitted both its replicated-backup ARN and stable source DbiResourceId');
   }
   const identityMaterial = arn ?? [
@@ -915,9 +915,9 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
 
       const archiveResources = [
-        ...automated.blocks.map((block) => resourceFromBlock(block, 'DBInstanceAutomatedBackup', scope, 'RDS_RETAINED_AUTOMATED_BACKUP',
+        ...automated.blocks.map((block) => resourceFromBlock(block, 'DBInstanceAutomatedBackup', scope, 'RDS_AUTOMATED_BACKUP',
           'DBInstanceAutomatedBackupsArn', 'DBInstanceIdentifier',
-          ['DBInstanceAutomatedBackupsArn', 'DBInstanceIdentifier', 'DbiResourceId', 'Status', 'BackupRetentionPeriod'])),
+          ['DBInstanceArn', 'DBInstanceAutomatedBackupsArn', 'DBInstanceIdentifier', 'DbiResourceId', 'Region', 'Status', 'BackupRetentionPeriod'])),
         ...snapshots.blocks.map((block) => resourceFromBlock(block, 'DBSnapshot', scope, 'RDS_DB_SNAPSHOT', 'DBSnapshotArn',
           'DBInstanceIdentifier', ['DBSnapshotIdentifier', 'DBInstanceIdentifier', 'SnapshotType', 'Status', 'Encrypted', 'KmsKeyId'])),
         ...clusterSnapshots.blocks.map((block) => resourceFromBlock(block, 'DBClusterSnapshot', scope, 'RDS_DB_CLUSTER_SNAPSHOT', 'DBClusterSnapshotArn',
@@ -935,7 +935,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
 
       append('PITR_RESTORE_PATH_CATALOG', archiveResources.filter((resource) =>
-        resource.resource_type === 'RDS_RETAINED_AUTOMATED_BACKUP'
+        resource.resource_type === 'RDS_AUTOMATED_BACKUP'
         || resource.resource_type === 'RDS_DB_SNAPSHOT'
         || resource.resource_type === 'RDS_DB_CLUSTER_SNAPSHOT'),
       automated.pages + snapshots.pages + clusterSnapshots.pages,
@@ -1027,7 +1027,8 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   }
   const resource = arn && inventory?.sources.flatMap((source) => source.items)
     .find((item) => item.resource_arn === arn
-      && ['RDS_RETAINED_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type));
+      && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type)
+      && (item.resource_type !== 'RDS_AUTOMATED_BACKUP' || item.status?.toLowerCase() === 'retained'));
   if (!resource) blockers.push('Candidate resource was not observed in the supplied inventory.');
   const now = Date.now();
   let expiry: number | null = null;
