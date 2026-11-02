@@ -28,6 +28,17 @@ The stack also requires a pre-provisioned KMS key in the trail home Region. Its 
 
 The S3 bucket is retained by CloudFormation deletion and replacement policies, has versioning, Object Lock default Compliance retention, KMS default encryption, Bucket Owner Enforced ownership, all S3 public-access blocks, and a TLS-only access condition. CloudTrail is the only writer principal allowed by the bucket policy. A generated bucket name avoids cross-account naming collisions.
 
+## Cold-start baseline and event gaps
+
+Neither template backfills events from before its creation. An EventBridge archive starts retaining matching events only after the archive exists and is active. A newly enabled CloudTrail trail likewise starts ongoing delivery from its activation; enabling log validation does not reconstruct older digest files.
+
+Immediately before/after deployment, capture a bounded baseline for every supplied account/Region:
+- Run the current AWS Backup ListCopyJobs inventory while the API still exposes the last 30 days of terminal jobs. Preserve the request scope, pagination completion, query receipts, result digest and the exact capture interval.
+- Where the relevant records are available in CloudTrail Event history, export the maximum available 90-day regional history and mark the exact returned time window. CloudTrail Event history is a rolling, per-Region management-event view; do not claim events outside its window or visibility.
+- Record the archive's creation/activation time and the CloudTrail trail's first successful log and digest delivery times. Mark the earlier interval as a known historical gap unless a separate retained source fills it.
+
+The one-time ListCopyJobs baseline is not a perpetual source and does not extend the AWS API's retention. EventBridge archive does not ingest the CloudTrail Event history export automatically. Keep baseline records separate from ongoing events and bind both into the same reviewed evidence period only after comparing scopes and duplicate/correlation identities.
+
 ## Event shape, ordering and deduplication
 
 Keep the **raw envelope bytes** as evidence. The documented EventBridge event includes the envelope id, account, region, time, detail-type, source, and a detail object. AWS copy-job detail can include copyJobId, state, source/destination vault ARNs, creation/completion time and destination recovery-point ARN. Some early-state examples omit copyJobId; a consumer must not drop such an event just because that field is absent.
@@ -72,3 +83,15 @@ This implementation is **not** live AWS acceptance. Still required:
 - Continue to enumerate self-managed WAL/AOF/RDB, volume/filesystem snapshots, S3/third-party copies, replicas and external DR classes separately.
 
 The repository contract test verifies the CloudFormation resource shape only. It does not deploy AWS resources or prove events were delivered, digest chains validate, keys are correctly provisioned, or records are retained in a live account. Issue #298 stays OPEN; AS-137 / NFR-PROD-14 stay PARTIAL.
+
+## AWS reference links
+
+- [AWS Backup Copy Job State Change events](https://docs.aws.amazon.com/aws-backup/latest/devguide/eventbridge.html)
+- [AWS Backup CloudTrail events and trail behavior](https://docs.aws.amazon.com/aws-backup/latest/devguide/logging-using-cloudtrail.html)
+- [EventBridge archives and replay](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-archive.html)
+- [CloudTrail log-file integrity validation](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html)
+- [CloudTrail digest file structure](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-digest-file-structure.html)
+- [S3 Object Lock configuration](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-configure.html)
+- [CloudFormation AWS::Events::Archive](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-events-archive.html)
+- [CloudFormation AWS::CloudTrail::Trail](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-cloudtrail-trail.html)
+- [CloudFormation AWS::S3::Bucket](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-s3-bucket.html)
