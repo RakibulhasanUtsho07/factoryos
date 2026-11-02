@@ -478,7 +478,7 @@ async function signedFetch(
 function apiActionForPath(path: string): string {
   if (path === '/backup-vaults/') return 'ListBackupVaults';
   if (path === '/copy-jobs/') return 'ListCopyJobs';
-  if (/^\\/copy-jobs\\/[^/]+$/.test(path)) return 'DescribeCopyJob';
+  if (/^\/copy-jobs\/[^/]+$/.test(path)) return 'DescribeCopyJob';
   if (path === '/legal-holds/') return 'ListLegalHolds';
   if (/^\/backup-vaults\/[^/]+\/recovery-points\/$/.test(path)) return 'ListRecoveryPointsByBackupVault';
   if (/^\/backup-vaults\/[^/]+$/.test(path)) return 'DescribeBackupVault';
@@ -1170,6 +1170,8 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
       } else if (message.includes('ListLegalHolds') || message.includes('GetLegalHold')
         || message.includes('ListRecoveryPointsByLegalHold')) {
         legalHoldComplete = false;
+      } else if (message.includes('ListCopyJobs') || message.includes('DescribeCopyJob')) {
+        copyJobComplete = false;
       } else {
         vaultComplete = false;
         recoveryComplete = false;
@@ -1212,6 +1214,7 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
   const copyDestinationScopeGaps = new Set<string>();
   const copyVaultCatalogGaps = new Set<string>();
   const copyRecoveryPointCatalogGaps = new Set<string>();
+  let copyReconciliationBlocked = false;
   let crossAccountCopyJobCount = 0;
   let crossRegionCopyJobCount = 0;
 
@@ -1221,8 +1224,9 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     scopeGaps: Set<string>,
   ): { partition: AwsBackupPartition; account: string; region: string } | null => {
     const identity = scopedArnIdentity(arn);
-    if (!identity || identity.partition !== scopes[0]!.partition) {
+    if (!identity) {
       blockers.push(description + ' has a malformed or unsupported AWS Backup ARN');
+      copyReconciliationBlocked = true;
       return null;
     }
     const key = identity.partition + ':' + identity.account + ':' + identity.region;
@@ -1242,6 +1246,12 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
       'copy job source recovery point ' + job.copy_job_id, copySourceScopeGaps);
     if (sourceVault && (sourceVault.account !== job.account_id || sourceVault.region !== job.region)) {
       blockers.push('copy job ' + job.copy_job_id + ' source vault is outside its enumerated job account/region');
+      copyReconciliationBlocked = true;
+    }
+    if (sourceVault && sourcePoint && (sourceVault.account !== sourcePoint.account
+      || sourceVault.region !== sourcePoint.region || sourceVault.partition !== sourcePoint.partition)) {
+      blockers.push('copy job ' + job.copy_job_id + ' source recovery point does not belong to its source vault scope');
+      copyReconciliationBlocked = true;
     }
     if (sourceVault && suppliedScopeKeys.has(sourceVault.partition + ':' + sourceVault.account + ':' + sourceVault.region)
       && !vaultArns.has(job.source_backup_vault_arn)) {
@@ -1262,6 +1272,11 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
         && !recoveryPointArns.has(job.destination_recovery_point_arn)) {
         copyRecoveryPointCatalogGaps.add(job.destination_recovery_point_arn);
       }
+      if (destinationVault && destinationPoint && (destinationVault.account !== destinationPoint.account
+        || destinationVault.region !== destinationPoint.region || destinationVault.partition !== destinationPoint.partition)) {
+        blockers.push('copy job ' + job.copy_job_id + ' destination recovery point does not belong to its destination vault scope');
+        copyReconciliationBlocked = true;
+      }
     }
     if (sourceVault && destinationVault) {
       if (sourceVault.account !== destinationVault.account) crossAccountCopyJobCount += 1;
@@ -1281,7 +1296,7 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
   for (const arn of copyRecoveryPointCatalogGaps) {
     blockers.push('copy job references a recovery point absent from the enumerated recovery-point catalog: ' + arn);
   }
-  const copyJobDestinationReconciliationComplete = copyJobComplete
+  const copyJobDestinationReconciliationComplete = copyJobComplete && !copyReconciliationBlocked
     && copySourceScopeGaps.size === 0 && copyDestinationScopeGaps.size === 0
     && copyVaultCatalogGaps.size === 0 && copyRecoveryPointCatalogGaps.size === 0;
 
