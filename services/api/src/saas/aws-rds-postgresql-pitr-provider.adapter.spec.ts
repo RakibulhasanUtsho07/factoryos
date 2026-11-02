@@ -338,7 +338,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     });
     expect(plan.schema).toBe(AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA);
     expect(plan.status).toBe('BLOCKED');
-    expect(plan.blockers.join(' ')).toMatch(/WAL, database writer and AWS Backup/i);
+    expect(plan.blockers).toContain('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
     expect(plan.operation).toBe('DRY_RUN_ONLY');
     expect(plan.provider_mutation_performed).toBe(false);
     expect(plan.delete_api_available).toBe(false);
@@ -373,7 +373,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.candidate_resource_arn).toBeNull();
     expect(plan.provider_delete_identity_reference).toBe('db-ABCDEFGHIJKLMNOP');
     expect(plan.provider_delete_identity_kind).toBe('DBI_RESOURCE_ID');
-    expect(plan.blockers.join(' ')).toMatch(/WAL, database writer and AWS Backup/i);
+    expect(plan.blockers).toContain('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
   });
 
   it('uses the separate replicated automated-backup ARN when AWS supplies one', async () => {
