@@ -472,13 +472,14 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
   it('blocks retention planning while an AWS Backup legal hold is creating or canceling', async () => {
     const mock = makeFetch({
-      legalHoldPages: [JSON.stringify({ LegalHolds: [{
-        LegalHoldId: 'hold-2026-uncertain',
-        Status: 'CREATING',
-      }] })],
+      legalHoldPages: [JSON.stringify({ LegalHolds: [
+        { LegalHoldId: 'hold-2026-creating', Status: 'CREATING' },
+        { LegalHoldId: 'hold-2026-cancelling', Status: 'CANCELLING' },
+      ] })],
     });
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     expect(inventory.aws_backup_legal_hold_scope_status_uncertain).toBe(true);
+    expect(inventory.aws_backup_legal_holds.map((hold) => hold.status)).toEqual(['CREATING', 'CANCELLING']);
     const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
       ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
     const plan = createAwsRdsPitrRetentionDryRunPlan({
