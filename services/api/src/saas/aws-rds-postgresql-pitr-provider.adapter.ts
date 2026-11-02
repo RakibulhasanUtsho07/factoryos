@@ -1214,7 +1214,7 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     source.items as AwsRdsPitrResource[]);
   const resource = candidateReference
     ? inventoryItems.find((item) => item.provider_identity_reference === candidateReference
-      && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type))
+      && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT', 'AWS_BACKUP_RECOVERY_POINT'].includes(item.resource_type))
     : undefined;
   if (!resource) {
     blockers.push('Candidate resource was not observed as an exact backup/snapshot provider identity in the supplied inventory.');
