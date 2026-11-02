@@ -17,6 +17,8 @@ For each explicitly supplied account/region scope, the adapter:
 4. Exhausts \`ListRecoveryPointsByBackupVault\` for each listed vault.
 5. For each logically air-gapped source vault, exhausts \`ListRestoreAccessBackupVaults\` and captures the associated restore-access vault ARN, state and approval/revocation lifecycle timestamps.
 6. Exhausts \`ListLegalHolds\`, calls \`GetLegalHold\` for each hold, and exhausts \`ListRecoveryPointsByLegalHold\` to materialize the many-to-many legal-hold/recovery-point relationship.
+7. Exhausts `ListCopyJobs` for every supplied account/Region scope and fetches each job with `DescribeCopyJob`.
+8. Reconciles source/destination vault and recovery-point ARNs against the explicitly supplied scopes and the corresponding vault/recovery-point catalogs.
 
 ### Vault metadata
 
@@ -45,6 +47,21 @@ The adapter records hold ID/ARN/status, creation/cancellation/record-retention t
 \`ListRecoveryPointsByLegalHold\` produces explicit association rows. This preserves the AWS Backup many-to-many model: a recovery point may be associated with more than one hold, and a hold may cover more than one recovery point. If a hold references a recovery point that is absent from the enumerated vault catalogs, the result is PARTIAL rather than silently dropping the relationship.
 
 A legal-hold status of ACTIVE is observed provider metadata only. The inventory does not create, cancel or release holds and does not independently prove the legal sufficiency of any retention policy. AWS documents that copies made to another Region or account do not inherit the source recovery point's legal hold; therefore each copy destination must be enumerated and its hold/retention state evaluated independently. A source hold relationship is not evidence that a destination copy is protected by the same hold.
+
+## AWS Backup copy-job history and destination reconciliation
+
+For every STS-verified account/Region scope, the collector exhausts `ListCopyJobs` without state or date filters, then calls `DescribeCopyJob` for each unique `CopyJobId`. This includes `CREATED`, `RUNNING`, `COMPLETED`, `FAILED` and `PARTIAL` job states, so the inventory does not silently omit failed or still-running copy attempts. A malformed/missing job ID, duplicate ID, unknown state, missing creation timestamp, missing source/destination vault identity, or an incomplete completed-job result blocks copy-job completeness.
+
+Captured, minimized metadata includes the job owner/account and source execution scope, source vault and recovery-point ARNs, destination vault and recovery-point ARNs, job state and lifecycle timestamps, byte count, resource ARN/type, destination encryption-key ARN, destination vault type/lock state, destination lifecycle settings, backup-plan/rule identifiers, and composite parent/child indicators. Free-form status messages, non-unique resource names, and the copy IAM role ARN are intentionally omitted.
+
+Each source and destination ARN is parsed into partition/account/Region and compared with the requested scopes. Vault ARNs are cross-checked against the vault catalog; source and completed destination recovery-point ARNs are cross-checked against the recovery-point catalog. The output records separate source-scope, destination-scope, vault-catalog and recovery-point-catalog gaps. A completed job whose destination point is not in the current point catalog remains PARTIAL: the missing point could have expired, been deleted, or be outside effective visibility, and the job record alone cannot distinguish those conditions. A job that is not COMPLETED may legitimately have no destination recovery-point ARN yet.
+
+`aws_backup_copy_job_catalog_enumerated` is true only when copy-job pagination and every per-job detail read complete for all supplied scopes without validation blockers. `copy_job_destination_reconciliation_complete` is a separate signal and requires all referenced source/destination scopes, vaults and recovery points to reconcile. Cross-account and cross-Region counts are derived only from provider source/destination vault ARNs. Neither signal proves byte readability, successful restore, future copy delivery, or whole-backup/tenant erasure coverage.
+
+AWS Backup cross-account monitoring is an explicit opt-in. AWS documents that the aggregated view includes jobs created after cross-account monitoring is enabled; jobs created before opt-in are not retroactively guaranteed by that view. FactoryOS therefore does not infer organization-wide coverage from one management-account response. The caller must supply and independently verify every account/Region scope, including destination accounts/Regions, and must confirm effective role access in each. AWS also documents separate source- and destination-account requirements for cross-account copy permissions; this inventory grants neither permission and performs no copy.
+
+A job in state `COMPLETED` is provider-reported job metadata, not an independently verified restore. Cross-account/Region destination recovery points must be enumerated under destination-account credentials and evaluated for their own encryption, retention, legal-hold and restore controls. AWS legal holds on a source point do not automatically protect its copies.
+
 
 ## Request, pagination and evidence bounds
 
@@ -77,27 +94,29 @@ The reader role policy allows only:
 - \`backup:GetLegalHold\`
 - \`backup:ListRecoveryPointsByLegalHold\`
 - \`backup:ListRestoreAccessBackupVaults\`
+- `backup:ListCopyJobs`
+- `backup:DescribeCopyJob`
 - \`sts:GetCallerIdentity\`
 
-The policy explicitly denies every action outside that reviewed allowlist. It grants no \`StartBackupJob\`, \`StartCopyJob\`, \`StartRestoreJob\`, \`DeleteRecoveryPoint\`, legal-hold create/cancel, vault mutation, access-policy mutation, tag mutation or KMS data-key operation. The trust template limits the principal to the designated FactoryOS source role and requires a unique ExternalId. The source-role template permits assuming only the dedicated reader role in an explicit target-account allowlist. Add one exact target role ARN for each approved account/partition; do not replace the account placeholder with a wildcard. The reader policy scopes vault-read actions to the approved account/Region backup-vault ARN and legal-hold actions to the matching legal-hold ARN. Only the two account/Region-wide catalog discovery actions and STS identity verification use Resource: "*", because AWS publishes no resource type for those list/identity actions.
+The reader policy scopes vault-read actions to the approved account/Region backup-vault ARN and legal-hold actions to the matching legal-hold ARN. Copy-job list/detail operations use `Resource: "*"` because the AWS Backup service authorization reference publishes no resource type for `ListCopyJobs` or `DescribeCopyJob`; these are non-mutating read actions and the explicit `NotAction` deny fence retains the allowlist boundary. Only approved account/Region-wide catalog and job-history discovery, copy-job detail, and STS identity verification use `Resource: "*"`.
 
 Replace placeholders only through the approved cloud-owner process. Independently inspect the deployed trust policy, permission boundary, SCPs, session policies, organization controls and effective permissions. A checked-in policy template is not evidence that a live role exists or is least-privileged.
 
 ## Explicit exclusions
 
-1. AWS Backup copy-job history and in-flight job state (\`ListCopyJobs\` / \`DescribeCopyJob\`) are not enumerated by this adapter.
+1. Copy-job history is enumerated only within the explicit account/Region scopes supplied to the run. Organization-wide coverage is not inferred: cross-account monitoring must be enabled and its opt-in time boundary reviewed, and destination account/Region scopes must be supplied separately.
 2. Copies that exist only in accounts/regions not supplied by the caller, external providers, third-party vaults, self-managed database WAL/AOF/RDB, filesystem/block-volume agents and offline media are not discovered.
 3. S3 object-version inventories, external DR replicas, provider-specific snapshot exports and object-storage copy destinations are separate copy classes.
 4. No restore rehearsal, checksum/byte-level backup validation, PITR replay, failover test, MPA approval, live role review or production deletion is performed.
 5. No legal/compliance owner decision, retention-policy approval, or deletion authority is derived from these API responses.
 
-Accordingly \`aws_backup_copy_job_catalog_enumerated\`, \`non_aws_backup_external_copy_surfaces_enumerated\`, \`whole_backup_coverage_complete\`, \`provider_mutation_performed\`, \`restore_api_available\`, \`copy_api_available\`, \`delete_api_available\` and \`deletion_authorized\` remain false.
+Accordingly `aws_backup_copy_job_catalog_enumerated` is true only for a complete copy-job catalog across the explicitly supplied scopes; `copy_job_destination_reconciliation_complete` is a separate scope/catalog reconciliation gate. `non_aws_backup_external_copy_surfaces_enumerated`, `whole_backup_coverage_complete`, `provider_mutation_performed`, `restore_api_available`, `copy_api_available`, `delete_api_available` and `deletion_authorized` remain false.
 
 ## Tests and release boundary
 
 Focused suite: \`services/api/src/saas/aws-backup-vault-recovery-point-inventory.spec.ts\`.
 
-Mocked provider tests cover SigV4 headers, identity mismatch, all three vault types, per-vault describe, paginated vault listing including an empty continuation page, recovery-point lifecycle/encryption/source metadata, restore-access links, legal-hold detail and many-to-many relationship capture, repeated-token rejection, AccessDenied, missing CreationDate, out-of-scope source vaults, missing hold relationships, duplicate scopes and shared page-budget exhaustion.
+Mocked provider tests cover SigV4 headers, identity mismatch, all three vault types, per-vault describe, paginated vault listing including an empty continuation page, recovery-point lifecycle/encryption/source metadata, restore-access links, legal-hold detail and many-to-many relationship capture, copy-job list/detail calls, copy-job state/lifecycle/destination metadata, empty continuation pages, AccessDenied for list and detail actions, missing destination recovery-point ARNs on completed jobs, cross-account/Region destination scope gaps, repeated-token rejection, missing CreationDate, out-of-scope source vaults, missing hold relationships, duplicate scopes and shared page-budget exhaustion.
 
 No live AWS credentials or production backup vault were used. Before production acceptance, the cloud owner must provision the roles; an independent reviewer must inspect the final effective IAM controls; operators must prove complete organization/account/Region scope, reconcile source-vault and copy-job references, and perform approved representative restore and copy/DR rehearsals with retained evidence.
 
@@ -112,5 +131,10 @@ No live AWS credentials or production backup vault were used. Before production 
 - [GetLegalHold](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_GetLegalHold.html)
 - [ListRecoveryPointsByLegalHold](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_ListRecoveryPointsByLegalHold.html)
 - [ListRestoreAccessBackupVaults](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_ListRestoreAccessBackupVaults.html)
+- [ListCopyJobs](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_ListCopyJobs.html)
+- [DescribeCopyJob](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_DescribeCopyJob.html)
+- [CopyJob response model](https://docs.aws.amazon.com/aws-backup/latest/APIReference/API_CopyJob.html)
+- [AWS Backup cross-account monitoring](https://docs.aws.amazon.com/aws-backup/latest/devguide/manage-cross-account.html)
+- [AWS Backup cross-account copy](https://docs.aws.amazon.com/aws-backup/latest/devguide/create-cross-account-backup.html)
 - [AWS Backup legal holds](https://docs.aws.amazon.com/aws-backup/latest/devguide/legalhold.html)
 - [AWS Backup IAM service authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_backup.html)
