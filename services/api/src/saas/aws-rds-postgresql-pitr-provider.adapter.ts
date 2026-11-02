@@ -1133,10 +1133,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
             const endpointHost = resource.attributes.DatabaseEndpointAddress;
             const endpointPort = Number(resource.attributes.DatabaseEndpointPort ?? 0);
-            const targetRowBudget = Math.min(
-              remainingDatabasePrincipalRows,
-              Math.max(0, this.config.max_total_items - this.totalItems),
-            );
+            const targetRowBudget = remainingDatabasePrincipalRows;
             if (targetRowBudget < 1) {
               unavailableReason = 'DATABASE_PRINCIPAL_GLOBAL_ITEM_BUDGET_EXHAUSTED';
               throw new Error('database principal global item budget exhausted');
@@ -1180,7 +1177,6 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
             remainingDatabasePrincipalRows = Math.max(0, remainingDatabasePrincipalRows - targetRows);
             this.totalDatabaseQueries += targetQueries;
             this.totalDatabasePrincipalRows += targetRows;
-            this.addItems(targetRows);
           } catch {
             databasePrincipalCatalogs.push(unavailableDatabasePrincipalCatalog(
               resource,
