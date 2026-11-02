@@ -31,6 +31,12 @@ function instanceXml(): string {
     + '</DBInstance>';
 }
 
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/x-amz-json-1.1' } });
+}
+
+type MockRequestBody = URLSearchParams | Record<string, unknown>;
+
 function makeFetch(options: {
   accountPages?: string[];
   roleAccount?: string;
@@ -38,22 +44,35 @@ function makeFetch(options: {
   instanceXml?: string;
   failAction?: string;
 } = {}) {
-  const requests: Array<{ host: string; action: string; body: URLSearchParams; authorization: string }> = [];
+  const requests: Array<{
+    host: string;
+    action: string;
+    body: MockRequestBody;
+    authorization: string;
+    target: string;
+  }> = [];
   const accountPages = options.accountPages ?? [
-    '<ListAccountsResponse><ListAccountsResult><Accounts/>'
-      + '<NextToken>empty-first-page-cursor</NextToken></ListAccountsResult></ListAccountsResponse>',
-    '<ListAccountsResponse><ListAccountsResult><Accounts><member>'
-      + '<Id>' + organizationAccount + '</Id><State>ACTIVE</State>'
-      + '</member></Accounts></ListAccountsResult></ListAccountsResponse>',
+    JSON.stringify({ Accounts: [], NextToken: 'empty-first-page-cursor' }),
+    JSON.stringify({ Accounts: [{ Id: organizationAccount, State: 'ACTIVE' }] }),
   ];
   let accountPage = 0;
   const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    const body = new URLSearchParams(String(init?.body ?? ''));
-    const action = body.get('Action') ?? '';
-    const authorization = String((init?.headers as Record<string, string> | undefined)?.authorization ?? '');
-    requests.push({ host: url.host, action, body, authorization });
-    if (options.failAction === action) return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>', 403);
+    const headers = init?.headers as Record<string, string> | undefined;
+    const target = String(headers?.['x-amz-target'] ?? '');
+    const isOrganizations = target === 'AWSOrganizationsV20161128.ListAccounts';
+    const bodyText = String(init?.body ?? '');
+    const body: MockRequestBody = isOrganizations
+      ? JSON.parse(bodyText) as Record<string, unknown>
+      : new URLSearchParams(bodyText);
+    const action = isOrganizations ? 'ListAccounts' : (body as URLSearchParams).get('Action') ?? '';
+    const authorization = String(headers?.authorization ?? '');
+    requests.push({ host: url.host, action, body, authorization, target });
+    if (options.failAction === action) {
+      return isOrganizations
+        ? json({ __type: 'com.amazonaws.organizations#AccessDeniedException' }, 400)
+        : xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>', 403);
+    }
     if (action === 'GetCallerIdentity') {
       const temporary = authorization.includes('ASIAABCDEFGHIJKLMNOP');
       const account = temporary ? (options.roleAccount ?? organizationAccount) : organizationAccount;
@@ -64,7 +83,8 @@ function makeFetch(options: {
         + account + '</Account><Arn>' + arn + '</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>');
     }
     if (action === 'AssumeRole') {
-      if (body.get('RoleArn') !== 'arn:aws:iam::' + organizationAccount + ':role/' + roleName) {
+      const queryBody = body as URLSearchParams;
+      if (queryBody.get('RoleArn') !== 'arn:aws:iam::' + organizationAccount + ':role/' + roleName) {
         return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>');
       }
       return xml('<AssumeRoleResponse><AssumeRoleResult><Credentials>'
@@ -73,7 +93,12 @@ function makeFetch(options: {
         + '<SessionToken>temporary-session-token-material-0123456789</SessionToken>'
         + '</Credentials></AssumeRoleResult></AssumeRoleResponse>');
     }
-    if (action === 'ListAccounts') return xml(accountPages[accountPage++] ?? accountPages[accountPages.length - 1]!);
+    if (action === 'ListAccounts') {
+      return new Response(accountPages[accountPage++] ?? accountPages[accountPages.length - 1]!, {
+        status: 200,
+        headers: { 'content-type': 'application/x-amz-json-1.1' },
+      });
+    }
     if (action === 'DescribeRegions') {
       return xml(options.regionXml ?? '<DescribeRegionsResponse><DescribeRegionsResult><regionInfo>'
         + '<item><regionName>ap-southeast-1</regionName><optInStatus>opted-in</optInStatus></item>'
@@ -142,8 +167,9 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
     const accountRequests = mock.requests.filter((request) => request.action === 'ListAccounts');
     expect(accountRequests).toHaveLength(2);
-    expect(accountRequests[0]!.body.has('NextToken')).toBe(false);
-    expect(accountRequests[1]!.body.get('NextToken')).toBe('empty-first-page-cursor');
+    expect(accountRequests[0]!.target).toBe('AWSOrganizationsV20161128.ListAccounts');
+    expect((accountRequests[0]!.body as Record<string, unknown>).NextToken).toBeUndefined();
+    expect((accountRequests[1]!.body as Record<string, unknown>).NextToken).toBe('empty-first-page-cursor');
     expect(mock.requests.every((request) =>
       /^AWS4-HMAC-SHA256 Credential=/.test(request.authorization))).toBe(true);
     expect(mock.requests.some((request) => request.action.startsWith('Delete'))).toBe(false);
@@ -153,9 +179,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
   it('marks non-active organization accounts as excluded and never claims complete account coverage', async () => {
     const inactiveAccounts = [
-      '<ListAccountsResponse><ListAccountsResult><Accounts><member>'
-        + '<Id>' + organizationAccount + '</Id><State>SUSPENDED</State>'
-        + '</member></Accounts></ListAccountsResult></ListAccountsResponse>',
+      JSON.stringify({ Accounts: [{ Id: organizationAccount, State: 'SUSPENDED' }] }),
     ];
     const mock = makeFetch({ accountPages: inactiveAccounts });
     const result = await createAdapter(mock.fetcher).captureInventory();
@@ -167,9 +191,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
   it('fails closed on a repeated Organizations continuation token', async () => {
     const repeated = [
-      '<ListAccountsResponse><ListAccountsResult><Accounts/><NextToken>same-token</NextToken></ListAccountsResult></ListAccountsResponse>',
-      '<ListAccountsResponse><ListAccountsResult><Accounts><member><Id>' + organizationAccount
-        + '</Id><State>ACTIVE</State></member></Accounts><NextToken>same-token</NextToken></ListAccountsResult></ListAccountsResponse>',
+      JSON.stringify({ Accounts: [], NextToken: 'same-token' }),
+      JSON.stringify({ Accounts: [{ Id: organizationAccount, State: 'ACTIVE' }], NextToken: 'same-token' }),
     ];
     const mock = makeFetch({ accountPages: repeated });
     await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/repeated continuation token/i);
