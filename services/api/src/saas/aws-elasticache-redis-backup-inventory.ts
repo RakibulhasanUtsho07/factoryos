@@ -298,7 +298,46 @@ function xmlText(xml: string, tag: string): string | null {
 
 function nestedText(xml: string, parentTag: string, childTag: string): string | null {
   const parent = xmlBlocks(xml, parentTag)[0];
-  return parent ? xmlText(parent, childTag) : null;
+  return parent ? directXmlText(parent, childTag) : null;
+}
+
+function directChildXmlBlocks(parentXml: string): string[] {
+  const openingEnd = parentXml.indexOf('>');
+  const closingStart = parentXml.lastIndexOf('</');
+  if (openingEnd < 0 || closingStart < openingEnd) return [];
+  const inner = parentXml.slice(openingEnd + 1, closingStart);
+  const token = /<\/?([A-Za-z0-9_:-]+)(?:\s[^>]*)?\/?>/g;
+  const blocks: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (const match of inner.matchAll(token)) {
+    const value = match[0];
+    const index = match.index ?? 0;
+    if (value.startsWith('</')) {
+      depth -= 1;
+      if (depth < 0) return fail('AWS response contains malformed direct-child XML nesting');
+      if (depth === 0 && start >= 0) {
+        blocks.push(inner.slice(start, index + value.length));
+        start = -1;
+      }
+    } else if (value.endsWith('/>')) {
+      if (depth === 0) blocks.push(value);
+    } else {
+      if (depth === 0) start = index;
+      depth += 1;
+    }
+  }
+  if (depth !== 0 || start >= 0) return fail('AWS response contains an unterminated direct-child XML element');
+  return blocks;
+}
+
+function directXmlText(xml: string, tag: string): string | null {
+  const target = tag.toLowerCase();
+  for (const block of directChildXmlBlocks(xml)) {
+    const opening = /^<(?:(?:[A-Za-z0-9_]+):)?([A-Za-z0-9_]+)/.exec(block);
+    if (opening?.[1]?.toLowerCase() === target) return xmlText(block, tag);
+  }
+  return null;
 }
 
 function childRecords(xml: string, containerTag: string, itemTag: string): string[] {
@@ -519,21 +558,21 @@ function parseCacheCluster(
   xml: string,
   scope: AwsElastiCacheRedisBackupScope,
 ): AwsElastiCacheRedisCacheClusterRecord | null {
-  const engine = redisEngine(xmlText(xml, 'Engine'));
+  const engine = redisEngine(directXmlText(xml, 'Engine'));
   if (!engine) return null;
-  const createdAt = canonicalTimestamp(xmlText(xml, 'CacheClusterCreateTime'));
+  const createdAt = canonicalTimestamp(directXmlText(xml, 'CacheClusterCreateTime'));
   return {
     account_id: scope.account_id,
     region: scope.region,
-    cache_cluster_id: validIdentifier(xmlText(xml, 'CacheClusterId'), 'CacheClusterId'),
+    cache_cluster_id: validIdentifier(directXmlText(xml, 'CacheClusterId'), 'CacheClusterId'),
     engine,
-    engine_version: xmlText(xml, 'EngineVersion'),
-    status: validIdentifier(xmlText(xml, 'CacheClusterStatus'), 'CacheClusterStatus'),
-    replication_group_id: xmlText(xml, 'ReplicationGroupId'),
-    cache_node_type: xmlText(xml, 'CacheNodeType'),
-    num_cache_nodes: optionalInteger(xmlText(xml, 'NumCacheNodes')),
-    snapshot_retention_limit_days: optionalInteger(xmlText(xml, 'SnapshotRetentionLimit')),
-    snapshot_window: xmlText(xml, 'SnapshotWindow'),
+    engine_version: directXmlText(xml, 'EngineVersion'),
+    status: validIdentifier(directXmlText(xml, 'CacheClusterStatus'), 'CacheClusterStatus'),
+    replication_group_id: directXmlText(xml, 'ReplicationGroupId'),
+    cache_node_type: directXmlText(xml, 'CacheNodeType'),
+    num_cache_nodes: optionalInteger(directXmlText(xml, 'NumCacheNodes')),
+    snapshot_retention_limit_days: optionalInteger(directXmlText(xml, 'SnapshotRetentionLimit')),
+    snapshot_window: directXmlText(xml, 'SnapshotWindow'),
     created_at: createdAt,
   };
 }
@@ -557,16 +596,16 @@ function parseReplicationGroup(
   return {
     account_id: scope.account_id,
     region: scope.region,
-    replication_group_id: validIdentifier(xmlText(xml, 'ReplicationGroupId'), 'ReplicationGroupId'),
-    status: validIdentifier(xmlText(xml, 'Status'), 'ReplicationGroup Status'),
+    replication_group_id: validIdentifier(directXmlText(xml, 'ReplicationGroupId'), 'ReplicationGroupId'),
+    status: validIdentifier(directXmlText(xml, 'Status'), 'ReplicationGroup Status'),
     global_replication_group_id: xmlText(xml, 'GlobalReplicationGroupInfo')
       ? nestedText(xml, 'GlobalReplicationGroupInfo', 'GlobalReplicationGroupId') : null,
-    multi_az: optionalBoolean(xmlText(xml, 'MultiAZ')),
-    automatic_failover: xmlText(xml, 'AutomaticFailover'),
-    cluster_enabled: optionalBoolean(xmlText(xml, 'ClusterEnabled')),
-    snapshot_retention_limit_days: optionalInteger(xmlText(xml, 'SnapshotRetentionLimit')),
-    snapshot_window: xmlText(xml, 'SnapshotWindow'),
-    snapshotting_cluster_id: xmlText(xml, 'SnapshottingClusterId'),
+    multi_az: optionalBoolean(directXmlText(xml, 'MultiAZ')),
+    automatic_failover: directXmlText(xml, 'AutomaticFailover'),
+    cluster_enabled: optionalBoolean(directXmlText(xml, 'ClusterEnabled')),
+    snapshot_retention_limit_days: optionalInteger(directXmlText(xml, 'SnapshotRetentionLimit')),
+    snapshot_window: directXmlText(xml, 'SnapshotWindow'),
+    snapshotting_cluster_id: directXmlText(xml, 'SnapshottingClusterId'),
     member_cluster_ids: [...new Set(memberClusters)].sort(),
     node_group_ids: nodeGroups.map((nodeGroup) => xmlText(nodeGroup, 'NodeGroupId'))
       .filter((value): value is string => value !== null).sort(),
@@ -592,12 +631,12 @@ function parseGlobalReplicationGroup(
   }
   return {
     account_id: scope.account_id,
-    global_replication_group_id: validIdentifier(xmlText(xml, 'GlobalReplicationGroupId'), 'GlobalReplicationGroupId'),
-    status: validIdentifier(xmlText(xml, 'Status'), 'GlobalReplicationGroup Status'),
-    engine: xmlText(xml, 'Engine'),
-    engine_version: xmlText(xml, 'EngineVersion'),
-    cache_node_type: xmlText(xml, 'CacheNodeType'),
-    cluster_enabled: optionalBoolean(xmlText(xml, 'ClusterEnabled')),
+    global_replication_group_id: validIdentifier(directXmlText(xml, 'GlobalReplicationGroupId'), 'GlobalReplicationGroupId'),
+    status: validIdentifier(directXmlText(xml, 'Status'), 'GlobalReplicationGroup Status'),
+    engine: directXmlText(xml, 'Engine'),
+    engine_version: directXmlText(xml, 'EngineVersion'),
+    cache_node_type: directXmlText(xml, 'CacheNodeType'),
+    cluster_enabled: optionalBoolean(directXmlText(xml, 'ClusterEnabled')),
     members: parsedMembers,
     observed_in_regions: [scope.region],
   };
@@ -607,10 +646,10 @@ function parseSnapshot(
   xml: string,
   scope: AwsElastiCacheRedisBackupScope,
 ): AwsElastiCacheRedisSnapshotRecord | null {
-  const engine = redisEngine(xmlText(xml, 'Engine'));
+  const engine = redisEngine(directXmlText(xml, 'Engine'));
   if (!engine) return null;
-  const snapshotName = validIdentifier(xmlText(xml, 'SnapshotName'), 'SnapshotName');
-  const createTime = canonicalTimestamp(xmlText(xml, 'SnapshotCreateTime'))
+  const snapshotName = validIdentifier(directXmlText(xml, 'SnapshotName'), 'SnapshotName');
+  const createTime = canonicalTimestamp(directXmlText(xml, 'SnapshotCreateTime'))
     ?? canonicalTimestamp(xmlText(childRecords(xml, 'NodeSnapshots', 'NodeSnapshot')[0] ?? '', 'SnapshotCreateTime'));
   const nodeSnapshots = childRecords(xml, 'NodeSnapshots', 'NodeSnapshot').map((node) => ({
     cache_node_id: xmlText(node, 'CacheNodeId'),
@@ -625,15 +664,15 @@ function parseSnapshot(
     snapshot_name: snapshotName,
     snapshot_identity_reference: 'elasticache-snapshot.' + sha256(identityMaterial).slice(0, 40),
     snapshot_identity_kind: 'SNAPSHOT_NAME_AND_CREATE_TIME',
-    replication_group_id: xmlText(xml, 'ReplicationGroupId'),
-    cache_cluster_id: xmlText(xml, 'CacheClusterId'),
-    status: validIdentifier(xmlText(xml, 'SnapshotStatus'), 'SnapshotStatus'),
-    source: xmlText(xml, 'SnapshotSource'),
+    replication_group_id: directXmlText(xml, 'ReplicationGroupId'),
+    cache_cluster_id: directXmlText(xml, 'CacheClusterId'),
+    status: validIdentifier(directXmlText(xml, 'SnapshotStatus'), 'SnapshotStatus'),
+    source: directXmlText(xml, 'SnapshotSource'),
     engine,
-    engine_version: xmlText(xml, 'EngineVersion'),
-    cache_node_type: xmlText(xml, 'CacheNodeType'),
+    engine_version: directXmlText(xml, 'EngineVersion'),
+    cache_node_type: directXmlText(xml, 'CacheNodeType'),
     create_time: createTime,
-    num_cache_nodes: optionalInteger(xmlText(xml, 'NumCacheNodes')),
+    num_cache_nodes: optionalInteger(directXmlText(xml, 'NumCacheNodes')),
     node_snapshots: nodeSnapshots,
   };
 }
