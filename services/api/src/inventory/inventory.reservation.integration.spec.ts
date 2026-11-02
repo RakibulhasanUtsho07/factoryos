@@ -184,6 +184,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   });
 
   it('allocates the first released production BOM requirement FEFO across bins, then issues the earliest lot idempotently', async () => {
+    const expiryDate = (daysFromToday: number) => {
+      const date = new Date();
+      date.setUTCDate(date.getUTCDate() + daysFromToday);
+      return date.toISOString().slice(0, 10);
+    };
     const itemId = await createItem('10.0000');
     const defaultResult = await adminPool.query<{ id: string }>(
       `SELECT id::text AS id FROM inventory_locations
@@ -237,16 +242,16 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       return unit.id;
     };
 
-    const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', '2026-11-01', 'wms-fefo-early-' + randomUUID());
-    const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', '2027-01-01', 'wms-fefo-late-' + randomUUID());
-    const expiredLotId = await createLot('LOT-EXPIRED-' + randomUUID().slice(0, 6), '0.5000', '2026-10-20', 'wms-fefo-expired-' + randomUUID());
-    const damagedLotId = await createLot('LOT-DAMAGED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-damaged-' + randomUUID(), {
+    const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', expiryDate(1), 'wms-fefo-early-' + randomUUID());
+    const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', expiryDate(60), 'wms-fefo-late-' + randomUUID());
+    const expiredLotId = await createLot('LOT-EXPIRED-' + randomUUID().slice(0, 6), '0.5000', expiryDate(-10), 'wms-fefo-expired-' + randomUUID());
+    const damagedLotId = await createLot('LOT-DAMAGED-' + randomUUID().slice(0, 6), '0.5000', expiryDate(60), 'wms-fefo-damaged-' + randomUUID(), {
       attributes: { damaged: true, condition: 'DAMAGED' },
     });
-    const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-held-' + randomUUID(), {
+    const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', expiryDate(60), 'wms-fefo-held-' + randomUUID(), {
       attributes: { held: true, condition: 'HELD' },
     });
-    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID());
+    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', expiryDate(60), 'wms-fefo-quarantine-' + randomUUID());
     // New traceability identities must begin ACTIVE. Exercise quarantine through
     // the audited lifecycle so the candidate query excludes a real quarantined unit.
     await traceabilityService.changeUnitStatus(
