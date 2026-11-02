@@ -44,6 +44,8 @@ function makeFetch(options: {
   instanceXml?: string;
   automatedBackupXml?: string;
   backupStatus?: string;
+  backupVaultPages?: string[];
+  backupRecoveryPointPages?: string[];
   failAction?: string;
 } = {}) {
   const requests: Array<{
@@ -58,21 +60,28 @@ function makeFetch(options: {
     JSON.stringify({ Accounts: [{ Id: organizationAccount, State: 'ACTIVE' }] }),
   ];
   let accountPage = 0;
+  let backupVaultPage = 0;
+  let backupRecoveryPointPage = 0;
+  const backupVaultArn = 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default';
+  const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
   const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = init?.headers as Record<string, string> | undefined;
     const target = String(headers?.['x-amz-target'] ?? '');
     const isOrganizations = target === 'AWSOrganizationsV20161128.ListAccounts';
+    const isBackup = url.host.startsWith('backup.');
     const bodyText = String(init?.body ?? '');
     const body: MockRequestBody = isOrganizations
       ? JSON.parse(bodyText) as Record<string, unknown>
-      : new URLSearchParams(bodyText);
-    const action = isOrganizations ? 'ListAccounts' : (body as URLSearchParams).get('Action') ?? '';
+      : isBackup ? Object.fromEntries(url.searchParams.entries()) : new URLSearchParams(bodyText);
+    const action = isOrganizations ? 'ListAccounts' : isBackup
+      ? (url.pathname.endsWith('/recovery-points/') ? 'ListRecoveryPointsByBackupVault' : 'ListBackupVaults')
+      : (body as URLSearchParams).get('Action') ?? '';
     const authorization = String(headers?.authorization ?? '');
     requests.push({ host: url.host, action, body, authorization, target });
     if (options.failAction === action) {
-      return isOrganizations
-        ? json({ __type: 'com.amazonaws.organizations#AccessDeniedException' }, 400)
+      return isOrganizations || isBackup
+        ? json({ __type: 'com.amazonaws.backup#AccessDeniedException' }, 403)
         : xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>', 403);
     }
     if (action === 'GetCallerIdentity') {
@@ -94,6 +103,47 @@ function makeFetch(options: {
         + '<SecretAccessKey>temporary-secret-key-material-0123456789</SecretAccessKey>'
         + '<SessionToken>temporary-session-token-material-0123456789</SessionToken>'
         + '</Credentials></AssumeRoleResult></AssumeRoleResponse>');
+    }
+    if (action === 'ListBackupVaults') {
+      const pages = options.backupVaultPages ?? [JSON.stringify({
+        BackupVaultList: [{
+          BackupVaultName: 'default',
+          BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+          VaultType: 'BACKUP_VAULT',
+          VaultState: 'AVAILABLE',
+          Locked: false,
+          NumberOfRecoveryPoints: 1,
+          EncryptionKeyArn: 'arn:aws:kms:ap-southeast-1:111111111111:key/abcd1234',
+          CreationDate: '2026-10-01T00:00:00.000Z'
+        }]
+      })];
+      return new Response(pages[backupVaultPage++] ?? pages[pages.length - 1]!, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (action === 'ListRecoveryPointsByBackupVault') {
+      const pages = options.backupRecoveryPointPages ?? [JSON.stringify({
+        RecoveryPoints: [{
+          RecoveryPointArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012',
+          BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+          BackupVaultName: 'default',
+          ResourceArn: 'arn:aws:rds:ap-southeast-1:111111111111:db:orders-db',
+          ResourceType: 'RDS',
+          Status: 'COMPLETED',
+          CreationDate: '2026-11-01T00:00:00.000Z',
+          CompletionDate: '2026-11-01T00:05:00.000Z',
+          LastRestoreTime: null,
+          Lifecycle: { DeleteAt: 1796102400, MoveToColdStorageAt: null },
+          IsEncrypted: true,
+          EncryptionKeyArn: 'arn:aws:kms:ap-southeast-1:111111111111:key/abcd1234',
+          BackupSizeInBytes: 987654321
+        }]
+      })];
+      return new Response(pages[backupRecoveryPointPage++] ?? pages[pages.length - 1]!, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     }
     if (action === 'ListAccounts') {
       return new Response(accountPages[accountPage++] ?? accountPages[accountPages.length - 1]!, {
@@ -187,7 +237,13 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       /^AWS4-HMAC-SHA256 Credential=/.test(request.authorization))).toBe(true);
     expect(mock.requests.some((request) => request.action.startsWith('Delete'))).toBe(false);
     expect(mock.requests.some((request) => request.action.startsWith('Modify'))).toBe(false);
-    expect(result.total_pages_fetched).toBe(mock.requests.length);
+    expect(result.total_provider_requests).toBe(mock.requests.length);
+    expect(result.backup_vault_catalog_complete).toBe(true);
+    expect(result.aws_backup_recovery_points_enumerated).toBe(true);
+    expect(result.backup_vaults).toHaveLength(1);
+    expect(result.aws_backup_recovery_points).toHaveLength(1);
+    expect(result.aws_backup_recovery_points[0]?.recovery_point_arn)
+      .toBe('arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012');
   });
 
   it('marks non-active organization accounts as excluded and never claims complete account coverage', async () => {
