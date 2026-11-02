@@ -360,8 +360,12 @@ module must implement `PostgresqlWalPitrProviderInventoryGateway` with two opera
 catalog, and `listSourcePage()` must perform provider-native read-only pagination for each
 of the six required catalogs. The coordinator checks complete account and region discovery,
 provider read-only identity and policy-audit references, exact page/scope/principal binding,
-continuation-token progress, duplicate resource references, bounded page/item sizes, and
-sanitized normalized records. Opaque continuation tokens are never copied into evidence.
+continuation-token progress, duplicate resource references, bounded page/item sizes, a global
+10,000-page default budget (hard cap 50,000 pages) including scope discovery, and a global
+20,000-item default budget (hard cap 100,000 items). Each provider response must contain no
+more than the requested page size (maximum 1,000 records), and each normalized record is
+limited to 64 KiB. The independent residual scanner applies the same bounds. Opaque
+continuation tokens are never copied into evidence.
 
 Call `capturePostgresqlWalPitrProviderInventory(gateway, input)` only from a dedicated
 collector service or isolated collection job. The result deliberately reports
