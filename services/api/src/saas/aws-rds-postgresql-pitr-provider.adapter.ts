@@ -1105,6 +1105,9 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         CompletionDate: point.completion_date,
         LastRestoreTime: point.last_restore_time,
         LifecycleDeleteAt: point.lifecycle_delete_at,
+        LifecycleDeleteAfterDays: point.lifecycle_delete_after_days === null ? null : String(point.lifecycle_delete_after_days),
+        LifecycleMoveToColdStorageAfterDays: point.lifecycle_move_to_cold_storage_after_days === null
+          ? null : String(point.lifecycle_move_to_cold_storage_after_days),
         LifecycleMoveToColdStorageAt: point.lifecycle_move_to_cold_storage_at,
         IsEncrypted: point.is_encrypted === null ? null : String(point.is_encrypted),
         EncryptionKeyArn: point.encryption_key_arn,
@@ -1133,7 +1136,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         'IAM role discovery and database-native login/replication principal inventory are not included in this adapter and remain a hard release blocker.',
         [], 0, []),
       sourceFromItems('WAL_REPLICATION_PATH_CATALOG', 'PARTIAL',
-        'Read-replica and global-cluster relationships are derived from the complete RDS instance/cluster catalogs; external delivery queues and database-side replication identities are not covered.',
+        'Read-replica, global-cluster and automated-backup cross-region relationships are captured; external delivery queues and database-side replication identities are not covered.',
         sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? [], sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0,
         sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []),
       sourceFromItems('PITR_RESTORE_PATH_CATALOG', 'PARTIAL',
