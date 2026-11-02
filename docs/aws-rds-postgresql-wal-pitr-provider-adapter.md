@@ -23,7 +23,7 @@ RDS-managed PostgreSQL WAL and system-backup chains are provider-managed. The RD
 
 The constructor receives:
 - an AWS Organizations management/delegated-discovery account ID;
-- the cross-account read-only role name and optional ExternalId;
+- the cross-account read-only role name and mandatory ExternalId;
 - source credentials from an approved secret/workload-identity provider;
 - optional bounded page/item/request limits;
 - optional read-only role policy digest and independent policy-review reference.
@@ -43,7 +43,7 @@ Deployment policy templates are checked in under deploy/aws/: rds-postgresql-pit
 - backup:ListLegalHolds;
 - backup:ListRecoveryPointsByLegalHold.
 
-The checked-in inventory role policy explicitly denies all actions except this read-only allow-list. The Organizations discovery identity requires organizations:ListAccounts and sts:AssumeRole for the reviewed account role ARNs. sts:GetCallerIdentity is used for identity checks. Attach a narrowly scoped policy to the role and a trust policy limited to the designated management/delegated principal; use a unique ExternalId where applicable. Do not reuse an archive writer, application role or deletion role.
+The checked-in inventory role policy explicitly denies all actions except this read-only allow-list. The Organizations discovery identity requires organizations:ListAccounts and sts:AssumeRole for the reviewed account role ARNs. sts:GetCallerIdentity is used for identity checks. Attach a narrowly scoped policy to the role and a trust policy limited to the designated management/delegated principal; supply the unique ExternalId required by this adapter and the example trust policy. Do not reuse an archive writer, application role or deletion role.
 
 **Important:** role identity verification is not effective-permission proof. The adapter records collector_policy_independently_verified = false even when a policy digest/reference is configured. Security must independently retrieve and review attached/inline policies, permissions boundaries, trust policy, SCPs and session policies. A configured digest is only an input claim.
 
@@ -87,7 +87,7 @@ createAwsRdsPitrRetentionDryRunPlan requires:
 - dependency state NO_DEPENDENCY;
 - policy, data-owner and infrastructure-owner references.
 
-Even with those inputs, the plan remains blocked while provider-managed WAL segments or database writer principals are unresolved. AWS Backup candidates additionally require COMPLETED recovery-point state, an unlocked vault, complete legal-hold inventory and no matching ACTIVE legal hold. Standard retained RDS automated backups bind to DbiResourceId; replicated RDS backup copies bind to DBInstanceAutomatedBackupsArn; AWS Backup copies bind to RecoveryPointArn. The plan also honours the provider-reported lifecycle DeleteAt and vault minimum retention horizon. The result is always DRY_RUN_ONLY. There is no Delete API method in this adapter. Do not add destructive calls here.
+Even with those inputs, the plan remains blocked while provider-managed WAL segments or database writer principals are unresolved. AWS Backup candidates additionally require COMPLETED recovery-point state, an unlocked vault, complete legal-hold inventory and no matching ACTIVE legal hold. Standard retained RDS automated backups bind to DbiResourceId; replicated RDS backup copies bind to DBInstanceAutomatedBackupsArn; RDS DB/cluster snapshots are bound by immutable snapshot ARN but their provider delete selector is DBSnapshotIdentifier or DBClusterSnapshotIdentifier; AWS Backup copies bind to RecoveryPointArn. The plan also honours the provider-reported lifecycle DeleteAt and vault minimum retention horizon. The result is always DRY_RUN_ONLY. There is no Delete API method in this adapter. Do not add destructive calls here.
 
 A future deletion implementation must be a separate adapter and release gate. It must bind a reviewed exact ARN and current inventory digest, recheck preservation/legal hold and recovery dependencies immediately before mutation, use a distinct deletion principal, reconcile crashes/idempotent retries, and use an independently assumed read-only verifier to re-list the exact identity. A provider scan or dry-run result is never deletion authorization.
 
@@ -95,7 +95,7 @@ A future deletion implementation must be a separate adapter and release gate. It
 
 Focused regression suite: **services/api/src/saas/aws-rds-postgresql-pitr-provider.adapter.spec.ts**
 
-It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection, RDS backup DbiResourceId/replicated ARN identity, AWS Backup vault/recovery-point/legal-hold cataloging and blocked dry-run behavior.
+It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, missing linked-recovery-point blocking and locked-vault retention blocking.
 
 The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. They do not connect to AWS or validate live IAM/SCP policy behavior.
 
@@ -106,6 +106,6 @@ The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backu
 3. Add AWS Config/CloudTrail event linkage and DB-native user/role inventory; AWS Backup vaults, recovery points and active legal holds are now captured but provider audit evidence is not yet independently attested.
 4. Resolve account closure/suspension and opt-in-region coverage with the cloud owner.
 5. Run a synthetic RDS PostgreSQL and Aurora PostgreSQL staging inventory and controlled PITR restore in an approved isolated account.
-6. Keep deletion disabled until the provider owners approve retention/legal-hold policy, dependencies, exact-resource plan and independent residual-read acceptance.
+6. Keep deletion disabled until the provider owners approve retention/legal-hold policy, dependencies, exact-resource plan and independent residual-read acceptance. The adapter intentionally exposes no Delete API call.
 
 AS-137 / NFR-PROD-14 remain **PARTIAL**. This implementation is repository code and mocked contract coverage only; it is not production provider acceptance.
