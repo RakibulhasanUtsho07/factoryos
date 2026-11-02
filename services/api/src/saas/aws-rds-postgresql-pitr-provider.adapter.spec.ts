@@ -68,8 +68,6 @@ function makeFetch(options: {
   let backupRecoveryPointPage = 0;
   let legalHoldPage = 0;
   const legalHoldRecoveryPointPage: Record<string, number> = {};
-  const backupVaultArn = 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default';
-  const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
   const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = init?.headers as Record<string, string> | undefined;
@@ -266,7 +264,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect((accountRequests[0]!.body as Record<string, unknown>).NextToken).toBeUndefined();
     expect((accountRequests[1]!.body as Record<string, unknown>).NextToken).toBe('empty-first-page-cursor');
     expect(mock.requests.every((request) =>
-      /^AWS4-HMAC-SHA256 Credential=/.test(request.authorization))).toBe(true);
+      request.authorization.startsWith('AWS4-HMAC-SHA256 Credential='))).toBe(true);
     expect(mock.requests.some((request) => request.action.startsWith('Delete'))).toBe(false);
     expect(mock.requests.some((request) => request.action.startsWith('Modify'))).toBe(false);
     expect(result.total_provider_requests).toBe(mock.requests.length);
@@ -795,12 +793,14 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       }] })],
     });
     const inventory = await createAdapter(mock.fetcher).captureInventory();
-    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
-      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    const restoreCatalog = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG');
+    if (!restoreCatalog) throw new Error('PITR restore catalog was not returned');
+    const recoveryPoint = restoreCatalog.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    if (!recoveryPoint) throw new Error('AWS Backup recovery point was not returned');
     const plan = createAwsRdsPitrRetentionDryRunPlan({
       inventory,
-      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
-      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      candidate_provider_identity_reference: recoveryPoint.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint.resource_arn ?? undefined,
       expected_account_id: organizationAccount,
       expected_region: 'ap-southeast-1',
       minimum_recovery_horizon_end_at: '2026-11-03T00:00:00.000Z',
