@@ -334,7 +334,17 @@ describe('AWS Backup vault and recovery-point inventory', () => {
     expect(calls.every((call) => call.headers.authorization?.startsWith('AWS4-HMAC-SHA256 Credential='))).toBe(true);
     expect(calls.every((call) => call.headers['x-amz-date'])).toBe(true);
     expect(calls.filter((call) => call.url.host.startsWith('backup.')).every((call) => call.method === 'GET')).toBe(true);
-    expect(calls.some((call) => /delete|restore|copy/i.test(call.url.pathname))).toBe(false);
+    const providerCalls = calls.filter((call) => call.url.host.startsWith('backup.'));
+    expect(providerCalls.every((call) => call.method === 'GET')).toBe(true);
+    expect(providerCalls.some((call) => !(
+      call.url.pathname === '/backup-vaults/'
+      || /^\/backup-vaults\/[A-Za-z0-9_-]+$/.test(call.url.pathname)
+      || /^\/backup-vaults\/[A-Za-z0-9_-]+\/recovery-points\/$/.test(call.url.pathname)
+      || call.url.pathname === '/legal-holds/'
+      || /^\/legal-holds\/[A-Za-z0-9-]+\/$/.test(call.url.pathname)
+      || /^\/legal-holds\/[A-Za-z0-9-]+\/recovery-points$/.test(call.url.pathname)
+      || /^\/logically-air-gapped-backup-vaults\/[A-Za-z0-9_-]+\/restore-access-backup-vaults\/$/.test(call.url.pathname)
+    ))).toBe(false);
   });
 
   test('follows an empty ListBackupVaults continuation page and signs both pages', async () => {

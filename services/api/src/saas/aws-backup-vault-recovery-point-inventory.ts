@@ -1,6 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
 
-const BACKUP_API_VERSION = '2018-11-15';
 const STS_API_VERSION = '2011-06-15';
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_SCOPES = 500;
@@ -306,9 +305,20 @@ function optionalBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+function hasControlCharacters(value: string, allowWhitespaceControls = false): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code === 127 || (code <= 31
+      && !(allowWhitespaceControls && (code === 9 || code === 10 || code === 13)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function optionalString(value: unknown, maxLength = 2048): string | null {
   if (typeof value !== 'string' || value.length < 1 || value.length > maxLength
-    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) return null;
+    || hasControlCharacters(value, true)) return null;
   return value;
 }
 
@@ -495,7 +505,7 @@ async function paginate<T>(
       complete = true;
       nextToken = undefined;
     } else {
-      if (typeof token !== 'string' || token.length > 2048 || /[\u0000-\u001f\u007f]/.test(token)) {
+      if (typeof token !== 'string' || token.length > 2048 || hasControlCharacters(token)) {
         return fail('AWS Backup returned a malformed continuation token');
       }
       if (seenTokens.has(token)) return fail('AWS Backup repeated a continuation token');
@@ -704,7 +714,7 @@ function applyLegalHoldDetail(
     resourceIdentifiers = rawIdentifiers.length;
     for (const identifier of rawIdentifiers) {
       if (typeof identifier !== 'string' || identifier.length < 1 || identifier.length > 2048
-        || /[\u0000-\u001f\u007f]/.test(identifier)) {
+        || hasControlCharacters(identifier)) {
         blockers.push(key + ': GetLegalHold returned an invalid resource identifier');
       }
     }
