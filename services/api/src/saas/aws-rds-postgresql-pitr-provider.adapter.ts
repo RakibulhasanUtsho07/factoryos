@@ -22,7 +22,7 @@ const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const AWS_ACCOUNT_ID = /^\d{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const ROLE_NAME = /^[A-Za-z0-9+=,.@_-]{1,64}$/;
-const RDS_ARN = /^arn:(aws|aws-us-gov|aws-cn):rds:[a-z0-9-]+:\d{12}:(?:db|cluster|snapshot|cluster-snapshot|auto-backup):[A-Za-z0-9:_-]+$/;
+const RDS_ARN = /^arn:(aws|aws-us-gov|aws-cn):rds:[a-z0-9-]+:\d{12}:(?:db|cluster|global-cluster|snapshot|cluster-snapshot|auto-backup):[A-Za-z0-9:_-]+$/;
 
 export interface AwsRdsPitrCredentials {
   access_key_id: string;
@@ -412,7 +412,7 @@ class AwsQueryApi {
 
 function resourceFromBlock(
   block: string,
-  tag: string,
+  _tag: string,
   scope: AwsRdsPitrProviderScope,
   resourceType: string,
   arnTag: string,
@@ -558,7 +558,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       id: xmlText(block, 'Id') ?? '',
       state: xmlText(block, 'State') ?? xmlText(block, 'Status') ?? 'UNKNOWN',
     }));
-    if (accounts.length < 1 || accounts.some((account) => !AWS_ACCOUNT_ID.test(account.id))) {
+if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       return fail('AWS Organizations did not return a complete, valid account catalog');
     }
     if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
@@ -667,8 +667,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
         });
       }
     }
-    if (scopes.length < 1 || scopes.length > MAX_SCOPES) return fail('AWS account/region scope count is empty or exceeds the hard limit');
-    if (scopes.length > MAX_SCOPES) return fail('AWS account/region scope count exceeded the hard limit');
+if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     this.addItems(scopes.length);
 
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
