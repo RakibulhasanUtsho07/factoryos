@@ -15,7 +15,7 @@ The adapter covers AWS Organizations account discovery, EC2 region discovery, cr
 
 It does **not** enumerate self-managed PostgreSQL WAL objects written to S3. That is a separate S3 object-version inventory and deletion adapter.
 
-RDS-managed PostgreSQL WAL and system-backup chains are provider-managed. The RDS Describe APIs expose backup resources and restore-window metadata, not every underlying WAL segment as an independently addressable object generation. The adapter therefore emits WAL_SEGMENT_CATALOG = OPAQUE_PROVIDER_MANAGED, never synthesizes segment IDs, and never represents that source as a complete empty list.
+RDS-managed PostgreSQL WAL and system-backup chains are provider-managed. The RDS Describe APIs expose backup resources and restore-window metadata, not every underlying WAL segment as an independently addressable object generation. The adapter therefore emits WAL_SEGMENT_CATALOG = OPAQUE_PROVIDER_MANAGED, never synthesizes segment IDs, and never represents that source as a complete empty list. For automated backups, DBInstanceArn identifies the source DB, not the backup object. When DBInstanceAutomatedBackupsArn is absent, the item is recorded only with a SOURCE_DB_COMPOSITE identity (DbiResourceId + account + region); it has no candidate resource ARN and cannot be selected by the exact-ARN dry-run plan. When AWS supplies DBInstanceAutomatedBackupsArn for a replicated backup, that distinct ARN is retained separately.
 
 ## Runtime contract
 
@@ -26,9 +26,9 @@ The constructor receives:
 - optional bounded page/item/request limits;
 - optional read-only role policy digest and independent policy-review reference.
 
-The source credential object is held only in memory. The adapter never returns access keys, secret keys or session tokens. It uses AWS SigV4 signed Query API POST requests and requires HTTPS. The source identity must resolve to the configured Organizations account. Every account role assumption is followed by STS GetCallerIdentity; the returned account and assumed-role ARN must match the expected account and role name.
+The source credential object is held only in memory. The helper exchangeAwsRdsPitrWebIdentityToken can exchange a deployment-owned OIDC token for a 15-minute STS session; the caller must obtain the token from its approved workload-identity source and must not place it in logs or configuration files. The adapter never returns access keys, secret keys or session tokens. It uses AWS SigV4 signed HTTPS POST requests. Organizations ListAccounts uses the AWS Organizations JSON 1.1 protocol and x-amz-target; STS, EC2 and RDS use their Query/XML protocols. The Organizations pager follows NextToken even when Accounts is empty. The source identity must resolve to the configured Organizations account. Every account role assumption is followed by STS GetCallerIdentity; the returned account and assumed-role ARN must match the expected account and role name.
 
-The assumed role is expected to permit only:
+Deployment policy templates are checked in under deploy/aws/: rds-postgresql-pitr-source-role-policy.json, rds-postgresql-pitr-readonly-role-trust.template.json and rds-postgresql-pitr-readonly-role-policy.json. Replace placeholders in the trust template in the controlled account and independently verify the trust and policy before use. The assumed role is expected to permit only:
 - ec2:DescribeRegions;
 - rds:DescribeDBInstances;
 - rds:DescribeDBClusters;
@@ -43,8 +43,8 @@ The Organizations discovery identity requires organizations:ListAccounts and sts
 
 ## Pagination and response safety
 
-- Organizations ListAccounts follows NextToken, including after an empty account page.
-- EC2 DescribeRegions and every RDS Describe* operation follow the provider continuation marker until exhausted.
+- Organizations ListAccounts uses JSON protocol with x-amz-target AWSOrganizationsV20161128.ListAccounts and follows NextToken, including after an empty account page.
+- EC2 DescribeRegions and every RDS Describe* operation use Query/XML and follow the provider continuation marker until exhausted.
 - A repeated/oversized token, malformed account/region, unexpected identity, HTTP/provider error, invalid XML, duplicate resource ARN or budget exhaustion fails closed.
 - Global request/page budget defaults to 10,000 (hard maximum 50,000).
 - Global item budget defaults to 20,000 (hard maximum 100,000).
@@ -86,7 +86,7 @@ A future deletion implementation must be a separate adapter and release gate. It
 
 Focused regression suite: **services/api/src/saas/aws-rds-postgresql-pitr-provider.adapter.spec.ts**
 
-It covers an empty Organizations continuation page, exhausted token pagination, enabled/opted-out regions, SigV4 authorization presence, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, explicit WAL/writer/AWS Backup gaps and blocked dry-run behavior.
+It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, separate OIDC token exchange, response streaming caps, cross-account ARN rejection, source DB versus automated-backup ARN identity, explicit WAL/writer/AWS Backup gaps and blocked dry-run behavior.
 
 The tests use mocked AWS Query API responses only. They do not connect to AWS or validate live IAM/SCP policy behavior.
 
