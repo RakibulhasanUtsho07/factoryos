@@ -1596,6 +1596,12 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     || inventory.aws_backup_legal_holds_enumerated !== true)) {
     blockers.push('AWS Backup vault/recovery-point/legal-hold catalog coverage is incomplete.');
   }
+  if (inventory && inventory.collector_policy_independently_verified !== true) {
+    blockers.push('RDS/AWS Backup inventory-role effective permissions have not been independently verified.');
+  }
+  if (inventory && inventory.database_principal_reader_policy_independently_verified !== true) {
+    blockers.push('Database-principal reader-role effective permissions have not been independently verified.');
+  }
   if (resource && inventory) {
     const linkedRecoveryPointArn = resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT'
       ? resource.resource_arn : resource.attributes.AwsBackupRecoveryPointArn;
