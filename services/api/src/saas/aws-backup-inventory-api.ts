@@ -64,6 +64,8 @@ export interface AwsBackupRecoveryPointRecord {
   encryption_key_arn: string | null;
   backup_size_bytes: number | null;
   source_backup_vault_arn: string | null;
+  backup_vault_type: string | null;
+  backup_vault_state: string | null;
   backup_vault_locked: boolean | null;
   backup_vault_lock_date: string | null;
   backup_vault_min_retention_days: number | null;
@@ -485,6 +487,8 @@ export class AwsBackupInventoryApi {
           encryption_key_arn: typeof item.EncryptionKeyArn === 'string' ? item.EncryptionKeyArn : null,
           backup_size_bytes: safeNumber(item.BackupSizeInBytes),
           source_backup_vault_arn: typeof item.SourceBackupVaultArn === 'string' ? item.SourceBackupVaultArn : null,
+          backup_vault_type: vault.vault_type,
+          backup_vault_state: vault.vault_state,
           backup_vault_locked: vault.locked,
           backup_vault_lock_date: vault.lock_date,
           backup_vault_min_retention_days: vault.min_retention_days,
