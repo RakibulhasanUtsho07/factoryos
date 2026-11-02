@@ -91,7 +91,7 @@ function makeFetch(options: {
           : action === 'DescribeGlobalClusters' ? 'GlobalClusters'
             : action === 'DescribeDBInstanceAutomatedBackups' ? 'DBInstanceAutomatedBackups'
               : action === 'DescribeDBSnapshots' ? 'DBSnapshots' : 'DBClusterSnapshots';
-      const item = action === 'DescribeDBInstances' ? instanceXml() : '';
+      const item = action === 'DescribeDBInstances' ? (options.instanceXml ?? instanceXml()) : '';
       return xml('<' + action + 'Response><' + resultTag + '><' + collectionTag + '>'
         + item + '</' + collectionTag + '></' + resultTag + '></' + action + 'Response>');
     }
@@ -268,6 +268,26 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       web_identity_token: 'short',
     }, fetcher)).rejects.toThrow(/web-identity input/i);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+
+  it('rejects an RDS resource ARN returned outside the current account and region', async () => {
+    const foreignInstance = instanceXml().replace(organizationAccount, '999999999999');
+    const mock = makeFetch({ instanceXml: foreignInstance });
+    await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/outside the requested account\/region scope/i);
+  });
+
+  it('cancels an oversized AWS response stream before parsing or retaining it', async () => {
+    const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      if (body.get('Action') === 'GetCallerIdentity') {
+        return xml('<GetCallerIdentityResponse><GetCallerIdentityResult><Account>'
+          + organizationAccount + '</Account><Arn>arn:aws:sts::' + organizationAccount
+          + ':assumed-role/OrganizationReadOnly/source-session</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>');
+      }
+      return new Response('x'.repeat(4 * 1024 * 1024 + 1), { status: 200 });
+    });
+    await expect(createAdapter(fetcher).captureInventory()).rejects.toThrow(/byte limit/i);
   });
 
 });
