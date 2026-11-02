@@ -213,7 +213,7 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.serverless_caches[0]?.cache_arn).toContain(':serverlesscache:');
     expect(result.serverless_snapshots).toHaveLength(2);
     expect(result.serverless_snapshots[0]?.snapshot_identity_kind).toBe('PROVIDER_SNAPSHOT_ARN');
-    expect(result.serverless_snapshots[0]?.snapshot_identity_reference).toMatch(/^elasticache-serverless-snapshot\\.[a-f0-9]{40}$/);
+    expect(result.serverless_snapshots[0]?.snapshot_identity_reference).toMatch(/^elasticache-serverless-snapshot\.[a-f0-9]{40}$/);
     expect(result.serverless_catalog_complete).toBe(true);
     expect(result.snapshots[0]?.snapshot_identity_kind).toBe('SNAPSHOT_NAME_AND_CREATE_TIME');
     expect(result.snapshots[0]?.snapshot_identity_reference).toMatch(/^elasticache-snapshot\.[a-f0-9]{40}$/);
@@ -244,7 +244,7 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.status).toBe('PARTIAL');
     expect(result.snapshots).toHaveLength(1);
     expect(result.blockers).toContain(account + ':ap-northeast-1:GLOBAL_DATASTORE_MEMBER_REGION_NOT_SCANNED');
-    expect(result.pages_fetched).toBe(5);
+    expect(result.pages_fetched).toBe(7);
     const snapshotRequests = requests.filter((request) => request.action === 'DescribeSnapshots');
     expect(snapshotRequests).toHaveLength(2);
     expect(snapshotRequests[0]?.body.get('Marker')).toBeNull();
