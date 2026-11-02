@@ -345,6 +345,26 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     })).toThrow(/CA bundle does not match/i);
   });
 
+
+  it('accepts both Aurora PostgreSQL instance db-resource IDs and cluster-resource IDs', async () => {
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, makePoolFactory().poolFactory);
+    const auroraInstance = await reader.capture({
+      ...target,
+      engine: 'aurora-postgresql',
+      resource_arn: 'arn:aws:rds:ap-southeast-1:111111111111:db:orders-aurora-instance',
+      db_resource_id: 'db-ABCDEFGH12345678',
+    }, role);
+    expect(auroraInstance.status).toBe('COMPLETE');
+
+    const auroraCluster = await reader.capture({
+      ...target,
+      engine: 'aurora-postgresql',
+      resource_arn: 'arn:aws:rds:ap-southeast-1:111111111111:cluster:orders-aurora',
+      db_resource_id: 'cluster-ABCDEFGH12345678',
+    }, role);
+    expect(auroraCluster.status).toBe('COMPLETE');
+  });
+
   it('rejects a custom DNS endpoint outside the discovered AWS RDS region', async () => {
     const mock = makePoolFactory();
     const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory);
