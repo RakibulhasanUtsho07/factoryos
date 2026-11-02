@@ -246,11 +246,11 @@ This slice covers node-based Redis OSS/Valkey and ElastiCache Serverless cache/s
 
 ## AWS Backup inventory reader identity (read-only)
 
-The WP10 AWS Backup inventory uses a separate \`FactoryOSAwsBackupInventoryReader\` assumed role. Its policy template is \`deploy/aws/aws-backup-vault-recovery-point-inventory-reader-role-policy.template.json\`; the trust and source-role templates are adjacent. The policy allows only \`ListBackupVaults\`, \`DescribeBackupVault\`, \`ListRecoveryPointsByBackupVault\`, \`ListLegalHolds\`, \`GetLegalHold\`, \`ListRecoveryPointsByLegalHold\`, \`ListRestoreAccessBackupVaults\` and STS \`GetCallerIdentity\`, and explicitly denies all other actions.
+The policy allows only `ListBackupVaults`, `DescribeBackupVault`, `ListRecoveryPointsByBackupVault`, `ListLegalHolds`, `GetLegalHold`, `ListRecoveryPointsByLegalHold`, `ListRestoreAccessBackupVaults`, `ListCopyJobs`, `DescribeCopyJob` and STS `GetCallerIdentity`, and explicitly denies all other actions.
 
 The adapter requires temporary credentials from the already-assumed role and validates the exact account and assumed-role name through STS before AWS Backup API calls. It captures vault type/state, Vault Lock/encryption settings, recovery-point lifecycle/encryption/source-vault metadata and legal-hold associations without retaining free-form legal-hold descriptions. No backup job start/copy/restore/delete, vault mutation, legal-hold create/cancel, tag or KMS operation is implemented.
 
-The reader policy scopes vault-read actions to approved backup-vault ARNs and legal-hold reads to approved legal-hold ARNs; only account/Region-wide list discovery and STS caller-identity verification use Resource: "*". The source-role policy uses explicit target-account role ARNs rather than wildcard account matching. The checked-in IAM policy and trust files are examples, not proof of effective production permissions. Before enablement, the cloud owner must provision and independently review the actual trust, ExternalId, permission boundaries, SCP/session-policy interactions, organization controls and every enabled account/Region. Repository CI and mocked responses do not constitute live restore, copy or deletion acceptance.
+The reader policy scopes vault-read actions to approved backup-vault ARNs and legal-hold reads to approved legal-hold ARNs. Copy-job list/detail operations use Resource: "*" because AWS publishes no resource type for `ListCopyJobs` / `DescribeCopyJob`; the explicit `NotAction` deny allowlist remains. The source-role policy uses explicit target-account role ARNs rather than wildcard account matching.
 
 ## AWS Backup copy-job reader permissions
 
