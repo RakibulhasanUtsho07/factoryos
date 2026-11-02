@@ -242,3 +242,12 @@ The API requires already-assumed temporary credentials and verifies STS `GetCall
 This slice covers node-based Redis OSS/Valkey and ElastiCache Serverless cache/snapshot API catalogs (including Serverless Memcached metadata). Snapshot name/create-time or provider-ARN references are correlation identities only, not delete selectors or deletion authority. Self-managed Redis/Valkey AOF/RDB files, EBS/filesystem/volume backup chains, copied/exported snapshots, AWS Backup recovery points and external DR copies remain outside this adapter. The output permanently leaves `whole_cache_backup_coverage_complete` and all deletion flags false.
 
 **Independent review and production staging remain pending.** A successful mocked test suite is not evidence that AWS roles were provisioned, all enabled accounts/regions were scanned, cache snapshots were restored, Global Datastore replicas were restored/failover-tested, or external copies were discovered.
+
+
+## AWS Backup inventory reader identity (read-only)
+
+The WP10 AWS Backup inventory uses a separate \`FactoryOSAwsBackupInventoryReader\` assumed role. Its policy template is \`deploy/aws/aws-backup-vault-recovery-point-inventory-reader-role-policy.template.json\`; the trust and source-role templates are adjacent. The policy allows only \`ListBackupVaults\`, \`DescribeBackupVault\`, \`ListRecoveryPointsByBackupVault\`, \`ListLegalHolds\`, \`GetLegalHold\`, \`ListRecoveryPointsByLegalHold\`, \`ListRestoreAccessBackupVaults\` and STS \`GetCallerIdentity\`, and explicitly denies all other actions.
+
+The adapter requires temporary credentials from the already-assumed role and validates the exact account and assumed-role name through STS before AWS Backup API calls. It captures vault type/state, Vault Lock/encryption settings, recovery-point lifecycle/encryption/source-vault metadata and legal-hold associations without retaining free-form legal-hold descriptions. No backup job start/copy/restore/delete, vault mutation, legal-hold create/cancel, tag or KMS operation is implemented.
+
+The checked-in IAM policy and trust files are examples, not proof of effective production permissions. Before enablement, the cloud owner must provision and independently review the actual trust, ExternalId, permission boundaries, SCP/session-policy interactions, organization controls and every enabled account/Region. Repository CI and mocked responses do not constitute live restore, copy or deletion acceptance.

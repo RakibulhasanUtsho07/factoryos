@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeOnlyTheDedicatedAwsBackupInventoryReader",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::*:role/FactoryOSAwsBackupInventoryReader",
+        "arn:aws-us-gov:iam::*:role/FactoryOSAwsBackupInventoryReader",
+        "arn:aws-cn:iam::*:role/FactoryOSAwsBackupInventoryReader"
+      ]
+    }
+  ]
+}

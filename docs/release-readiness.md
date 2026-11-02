@@ -106,3 +106,16 @@ The node-based and Serverless completion signals are separate. A denied or incom
 This still does not enumerate self-managed Redis/Valkey AOF/RDB files, EBS/filesystem/volume snapshots, copied/exported snapshot destinations, AWS Backup-managed recovery points, S3 object-version backup copies or all external DR replicas. It does not discover all organization accounts/regions on its own; the caller must provide complete scopes. A mocked COMPLETE status proves only the queried catalogs for those supplied scopes.
 
 **Release disposition:** repository-level mocked API evidence only. AWS role provisioning, independent effective trust/permission review, organization and enabled-region coverage, live provider capture, controlled restore, Global Datastore failover/replication acceptance and every separately managed copy class remain unaccepted. Issue #298 stays OPEN; AS-137 / NFR-PROD-14 stay PARTIAL. Do not infer whole-cache or whole-tenant erasure proof from the node-based and Serverless inventory.
+
+
+## AWS Backup vault, recovery-point and legal-hold inventory status
+
+The separate AWS Backup reader enumerates \`BACKUP_VAULT\`, \`LOGICALLY_AIR_GAPPED_BACKUP_VAULT\` and \`RESTORE_ACCESS_BACKUP_VAULT\` records with \`ListBackupVaults\` / \`DescribeBackupVault\`. It exhausts \`ListRecoveryPointsByBackupVault\` for each discovered vault and captures recovery-point status, create/complete/restore timestamps, lifecycle, calculated deletion/cold-storage dates, encryption metadata and \`SourceBackupVaultArn\`. Logically air-gapped vault relationships to restore-access vaults are read with \`ListRestoreAccessBackupVaults\`.
+
+Legal holds are inventoried with \`ListLegalHolds\` and \`GetLegalHold\`; recovery-point memberships are separately enumerated with \`ListRecoveryPointsByLegalHold\`. The output preserves the many-to-many relationship and does not infer retention approval from an ACTIVE status. Every list API uses bounded NextToken pagination; STS verifies the exact account and dedicated reader-role name before provider reads.
+
+The dedicated reader policy grants only the required AWS Backup List/Describe/Get calls plus STS identity verification and explicitly denies all other actions. It does not grant backup/copy/restore/delete or legal-hold mutation permissions. Mocked API tests do not prove live IAM deployment, complete organization/Region discovery or actual restoreability.
+
+The adapter does **not** enumerate AWS Backup copy-job history, all cross-account/Region destinations unless those scopes are supplied, self-managed AOF/RDB/WAL/volume copies or external DR stores. Source-vault ARNs outside supplied scopes and unmatched legal-hold relationships create explicit blockers. Whole-backup coverage and deletion authorization remain false.
+
+**Release disposition:** mocked/repository-level evidence only. Live role provisioning, independent effective-policy review, complete scope proof, approved copy and restore rehearsals, and external copy-class reconciliation remain outstanding. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL. See [AWS Backup vault and recovery-point inventory](aws-backup-vault-recovery-point-inventory.md).

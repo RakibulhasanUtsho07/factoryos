@@ -1,0 +1,35 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyAwsBackupVaultRecoveryPointAndLegalHoldInventory",
+      "Effect": "Allow",
+      "Action": [
+        "backup:ListBackupVaults",
+        "backup:DescribeBackupVault",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:GetLegalHold",
+        "backup:ListRecoveryPointsByLegalHold",
+        "backup:ListRestoreAccessBackupVaults",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEveryActionExceptReviewedAwsBackupInventoryRead",
+      "Effect": "Deny",
+      "NotAction": [
+        "backup:ListBackupVaults",
+        "backup:DescribeBackupVault",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:GetLegalHold",
+        "backup:ListRecoveryPointsByLegalHold",
+        "backup:ListRestoreAccessBackupVaults",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
