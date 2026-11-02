@@ -94,12 +94,14 @@ interface ValidatedConfig {
 
 const SQL = {
   session: [
-    'SELECT current_user AS database_user, current_database() AS database_name,',
+    'SELECT current_user AS database_user, session_user AS authenticated_database_user, current_database() AS database_name,',
     " current_setting('transaction_read_only') AS transaction_read_only,",
     ' r.rolcanlogin, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
     " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_superuser'), false) AS has_rds_superuser,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_replication'), false) AS has_rds_replication,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_read_all_data'), false) AS has_pg_read_all_data,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_read_server_files'), false) AS has_pg_read_server_files,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_write_all_data'), false) AS has_pg_write_all_data,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_write_server_files'), false) AS has_pg_write_server_files,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_execute_server_program'), false) AS has_pg_execute_server_program",
@@ -452,6 +454,11 @@ function makeRecord(
   };
   for (const [key, value] of Object.entries(row)) {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key)) return fail('database catalog returned an unexpected field name');
+    if (key === 'application_name') {
+      attributes.application_name_present = typeof value === 'string' && value.length > 0 ? 'true' : 'false';
+      attributes.application_name_sha256 = typeof value === 'string' ? sha256(value) : null;
+      continue;
+    }
     attributes[key] = rowValue(value);
   }
   const material = [
@@ -519,6 +526,7 @@ async function openReadOnlyClient(
     const result = await client.query(SQL.session);
     const session = result.rows[0];
     if (!session || session.database_user !== config.database_username
+      || session.authenticated_database_user !== config.database_username
       || session.database_name !== database
       || String(session.transaction_read_only).toLowerCase() !== 'on'
       || session.rolcanlogin !== true || session.rolsuper !== false
@@ -526,6 +534,7 @@ async function openReadOnlyClient(
       || session.rolreplication !== false || session.rolbypassrls !== false
       || session.rolinherit !== true || session.has_pg_monitor !== true
       || session.has_rds_superuser === true || session.has_rds_replication === true
+      || session.has_pg_read_all_data === true || session.has_pg_read_server_files === true
       || session.has_pg_write_all_data === true || session.has_pg_write_server_files === true
       || session.has_pg_execute_server_program === true) {
       return fail('database session identity is not the bounded pg_monitor-only read-only login');
@@ -539,8 +548,12 @@ async function openReadOnlyClient(
 }
 
 async function closeReadOnlyClient(client: AwsRdsDatabasePrincipalPgClient): Promise<void> {
-  try { await client.query('ROLLBACK'); } catch { /* read-only transaction is always rolled back */ }
-  try { await client.end(); } catch { /* close failure does not create provider evidence */ }
+  try { await client.query('ROLLBACK'); } catch { /* closing the session also rolls back its open read-only transaction */ }
+  try {
+    await client.end();
+  } catch {
+    return fail('database reader connection could not be closed after the read-only scan');
+  }
 }
 
 async function readBounded(
