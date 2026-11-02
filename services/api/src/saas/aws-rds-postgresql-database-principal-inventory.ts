@@ -244,6 +244,7 @@ const SQL = {
     'SELECT pid, usename, application_name, backend_type, state, wait_event_type, wait_event',
     ' FROM pg_catalog.pg_stat_activity',
     ' WHERE pid <> pg_catalog.pg_backend_pid() AND usename IS NOT NULL',
+    ' AND datname = current_database()',
     ' ORDER BY usename, application_name, pid LIMIT $1',
   ].join(' '),
   replicationSenders: [
@@ -265,24 +266,29 @@ const SQL = {
     ' FROM pg_catalog.pg_stat_wal_receiver LIMIT $1',
   ].join(' '),
   subscriptions: [
-    'SELECT subname, subowner::pg_catalog.regrole::text AS owner_role, subenabled,',
+    'SELECT subdbid::text AS database_oid, subname, subowner::pg_catalog.regrole::text AS owner_role, subenabled,',
     ' subslotname, subpublications',
-    ' FROM pg_catalog.pg_subscription ORDER BY subname LIMIT $1',
+    ' FROM pg_catalog.pg_subscription',
+    ' WHERE subdbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())',
+    ' ORDER BY subname LIMIT $1',
   ].join(' '),
 } as const;
 
-const QUERY_KINDS = [
+const CLUSTER_QUERY_KINDS = [
   ['DATABASE_ROLE', SQL.roles, ['rolname']],
   ['ROLE_MEMBERSHIP', SQL.memberships, ['granted_role', 'member_role']],
+  ['REPLICATION_SENDER', SQL.replicationSenders, ['pid']],
+  ['REPLICATION_SLOT', SQL.replicationSlots, ['slot_name']],
+  ['WAL_RECEIVER', SQL.walReceiver, ['status', 'sender_host', 'sender_port']],
+] as const;
+
+const QUERY_KINDS = [
   ['DATABASE_PRIVILEGE', SQL.databasePrivileges, ['grantee']],
   ['SCHEMA_PRIVILEGE', SQL.schemaPrivileges, ['grantee', 'schema_name', 'privilege_type']],
   ['TABLE_WRITE_PRIVILEGE', SQL.tablePrivileges, ['grantee', 'schema_name', 'object_name', 'privilege_type']],
   ['SEQUENCE_WRITE_PRIVILEGE', SQL.sequencePrivileges, ['grantee', 'schema_name', 'sequence_name', 'privilege_type']],
   ['FUNCTION_EXECUTE_PRIVILEGE', SQL.functionPrivileges, ['grantee', 'schema_name', 'function_name', 'identity_arguments']],
   ['ACTIVE_DATABASE_SESSION', SQL.sessions, ['pid']],
-  ['REPLICATION_SENDER', SQL.replicationSenders, ['pid']],
-  ['REPLICATION_SLOT', SQL.replicationSlots, ['slot_name']],
-  ['WAL_RECEIVER', SQL.walReceiver, ['status', 'sender_host', 'sender_port']],
   ['LOGICAL_SUBSCRIPTION', SQL.subscriptions, ['subname']],
 ] as const;
 
@@ -642,6 +648,46 @@ export async function captureAwsRdsDatabasePrincipalInventory(
       databaseList = listResult.rows;
       totalRows += listResult.rows.length;
       databasesDiscovered += Number.isSafeInteger(databaseCount) && databaseCount >= 0 ? databaseCount : 0;
+      for (const [kind, sql, identityKeys] of CLUSTER_QUERY_KINDS) {
+        if (totalRows >= config.max_total_rows) {
+          coverageComplete = false;
+          blockers.push('GLOBAL_DATABASE_CATALOG_ROW_BUDGET_EXHAUSTED');
+          break;
+        }
+        let bounded: { rows: Array<Record<string, unknown>>; overflow: boolean };
+        try {
+          bounded = await readBounded(bootstrapClient, sql, Math.min(
+            config.max_rows_per_query, config.max_total_rows - totalRows,
+          ), queryBudget);
+          pagesFetched += 1;
+        } catch {
+          coverageComplete = false;
+          blockers.push(target.resource_id + ':<CLUSTER>:' + kind + ':CATALOG_QUERY_DENIED_OR_FAILED');
+          if (queryBudget.count >= queryBudget.maximum) {
+            blockers.push('GLOBAL_DATABASE_CATALOG_QUERY_BUDGET_EXHAUSTED');
+            break;
+          }
+          continue;
+        }
+        totalRows += bounded.rows.length;
+        const emitted = bounded.rows.map((row, index) => makeRecord(
+          target, '<CLUSTER>', kind, identityFor(kind, row, index), row,
+        ));
+        records.push(...emitted);
+        replicationRecords.push(...emitted.filter((record) => REPLICATION_KINDS.has(kind)));
+        itemCount += emitted.length;
+        receiptReferences.push('postgresql-readonly.' + sha256(JSON.stringify({
+          target: target.resource_id, database: '<CLUSTER>', kind, rows: bounded.rows,
+        })).slice(0, 40));
+        if (bounded.overflow) {
+          coverageComplete = false;
+          blockers.push(target.resource_id + ':<CLUSTER>:' + kind + ':ROW_LIMIT_REACHED');
+        }
+        if (bounded.rows.some((row) => identityKeys.every((key) => row[key] === undefined))) {
+          coverageComplete = false;
+          blockers.push(target.resource_id + ':<CLUSTER>:' + kind + ':CATALOG_IDENTITY_INVALID');
+        }
+      }
       if (countResult.overflow || !Number.isSafeInteger(databaseCount) || databaseCount < 0
         || databaseCount > config.max_databases_per_target || listResult.overflow
         || databaseList.length !== databaseCount) {
