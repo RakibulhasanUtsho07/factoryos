@@ -251,9 +251,11 @@ export class AwsBackupInventoryApi {
     pages: number;
     total_items_seen: number;
     scope_status_uncertain: boolean;
+    receipts: string[];
   }> {
     const legalHolds: AwsBackupLegalHoldRecord[] = [];
     const recoveryPointArns = new Set<string>();
+    const receipts: string[] = [];
     const seenTokens = new Set<string>();
     let nextToken: string | null = null;
     let pages = 0;
@@ -289,6 +291,7 @@ export class AwsBackupInventoryApi {
         if (status === 'ACTIVE') {
           const heldPoints = await this.listRecoveryPointsByLegalHold(scope, credentials, id);
           pages += heldPoints.pages;
+          receipts.push(...heldPoints.receipts);
           totalItemsSeen += heldPoints.total_items_seen;
           if (totalItemsSeen > this.maxItems) return fail('AWS Backup legal-hold inventory exceeded its total item budget');
           for (const arn of heldPoints.recovery_point_arns) {
@@ -302,6 +305,8 @@ export class AwsBackupInventoryApi {
         legalHolds.push(record);
       }
       pages += 1;
+      receipts.push('aws-backup.list-legal-holds.'
+        + sha256(scope.account_reference + ':' + scope.region_reference + ':' + sha256(JSON.stringify(page))).slice(0, 32));
       const token = response.NextToken;
       if (token !== undefined && token !== null && token !== '') {
         if (typeof token !== 'string' || token.length > 100000 || seenTokens.has(token)) {
@@ -320,6 +325,7 @@ export class AwsBackupInventoryApi {
       pages,
       total_items_seen: totalItemsSeen,
       scope_status_uncertain: scopeStatusUncertain,
+      receipts,
     };
   }
 
@@ -327,8 +333,9 @@ export class AwsBackupInventoryApi {
     scope: AwsBackupInventoryScope,
     credentials: AwsBackupInventoryCredentials,
     legalHoldId: string,
-  ): Promise<{ recovery_point_arns: string[]; pages: number; total_items_seen: number }> {
+  ): Promise<{ recovery_point_arns: string[]; pages: number; total_items_seen: number; receipts: string[] }> {
     const recoveryPointArns: string[] = [];
+    const receipts: string[] = [];
     const seenTokens = new Set<string>();
     let nextToken: string | null = null;
     let pages = 0;
@@ -348,6 +355,8 @@ export class AwsBackupInventoryApi {
         recoveryPointArns.push(validateAwsBackupArn(item.RecoveryPointArn, scope, 'recovery-point'));
       }
       pages += 1;
+      receipts.push('aws-backup.list-held-recovery-points.'
+        + sha256(scope.account_reference + ':' + scope.region_reference + ':' + legalHoldId + ':' + sha256(JSON.stringify(page))).slice(0, 32));
       const token = response.NextToken;
       if (token !== undefined && token !== null && token !== '') {
         if (typeof token !== 'string' || token.length > 100000 || seenTokens.has(token)) {
@@ -360,7 +369,7 @@ export class AwsBackupInventoryApi {
     if (new Set(recoveryPointArns).size !== recoveryPointArns.length) {
       return fail('AWS Backup ListRecoveryPointsByLegalHold returned duplicate recovery-point ARNs');
     }
-    return { recovery_point_arns: recoveryPointArns, pages, total_items_seen: totalItemsSeen };
+    return { recovery_point_arns: recoveryPointArns, pages, total_items_seen: totalItemsSeen, receipts };
   }
 
   async listBackupVaults(
