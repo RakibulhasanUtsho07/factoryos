@@ -57,6 +57,8 @@ export interface AwsBackupRecoveryPointRecord {
   completion_date: string | null;
   last_restore_time: string | null;
   lifecycle_delete_at: string | null;
+  lifecycle_delete_after_days: number | null;
+  lifecycle_move_to_cold_storage_after_days: number | null;
   lifecycle_move_to_cold_storage_at: string | null;
   is_encrypted: boolean | null;
   encryption_key_arn: string | null;
@@ -90,25 +92,27 @@ function encode(value: string): string {
 }
 
 function timestamp(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
     const date = new Date(value * 1000);
-    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    if (Number.isFinite(date.getTime())) return date.toISOString();
   }
   if (typeof value === 'string' && value.length <= 80) {
     const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
   }
-  return null;
+  return fail('AWS Backup returned a malformed timestamp field');
 }
-
 function safeNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return fail('AWS Backup returned an invalid numeric field');
 }
-
 function safeBoolean(value: unknown): boolean | null {
-  return typeof value === 'boolean' ? value : null;
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value;
+  return fail('AWS Backup returned an invalid boolean field');
 }
-
 function validateAwsBackupArn(
   value: unknown,
   scope: AwsBackupInventoryScope,
@@ -277,8 +281,8 @@ export class AwsBackupInventoryApi {
           legal_hold_arn: item.LegalHoldArn === undefined || item.LegalHoldArn === null
             ? null : validateAwsBackupArn(item.LegalHoldArn, scope, 'legal-hold'),
           status: status as AwsBackupLegalHoldRecord['status'],
-          creation_date: timestamp(item.CreationDate),
-          cancellation_date: timestamp(item.CancellationDate),
+          creation_date: timestamp(item.CreatedTime ?? item.CreationDate),
+          cancellation_date: timestamp(item.CanceledTime ?? item.CancellationDate),
           recovery_point_arns: [],
         };
         if (status === 'CREATING' || status === 'CANCELING' || status === 'CANCELLING') scopeStatusUncertain = true;
@@ -463,8 +467,8 @@ export class AwsBackupInventoryApi {
           completion_date: timestamp(item.CompletionDate),
           last_restore_time: timestamp(item.LastRestoreTime),
           lifecycle_delete_at: isRecord(item.Lifecycle) ? timestamp(item.Lifecycle.DeleteAt) : null,
-          lifecycle_move_to_cold_storage_at: isRecord(item.Lifecycle)
-            ? timestamp(item.Lifecycle.MoveToColdStorageAt) : null,
+          lifecycle_move_to_cold_storage_at: isRecord(item.CalculatedLifecycle)
+            ? timestamp(item.CalculatedLifecycle.MoveToColdStorageAt) : null,
           is_encrypted: safeBoolean(item.IsEncrypted),
           encryption_key_arn: typeof item.EncryptionKeyArn === 'string' ? item.EncryptionKeyArn : null,
           backup_size_bytes: safeNumber(item.BackupSizeInBytes),
