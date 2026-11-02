@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { AwsBackupInventoryApi, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
 
 export const AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA =
   'factoryos.aws-rds-postgresql-pitr-inventory/v1';
@@ -776,7 +777,9 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
   private readonly config: ReturnType<typeof validateConfig>;
   private readonly sourceCredentials: AwsRdsPitrCredentials;
   private readonly api: AwsQueryApi;
+  private readonly backupApi: AwsBackupInventoryApi;
   private totalItems = 0;
+  private totalPaginationPages = 0;
 
   constructor(
     config: AwsRdsPitrProviderConfig,
@@ -789,6 +792,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     this.now = now;
     this.budget = { total: 0, maximum: this.config.max_total_pages };
     this.api = new AwsQueryApi(this.config.request_timeout_ms, fetcher, this.budget);
+    this.backupApi = new AwsBackupInventoryApi(this.config.request_timeout_ms, fetcher, this.budget, this.config.max_total_items);
   }
 
   private readonly now: () => Date;
@@ -845,6 +849,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       this.config.organization_region,
       this.sourceCredentials,
     );
+    this.totalPaginationPages += result.pages;
     const accounts = result.accounts;
 if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       || accounts.some((account) => !AWS_ACCOUNT_ID.test(account.id))) {
@@ -871,6 +876,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       { AllRegions: 'true', MaxResults: '1000' },
       Math.min(this.config.max_total_items, MAX_TOTAL_ITEMS),
     );
+    this.totalPaginationPages += result.pages;
     const regions = result.blocks.map((block) => ({
       region: xmlText(block, 'regionName') ?? '',
       optInStatus: xmlText(block, 'optInStatus') ?? 'unknown',
@@ -917,6 +923,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       return fail('inventory clock is invalid');
     }
     this.totalItems = 0;
+    this.totalPaginationPages = 0;
     const accountResult = await this.discoverAccounts();
     const scopes: AwsRdsPostgresqlPitrInventory['scopes'] = [];
     const excludedAccounts: AwsRdsPostgresqlPitrInventory['excluded_accounts'] = [];
@@ -962,6 +969,9 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
 if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     this.addItems(scopes.length);
 
+    const backupVaults: AwsBackupVaultRecord[] = [];
+    const backupRecoveryPoints: AwsBackupRecoveryPointRecord[] = [];
+    let backupPages = 0;
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
     const sourcePages = new Map<AwsRdsPitrSourceKind, number>();
     const sourceReceipts = new Map<AwsRdsPitrSourceKind, string[]>();
@@ -988,6 +998,20 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         this.listRds('DescribeDBSnapshots', 'DBSnapshot', scope, role.credentials),
         this.listRds('DescribeDBClusterSnapshots', 'DBClusterSnapshot', scope, role.credentials),
       ]);
+      this.totalPaginationPages += instances.pages + clusters.pages + globals.pages
+        + automated.pages + snapshots.pages + clusterSnapshots.pages;
+      const backupVaultResult = await this.backupApi.listBackupVaults(scope, role.credentials);
+      backupVaults.push(...backupVaultResult.vaults);
+      backupPages += backupVaultResult.pages;
+      this.totalPaginationPages += backupVaultResult.pages;
+      this.addItems(backupVaultResult.vaults.length);
+      for (const vault of backupVaultResult.vaults) {
+        const recoveryResult = await this.backupApi.listRecoveryPointsByVault(scope, role.credentials, vault);
+        backupRecoveryPoints.push(...recoveryResult.points);
+        backupPages += recoveryResult.pages;
+        this.totalPaginationPages += recoveryResult.pages;
+        this.addItems(recoveryResult.total_items_seen);
+      }
       const clusterResources = [
         ...instances.blocks.map((block) => resourceFromBlock(block, 'DBInstance', scope, 'RDS_DB_INSTANCE', 'DBInstanceArn',
           'DbiResourceId', ['DBInstanceIdentifier', 'DbiResourceId', 'DBInstanceStatus', 'BackupRetentionPeriod',
@@ -1015,9 +1039,11 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         automated.pages + snapshots.pages + clusterSnapshots.pages,
         [...automated.receipts, ...snapshots.receipts, ...clusterSnapshots.receipts]);
 
-      const replicationResources = clusterResources.filter((resource) =>
-        resource.attributes.ReadReplicaSourceDBInstanceIdentifier
-        || resource.attributes.GlobalClusterIdentifier || resource.attributes.ReplicationSourceIdentifier);
+      const replicationResources = [
+        ...clusterResources.filter((resource) => resource.attributes.ReadReplicaSourceDBInstanceIdentifier
+          || resource.attributes.GlobalClusterIdentifier || resource.attributes.ReplicationSourceIdentifier),
+        ...archiveResources.filter((resource) => resource.replication_destination_arns.length > 0),
+      ];
       append('WAL_REPLICATION_PATH_CATALOG', replicationResources,
         instances.pages + clusters.pages + globals.pages,
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
@@ -1030,6 +1056,43 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       [...automated.receipts, ...snapshots.receipts, ...clusterSnapshots.receipts]);
     }
 
+    const backupRecoveryResources: AwsRdsPitrResource[] = backupRecoveryPoints.map((point) => ({
+      resource_arn: point.recovery_point_arn,
+      provider_identity_reference: 'aws-backup-recovery-point.' + sha256(point.recovery_point_arn).slice(0, 40),
+      identity_kind: 'IMMUTABLE_RESOURCE_ARN',
+      provider_delete_identity_reference: point.recovery_point_arn,
+      provider_delete_identity_kind: 'AWS_BACKUP_RECOVERY_POINT_ARN',
+      replication_destination_arns: [],
+      resource_type: 'AWS_BACKUP_RECOVERY_POINT',
+      account_id: point.account_id,
+      region: point.region,
+      engine: null,
+      source_database_reference: point.resource_arn,
+      status: point.status,
+      created_at: point.creation_date,
+      earliest_restorable_time: null,
+      latest_restorable_time: null,
+      retention_days: null,
+      attributes: {
+        ResourceArn: point.resource_arn,
+        ResourceType: point.resource_type,
+        BackupVaultArn: point.backup_vault_arn,
+        BackupVaultName: point.backup_vault_name,
+        CompletionDate: point.completion_date,
+        LastRestoreTime: point.last_restore_time,
+        LifecycleDeleteAt: point.lifecycle_delete_at,
+        LifecycleMoveToColdStorageAt: point.lifecycle_move_to_cold_storage_at,
+        IsEncrypted: point.is_encrypted === null ? null : String(point.is_encrypted),
+        EncryptionKeyArn: point.encryption_key_arn,
+        BackupSizeInBytes: point.backup_size_bytes === null ? null : String(point.backup_size_bytes),
+        SourceBackupVaultArn: point.source_backup_vault_arn,
+        BackupVaultLocked: point.backup_vault_locked === null ? null : String(point.backup_vault_locked),
+        BackupVaultLockDate: point.backup_vault_lock_date,
+        BackupVaultMinRetentionDays: point.backup_vault_min_retention_days === null ? null : String(point.backup_vault_min_retention_days),
+        BackupVaultMaxRetentionDays: point.backup_vault_max_retention_days === null ? null : String(point.backup_vault_max_retention_days),
+      },
+    }));
+    const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
     const sources: AwsRdsPitrCatalogSource[] = [
       sourceFromItems('POSTGRESQL_CLUSTER_CATALOG', accountDiscoveryComplete && regionDiscoveryComplete ? 'COMPLETE' : 'PARTIAL',
         'RDS DB instance, DB cluster and global-cluster catalogs were enumerated for every discovered enabled account/region scope.',
@@ -1073,15 +1136,19 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       accounts_discovered: accountResult.accounts.length,
       regions_discovered: new Set(scopes.map((entry) => entry.scope.region_reference)).size,
       scopes_discovered: scopes.length,
-      total_pages_fetched: this.budget.total,
+      total_pages_fetched: this.totalPaginationPages,
+      total_provider_requests: this.budget.total,
       total_items_observed: this.totalItems,
       scopes,
       excluded_accounts: excludedAccounts,
       excluded_regions: excludedRegions,
       sources,
+      backup_vault_catalog_complete: backupCatalogComplete,
+      backup_vaults,
+      aws_backup_recovery_points_enumerated: backupCatalogComplete,
+      aws_backup_recovery_points: backupRecoveryPoints,
       provider_managed_wal_segments_individually_enumerated: false,
       database_writer_principals_fully_enumerated: false,
-      aws_backup_recovery_points_enumerated: false,
       source_receipts_signable: false,
       manifest_eligible: false,
       deletion_authorized: false,
