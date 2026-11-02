@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { AwsBackupInventoryApi, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
+import { AwsBackupInventoryApi, AwsBackupLegalHoldRecord, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
 
 export const AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA =
   'factoryos.aws-rds-postgresql-pitr-inventory/v1';
@@ -162,6 +162,10 @@ export interface AwsRdsPostgresqlPitrInventory {
   backup_vaults: AwsBackupVaultRecord[];
   aws_backup_recovery_points_enumerated: boolean;
   aws_backup_recovery_points: AwsBackupRecoveryPointRecord[];
+  aws_backup_legal_holds_enumerated: boolean;
+  aws_backup_legal_holds: AwsBackupLegalHoldRecord[];
+  aws_backup_legal_hold_recovery_point_arns: string[];
+  aws_backup_legal_hold_scope_status_uncertain: boolean;
   provider_managed_wal_segments_individually_enumerated: false;
   database_writer_principals_fully_enumerated: false;
   source_receipts_signable: false;
@@ -971,6 +975,9 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
 
     const backupVaults: AwsBackupVaultRecord[] = [];
     const backupRecoveryPoints: AwsBackupRecoveryPointRecord[] = [];
+    const backupLegalHolds: AwsBackupLegalHoldRecord[] = [];
+    const backupLegalHoldRecoveryPointArns = new Set<string>();
+    let backupLegalHoldScopeStatusUncertain = false;
     let backupPages = 0;
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
     const sourcePages = new Map<AwsRdsPitrSourceKind, number>();
@@ -1011,7 +1018,18 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         backupPages += recoveryResult.pages;
         this.totalPaginationPages += recoveryResult.pages;
         this.addItems(recoveryResult.total_items_seen);
+        if (vault.number_of_recovery_points !== null
+          && vault.number_of_recovery_points !== recoveryResult.total_items_seen) {
+          return fail('AWS Backup recovery-point page count does not reconcile with the provider vault inventory');
+        }
       }
+      const legalHoldResult = await this.backupApi.listLegalHolds(scope, role.credentials);
+      backupLegalHolds.push(...legalHoldResult.legal_holds);
+      legalHoldResult.recovery_point_arns.forEach((arn) => backupLegalHoldRecoveryPointArns.add(arn));
+      backupLegalHoldScopeStatusUncertain ||= legalHoldResult.scope_status_uncertain;
+      backupPages += legalHoldResult.pages;
+      this.totalPaginationPages += legalHoldResult.pages;
+      this.addItems(legalHoldResult.total_items_seen);
       const clusterResources = [
         ...instances.blocks.map((block) => resourceFromBlock(block, 'DBInstance', scope, 'RDS_DB_INSTANCE', 'DBInstanceArn',
           'DbiResourceId', ['DBInstanceIdentifier', 'DbiResourceId', 'DBInstanceStatus', 'BackupRetentionPeriod',
@@ -1261,8 +1279,19 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     try { safeReference(reference, field); } catch { blockers.push(field + ' is missing or invalid.'); }
   }
   if (inventory && (inventory.backup_vault_catalog_complete !== true
-    || inventory.aws_backup_recovery_points_enumerated !== true)) {
-    blockers.push('AWS Backup vault/recovery-point catalog coverage is incomplete.');
+    || inventory.aws_backup_recovery_points_enumerated !== true
+    || inventory.aws_backup_legal_holds_enumerated !== true)) {
+    blockers.push('AWS Backup vault/recovery-point/legal-hold catalog coverage is incomplete.');
+  }
+  if (resource && inventory) {
+    const linkedRecoveryPointArn = resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT'
+      ? resource.resource_arn : resource.attributes.AwsBackupRecoveryPointArn;
+    if (linkedRecoveryPointArn && inventory.aws_backup_legal_hold_recovery_point_arns?.includes(linkedRecoveryPointArn)) {
+      blockers.push('Candidate recovery point is covered by an active AWS Backup legal hold.');
+    }
+    if (inventory.aws_backup_legal_hold_scope_status_uncertain) {
+      blockers.push('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
+    }
   }
   if (inventory) {
     blockers.push('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
