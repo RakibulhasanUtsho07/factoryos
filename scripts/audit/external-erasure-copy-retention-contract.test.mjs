@@ -1,3 +1,6 @@
+  assert.match(evaluator, /expectedTenantId: string/);
+  assert.match(evaluator, /input\.tenant_id\.toLowerCase\(\) === expectedTenantId\.toLowerCase\(\)/);
+  assert.match(evaluatorTests, /rejects a complete inventory bound to a different tenant/);
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
