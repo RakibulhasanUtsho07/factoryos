@@ -201,11 +201,11 @@ function canonicalJson(value: unknown): string {
     if (typeof value === 'string' && URL_WITH_CREDENTIALS.test(value)) {
       return fail('provider record contains an embedded URL credential');
     }
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? 'null';
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return fail('provider record contains a non-finite number');
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? 'null';
   }
   if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
   if (!isRecord(value)) return fail('provider record contains a non-JSON value');
