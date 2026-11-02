@@ -640,6 +640,13 @@ class AwsQueryApi {
   }
 }
 
+function xmlWithoutAutomatedBackupReplications(block: string): string {
+  return block.replace(
+    /<(?:[A-Za-z0-9_]+:)?DBInstanceAutomatedBackupsReplications(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_]+:)?DBInstanceAutomatedBackupsReplications\s*>/i,
+    '',
+  );
+}
+
 function resourceFromBlock(
   block: string,
   _tag: string,
@@ -649,12 +656,14 @@ function resourceFromBlock(
   sourceDatabaseTag: string | null,
   fieldNames: string[],
 ): AwsRdsPitrResource {
-  const rawArn = xmlText(block, arnTag);
+  const primaryBlock = resourceType === 'RDS_AUTOMATED_BACKUP'
+    ? xmlWithoutAutomatedBackupReplications(block) : block;
+  const rawArn = xmlText(primaryBlock, arnTag);
   const arn = rawArn === null && resourceType === 'RDS_AUTOMATED_BACKUP'
     ? null
     : requireAwsArn(rawArn, resourceType + ' ARN', scope);
-  const sourceDatabaseReference = sourceDatabaseTag ? optionalString(xmlText(block, sourceDatabaseTag)) : null;
-  const dbiResourceId = optionalString(xmlText(block, 'DbiResourceId'));
+  const sourceDatabaseReference = sourceDatabaseTag ? optionalString(xmlText(primaryBlock, sourceDatabaseTag)) : null;
+  const dbiResourceId = optionalString(xmlText(primaryBlock, 'DbiResourceId'));
   if (resourceType === 'RDS_AUTOMATED_BACKUP' && !arn
     && (typeof dbiResourceId !== 'string' || !/^db-[A-Za-z0-9]+$/.test(dbiResourceId))) {
     return fail('RDS automated backup omitted a valid stable source DbiResourceId and replicated-backup ARN');
@@ -668,8 +677,8 @@ function resourceFromBlock(
   const providerIdentityReference = 'aws-rds-resource.' + sha256(identityMaterial).slice(0, 40);
   const isAutomatedBackup = resourceType === 'RDS_AUTOMATED_BACKUP';
   const isSnapshot = resourceType === 'RDS_DB_SNAPSHOT' || resourceType === 'RDS_DB_CLUSTER_SNAPSHOT';
-  const snapshotIdentifier = resourceType === 'RDS_DB_SNAPSHOT' ? optionalString(xmlText(block, 'DBSnapshotIdentifier'))
-    : resourceType === 'RDS_DB_CLUSTER_SNAPSHOT' ? optionalString(xmlText(block, 'DBClusterSnapshotIdentifier')) : null;
+  const snapshotIdentifier = resourceType === 'RDS_DB_SNAPSHOT' ? optionalString(xmlText(primaryBlock, 'DBSnapshotIdentifier'))
+    : resourceType === 'RDS_DB_CLUSTER_SNAPSHOT' ? optionalString(xmlText(primaryBlock, 'DBClusterSnapshotIdentifier')) : null;
   const providerDeleteIdentity = isAutomatedBackup ? (arn ?? dbiResourceId)
     : isSnapshot ? snapshotIdentifier : null;
   const providerDeleteIdentityKind = isAutomatedBackup ? (arn ? 'REPLICATED_BACKUP_ARN' : 'DBI_RESOURCE_ID')
@@ -685,9 +694,9 @@ function resourceFromBlock(
         return entry;
       })
     : [];
-  const retention = optionalInteger(xmlText(block, 'BackupRetentionPeriod'));
+  const retention = optionalInteger(xmlText(primaryBlock, 'BackupRetentionPeriod'));
   const attrs: Record<string, string | null> = {};
-  for (const name of fieldNames) attrs[name] = optionalString(xmlText(block, name));
+  for (const name of fieldNames) attrs[name] = optionalString(xmlText(primaryBlock, name));
   return {
     resource_arn: arn,
     provider_identity_reference: providerIdentityReference,
@@ -698,12 +707,12 @@ function resourceFromBlock(
     resource_type: resourceType,
     account_id: scope.account_reference,
     region: scope.region_reference,
-    engine: optionalString(xmlText(block, 'Engine')),
+    engine: optionalString(xmlText(primaryBlock, 'Engine')),
     source_database_reference: sourceDatabaseReference,
-    status: optionalString(xmlText(block, 'Status') ?? xmlText(block, 'DBInstanceStatus') ?? xmlText(block, 'DBClusterStatus')),
-    created_at: optionalString(xmlText(block, 'SnapshotCreateTime') ?? xmlText(block, 'InstanceCreateTime')),
-    earliest_restorable_time: optionalString(xmlText(block, 'EarliestTime')),
-    latest_restorable_time: optionalString(xmlText(block, 'LatestTime') ?? xmlText(block, 'LatestRestorableTime')),
+    status: optionalString(xmlText(primaryBlock, 'Status') ?? xmlText(primaryBlock, 'DBInstanceStatus') ?? xmlText(primaryBlock, 'DBClusterStatus')),
+    created_at: optionalString(xmlText(primaryBlock, 'SnapshotCreateTime') ?? xmlText(primaryBlock, 'InstanceCreateTime')),
+    earliest_restorable_time: optionalString(xmlText(primaryBlock, 'EarliestTime')),
+    latest_restorable_time: optionalString(xmlText(primaryBlock, 'LatestTime') ?? xmlText(primaryBlock, 'LatestRestorableTime')),
     retention_days: retention,
     attributes: { account_id: scope.account_reference, region: scope.region_reference, ...attrs },
   };
