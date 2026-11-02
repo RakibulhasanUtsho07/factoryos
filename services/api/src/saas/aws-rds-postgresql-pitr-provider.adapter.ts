@@ -1026,7 +1026,8 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     blockers.push('Candidate ARN does not match the expected AWS account and region.');
   }
   const resource = arn && inventory?.sources.flatMap((source) => source.items)
-    .find((item) => item.resource_arn === arn);
+    .find((item) => item.resource_arn === arn
+      && ['RDS_RETAINED_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type));
   if (!resource) blockers.push('Candidate resource was not observed in the supplied inventory.');
   const now = Date.now();
   let expiry: number | null = null;
