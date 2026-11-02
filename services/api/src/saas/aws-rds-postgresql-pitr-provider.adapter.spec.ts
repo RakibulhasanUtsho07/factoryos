@@ -162,7 +162,8 @@ function makeFetch(options: {
           CreationDate: '2026-11-01T00:00:00.000Z',
           CompletionDate: '2026-11-01T00:05:00.000Z',
           LastRestoreTime: null,
-          Lifecycle: { DeleteAt: 1796102400, MoveToColdStorageAt: null },
+          Lifecycle: { DeleteAfterDays: 365, MoveToColdStorageAfterDays: null },
+          CalculatedLifecycle: { DeleteAt: 1796102400, MoveToColdStorageAt: null },
           IsEncrypted: true,
           EncryptionKeyArn: 'arn:aws:kms:ap-southeast-1:111111111111:key/abcd1234',
           BackupSizeInBytes: 987654321
