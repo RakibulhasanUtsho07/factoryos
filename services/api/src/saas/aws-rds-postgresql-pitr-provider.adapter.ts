@@ -659,7 +659,8 @@ function sourceFromItems(
   pages: number,
   receipts: string[],
 ): AwsRdsPitrCatalogSource {
-  const sorted = [...items].sort((a, b) => a.resource_arn < b.resource_arn ? -1 : a.resource_arn > b.resource_arn ? 1 : 0);
+  const sorted = [...items].sort((a, b) => a.provider_identity_reference < b.provider_identity_reference ? -1
+    : a.provider_identity_reference > b.provider_identity_reference ? 1 : 0);
   const unique = new Set(sorted.map((item) => item.provider_identity_reference));
   if (unique.size !== sorted.length) return fail(sourceKind + ' contains a duplicate provider resource identity');
   const normalized = JSON.stringify(sorted);
