@@ -1,0 +1,39 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyMutationOrDeletionOfFactoryOSBackupCopyEventArchive",
+      "Effect": "Deny",
+      "Action": [
+        "events:DeleteArchive",
+        "events:UpdateArchive"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:events:*:<ACCOUNT_ID>:archive/<ARCHIVE_NAME>"
+      ],
+      "Condition": {
+        "ArnNotEquals": {
+          "aws:PrincipalArn": "arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyStopDeleteOrConfigurationChangesToFactoryOSBackupCopyCloudTrail",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:UpdateTrail",
+        "cloudtrail:PutEventSelectors"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:cloudtrail:*:<ACCOUNT_ID>:trail/<TRAIL_NAME>"
+      ],
+      "Condition": {
+        "ArnNotEquals": {
+          "aws:PrincipalArn": "arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>"
+        }
+      }
+    }
+  ]
+}
