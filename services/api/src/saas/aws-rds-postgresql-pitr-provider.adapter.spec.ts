@@ -571,6 +571,9 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const backup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
       ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
+    expect(backup?.resource_arn).toBeNull();
+    expect(backup?.identity_kind).toBe('SOURCE_DB_RESOURCE_ID');
+    expect(backup?.provider_delete_identity_kind).toBe('DBI_RESOURCE_ID');
     expect(backup?.replication_destination_arns).toEqual([destinationArn]);
     expect(inventory.unresolved_replication_destination_arns).toEqual([destinationArn]);
     expect(inventory.sources.find((source) => source.source_kind === 'WAL_REPLICATION_PATH_CATALOG')
