@@ -59,14 +59,14 @@ This is an optional, separate read-only inspection path. Configure database_prin
 
 The database connection uses the supplied RDS CA bundle only when its configured SHA-256 digest matches the exact PEM bytes. TLS certificate verification and endpoint hostname verification are mandatory; there is no insecure fallback. Each connection begins with BEGIN READ ONLY, applies bounded statement and lock timeouts, verifies that the current login is the configured reader, requires pg_monitor membership and inherited role grants, rejects superuser/createdb/createrole/replication/BYPASSRLS capabilities and known elevated writer/server-execution role memberships, then rolls the transaction back and closes the connection. The reader role must not be reused for application traffic or backup deletion.
 
-The scanner first enumerates pg_database, then inspects every non-template database with datallowconn = true. A denied connection, disabled database, missing database, truncated catalog or budget exhaustion remains an explicit blocker; a skipped database is never treated as an empty result. The bounded catalogs include:
+The scanner first enumerates pg_database, then inspects every non-template database with datallowconn = true. Cluster-wide roles, role memberships, replication senders, replication slots and WAL receiver state are queried once per RDS resource using the bootstrap database connection; they are not repeated or attributed to every database. Database-scoped grants and sessions are queried in each database, and logical subscriptions are filtered by their owning subdbid because pg_subscription is shared across the cluster. A denied connection, disabled database, missing database, truncated catalog or budget exhaustion remains an explicit blocker; a skipped database is never treated as an empty result. The bounded catalogs include:
 
 - role attributes and login status from pg_roles (never rolpassword or pg_authid);
 - role memberships and admin option;
 - database CONNECT/CREATE/TEMP privileges;
 - schema ACLs, table/view write ACLs, column-level write ACLs, sequence ACLs, and default table/sequence/function privileges;
 - function EXECUTE grants as capability evidence, not proof that a function is harmless;
-- active session identity/application/state metadata from pg_stat_activity (never SQL text);
+- active session identity/state metadata from pg_stat_activity (never SQL text); application_name is stored only as a presence flag and SHA-256 digest, never as raw text;
 - replication senders, slots and WAL receivers;
 - logical subscription metadata (subname, owner, enabled state, slot and publication names), never pg_subscription.subconninfo.
 
@@ -131,7 +131,7 @@ Focused regression suites: **services/api/src/saas/aws-rds-postgresql-pitr-provi
 
 It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection including exact AWS Backup source account/region and vault binding, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
 
-The adapter tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. The new database-principal suite uses a mocked PostgreSQL client and covers SigV4 IAM token scope, CA digest pinning, verified TLS options, read-only transactions, least-privilege role checks, multi-database coverage, query/row budgets, partial handling of denied catalogs and omission of password/connection-info/query-text fields. These suites do not connect to AWS or a live PostgreSQL database and do not validate effective IAM/SCP policy behavior.
+The adapter tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. The new database-principal suite uses a mocked PostgreSQL client and covers SigV4 IAM token scope, CA digest pinning, verified TLS options, read-only transactions, least-privilege role checks, cluster-versus-database catalog scoping without duplicate role/replication evidence, multi-database coverage, query/row budgets, partial handling of denied catalogs, hashed application labels and omission of password/connection-info/query-text fields. These suites do not connect to AWS or a live PostgreSQL database and do not validate effective IAM/SCP policy behavior.
 
 ## Production acceptance still required
 
