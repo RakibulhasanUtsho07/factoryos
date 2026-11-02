@@ -35,6 +35,7 @@ export interface AwsRdsDatabasePrincipalReaderConfig {
   max_databases_per_target?: number;
   max_rows_per_query?: number;
   max_total_rows?: number;
+  max_total_queries?: number;
   statement_timeout_ms?: number;
   connection_timeout_ms?: number;
 }
@@ -58,6 +59,7 @@ export interface AwsRdsDatabasePrincipalInventoryResult {
   databases_discovered: number;
   databases_scanned: number;
   pages_fetched: number;
+  queries_attempted: number;
   item_count: number;
   receipt_references: string[];
   blockers: string[];
@@ -84,6 +86,7 @@ interface ValidatedConfig {
   max_databases_per_target: number;
   max_rows_per_query: number;
   max_total_rows: number;
+  max_total_queries: number;
   statement_timeout_ms: number;
   connection_timeout_ms: number;
 }
@@ -93,7 +96,12 @@ const SQL = {
     'SELECT current_user AS database_user, current_database() AS database_name,',
     " current_setting('transaction_read_only') AS transaction_read_only,",
     ' r.rolcanlogin, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
-    " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor",
+    " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor,",
+    " pg_catalog.pg_has_role(current_user, 'rds_superuser', 'MEMBER') AS has_rds_superuser,",
+    " pg_catalog.pg_has_role(current_user, 'rds_replication', 'MEMBER') AS has_rds_replication,",
+    " pg_catalog.pg_has_role(current_user, 'pg_write_all_data', 'MEMBER') AS has_pg_write_all_data,",
+    " pg_catalog.pg_has_role(current_user, 'pg_write_server_files', 'MEMBER') AS has_pg_write_server_files,",
+    " pg_catalog.pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER') AS has_pg_execute_server_program",
     ' FROM pg_catalog.pg_roles r WHERE r.rolname = current_user',
   ].join(' '),
   databaseCount: [
@@ -265,11 +273,13 @@ function validateConfig(config: AwsRdsDatabasePrincipalReaderConfig): ValidatedC
   const maxDatabases = config.max_databases_per_target ?? 64;
   const maxRows = config.max_rows_per_query ?? 500;
   const maxTotalRows = config.max_total_rows ?? 20000;
+  const maxTotalQueries = config.max_total_queries ?? 10000;
   const statementTimeout = config.statement_timeout_ms ?? 5000;
   const connectionTimeout = config.connection_timeout_ms ?? 5000;
   if (!Number.isSafeInteger(maxDatabases) || maxDatabases < 1 || maxDatabases > MAX_DATABASES_HARD_LIMIT
     || !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > MAX_ROWS_HARD_LIMIT
     || !Number.isSafeInteger(maxTotalRows) || maxTotalRows < 1 || maxTotalRows > MAX_TOTAL_ROWS_HARD_LIMIT
+    || !Number.isSafeInteger(maxTotalQueries) || maxTotalQueries < 1 || maxTotalQueries > 50000
     || !Number.isSafeInteger(statementTimeout) || statementTimeout < 500 || statementTimeout > 30000
     || !Number.isSafeInteger(connectionTimeout) || connectionTimeout < 500 || connectionTimeout > 15000) {
     return fail('database catalog, row or timeout budgets are outside supported limits');
@@ -281,6 +291,7 @@ function validateConfig(config: AwsRdsDatabasePrincipalReaderConfig): ValidatedC
     max_databases_per_target: maxDatabases,
     max_rows_per_query: maxRows,
     max_total_rows: maxTotalRows,
+    max_total_queries: maxTotalQueries,
     statement_timeout_ms: statementTimeout,
     connection_timeout_ms: connectionTimeout,
   };
@@ -458,7 +469,10 @@ async function openReadOnlyClient(
       || session.rolcanlogin !== true || session.rolsuper !== false
       || session.rolcreaterole !== false || session.rolcreatedb !== false
       || session.rolreplication !== false || session.rolbypassrls !== false
-      || session.has_pg_monitor !== true) {
+      || session.rolinherit !== true || session.has_pg_monitor !== true
+      || session.has_rds_superuser === true || session.has_rds_replication === true
+      || session.has_pg_write_all_data === true || session.has_pg_write_server_files === true
+      || session.has_pg_execute_server_program === true) {
       return fail('database session identity is not the bounded pg_monitor-only read-only login');
     }
     return client;
@@ -478,7 +492,10 @@ async function readBounded(
   client: AwsRdsDatabasePrincipalPgClient,
   sql: string,
   maxRows: number,
+  budget: { count: number; maximum: number },
 ): Promise<{ rows: Array<Record<string, unknown>>; overflow: boolean }> {
+  if (budget.count >= budget.maximum) return fail('database catalog query budget was exhausted');
+  budget.count += 1;
   const result = await client.query(sql, [maxRows + 1]);
   if (!Array.isArray(result.rows) || result.rows.length > maxRows + 1) {
     return fail('database catalog query exceeded its bounded result contract');
@@ -524,6 +541,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
   let itemCount = 0;
   let coverageComplete = targets.length > 0;
   let totalRows = 0;
+  const queryBudget = { count: 0, maximum: config.max_total_queries };
 
   for (const target of targets) {
     if (!target.iam_database_authentication_enabled) {
@@ -546,11 +564,11 @@ export async function captureAwsRdsDatabasePrincipalInventory(
         clientFactory, config, target, 'postgres', credentials,
       );
       targetConnected = true;
-      const countResult = await readBounded(bootstrapClient, SQL.databaseCount, 1);
+      const countResult = await readBounded(bootstrapClient, SQL.databaseCount, 1, queryBudget);
       pagesFetched += 1;
       const databaseCount = Number(countResult.rows[0]?.database_count ?? 0);
       const listResult = await readBounded(
-        bootstrapClient, SQL.databases, config.max_databases_per_target,
+        bootstrapClient, SQL.databases, config.max_databases_per_target, queryBudget,
       );
       pagesFetched += 1;
       databaseList = listResult.rows;
@@ -595,8 +613,14 @@ export async function captureAwsRdsDatabasePrincipalInventory(
       let client: AwsRdsDatabasePrincipalPgClient | null = null;
       try {
         client = await openReadOnlyClient(clientFactory, config, target, database, credentials);
-        const sessionRows = await readBounded(client, SQL.session, 1);
+        const sessionRows = await readBounded(client, SQL.session, 1, queryBudget);
         pagesFetched += 1;
+        totalRows += sessionRows.rows.length;
+        if (totalRows > config.max_total_rows) {
+          coverageComplete = false;
+          blockers.push('GLOBAL_DATABASE_CATALOG_ROW_BUDGET_EXHAUSTED');
+          break;
+        }
         if (sessionRows.rows.length !== 1) {
           coverageComplete = false;
           blockers.push(target.resource_id + ':' + database + ':READER_SESSION_EVIDENCE_MISSING');
@@ -613,7 +637,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
           const bounded = await readBounded(client, sql, Math.min(
             config.max_rows_per_query,
             config.max_total_rows - totalRows,
-          ));
+          ), queryBudget);
           pagesFetched += 1;
           totalRows += bounded.rows.length;
           const emitted = bounded.rows.map((row, index) => makeRecord(
@@ -669,6 +693,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
     databases_discovered: databasesDiscovered,
     databases_scanned: databasesScanned,
     pages_fetched: pagesFetched,
+    queries_attempted: queryBudget.count,
     item_count: itemCount,
     receipt_references: [...new Set(receiptReferences)].sort(),
     blockers: [...new Set(blockers)].sort(),
