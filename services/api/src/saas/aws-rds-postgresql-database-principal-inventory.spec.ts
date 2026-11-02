@@ -51,6 +51,9 @@ function makePoolFactory(settings: {
   superuser?: boolean;
   readOnly?: string;
   sessionUser?: string;
+  databaseNames?: string[];
+  inaccessibleDatabaseNames?: string[];
+  privilegedMemberships?: string[];
 } = {}) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   const poolConfig: Array<Record<string, unknown>> = [];
@@ -58,6 +61,7 @@ function makePoolFactory(settings: {
   let ended = false;
   const poolFactory: AwsRdsPitrPgPoolFactory = (config) => {
     poolConfig.push(config as unknown as Record<string, unknown>);
+    const configuredDatabase = String(config.database ?? 'postgres');
     return {
       connect: async () => ({
         query: async (sql, values) => {
@@ -66,12 +70,12 @@ function makePoolFactory(settings: {
             return { rows: [{
               current_user: username,
               session_user: settings.sessionUser ?? username,
-              current_database: 'postgres',
+              current_database: configuredDatabase,
               transaction_read_only: settings.readOnly ?? 'on',
               in_recovery: false,
               has_pg_read_all_stats: true,
               has_rds_iam: true,
-              privileged_memberships: [],
+              privileged_memberships: settings.privilegedMemberships ?? [],
               server_version_num: '160004',
             }] };
           }
@@ -91,7 +95,15 @@ function makePoolFactory(settings: {
             ] };
           }
           if (sql.includes('factoryos:pitr:database_access')) {
-            return { rows: [{ datname: 'postgres', owner: 'rdsadmin', datallowconn: true, current_user_can_connect: true, datistemplate: false, acl_reference: null }] };
+            const databaseNames = settings.databaseNames ?? ['postgres'];
+            return { rows: databaseNames.map((datname) => ({
+              datname,
+              owner: 'rdsadmin',
+              datallowconn: true,
+              current_user_can_connect: !(settings.inaccessibleDatabaseNames ?? []).includes(datname),
+              datistemplate: false,
+              acl_reference: null,
+            })) };
           }
           if (sql.includes('factoryos:pitr:schema_privileges')) {
             return { rows: [{ grantee: 'app_writer', schema_name: 'public', privilege_type: 'CREATE', is_grantable: false }] };
@@ -235,6 +247,39 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalog.status).toBe('PARTIAL');
     expect(catalog.blockers).toContain('DATABASE_PRINCIPAL_CATALOG_FAILED:logical_subscriptions:ACCESS_DENIED');
     expect(catalog.blockers.join(' ')).not.toContain('do-not-leak-secret-conninfo');
+  });
+
+
+  it('captures every connectable non-template database on the PostgreSQL instance', async () => {
+    const mock = makePoolFactory({ databaseNames: ['postgres', 'orders', 'analytics'] });
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory,
+      () => new Date('2026-11-02T06:02:00.000Z'));
+    const catalogs = await reader.captureAll(target, role);
+    expect(catalogs.map((item) => item.database_name).sort()).toEqual(['analytics', 'orders', 'postgres']);
+    expect(catalogs.every((item) => item.status === 'COMPLETE')).toBe(true);
+    expect(mock.poolConfig.map((item) => item.database).sort()).toEqual(['analytics', 'orders', 'postgres']);
+    expect(catalogs.every((item) => item.identity?.transaction_read_only === true)).toBe(true);
+  });
+
+  it('keeps multi-database coverage partial when the IAM reader cannot connect to an application database', async () => {
+    const mock = makePoolFactory({
+      databaseNames: ['postgres', 'orders'],
+      inaccessibleDatabaseNames: ['orders'],
+    });
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory);
+    const catalogs = await reader.captureAll(target, role);
+    expect(catalogs).toHaveLength(1);
+    expect(catalogs[0]?.status).toBe('PARTIAL');
+    expect(catalogs[0]?.blockers).toContain('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
+    expect(mock.poolConfig.map((item) => item.database)).toEqual(['postgres']);
+  });
+
+  it('rejects the database reader when it inherits a privileged RDS/PostgreSQL role', async () => {
+    const mock = makePoolFactory({ privilegedMemberships: ['rds_superuser'] });
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory);
+    const catalog = await reader.capture(target, role);
+    expect(catalog.status).toBe('PARTIAL');
+    expect(catalog.blockers).toContain('DATABASE_INVENTORY_LOGIN_ROLE_IS_MISSING_OR_OVERPRIVILEGED');
   });
 
   it('rejects a database role assumed in a different account or under the inventory collection role', async () => {
