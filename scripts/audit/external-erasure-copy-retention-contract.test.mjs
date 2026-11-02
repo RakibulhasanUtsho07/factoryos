@@ -587,6 +587,12 @@ test('PostgreSQL WAL/PITR provider capture and independent residual scan fail cl
   assert.match(providerEvidence, /duplicate provider item reference/);
   assert.match(providerEvidence, /sensitive field name/);
   assert.match(providerEvidence, /MAX_TOTAL_ITEMS/);
+  assert.match(providerEvidence, /MAX_TOTAL_PAGES/);
+  assert.match(providerEvidence, /page\.items\.length > pageSize/);
+  assert.match(providerEvidence, /exceeded its total page budget/);
+  assert.match(providerTests, /rejects a provider page larger than the requested page size/);
+  assert.match(providerTests, /enforces a global page budget across source catalogs and provider scopes/);
+  assert.match(providerTests, /enforces a global page budget across independent residual scopes/);
   assert.match(providerEvidence, /provider_native_inventory_complete: false/);
   assert.match(providerEvidence, /source_receipts_signable: false/);
   assert.match(providerEvidence, /manifest_eligible: false/);
