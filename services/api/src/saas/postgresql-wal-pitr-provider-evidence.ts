@@ -269,7 +269,7 @@ function validateDiscovery(
 }
 
 function validateInput(input: PostgresqlWalPitrProviderInventoryCaptureInput): {
-  pageSize: number; maxPages: number; maxItems: number; now: Date;
+  pageSize: number; maxPages: number; maxItems: number; maxTotalPages: number; now: Date;
 } {
   if (!isRecord(input) || typeof input.tenant_id !== 'string' || !UUID.test(input.tenant_id)
     || typeof input.inventory_id !== 'string' || !UUID.test(input.inventory_id)
@@ -299,6 +299,7 @@ async function enumerateSource(
   principal: string,
   pageSize: number,
   maxPages: number,
+  collectionRunReference: string,
   itemBudget: { total: number; maximum: number },
   pageBudget: { total: number; maximum: number },
 ): Promise<PostgresqlWalPitrProviderSourceCapture> {
@@ -356,9 +357,8 @@ async function enumerateSource(
   return {
     source_kind: kind,
     source_reference: 'provider.inventory.' + kindSuffix,
-    collection_run_reference: 'provider.capture.' + kindSuffix + '.' + safeReference(
-      'run.' + pagesFetched + '.' + resultDigest.slice(0, 16), 'derived collection run reference',
-    ),
+    collection_run_reference: 'provider.capture.' + kindSuffix + '.'
+      + sha256(collectionRunReference).slice(0, 24) + '.' + resultDigest.slice(0, 16),
     pages_fetched: pagesFetched,
     item_count: sorted.length,
     result_sha256: resultDigest,
@@ -388,7 +388,7 @@ export async function capturePostgresqlWalPitrProviderInventory(
   for (const kind of POSTGRESQL_WAL_PITR_PROVIDER_SOURCE_KINDS) {
     captures.push(await enumerateSource(
       gateway, kind, discovery.scopes, discovery.principal, bounds.pageSize,
-      bounds.maxPages, itemBudget, pageBudget,
+      bounds.maxPages, input.collection_run_reference, itemBudget, pageBudget,
     ));
   }
   const scopeSha = sha256(JSON.stringify(discovery.scopes));
