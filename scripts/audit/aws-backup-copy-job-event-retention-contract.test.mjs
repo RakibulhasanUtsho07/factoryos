@@ -170,7 +170,7 @@ test('SCP protects the exact archive, trail, audit bucket and KMS key except one
     's3:PutBucketObjectLockConfiguration',
     's3:PutBucketVersioning',
     's3:PutBucketEncryption',
-    's3:DeleteBucketEncryption',
+    's3:PutEncryptionConfiguration',
     's3:PutLifecycleConfiguration',
   ]);
   assert.equal(bucket.Resource[0], 'arn:<PARTITION>:s3:::<AUDIT_BUCKET_NAME>');
