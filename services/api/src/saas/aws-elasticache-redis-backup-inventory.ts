@@ -1082,15 +1082,6 @@ export async function captureAwsElastiCacheRedisBackupInventory(
     }
   }
   const mergedGlobals = mergeGlobalReplicationGroups(globalReplicationGroups, blockers);
-  const cacheNames = new Set(serverlessCaches.map((cache) => cache.account_id + ':' + cache.region + ':' + cache.cache_name));
-  for (const snapshot of serverlessSnapshots) {
-    if (!cacheNames.has(snapshot.account_id + ':' + snapshot.region + ':' + snapshot.cache_name)) {
-      const blocker = snapshot.account_id + ':' + snapshot.region
-        + ':SERVERLESS_SNAPSHOT_SOURCE_CACHE_NOT_IN_CURRENT_CATALOG:' + snapshot.cache_name;
-      serverlessBlockers.add(blocker);
-      blockers.add(blocker);
-    }
-  }
   for (const blocker of serverlessBlockers) blockers.add(blocker);
   const uniqueBlockers = [...blockers].sort();
   const nodeBasedBlockers = uniqueBlockers.filter((blocker) => !serverlessBlockers.has(blocker));
