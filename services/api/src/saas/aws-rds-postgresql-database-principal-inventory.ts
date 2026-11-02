@@ -60,6 +60,7 @@ export interface AwsRdsDatabasePrincipalInventoryResult {
   databases_scanned: number;
   pages_fetched: number;
   queries_attempted: number;
+  total_rows_observed: number;
   item_count: number;
   receipt_references: string[];
   blockers: string[];
@@ -97,11 +98,11 @@ const SQL = {
     " current_setting('transaction_read_only') AS transaction_read_only,",
     ' r.rolcanlogin, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
     " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor,",
-    " pg_catalog.pg_has_role(current_user, 'rds_superuser', 'MEMBER') AS has_rds_superuser,",
-    " pg_catalog.pg_has_role(current_user, 'rds_replication', 'MEMBER') AS has_rds_replication,",
-    " pg_catalog.pg_has_role(current_user, 'pg_write_all_data', 'MEMBER') AS has_pg_write_all_data,",
-    " pg_catalog.pg_has_role(current_user, 'pg_write_server_files', 'MEMBER') AS has_pg_write_server_files,",
-    " pg_catalog.pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER') AS has_pg_execute_server_program",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_superuser'), false) AS has_rds_superuser,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_replication'), false) AS has_rds_replication,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_write_all_data'), false) AS has_pg_write_all_data,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_write_server_files'), false) AS has_pg_write_server_files,",
+    " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_execute_server_program'), false) AS has_pg_execute_server_program",
     ' FROM pg_catalog.pg_roles r WHERE r.rolname = current_user',
   ].join(' '),
   databaseCount: [
@@ -159,6 +160,19 @@ const SQL = {
     " AND acl.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')",
     ' ORDER BY n.nspname, c.relname, grantee.rolname, acl.privilege_type LIMIT $1',
   ].join(' '),
+  columnPrivileges: [
+    'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee, n.nspname AS schema_name,',
+    ' c.relname AS table_name, a.attname AS column_name, acl.privilege_type, acl.is_grantable',
+    ' FROM pg_catalog.pg_attribute a',
+    ' JOIN pg_catalog.pg_class c ON c.oid = a.attrelid',
+    ' JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace',
+    ' CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) acl',
+    ' LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee',
+    ' WHERE a.attnum > 0 AND NOT a.attisdropped',
+    " AND n.nspname NOT IN ('pg_catalog', 'information_schema')",
+    " AND acl.privilege_type IN ('INSERT', 'UPDATE', 'REFERENCES')",
+    ' ORDER BY n.nspname, c.relname, a.attname, grantee.rolname LIMIT $1',
+  ].join(' '),
   sequencePrivileges: [
     'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee, n.nspname AS schema_name,',
     ' c.relname AS sequence_name, acl.privilege_type, acl.is_grantable',
@@ -172,6 +186,31 @@ const SQL = {
     " AND acl.privilege_type IN ('USAGE', 'UPDATE')",
     ' ORDER BY n.nspname, c.relname, grantee.rolname LIMIT $1',
   ].join(' '),
+  defaultTablePrivileges: [
+    'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee,',
+    ' COALESCE(n.nspname, \'<GLOBAL>\') AS schema_name, owner.rolname AS owner_role,',
+    ' acl.privilege_type, acl.is_grantable',
+    ' FROM pg_catalog.pg_default_acl d',
+    ' LEFT JOIN pg_catalog.pg_namespace n ON n.oid = NULLIF(d.defaclnamespace, 0)',
+    ' JOIN pg_catalog.pg_roles owner ON owner.oid = d.defaclrole',
+    ' CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) acl',
+    ' LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee',
+    " WHERE d.defaclobjtype = 'r'",
+    " AND acl.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')",
+    ' ORDER BY schema_name, owner.rolname, grantee.rolname LIMIT $1',
+  ].join(' '),
+  defaultSequencePrivileges: [
+    'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee,',
+    ' COALESCE(n.nspname, \'<GLOBAL>\') AS schema_name, owner.rolname AS owner_role,',
+    ' acl.privilege_type, acl.is_grantable',
+    ' FROM pg_catalog.pg_default_acl d',
+    ' LEFT JOIN pg_catalog.pg_namespace n ON n.oid = NULLIF(d.defaclnamespace, 0)',
+    ' JOIN pg_catalog.pg_roles owner ON owner.oid = d.defaclrole',
+    ' CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) acl',
+    ' LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee',
+    " WHERE d.defaclobjtype = 'S' AND acl.privilege_type IN ('USAGE', 'UPDATE')",
+    ' ORDER BY schema_name, owner.rolname, grantee.rolname LIMIT $1',
+  ].join(' '),
   functionPrivileges: [
     'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee, n.nspname AS schema_name,',
     ' p.proname AS function_name, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments,',
@@ -184,6 +223,18 @@ const SQL = {
     " WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')",
     " AND acl.privilege_type = 'EXECUTE'",
     ' ORDER BY n.nspname, p.proname, grantee.rolname LIMIT $1',
+  ].join(' '),
+  defaultFunctionPrivileges: [
+    'SELECT COALESCE(grantee.rolname, \'PUBLIC\') AS grantee,',
+    ' COALESCE(n.nspname, \'<GLOBAL>\') AS schema_name, owner.rolname AS owner_role,',
+    ' acl.privilege_type, acl.is_grantable',
+    ' FROM pg_catalog.pg_default_acl d',
+    ' LEFT JOIN pg_catalog.pg_namespace n ON n.oid = NULLIF(d.defaclnamespace, 0)',
+    ' JOIN pg_catalog.pg_roles owner ON owner.oid = d.defaclrole',
+    ' CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) acl',
+    ' LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee',
+    " WHERE d.defaclobjtype = 'f' AND acl.privilege_type = 'EXECUTE'",
+    ' ORDER BY schema_name, owner.rolname, grantee.rolname LIMIT $1',
   ].join(' '),
   sessions: [
     'SELECT pid, usename, application_name, backend_type, state, wait_event_type, wait_event',
@@ -447,6 +498,7 @@ async function openReadOnlyClient(
   target: AwsRdsDatabasePrincipalTarget,
   database: string,
   credentials: AwsRdsDatabasePrincipalCredentials,
+  budget: { count: number; maximum: number },
 ): Promise<AwsRdsDatabasePrincipalPgClient> {
   const token = createAwsRdsIamDatabaseAuthToken(
     credentials,
@@ -461,6 +513,8 @@ async function openReadOnlyClient(
       String(config.statement_timeout_ms) + 'ms',
     ]);
     await client.query("SELECT pg_catalog.set_config('lock_timeout', '1000ms', true)");
+    if (budget.count >= budget.maximum) return fail('database catalog query budget was exhausted');
+    budget.count += 1;
     const result = await client.query(SQL.session);
     const session = result.rows[0];
     if (!session || session.database_user !== config.database_username
@@ -561,7 +615,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
     let bootstrapClient: AwsRdsDatabasePrincipalPgClient | null = null;
     try {
       bootstrapClient = await openReadOnlyClient(
-        clientFactory, config, target, 'postgres', credentials,
+        clientFactory, config, target, 'postgres', credentials, queryBudget,
       );
       targetConnected = true;
       const countResult = await readBounded(bootstrapClient, SQL.databaseCount, 1, queryBudget);
@@ -612,20 +666,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
       }
       let client: AwsRdsDatabasePrincipalPgClient | null = null;
       try {
-        client = await openReadOnlyClient(clientFactory, config, target, database, credentials);
-        const sessionRows = await readBounded(client, SQL.session, 1, queryBudget);
-        pagesFetched += 1;
-        totalRows += sessionRows.rows.length;
-        if (totalRows > config.max_total_rows) {
-          coverageComplete = false;
-          blockers.push('GLOBAL_DATABASE_CATALOG_ROW_BUDGET_EXHAUSTED');
-          break;
-        }
-        if (sessionRows.rows.length !== 1) {
-          coverageComplete = false;
-          blockers.push(target.resource_id + ':' + database + ':READER_SESSION_EVIDENCE_MISSING');
-          continue;
-        }
+        client = await openReadOnlyClient(clientFactory, config, target, database, credentials, queryBudget);
         let databaseFailed = false;
         for (const [kind, sql, identityKeys] of QUERY_KINDS) {
           if (totalRows >= config.max_total_rows) {
@@ -634,11 +675,23 @@ export async function captureAwsRdsDatabasePrincipalInventory(
             blockers.push('GLOBAL_DATABASE_CATALOG_ROW_BUDGET_EXHAUSTED');
             break;
           }
-          const bounded = await readBounded(client, sql, Math.min(
-            config.max_rows_per_query,
-            config.max_total_rows - totalRows,
-          ), queryBudget);
-          pagesFetched += 1;
+          let bounded: { rows: Array<Record<string, unknown>>; overflow: boolean };
+          try {
+            bounded = await readBounded(client, sql, Math.min(
+              config.max_rows_per_query,
+              config.max_total_rows - totalRows,
+            ), queryBudget);
+            pagesFetched += 1;
+          } catch {
+            databaseFailed = true;
+            coverageComplete = false;
+            blockers.push(target.resource_id + ':' + database + ':' + kind + ':CATALOG_QUERY_DENIED_OR_FAILED');
+            if (queryBudget.count >= queryBudget.maximum) {
+              blockers.push('GLOBAL_DATABASE_CATALOG_QUERY_BUDGET_EXHAUSTED');
+              break;
+            }
+            continue;
+          }
           totalRows += bounded.rows.length;
           const emitted = bounded.rows.map((row, index) => makeRecord(
             target,
@@ -648,16 +701,9 @@ export async function captureAwsRdsDatabasePrincipalInventory(
             row,
           ));
           records.push(...emitted);
-          replicationRecords.push(...emitted.filter((record) =>
-            REPLICATION_KINDS.has(kind),
-          ));
+          replicationRecords.push(...emitted.filter((record) => REPLICATION_KINDS.has(kind)));
           itemCount += emitted.length;
-          const receiptMaterial = JSON.stringify({
-            target: target.resource_id,
-            database,
-            kind,
-            rows: bounded.rows,
-          });
+          const receiptMaterial = JSON.stringify({ target: target.resource_id, database, kind, rows: bounded.rows });
           receiptReferences.push('postgresql-readonly.' + sha256(receiptMaterial).slice(0, 40));
           if (bounded.overflow) {
             databaseFailed = true;
@@ -694,6 +740,7 @@ export async function captureAwsRdsDatabasePrincipalInventory(
     databases_scanned: databasesScanned,
     pages_fetched: pagesFetched,
     queries_attempted: queryBudget.count,
+    total_rows_observed: totalRows,
     item_count: itemCount,
     receipt_references: [...new Set(receiptReferences)].sort(),
     blockers: [...new Set(blockers)].sort(),
