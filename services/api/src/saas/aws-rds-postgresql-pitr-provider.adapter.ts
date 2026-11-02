@@ -7,7 +7,6 @@ export const AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA =
 
 const QUERY_VERSIONS = {
   sts: '2011-06-15',
-  organizations: '2016-11-28',
   ec2: '2016-11-15',
   rds: '2014-10-31',
 } as const;
@@ -405,7 +404,7 @@ class AwsQueryApi {
   ) {}
 
   async call(
-    service: 'sts' | 'organizations' | 'ec2' | 'rds',
+    service: 'sts' | 'ec2' | 'rds',
     region: string,
     credentials: AwsRdsPitrCredentials,
     action: string,
@@ -470,8 +469,108 @@ class AwsQueryApi {
     return { xml, queryReceiptReference };
   }
 
+  async paginateOrganizations(
+    region: string,
+    credentials: AwsRdsPitrCredentials,
+  ): Promise<{
+    accounts: Array<{ id: string; state: string }>;
+    pages: number;
+    receipts: string[];
+  }> {
+    const accounts: Array<{ id: string; state: string }> = [];
+    const receipts: string[] = [];
+    const seenTokens = new Set<string>();
+    let nextToken: string | null = null;
+    let pages = 0;
+    do {
+      if (this.budget.total >= this.budget.maximum) {
+        return fail('AWS provider calls exceeded the global page/request budget');
+      }
+      this.budget.total += 1;
+      const dnsSuffix = region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
+      const host = 'organizations.' + region + '.' + dnsSuffix;
+      const endpoint = 'https://' + host + '/';
+      const requestBody: Record<string, unknown> = { MaxResults: 20 };
+      if (nextToken !== null) requestBody.NextToken = nextToken;
+      const body = JSON.stringify(requestBody);
+      const payloadHash = sha256(body);
+      const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      const dateStamp = amzDate.slice(0, 8);
+      const target = 'AWSOrganizationsV20161128.ListAccounts';
+      const headers: Record<string, string> = {
+        'content-type': 'application/x-amz-json-1.1',
+        host,
+        'x-amz-content-sha256': payloadHash,
+        'x-amz-date': amzDate,
+        'x-amz-target': target,
+      };
+      if (credentials.session_token) headers['x-amz-security-token'] = credentials.session_token;
+      const signedNames = Object.keys(headers).sort();
+      const canonicalHeaders = signedNames.map((name) =>
+        name + ':' + headers[name]!.trim().replace(/\s+/g, ' ') + '\n').join('');
+      const signedHeaders = signedNames.join(';');
+      const canonicalRequest = ['POST', '/', '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+      const scope = dateStamp + '/' + region + '/organizations/aws4_request';
+      const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256(canonicalRequest)].join('\n');
+      const signingKey = hmac(
+        hmac(hmac(hmac('AWS4' + credentials.secret_access_key, dateStamp), region), 'organizations'),
+        'aws4_request',
+      );
+      const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+      const authorization = 'AWS4-HMAC-SHA256 Credential=' + credentials.access_key_id + '/'
+        + scope + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature;
+      let response: Response;
+      try {
+        response = await this.fetcher(endpoint, {
+          method: 'POST',
+          headers: { ...headers, authorization },
+          body,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch {
+        return fail('AWS Organizations ListAccounts request failed before a verified response');
+      }
+      const responseText = await readBoundedResponse(response);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(responseText) as unknown;
+      } catch {
+        return fail('AWS Organizations ListAccounts returned malformed JSON');
+      }
+      if (!response.ok) {
+        const error = isRecord(parsed) ? String(parsed.__type ?? parsed.code ?? parsed.Code ?? 'HTTP_' + response.status) : 'HTTP_' + response.status;
+        const code = error.split('#').pop()?.split(':').pop() ?? 'UNKNOWN';
+        if (!/^[A-Za-z0-9_.-]{1,100}$/.test(code)) return fail('AWS Organizations returned an invalid service error code');
+        return fail('AWS Organizations ListAccounts was denied or failed (' + code + ')');
+      }
+      if (!isRecord(parsed) || !Array.isArray(parsed.Accounts)) {
+        return fail('AWS Organizations ListAccounts response has an unexpected JSON shape');
+      }
+      for (const item of parsed.Accounts) {
+        if (!isRecord(item)) return fail('AWS Organizations returned a malformed account entry');
+        const id = typeof item.Id === 'string' ? item.Id : '';
+        const state = typeof item.State === 'string' ? item.State.toUpperCase() : 'UNKNOWN';
+        accounts.push({ id, state });
+      }
+      pages += 1;
+      receipts.push('aws-query.organizations.listaccounts.'
+        + sha256(endpoint + target + sha256(credentials.access_key_id) + sha256(responseText)).slice(0, 32));
+      const tokenValue = parsed.NextToken;
+      if (tokenValue !== undefined && tokenValue !== null && tokenValue !== '') {
+        if (typeof tokenValue !== 'string' || tokenValue.length > 100000 || seenTokens.has(tokenValue)) {
+          return fail('AWS Organizations ListAccounts returned an invalid or repeated continuation token');
+        }
+        seenTokens.add(tokenValue);
+        nextToken = tokenValue;
+      } else {
+        nextToken = null;
+      }
+    } while (nextToken !== null);
+    return { accounts, pages, receipts };
+  }
+
   async paginate(
-    service: 'organizations' | 'ec2' | 'rds',
+    service: 'ec2' | 'rds',
     region: string,
     credentials: AwsRdsPitrCredentials,
     action: string,
@@ -639,19 +738,11 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     receipts: string[];
   }> {
     await this.callerIdentity(this.sourceCredentials, this.config.organization_account_id);
-    const result = await this.api.paginate(
-      'organizations',
+    const result = await this.api.paginateOrganizations(
       this.config.organization_region,
       this.sourceCredentials,
-      'ListAccounts',
-      'member',
-      'NextToken',
-      { MaxResults: '20' },
     );
-    const accounts = result.blocks.map((block) => ({
-      id: xmlText(block, 'Id') ?? '',
-      state: xmlText(block, 'State') ?? xmlText(block, 'Status') ?? 'UNKNOWN',
-    }));
+    const accounts = result.accounts;
 if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       return fail('AWS Organizations did not return a complete, valid account catalog');
     }
