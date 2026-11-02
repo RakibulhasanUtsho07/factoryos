@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AllowOnlyRdsPostgresqlPitrInventoryReads",
+      "Sid": "AllowReviewedRdsPostgresqlPitrCatalogReads",
       "Effect": "Allow",
       "Action": [
         "rds:DescribeDBInstances",
@@ -15,21 +15,38 @@
       "Resource": "*"
     },
     {
-      "Sid": "AllowOnlyRegionCatalogRead",
+      "Sid": "AllowEnabledRegionCatalogRead",
       "Effect": "Allow",
       "Action": "ec2:DescribeRegions",
       "Resource": "*"
     },
     {
-      "Sid": "DenyAllRdsMutationsFromInventoryRole",
-      "Effect": "Deny",
-      "NotAction": "rds:Describe*",
+      "Sid": "AllowAwsBackupVaultRecoveryPointAndLegalHoldReads",
+      "Effect": "Allow",
+      "Action": [
+        "backup:ListBackupVaults",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:ListRecoveryPointsByLegalHold"
+      ],
       "Resource": "*"
     },
     {
-      "Sid": "DenyAllEc2MutationsFromInventoryRole",
+      "Sid": "DenyEveryActionExceptReviewedInventoryReads",
       "Effect": "Deny",
-      "NotAction": "ec2:DescribeRegions",
+      "NotAction": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
+        "rds:DescribeGlobalClusters",
+        "rds:DescribeDBInstanceAutomatedBackups",
+        "rds:DescribeDBSnapshots",
+        "rds:DescribeDBClusterSnapshots",
+        "ec2:DescribeRegions",
+        "backup:ListBackupVaults",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:ListRecoveryPointsByLegalHold"
+      ],
       "Resource": "*"
     }
   ]
