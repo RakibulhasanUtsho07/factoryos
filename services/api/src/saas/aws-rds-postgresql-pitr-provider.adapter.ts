@@ -852,6 +852,10 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     this.budget = { total: 0, maximum: this.config.max_total_pages };
     this.api = new AwsQueryApi(this.config.request_timeout_ms, fetcher, this.budget);
     this.backupApi = new AwsBackupInventoryApi(this.config.request_timeout_ms, fetcher, this.budget, this.config.max_total_items);
+    if (this.config.database_principal_inventory
+      && this.config.database_principal_inventory.database_role_name === this.config.read_only_role_name) {
+      return fail('database IAM access must use a role separate from the RDS inventory collector role');
+    }
     this.databasePrincipalReader = this.config.database_principal_inventory
       ? new AwsRdsPitrDatabasePrincipalInventoryReader(this.config.database_principal_inventory, databasePoolFactory)
       : null;
@@ -1046,6 +1050,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
     const sourcePages = new Map<AwsRdsPitrSourceKind, number>();
     const sourceReceipts = new Map<AwsRdsPitrSourceKind, string[]>();
+    const databasePrincipalCatalogs: AwsRdsPitrDatabasePrincipalCatalog[] = [];
+    const databaseRoleCache = new Map<string, Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }>>();
+    let databaseTargetsDiscovered = 0;
+    let remainingDatabasePrincipalRows = this.config.database_principal_inventory?.max_total_rows ?? 10000;
     const append = (kind: AwsRdsPitrSourceKind, resources: AwsRdsPitrResource[], pages: number, receipts: string[]) => {
       const current = sourceItems.get(kind) ?? [];
       current.push(...resources);
@@ -1112,6 +1120,60 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       append('POSTGRESQL_CLUSTER_CATALOG', clusterResources,
         instances.pages + clusters.pages + globals.pages,
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
+
+      const databaseResources = clusterResources.filter((resource) =>
+        resource.resource_type === 'RDS_DB_INSTANCE' || resource.resource_type === 'RDS_DB_CLUSTER');
+      databaseTargetsDiscovered += databaseResources.length;
+      if (this.databasePrincipalReader && this.config.database_principal_inventory) {
+        for (const resource of databaseResources) {
+          let unavailableReason = 'DATABASE_PRINCIPAL_CAPTURE_UNAVAILABLE';
+          try {
+            const dbResourceId = resource.resource_type === 'RDS_DB_INSTANCE'
+              ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
+            const endpointHost = resource.attributes.DatabaseEndpointAddress;
+            const endpointPort = Number(resource.attributes.DatabaseEndpointPort ?? 0);
+            if (!resource.resource_arn || !dbResourceId || !endpointHost || endpointPort !== 5432) {
+              unavailableReason = 'DATABASE_ENDPOINT_OR_DB_RESOURCE_ID_MISSING';
+              throw new Error('database endpoint metadata is incomplete');
+            }
+            let rolePromise = databaseRoleCache.get(scope.account_reference);
+            if (!rolePromise) {
+              rolePromise = this.assumeReadOnlyRole(
+                scope.account_reference,
+                this.config.database_principal_inventory.database_role_name,
+              );
+              databaseRoleCache.set(scope.account_reference, rolePromise);
+            }
+            const dbRole = await rolePromise;
+            const target: AwsRdsPitrDatabaseTarget = {
+              account_id: scope.account_reference,
+              region: scope.region_reference,
+              resource_arn: resource.resource_arn,
+              db_resource_id: dbResourceId,
+              engine: resource.engine as 'postgres' | 'aurora-postgresql',
+              endpoint_host: endpointHost,
+              endpoint_port: endpointPort,
+              source_database_reference: resource.source_database_reference ?? resource.provider_identity_reference,
+            };
+            const catalog = await this.databasePrincipalReader.capture(target, {
+              role_arn: dbRole.arn,
+              principal_reference: dbRole.principal,
+              credentials: dbRole.credentials,
+            }, remainingDatabasePrincipalRows);
+            databasePrincipalCatalogs.push(catalog);
+            remainingDatabasePrincipalRows = Math.max(0, remainingDatabasePrincipalRows - catalog.rows_observed);
+            this.totalDatabaseQueries += catalog.queries_executed;
+            this.totalDatabasePrincipalRows += catalog.rows_observed;
+            this.addItems(catalog.rows_observed);
+          } catch {
+            databasePrincipalCatalogs.push(unavailableDatabasePrincipalCatalog(
+              resource,
+              this.config.database_principal_inventory,
+              unavailableReason,
+            ));
+          }
+        }
+      }
 
       const archiveResources = [
         ...automated.blocks.map((block) => resourceFromBlock(block, 'DBInstanceAutomatedBackup', scope, 'RDS_AUTOMATED_BACKUP',
