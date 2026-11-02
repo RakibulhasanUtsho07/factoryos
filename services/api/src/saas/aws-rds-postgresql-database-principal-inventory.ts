@@ -81,6 +81,7 @@ export interface AwsRdsPitrDatabasePrincipalCatalog {
     database_name: string;
     owner: string;
     allow_connections: boolean;
+    current_user_can_connect: boolean;
     is_template: boolean;
     acl_reference: string | null;
   }>;
@@ -345,7 +346,8 @@ const CATALOGS = [
     name: 'database_access',
     sql: '/* factoryos:pitr:database_access */\n'
       + 'SELECT datname, pg_catalog.pg_get_userbyid(datdba) AS owner, '
-      + 'datallowconn, datistemplate, datacl::text AS acl_reference '
+      + 'datallowconn, pg_catalog.has_database_privilege(current_user, datname, \'CONNECT\') AS current_user_can_connect, '
+      + 'datistemplate, datacl::text AS acl_reference '
       + 'FROM pg_catalog.pg_database ORDER BY datname LIMIT $1',
   },
   {
@@ -480,6 +482,60 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
     private readonly now: () => Date = () => new Date(),
   ) {
     this.options = validateOptions(options);
+  }
+
+  async captureAll(
+    target: AwsRdsPitrDatabaseTarget,
+    accessRole: AwsRdsPitrDatabaseAccessRole,
+    remainingRowBudget = this.options.max_total_rows,
+  ): Promise<AwsRdsPitrDatabasePrincipalCatalog[]> {
+    const first = await this.capture(target, accessRole, remainingRowBudget);
+    const catalogs = [first];
+    if (!first.identity || first.catalog_status.find((item) => item.catalog === 'database_access')?.status !== 'COMPLETE') {
+      if (!first.blockers.includes('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY')) {
+        first.blockers.push('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY');
+        first.status = 'PARTIAL';
+        first.snapshot_sha256 = sha256(JSON.stringify({ ...first, snapshot_sha256: '' }));
+      }
+      return catalogs;
+    }
+    const databaseNames = first.database_access
+      .filter((item) => item.allow_connections && !item.is_template && item.current_user_can_connect)
+      .map((item) => item.database_name);
+    if (!databaseNames.includes(this.options.database_name)) {
+      return refuse('configured metadata database is not in the connectable database catalog');
+    }
+    if (new Set(databaseNames).size !== databaseNames.length) {
+      return refuse('PostgreSQL database catalog returned duplicate connectable database names');
+    }
+    let remaining = Math.max(0, remainingRowBudget - first.rows_observed);
+    for (const databaseName of databaseNames.filter((name) => name !== this.options.database_name).sort()) {
+      if (remaining < 1) {
+        const unavailable = this.emptyResult(
+          target,
+          'aws-rds-endpoint.' + sha256(target.endpoint_host).slice(0, 32),
+          accessRole,
+          this.now().toISOString(),
+          ['DATABASE_PRINCIPAL_GLOBAL_ROW_BUDGET_EXHAUSTED'],
+          [{ catalog: 'connection', status: 'SKIPPED_BUDGET', rows_observed: 0, error_code: null }],
+          0,
+        );
+        unavailable.database_name = databaseName;
+        unavailable.status = 'UNAVAILABLE';
+        unavailable.snapshot_sha256 = sha256(JSON.stringify({ ...unavailable, snapshot_sha256: '' }));
+        catalogs.push(unavailable);
+        continue;
+      }
+      const reader = new AwsRdsPitrDatabasePrincipalInventoryReader({
+        ...this.options,
+        database_name: databaseName,
+        max_total_rows: remaining,
+      }, this.poolFactory, this.now);
+      const catalog = await reader.capture(target, accessRole, remaining);
+      catalogs.push(catalog);
+      remaining = Math.max(0, remaining - catalog.rows_observed);
+    }
+    return catalogs;
   }
 
   async capture(
@@ -617,6 +673,14 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       }
       const roleRows = rowsObserved.database_roles ?? [];
       const readerRole = roleRows.find((candidate) => candidate.rolname === this.options.database_username);
+      const databaseCatalog = rowsObserved.database_access ?? [];
+      if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
+        blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
+      }
+      if (databaseCatalog.some((candidate) => candidate.datallowconn === true
+        && candidate.datistemplate === false && candidate.current_user_can_connect !== true)) {
+        blockers.push('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
+      }
       if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
         || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
         || readerRole.rolbypassrls !== false || readerRole.rolcanlogin !== true
@@ -673,6 +737,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         database_name: requiredString(item.datname, 'datname'),
         owner: requiredString(item.owner, 'database_owner'),
         allow_connections: asBoolean(item.datallowconn, 'datallowconn'),
+        current_user_can_connect: asBoolean(item.current_user_can_connect, 'database_connect_privilege'),
         is_template: asBoolean(item.datistemplate, 'datistemplate'),
         acl_reference: typeof item.acl_reference === 'string' ? item.acl_reference.slice(0, 2048) : null,
       })),
