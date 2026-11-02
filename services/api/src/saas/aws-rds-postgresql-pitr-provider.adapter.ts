@@ -802,6 +802,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       'item',
       'NextToken',
       { AllRegions: 'true', MaxResults: '1000' },
+      Math.min(this.config.max_total_items, MAX_TOTAL_ITEMS),
     );
     const regions = result.blocks.map((block) => ({
       region: xmlText(block, 'regionName') ?? '',
@@ -839,6 +840,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       itemTag,
       'Marker',
       { MaxRecords: String(this.config.page_size) },
+      Math.min(this.config.max_total_items, MAX_TOTAL_ITEMS),
     );
   }
 
@@ -1044,11 +1046,22 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     || !arn?.includes(':' + (value?.expected_region ?? '') + ':' + (value?.expected_account_id ?? '') + ':')) {
     blockers.push('Candidate ARN does not match the expected AWS account and region.');
   }
-  const resource = arn && inventory?.sources.flatMap((source) => source.items)
-    .find((item) => item.resource_arn === arn
-      && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type)
-      && (item.resource_type !== 'RDS_AUTOMATED_BACKUP' || item.status?.toLowerCase() === 'retained'));
-  if (!resource) blockers.push('Candidate resource was not observed in the supplied inventory.');
+  const inventoryItems = Array.isArray(inventory?.sources)
+    ? inventory.sources.filter((source) => Array.isArray(source.items)).flatMap((source) => source.items)
+    : [];
+  const resource = arn && inventoryItems.find((item) => item.resource_arn === arn
+    && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type));
+  if (!resource) {
+    blockers.push('Candidate resource was not observed as an exact backup/snapshot ARN in the supplied inventory.');
+  } else {
+    if (resource.account_id !== value.expected_account_id || resource.region !== value.expected_region) {
+      blockers.push('Observed resource record is outside the expected inventory account/region scope.');
+    }
+    const allowedStatus = resource.resource_type === 'RDS_AUTOMATED_BACKUP'
+      ? resource.status?.toLowerCase() === 'retained'
+      : resource.status?.toLowerCase() === 'available';
+    if (!allowedStatus) blockers.push('Backup/snapshot lifecycle state is not eligible for retention review.');
+  }
   const now = Date.now();
   let expiry: number | null = null;
   let horizon: number | null = null;
