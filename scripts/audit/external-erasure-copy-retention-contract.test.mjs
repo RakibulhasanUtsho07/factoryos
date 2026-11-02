@@ -573,3 +573,30 @@ test('PostgreSQL WAL/PITR retention eligibility is non-destructive and requires 
   assert.match(runbook, /REVIEW_ELIGIBLE/);
   assert.match(runbook, /does not authorize deletion/);
 });
+
+test('PostgreSQL WAL/PITR provider capture and independent residual scan fail closed', async () => {
+  const providerEvidence = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-provider-evidence.ts');
+  const providerTests = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-provider-evidence.spec.ts');
+  const runbook = await readRepoFile(RUNBOOK);
+  assert.match(providerEvidence, /factoryos\.postgresql-wal-pitr-provider-capture\/v1/);
+  assert.match(providerEvidence, /factoryos\.postgresql-wal-pitr-independent-residual-scan\/v1/);
+  assert.match(providerEvidence, /all_accounts_discovered !== true/);
+  assert.match(providerEvidence, /all_regions_discovered !== true/);
+  assert.match(providerEvidence, /read_only_access_verified !== true/);
+  assert.match(providerEvidence, /repeated continuation token/);
+  assert.match(providerEvidence, /duplicate provider item reference/);
+  assert.match(providerEvidence, /sensitive field name/);
+  assert.match(providerEvidence, /MAX_TOTAL_ITEMS/);
+  assert.match(providerEvidence, /provider_native_inventory_complete: false/);
+  assert.match(providerEvidence, /source_receipts_signable: false/);
+  assert.match(providerEvidence, /manifest_eligible: false/);
+  assert.match(providerEvidence, /independent residual scanner reuses an inventory, deletion or archive-writer principal/);
+  assert.match(providerEvidence, /exact expected provider\/account\/region scope/);
+  assert.match(providerEvidence, /destructive_action_permitted: false/);
+  assert.match(providerEvidence, /deletion_authorized: false/);
+  assert.match(providerTests, /enumerates all six catalogs across every discovered account\/region/);
+  assert.match(providerTests, /rejects reuse of the inventory collector, deletion executor or archive writer principal/);
+  assert.match(providerTests, /reports an exact matching immutable object generation as residual/);
+  assert.match(runbook, /provider gateway enumeration contract/);
+  assert.match(runbook, /independent residual gateway/);
+});
