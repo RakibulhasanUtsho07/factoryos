@@ -1,4 +1,6 @@
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
+import { AwsRdsPitrPgPoolFactory } from './aws-rds-postgresql-database-principal-inventory';
 import {
   AwsRdsPostgresqlPitrProviderAdapter,
   createAwsRdsPitrRetentionDryRunPlan,
@@ -26,6 +28,8 @@ function instanceXml(): string {
     + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
     + '<Engine>postgres</Engine><DBInstanceStatus>available</DBInstanceStatus>'
     + '<BackupRetentionPeriod>7</BackupRetentionPeriod>'
+    + '<IAMDatabaseAuthenticationEnabled>true</IAMDatabaseAuthenticationEnabled>'
+    + '<Endpoint><Address>orders-db.abcdefghijkl.ap-southeast-1.rds.amazonaws.com</Address><Port>5432</Port></Endpoint>'
     + '<LatestRestorableTime>2026-11-01T10:00:00.000Z</LatestRestorableTime>'
     + '<StorageEncrypted>true</StorageEncrypted><MultiAZ>true</MultiAZ>'
     + '</DBInstance>';
@@ -51,6 +55,7 @@ function makeFetch(options: {
   legalHoldPages?: string[];
   legalHoldRecoveryPointPages?: Record<string, string[]>;
   failAction?: string;
+  databaseRoleName?: string;
 } = {}) {
   const requests: Array<{
     host: string;
@@ -64,6 +69,7 @@ function makeFetch(options: {
     JSON.stringify({ Accounts: [{ Id: organizationAccount, State: 'ACTIVE' }] }),
   ];
   let accountPage = 0;
+  let currentAssumedRole = roleName;
   let backupVaultPage = 0;
   let backupRecoveryPointPage = 0;
   let legalHoldPage = 0;
@@ -96,16 +102,22 @@ function makeFetch(options: {
       const temporary = authorization.includes('ASIAABCDEFGHIJKLMNOP');
       const account = temporary ? (options.roleAccount ?? organizationAccount) : organizationAccount;
       const arn = temporary
-        ? 'arn:aws:sts::' + account + ':assumed-role/' + roleName + '/FactoryOSPitrInventory'
+        ? 'arn:aws:sts::' + account + ':assumed-role/' + currentAssumedRole + '/FactoryOSPitrInventory'
         : 'arn:aws:sts::' + organizationAccount + ':assumed-role/OrganizationReadOnly/source-session';
       return xml('<GetCallerIdentityResponse><GetCallerIdentityResult><Account>'
         + account + '</Account><Arn>' + arn + '</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>');
     }
     if (action === 'AssumeRole') {
       const queryBody = body as URLSearchParams;
-      if (queryBody.get('RoleArn') !== 'arn:aws:iam::' + organizationAccount + ':role/' + roleName) {
+      const allowedRoles = [
+        'arn:aws:iam::' + organizationAccount + ':role/' + roleName,
+        'arn:aws:iam::' + organizationAccount + ':role/' + (options.databaseRoleName ?? 'FactoryOSDatabaseInventory'),
+      ];
+      const requestedRoleArn = queryBody.get('RoleArn') ?? '';
+      if (!allowedRoles.includes(requestedRoleArn)) {
         return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>');
       }
+      currentAssumedRole = requestedRoleArn.split('/').pop()!;
       return xml('<AssumeRoleResponse><AssumeRoleResult><Credentials>'
         + '<AccessKeyId>ASIAABCDEFGHIJKLMNOP</AccessKeyId>'
         + '<SecretAccessKey>temporary-secret-key-material-0123456789</SecretAccessKey>'
@@ -217,7 +229,11 @@ function makeFetch(options: {
   return { fetcher, requests };
 }
 
-function createAdapter(fetcher: typeof fetch, overrides: Record<string, unknown> = {}) {
+function createAdapter(
+  fetcher: typeof fetch,
+  overrides: Record<string, unknown> = {},
+  databasePoolFactory?: AwsRdsPitrPgPoolFactory,
+) {
   return new AwsRdsPostgresqlPitrProviderAdapter({
     organization_account_id: organizationAccount,
     read_only_role_name: roleName,
@@ -226,7 +242,7 @@ function createAdapter(fetcher: typeof fetch, overrides: Record<string, unknown>
     read_only_policy_sha256: 'a'.repeat(64),
     policy_review_reference: 'review.aws.read-only-role.v1',
     ...overrides,
-  }, sourceCredentials, fetcher, () => new Date('2026-11-02T04:00:00.000Z'));
+  }, sourceCredentials, fetcher, () => new Date('2026-11-02T04:00:00.000Z'), databasePoolFactory);
 }
 
 describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
@@ -279,6 +295,104 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       .toEqual(expect.arrayContaining(result.aws_backup_receipt_references));
     expect(result.aws_backup_recovery_points[0]?.recovery_point_arn)
       .toBe('arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012');
+  });
+
+
+  it('enumerates database-native PostgreSQL writers through a separate IAM DB-authenticated role', async () => {
+    const databaseRoleName = 'FactoryOSDatabaseInventory';
+    const ca = '-----BEGIN CERTIFICATE-----\\nZm9v\\n-----END CERTIFICATE-----\\n';
+    const rows: Record<string, unknown[]> = {
+      database_roles: [{
+        rolname: 'factoryos_pitr_inventory', rolcanlogin: true, rolsuper: false,
+        rolcreaterole: false, rolcreatedb: false, rolreplication: false, rolbypassrls: false, rolinherit: true,
+      }],
+      role_memberships: [
+        { granted_role: 'pg_monitor', member_role: 'factoryos_pitr_inventory', granted_by: 'rds_superuser', admin_option: false },
+        { granted_role: 'rds_iam', member_role: 'factoryos_pitr_inventory', granted_by: 'rds_superuser', admin_option: false },
+      ],
+      database_access: [],
+      schema_privileges: [],
+      object_privileges: [],
+      function_privileges: [],
+      active_sessions: [{ database_user: 'orders_writer', database_name: 'orders', backend_type: 'client backend', state: 'active', session_count: 1 }],
+      replication_senders: [{ database_user: 'replicator', application_name: 'private-app-name', state: 'streaming', sync_state: 'async', sender_count: 1 }],
+      replication_slots: [{ slot_name: 'orders_slot', plugin: 'pgoutput', slot_type: 'logical', database: 'orders', active: true, temporary: false }],
+      wal_receivers: [],
+      logical_subscriptions: [],
+      publications: [],
+    };
+    const databasePoolFactory: AwsRdsPitrPgPoolFactory = (config) => ({
+      connect: async () => ({
+        query: async (sql) => {
+          if (sql.includes('factoryos:pitr:session_identity')) {
+            return { rows: [{
+              current_user: 'factoryos_pitr_inventory',
+              session_user: 'factoryos_pitr_inventory',
+              current_database: 'postgres',
+              transaction_read_only: 'on',
+              in_recovery: false,
+              has_pg_monitor: true,
+              has_rds_iam: true,
+              server_version_num: '160004',
+            }] };
+          }
+          const catalog = Object.keys(rows).find((name) => sql.includes('factoryos:pitr:' + name));
+          return { rows: catalog ? rows[catalog] as never[] : [] };
+        },
+        release: () => undefined,
+      }),
+      end: async () => undefined,
+    });
+    const mock = makeFetch({ databaseRoleName });
+    const inventory = await createAdapter(mock.fetcher, {
+      database_principal_inventory: {
+        database_role_name: databaseRoleName,
+        database_username: 'factoryos_pitr_inventory',
+        database_name: 'postgres',
+        ca_certificate_pem: ca,
+        ca_certificate_sha256: createHash('sha256').update(ca).digest('hex'),
+      },
+    }, databasePoolFactory).captureInventory();
+
+    expect(inventory.database_writer_principals_fully_enumerated).toBe(true);
+    expect(inventory.database_principal_catalogs).toHaveLength(1);
+    expect(inventory.database_principal_catalogs[0]?.status).toBe('COMPLETE');
+    expect(inventory.database_principal_catalogs[0]?.replication_senders).toHaveLength(1);
+    expect(inventory.database_principal_catalogs[0]?.replication_slots[0]?.slot_name).toBe('orders_slot');
+    expect(inventory.database_principal_catalogs[0]?.database_access_role_arn)
+      .toBe('arn:aws:iam::111111111111:role/FactoryOSDatabaseInventory');
+    expect(inventory.total_database_queries).toBeGreaterThan(0);
+    expect(inventory.total_database_principal_rows).toBeGreaterThan(0);
+    const writerSource = inventory.sources.find((source) => source.source_kind === 'WAL_WRITER_PRINCIPAL_CATALOG');
+    expect(writerSource?.status).toBe('COMPLETE');
+    expect(writerSource?.items[0]?.resource_type).toBe('POSTGRESQL_DATABASE_PRINCIPAL_SNAPSHOT');
+    expect(mock.requests.filter((request) => request.action === 'AssumeRole')
+      .some((request) => (request.body as URLSearchParams).get('RoleArn')
+        === 'arn:aws:iam::111111111111:role/' + databaseRoleName)).toBe(true);
+    expect(inventory.provider_managed_wal_segments_individually_enumerated).toBe(false);
+    expect(inventory.deletion_authorized).toBe(false);
+  });
+
+  it('keeps database writer coverage PARTIAL when the RDS resource has IAM DB authentication disabled', async () => {
+    const databaseRoleName = 'FactoryOSDatabaseInventory';
+    const mock = makeFetch({
+      databaseRoleName,
+      instanceXml: instanceXml().replace('<IAMDatabaseAuthenticationEnabled>true</IAMDatabaseAuthenticationEnabled>',
+        '<IAMDatabaseAuthenticationEnabled>false</IAMDatabaseAuthenticationEnabled>'),
+    });
+    const inventory = await createAdapter(mock.fetcher, {
+      database_principal_inventory: {
+        database_role_name: databaseRoleName,
+        database_username: 'factoryos_pitr_inventory',
+        database_name: 'postgres',
+        ca_certificate_pem: '-----BEGIN CERTIFICATE-----\\nZm9v\\n-----END CERTIFICATE-----\\n',
+        ca_certificate_sha256: createHash('sha256').update('-----BEGIN CERTIFICATE-----\\nZm9v\\n-----END CERTIFICATE-----\\n').digest('hex'),
+      },
+    }, (() => { throw new Error('database pool must not be created while IAM DB auth is disabled'); }) as unknown as AwsRdsPitrPgPoolFactory).captureInventory();
+    expect(inventory.database_writer_principals_fully_enumerated).toBe(false);
+    expect(inventory.database_principal_catalogs[0]?.status).toBe('UNAVAILABLE');
+    expect(inventory.database_principal_catalogs[0]?.blockers).toContain('IAM_DATABASE_AUTHENTICATION_DISABLED_OR_UNKNOWN');
+    expect(inventory.sources.find((source) => source.source_kind === 'WAL_WRITER_PRINCIPAL_CATALOG')?.status).toBe('PARTIAL');
   });
 
   it('marks non-active organization accounts as excluded and never claims complete account coverage', async () => {
