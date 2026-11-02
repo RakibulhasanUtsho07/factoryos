@@ -285,6 +285,7 @@ export class AwsBackupInventoryApi {
           const heldPoints = await this.listRecoveryPointsByLegalHold(scope, credentials, id);
           pages += heldPoints.pages;
           totalItemsSeen += heldPoints.total_items_seen;
+          if (totalItemsSeen > this.maxItems) return fail('AWS Backup legal-hold inventory exceeded its total item budget');
           for (const arn of heldPoints.recovery_point_arns) {
             record.recovery_point_arns.push(arn);
             recoveryPointArns.add(arn);
