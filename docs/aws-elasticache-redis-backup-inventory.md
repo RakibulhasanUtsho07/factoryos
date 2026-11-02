@@ -31,7 +31,7 @@ The node-based APIs use Marker pagination; the Serverless APIs use NextToken pag
 - Credentials and session tokens remain in memory and are never returned in inventory records, query receipts or logs.
 - Raw resource descriptions, network endpoints, security-group identifiers, parameter values, ACLs, cache contents, backup payloads and object URLs are not captured.
 - Responses are bounded to 4 MiB, request timeouts are bounded, pagination follows every continuation marker/token, repeated/oversized continuation values fail closed, and request/page/item limits are global across all supplied scopes. Empty continuation pages still consume the shared budget.
-- STS account and assumed-role mismatches, AWS AccessDenied, malformed result containers, truncation, missing creation timestamps, malformed/out-of-scope ARNs, an unscanned Global Datastore region, or a Serverless snapshot whose source cache is absent from the current scoped cache catalog produce explicit blockers; they are not converted into empty success.
+- STS account and assumed-role mismatches, AWS AccessDenied, malformed result containers, truncation, missing required generation timestamps, malformed/out-of-scope ARNs, and an unscanned Global Datastore region produce explicit blockers; they are not converted into empty success. A retained Serverless snapshot remains independently inventoryable by its provider ARN even when its source cache no longer appears in the live cache catalog.
 - Each page receives a local SHA-256 receipt reference. It is not AWS-signed evidence, CloudTrail evidence or proof that the account's complete enabled-region list was supplied.
 
 ## Identity and completeness limitations
