@@ -1048,8 +1048,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         ...archiveResources.filter((resource) => resource.replication_destination_arns.length > 0),
       ];
       append('WAL_REPLICATION_PATH_CATALOG', replicationResources,
-        instances.pages + clusters.pages + globals.pages,
-        [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
+        instances.pages + clusters.pages + globals.pages + automated.pages,
+        [...instances.receipts, ...clusters.receipts, ...globals.receipts, ...automated.receipts]);
 
       append('PITR_RESTORE_PATH_CATALOG', archiveResources.filter((resource) =>
         resource.resource_type === 'RDS_AUTOMATED_BACKUP'
