@@ -5,12 +5,15 @@
 --   \set database_username 'factoryos_pitr_inventory'
 --   \set database_name 'postgres'
 
+DO $ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = :'database_username') THEN
+    RAISE EXCEPTION 'Dedicated FactoryOS inventory role already exists; inspect and reconcile its grants before re-running bootstrap';
+  END IF;
+END $;
+
 SELECT format(
-  'CREATE ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  'CREATE ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL',
   :'database_username'
-)
-WHERE NOT EXISTS (
-  SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = :'database_username'
 )
 \gexec
 
