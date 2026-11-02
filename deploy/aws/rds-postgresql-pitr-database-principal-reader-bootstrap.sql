@@ -14,7 +14,7 @@ WHERE NOT EXISTS (
 )
 \gexec
 
-SELECT format('GRANT rds_iam, pg_monitor TO %I', :'database_username')
+SELECT format('GRANT rds_iam, pg_read_all_stats TO %I', :'database_username')
 \gexec
 
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'database_name', :'database_username')
