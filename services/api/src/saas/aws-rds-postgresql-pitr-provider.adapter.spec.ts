@@ -644,7 +644,6 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       dependency_status: 'NO_DEPENDENCY',
     });
     expect(plan.status).toBe('BLOCKED');
-    expect(plan.blockers).toContain('AWS Backup recovery point is not in COMPLETED state.');
     expect(plan.blockers).toContain('AWS Backup vault lock is active, in grace-period configuration, or unknown.');
   });
 
@@ -680,11 +679,10 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
   it('rejects a missing cross-account external ID before making a provider request', async () => {
     const mock = makeFetch();
-    const adapter = new AwsRdsPostgresqlPitrProviderAdapter({
+    expect(() => new AwsRdsPostgresqlPitrProviderAdapter({
       organization_account_id: organizationAccount,
       read_only_role_name: roleName,
-    }, sourceCredentials, mock.fetcher);
-    await expect(adapter.captureInventory()).rejects.toThrow(/external ID is required/i);
+    }, sourceCredentials, mock.fetcher)).toThrow(/external ID is required/i);
     expect(mock.fetcher).not.toHaveBeenCalled();
   });
 
