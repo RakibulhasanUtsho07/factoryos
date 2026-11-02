@@ -116,13 +116,13 @@ function createClientFactory(options: {
         }
         if (sql.includes('FROM pg_catalog.pg_subscription')) {
           return {
-            rows: [{
+            rows: database === 'orders' ? [{
               subname: 'orders_subscription',
               owner_role: 'replication_owner',
               subenabled: true,
               subslotname: 'orders_remote_slot',
               subpublications: ['orders_publication'],
-            }],
+            }] : [],
           };
         }
         return { rows: [] };
@@ -167,7 +167,11 @@ describe('AWS RDS PostgreSQL database-native principal inventory', () => {
     expect(result.pages_fetched).toBeGreaterThan(0);
     expect(result.queries_attempted).toBeGreaterThan(result.pages_fetched);
     expect(result.records.some((record) => record.resource_type === 'POSTGRESQL_DATABASE_ROLE')).toBe(true);
+    expect(result.records.filter((record) => record.resource_type === 'POSTGRESQL_DATABASE_ROLE')).toHaveLength(1);
     expect(result.records.some((record) => record.resource_type === 'POSTGRESQL_LOGICAL_SUBSCRIPTION')).toBe(true);
+    expect(result.records.filter((record) => record.resource_type === 'POSTGRESQL_LOGICAL_SUBSCRIPTION')).toHaveLength(1);
+    expect(result.records.filter((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SLOT')).toHaveLength(1);
+    expect(result.records.filter((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SENDER')).toHaveLength(1);
     expect(result.replication_records.some((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SLOT')).toBe(true);
     expect(result.replication_records.some((record) => record.resource_type === 'POSTGRESQL_REPLICATION_SENDER')).toBe(true);
     const sessionRecord = result.records.find((record) => record.resource_type === 'POSTGRESQL_ACTIVE_DATABASE_SESSION');
