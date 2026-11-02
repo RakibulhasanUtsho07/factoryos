@@ -46,6 +46,8 @@ function makeFetch(options: {
   backupStatus?: string;
   backupVaultPages?: string[];
   backupRecoveryPointPages?: string[];
+  legalHoldPages?: string[];
+  legalHoldRecoveryPointPages?: Record<string, string[]>;
   failAction?: string;
 } = {}) {
   const requests: Array<{
@@ -62,6 +64,8 @@ function makeFetch(options: {
   let accountPage = 0;
   let backupVaultPage = 0;
   let backupRecoveryPointPage = 0;
+  let legalHoldPage = 0;
+  const legalHoldRecoveryPointPage: Record<string, number> = {};
   const backupVaultArn = 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default';
   const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
   const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
@@ -70,12 +74,16 @@ function makeFetch(options: {
     const target = String(headers?.['x-amz-target'] ?? '');
     const isOrganizations = target === 'AWSOrganizationsV20161128.ListAccounts';
     const isBackup = url.host.startsWith('backup.');
+    const isLegalHoldRecoveryPoints = isBackup && url.pathname.includes('/legal-holds/')
+      && url.pathname.endsWith('/recovery-points');
     const bodyText = String(init?.body ?? '');
     const body: MockRequestBody = isOrganizations
       ? JSON.parse(bodyText) as Record<string, unknown>
       : isBackup ? Object.fromEntries(url.searchParams.entries()) : new URLSearchParams(bodyText);
     const action = isOrganizations ? 'ListAccounts' : isBackup
-      ? (url.pathname.endsWith('/recovery-points/') ? 'ListRecoveryPointsByBackupVault' : 'ListBackupVaults')
+      ? (isLegalHoldRecoveryPoints ? 'ListRecoveryPointsByLegalHold'
+        : url.pathname === '/legal-holds/' ? 'ListLegalHolds'
+          : url.pathname.endsWith('/recovery-points/') ? 'ListRecoveryPointsByBackupVault' : 'ListBackupVaults')
       : (body as URLSearchParams).get('Action') ?? '';
     const authorization = String(headers?.authorization ?? '');
     requests.push({ host: url.host, action, body, authorization, target });
@@ -118,6 +126,24 @@ function makeFetch(options: {
         }]
       })];
       return new Response(pages[backupVaultPage++] ?? pages[pages.length - 1]!, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (action === 'ListLegalHolds') {
+      const pages = options.legalHoldPages ?? [JSON.stringify({ LegalHolds: [] })];
+      return new Response(pages[legalHoldPage++] ?? pages[pages.length - 1]!, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (action === 'ListRecoveryPointsByLegalHold') {
+      const legalHoldId = url.pathname.split('/').filter(Boolean)[1] ?? '';
+      const pages = options.legalHoldRecoveryPointPages?.[legalHoldId] ?? [JSON.stringify({ RecoveryPoints: [] })];
+      const pageKey = 'legal:' + legalHoldId;
+      const pageIndex = legalHoldRecoveryPointPage[pageKey] ?? 0;
+      legalHoldRecoveryPointPage[pageKey] = pageIndex + 1;
+      return new Response(pages[pageIndex] ?? pages[pages.length - 1]!, {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -240,6 +266,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(result.total_provider_requests).toBe(mock.requests.length);
     expect(result.backup_vault_catalog_complete).toBe(true);
     expect(result.aws_backup_recovery_points_enumerated).toBe(true);
+    expect(result.aws_backup_legal_holds_enumerated).toBe(true);
+    expect(result.aws_backup_legal_holds).toEqual([]);
     expect(result.backup_vaults).toHaveLength(1);
     expect(result.aws_backup_recovery_points).toHaveLength(1);
     expect(result.aws_backup_recovery_points[0]?.recovery_point_arn)
