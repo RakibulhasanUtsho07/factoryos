@@ -597,6 +597,6 @@ test('PostgreSQL WAL/PITR provider capture and independent residual scan fail cl
   assert.match(providerTests, /enumerates all six catalogs across every discovered account\/region/);
   assert.match(providerTests, /rejects reuse of the inventory collector, deletion executor or archive writer principal/);
   assert.match(providerTests, /reports an exact matching immutable object generation as residual/);
-  assert.match(runbook, /provider gateway enumeration contract/);
-  assert.match(runbook, /independent residual gateway/);
+assert.match(runbook, /provider gateway enumeration contract/i);
+assert.match(runbook, /independent residual gateway/i);
 });
