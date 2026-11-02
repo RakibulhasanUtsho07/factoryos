@@ -361,11 +361,11 @@ const CATALOGS = [
     sql: '/* factoryos:pitr:database_privileges */\n'
       + 'SELECT CASE WHEN grants.grantee = 0 THEN \'PUBLIC\' '
       + 'ELSE pg_catalog.pg_get_userbyid(grants.grantee) END AS grantee, '
-      + 'database.datname AS database_name, grants.privilege_type, grants.is_grantable '
-      + 'FROM pg_catalog.pg_database AS database '
-      + 'CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(database.datacl, '
-      + 'pg_catalog.acldefault(\'d\', database.datdba))) AS grants '
-      + 'ORDER BY database.datname, grantee, grants.privilege_type LIMIT $1',
+      + 'db_catalog.datname AS database_name, grants.privilege_type, grants.is_grantable '
+      + 'FROM pg_catalog.pg_database AS db_catalog '
+      + 'CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(db_catalog.datacl, '
+      + 'pg_catalog.acldefault(\'d\', db_catalog.datdba))) AS grants '
+      + 'ORDER BY db_catalog.datname, grantee, grants.privilege_type LIMIT $1',
   },
   {
     name: 'schema_privileges',
@@ -393,7 +393,7 @@ const CATALOGS = [
       + 'CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(relation.relacl, '
       + 'pg_catalog.acldefault(CASE WHEN relation.relkind = \'S\' THEN \'S\' ELSE \'r\' END, relation.relowner))) AS grants '
       + 'WHERE namespace.nspname NOT IN (\'pg_catalog\', \'information_schema\') '
-      + 'AND relation.relkind IN (\'r\', \'p\', \'v\', \'m\', \'S\') '
+      + 'AND relation.relkind IN (\'r\', \'p\', \'v\', \'m\', \'S\', \'f\') '
       + 'AND grants.privilege_type IN (\'INSERT\', \'UPDATE\', \'DELETE\', \'TRUNCATE\', \'TRIGGER\', \'REFERENCES\', \'USAGE\') '
       + 'ORDER BY namespace.nspname, relation.relname, grantee, grants.privilege_type LIMIT $1',
   },
@@ -625,10 +625,10 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         + 'pg_catalog.pg_is_in_recovery() AS in_recovery, '
         + 'pg_catalog.pg_has_role(current_user, \'pg_read_all_stats\', \'member\') AS has_pg_read_all_stats, '
         + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
-        + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role '
-        + 'WHERE role.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
+        + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role_item '
+        + 'WHERE role_item.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
         + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\') '
-        + 'AND pg_catalog.pg_has_role(current_user, role.oid, \'MEMBER\') ORDER BY role.rolname) AS privileged_memberships, '
+        + 'AND pg_catalog.pg_has_role(current_user, role_item.oid, \'MEMBER\') ORDER BY role_item.rolname) AS privileged_memberships, '
         + 'current_setting(\'server_version_num\') AS server_version_num',
       );
       queriesExecuted += 1;
