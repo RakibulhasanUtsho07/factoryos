@@ -704,7 +704,7 @@ function applyLegalHoldDetail(
     resourceIdentifiers = rawIdentifiers.length;
     for (const identifier of rawIdentifiers) {
       if (typeof identifier !== 'string' || identifier.length < 1 || identifier.length > 2048
-        || /[\\u0000-\\u001f\\u007f]/.test(identifier)) {
+        || /[\u0000-\u001f\u007f]/.test(identifier)) {
         blockers.push(key + ': GetLegalHold returned an invalid resource identifier');
       }
     }
@@ -832,6 +832,7 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
           context,
         );
         const normalized = applyVaultDescription(summary, detail, scope, blockers);
+        if (normalized.vault_type === null) restoreAccessComplete = false;
         currentScopeVaults.push(normalized);
         vaults.push(normalized);
       }

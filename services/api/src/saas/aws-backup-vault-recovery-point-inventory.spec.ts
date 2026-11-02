@@ -364,6 +364,28 @@ describe('AWS Backup vault and recovery-point inventory', () => {
     expect(result.provider_mutation_performed).toBe(false);
   });
 
+
+  test('keeps the recovery-point and later legal-hold catalogs incomplete when vault enumeration aborts mid-scope', async () => {
+    const { input } = makeInput({ deniedAction: 'ListRecoveryPointsByBackupVault' });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.vault_catalog_complete).toBe(true);
+    expect(result.recovery_point_catalog_complete).toBe(false);
+    expect(result.legal_hold_catalog_complete).toBe(false);
+    expect(result.blockers.join(' ')).toContain('ListRecoveryPointsByBackupVault');
+  });
+
+  test('marks logically air-gapped restore-access relationship inventory partial on AccessDenied', async () => {
+    const { input } = makeInput({ deniedAction: 'ListRestoreAccessBackupVaults' });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.vault_catalog_complete).toBe(true);
+    expect(result.recovery_point_catalog_complete).toBe(true);
+    expect(result.restore_access_relationships_complete).toBe(false);
+    expect(result.legal_hold_catalog_complete).toBe(false);
+    expect(result.blockers.join(' ')).toContain('ListRestoreAccessBackupVaults');
+  });
+
   test('does not enumerate any vault when STS account identity does not match', async () => {
     const { input, calls } = makeInput({ wrongIdentity: true });
     const result = await captureAwsBackupVaultRecoveryPointInventory(input);
