@@ -976,6 +976,25 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(inventory.database_principal_databases_discovered).toBe(1);
     expect(inventory.database_principal_databases_scanned).toBe(1);
     expect(inventory.database_principal_receipt_references.length).toBeGreaterThan(0);
+    const activeBackup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
+    const dryRun = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: activeBackup!.provider_identity_reference,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+      policy_reference: 'retention-policy.v1',
+      data_owner_approval_reference: 'data-owner-review.v1',
+      infrastructure_owner_approval_reference: 'infra-owner-review.v1',
+    });
+    expect(dryRun.blockers).not.toContain('Database-native writer-principal coverage is incomplete or not enumerated.');
+    expect(dryRun.blockers).toContain('Provider-managed RDS WAL segments remain opaque and have no individual inventory identities.');
+    expect(dryRun.blockers).toContain('AWS-side and external replication-path actors remain partially enumerated.');
+    expect(dryRun.blockers).toContain('Automated backup is not in retained state.');
     expect(inventory.source_receipts_signable).toBe(false);
     expect(inventory.manifest_eligible).toBe(false);
     expect(inventory.deletion_authorized).toBe(false);
