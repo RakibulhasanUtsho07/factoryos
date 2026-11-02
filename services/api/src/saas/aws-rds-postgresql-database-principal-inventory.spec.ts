@@ -46,7 +46,6 @@ const options: AwsRdsPitrDatabasePrincipalOptions = {
 };
 
 function makePoolFactory(settings: {
-  failCatalog?: string;
   truncateCatalog?: string;
   superuser?: boolean;
   readOnly?: string;
