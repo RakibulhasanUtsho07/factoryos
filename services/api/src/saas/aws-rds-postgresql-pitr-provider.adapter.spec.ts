@@ -322,14 +322,16 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       logical_subscriptions: [],
       publications: [],
     };
-    const databasePoolFactory: AwsRdsPitrPgPoolFactory = (config) => ({
+    const databasePoolFactory: AwsRdsPitrPgPoolFactory = (config) => {
+      const databaseName = String(config.database ?? 'postgres');
+      return {
       connect: async () => ({
         query: async (sql) => {
           if (sql.includes('factoryos:pitr:session_identity')) {
             return { rows: [{
               current_user: 'factoryos_pitr_inventory',
               session_user: 'factoryos_pitr_inventory',
-              current_database: 'postgres',
+              current_database: databaseName,
               transaction_read_only: 'on',
               in_recovery: false,
               has_pg_read_all_stats: true,
@@ -344,7 +346,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
         release: () => undefined,
       }),
       end: async () => undefined,
-    });
+      };
+    };
     const mock = makeFetch({ databaseRoleName });
     const inventory = await createAdapter(mock.fetcher, {
       database_principal_inventory: {
