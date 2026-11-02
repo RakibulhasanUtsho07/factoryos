@@ -238,7 +238,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     return fail('organization account or read-only role name is invalid');
   }
   const organizationRegion = config.organization_region ?? 'us-east-1';
-  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\\d$/.test(organizationRegion)) {
+  if (!/^[a-z]{2}(?:-[a-z0-9]+)+-\\d$/.test(organizationRegion)) {
     return fail('organization region is invalid');
   }
   const pageSize = config.page_size ?? 100;
@@ -763,8 +763,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
         sourceItems.get('PITR_RESTORE_PATH_CATALOG') ?? [], sourcePages.get('PITR_RESTORE_PATH_CATALOG') ?? 0,
         sourceReceipts.get('PITR_RESTORE_PATH_CATALOG') ?? []),
     ];
-    const incomplete = sources.some((source) => source.status !== 'COMPLETE')
-      || !accountDiscoveryComplete || !regionDiscoveryComplete;
+    const incomplete = !accountDiscoveryComplete || !regionDiscoveryComplete;
     const sourcePrincipalReference = await this.callerIdentity(this.sourceCredentials, this.config.organization_account_id);
     return {
       schema: AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA,
