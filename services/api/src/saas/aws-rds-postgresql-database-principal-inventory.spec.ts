@@ -91,7 +91,7 @@ function makePoolFactory(settings: {
             ] };
           }
           if (sql.includes('factoryos:pitr:database_access')) {
-            return { rows: [{ datname: 'postgres', owner: 'rdsadmin', datallowconn: true, datistemplate: false, acl_reference: null }] };
+            return { rows: [{ datname: 'postgres', owner: 'rdsadmin', datallowconn: true, current_user_can_connect: true, datistemplate: false, acl_reference: null }] };
           }
           if (sql.includes('factoryos:pitr:schema_privileges')) {
             return { rows: [{ grantee: 'app_writer', schema_name: 'public', privilege_type: 'CREATE', is_grantable: false }] };
