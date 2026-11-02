@@ -186,6 +186,7 @@ export interface AwsBackupVaultRecoveryPointInventory {
   legal_hold_recovery_point_relationships: AwsBackupLegalHoldRecoveryPointRelationship[];
   restore_access_vault_relationships: AwsBackupRestoreAccessVaultRelationship[];
   copy_jobs: AwsBackupCopyJobRecord[];
+  copy_job_terminal_record_retention_days: 30;
   copy_job_catalog_complete: boolean;
   copy_job_destination_reconciliation_complete: boolean;
   copy_job_source_scope_gaps: string[];
@@ -1322,6 +1323,7 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     legal_hold_recovery_point_relationships: legalHoldRelationships,
     restore_access_vault_relationships: restoreAccessRelationships,
     copy_jobs: copyJobs,
+    copy_job_terminal_record_retention_days: 30,
     copy_job_catalog_complete: copyJobComplete && verifiedScopeCount === scopes.length,
     copy_job_destination_reconciliation_complete: copyJobDestinationReconciliationComplete,
     copy_job_source_scope_gaps: [...copySourceScopeGaps].sort(),
