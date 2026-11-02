@@ -673,7 +673,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         + 'pg_catalog.pg_has_role(current_user, \'pg_read_all_stats\', \'member\') AS has_pg_read_all_stats, '
         + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
         + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role_item '
-        + 'WHERE role_item.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
+        + 'WHERE role_item.rolname IN (\'rds_superuser\', \'rds_replication\', \'rds_password\', \'pg_database_owner\', \'pg_monitor\', \'pg_read_all_settings\', \'pg_stat_scan_tables\', \'pg_read_all_data\', \'pg_write_all_data\', '
         + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\', \'pg_signal_backend\', \'pg_checkpoint\', \'pg_maintain\', \'pg_use_reserved_connections\', \'pg_create_subscription\') '
         + 'AND pg_catalog.pg_has_role(current_user, role_item.oid, \'MEMBER\') ORDER BY role_item.rolname) AS privileged_memberships, '
         + 'current_setting(\'server_version_num\') AS server_version_num',
@@ -779,7 +779,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       }
       if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite
         || effectiveObjectRead || effectiveLargeObjectAccess || effectiveFutureReadOrWrite) {
-        blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
+        blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_UNAPPROVED_DATA_READ_OR_WRITE_PRIVILEGES');
       }
       if (Number(identity.server_version_num) < 140000) {
         blockers.push('DATABASE_POSTGRESQL_VERSION_DOES_NOT_SUPPORT_PG_READ_ALL_STATS');
