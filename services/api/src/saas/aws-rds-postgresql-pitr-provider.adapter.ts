@@ -1,5 +1,12 @@
 import { createHash, createHmac } from 'node:crypto';
 import { AwsBackupInventoryApi, AwsBackupLegalHoldRecord, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
+import {
+  AwsRdsPitrDatabasePrincipalCatalog,
+  AwsRdsPitrDatabasePrincipalInventoryOptions,
+  AwsRdsPitrDatabasePrincipalInventoryReader,
+  AwsRdsPitrDatabaseTarget,
+  AwsRdsPitrPgPoolFactory,
+} from './aws-rds-postgresql-database-principal-inventory';
 
 export const AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA =
   'factoryos.aws-rds-postgresql-pitr-inventory/v1';
@@ -41,6 +48,7 @@ export interface AwsRdsPitrProviderConfig {
   request_timeout_ms?: number;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
+  database_principal_inventory?: AwsRdsPitrDatabasePrincipalInventoryOptions;
 }
 
 export interface AwsRdsPitrProviderScope {
@@ -133,7 +141,9 @@ export interface AwsRdsPostgresqlPitrInventory {
   aws_backup_receipt_references: string[];
   unresolved_replication_destination_arns: string[];
   provider_managed_wal_segments_individually_enumerated: false;
-  database_writer_principals_fully_enumerated: false;
+  database_writer_principals_fully_enumerated: boolean;
+  database_principal_catalogs: AwsRdsPitrDatabasePrincipalCatalog[];
+
   source_receipts_signable: false;
   manifest_eligible: false;
   deletion_authorized: false;
@@ -291,6 +301,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   external_id: string;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
+  database_principal_inventory?: AwsRdsPitrDatabasePrincipalInventoryOptions;
 } {
   if (!isRecord(config) || !AWS_ACCOUNT_ID.test(config.organization_account_id)
     || !ROLE_NAME.test(config.read_only_role_name)) {
@@ -331,6 +342,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     external_id: config.external_id,
     read_only_policy_sha256: config.read_only_policy_sha256,
     policy_review_reference: config.policy_review_reference,
+    database_principal_inventory: config.database_principal_inventory,
   };
 }
 
@@ -760,6 +772,9 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
   private readonly sourceCredentials: AwsRdsPitrCredentials;
   private readonly api: AwsQueryApi;
   private readonly backupApi: AwsBackupInventoryApi;
+  private readonly databasePrincipalReader: AwsRdsPitrDatabasePrincipalInventoryReader | null;
+  private totalDatabaseQueries = 0;
+  private totalDatabasePrincipalRows = 0;
   private totalItems = 0;
   private totalPaginationPages = 0;
 
@@ -768,6 +783,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     sourceCredentials: AwsRdsPitrCredentials,
     fetcher: typeof fetch = globalThis.fetch,
     now: () => Date = () => new Date(),
+    databasePoolFactory?: AwsRdsPitrPgPoolFactory,
   ) {
     this.config = validateConfig(config);
     this.sourceCredentials = validateCredentials(sourceCredentials);
@@ -775,6 +791,9 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     this.budget = { total: 0, maximum: this.config.max_total_pages };
     this.api = new AwsQueryApi(this.config.request_timeout_ms, fetcher, this.budget);
     this.backupApi = new AwsBackupInventoryApi(this.config.request_timeout_ms, fetcher, this.budget, this.config.max_total_items);
+    this.databasePrincipalReader = this.config.database_principal_inventory
+      ? new AwsRdsPitrDatabasePrincipalInventoryReader(this.config.database_principal_inventory, databasePoolFactory)
+      : null;
   }
 
   private readonly now: () => Date;
@@ -797,8 +816,12 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     return safeReference(arn, 'AWS STS caller principal');
   }
 
-  private async assumeReadOnlyRole(accountId: string): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
-    const roleArn = 'arn:' + partitionForRegion(this.config.organization_region) + ':iam::' + accountId + ':role/' + this.config.read_only_role_name;
+  private async assumeReadOnlyRole(
+    accountId: string,
+    roleName = this.config.read_only_role_name,
+  ): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
+    if (!ROLE_NAME.test(roleName)) return fail('requested AWS read-only role name is invalid');
+    const roleArn = 'arn:' + partitionForRegion(this.config.organization_region) + ':iam::' + accountId + ':role/' + roleName;
     const params: Record<string, string> = {
       RoleArn: roleArn,
       RoleSessionName: 'FactoryOSPitrInventory',
@@ -814,7 +837,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       session_token: xmlText(credentialsBlock, 'SessionToken') ?? '',
     });
     const principal = await this.callerIdentity(credentials, accountId);
-    const expectedPrincipalPrefix = 'arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + accountId + ':assumed-role/' + this.config.read_only_role_name + '/';
+    const expectedPrincipalPrefix = 'arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + accountId + ':assumed-role/' + roleName + '/';
     if (!principal.startsWith(expectedPrincipalPrefix)) {
       return fail('assumed AWS principal does not match the configured read-only role');
     }
