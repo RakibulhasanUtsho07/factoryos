@@ -71,6 +71,7 @@ function makePoolFactory(settings: {
               in_recovery: false,
               has_pg_read_all_stats: true,
               has_rds_iam: true,
+              privileged_memberships: [],
               server_version_num: '160004',
             }] };
           }
@@ -178,7 +179,7 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalog.snapshot_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(mock.poolConfig[0]?.ssl).toEqual({ ca: caPem, rejectUnauthorized: true });
     expect(String(mock.poolConfig[0]?.password)).toContain('X-Amz-Signature=');
-    expect(mock.queries.some((q) => q.sql === 'BEGIN READ ONLY')).toBe(true);
+    expect(mock.queries.some((q) => q.sql === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')).toBe(true);
     expect(mock.queries.some((q) => q.sql.includes('SET LOCAL statement_timeout'))).toBe(true);
     expect(mock.queries.every((q) => !q.sql.toLowerCase().includes('subconninfo'))).toBe(true);
     expect(mock.queries.every((q) => !q.sql.toLowerCase().includes('rolpassword'))).toBe(true);
