@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import {
   AwsRdsPostgresqlPitrProviderAdapter,
   createAwsRdsPitrRetentionDryRunPlan,
+  exchangeAwsRdsPitrWebIdentityToken,
   AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA,
   AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA,
 } from './aws-rds-postgresql-pitr-provider.adapter';
@@ -231,4 +232,42 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.status).toBe('BLOCKED');
     expect(plan.blockers.join(' ')).toMatch(/expected AWS account and region/i);
   });
+
+  it('exchanges a bounded OIDC token for short-lived STS credentials without signing or logging the token', async () => {
+    const token = 'oidc.' + 'a'.repeat(120) + '.signature';
+    const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      expect(String(input)).toBe('https://sts.ap-southeast-1.amazonaws.com/');
+      expect(String(init?.method)).toBe('POST');
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      expect(body.get('Action')).toBe('AssumeRoleWithWebIdentity');
+      expect(body.get('RoleArn')).toBe('arn:aws:iam::111111111111:role/FactoryOSWebIdentity');
+      expect(body.get('WebIdentityToken')).toBe(token);
+      expect((init?.headers as Record<string, string>).authorization).toBeUndefined();
+      return xml('<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials>'
+        + '<AccessKeyId>ASIAABCDEFGHIJKLMNOP</AccessKeyId>'
+        + '<SecretAccessKey>web-identity-secret-key-material-0123456789</SecretAccessKey>'
+        + '<SessionToken>web-identity-session-token-material-0123456789</SessionToken>'
+        + '</Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>');
+    });
+    const credentials = await exchangeAwsRdsPitrWebIdentityToken({
+      role_arn: 'arn:aws:iam::111111111111:role/FactoryOSWebIdentity',
+      region: 'ap-southeast-1',
+      role_session_name: 'FactoryOSPitrSource',
+      web_identity_token: token,
+    }, fetcher);
+    expect(credentials.access_key_id).toBe('ASIAABCDEFGHIJKLMNOP');
+    expect(credentials.session_token).toBeDefined();
+  });
+
+  it('rejects malformed or oversized web-identity input before making a network request', async () => {
+    const fetcher = jest.fn<typeof fetch>();
+    await expect(exchangeAwsRdsPitrWebIdentityToken({
+      role_arn: 'arn:aws:iam::111111111111:role/FactoryOSWebIdentity',
+      region: 'ap-southeast-1',
+      role_session_name: 'FactoryOSPitrSource',
+      web_identity_token: 'short',
+    }, fetcher)).rejects.toThrow(/web-identity input/i);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
 });
