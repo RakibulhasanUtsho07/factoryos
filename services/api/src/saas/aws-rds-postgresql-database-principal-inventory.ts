@@ -85,6 +85,12 @@ export interface AwsRdsPitrDatabasePrincipalCatalog {
     is_template: boolean;
     acl_reference: string | null;
   }>;
+  database_privileges: Array<{
+    grantee: string;
+    database_name: string;
+    privilege_type: string;
+    is_grantable: boolean;
+  }>;
   schema_privileges: Array<{
     grantee: string;
     schema_name: string;
@@ -349,6 +355,17 @@ const CATALOGS = [
       + 'datallowconn, pg_catalog.has_database_privilege(current_user, datname, \'CONNECT\') AS current_user_can_connect, '
       + 'datistemplate, datacl::text AS acl_reference '
       + 'FROM pg_catalog.pg_database ORDER BY datname LIMIT $1',
+  },
+  {
+    name: 'database_privileges',
+    sql: '/* factoryos:pitr:database_privileges */\n'
+      + 'SELECT CASE WHEN grants.grantee = 0 THEN \'PUBLIC\' '
+      + 'ELSE pg_catalog.pg_get_userbyid(grants.grantee) END AS grantee, '
+      + 'database.datname AS database_name, grants.privilege_type, grants.is_grantable '
+      + 'FROM pg_catalog.pg_database AS database '
+      + 'CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(database.datacl, '
+      + 'pg_catalog.acldefault(\'d\', database.datdba))) AS grants '
+      + 'ORDER BY database.datname, grantee, grants.privilege_type LIMIT $1',
   },
   {
     name: 'schema_privileges',
@@ -678,12 +695,34 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       const roleRows = rowsObserved.database_roles ?? [];
       const readerRole = roleRows.find((candidate) => candidate.rolname === this.options.database_username);
       const databaseCatalog = rowsObserved.database_access ?? [];
+      const inheritedRoles = new Set<string>([this.options.database_username]);
+      let membershipChanged = true;
+      while (membershipChanged) {
+        membershipChanged = false;
+        for (const membership of rowsObserved.role_memberships ?? []) {
+          if (inheritedRoles.has(String(membership.member_role)) && !inheritedRoles.has(String(membership.granted_role))) {
+            inheritedRoles.add(String(membership.granted_role));
+            membershipChanged = true;
+          }
+        }
+      }
+      const writePrivilegeTypes = new Set(['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER', 'REFERENCES', 'USAGE']);
+      const effectiveDatabaseCreate = (rowsObserved.database_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC') && item.privilege_type === 'CREATE');
+      const effectiveSchemaCreate = (rowsObserved.schema_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC') && item.privilege_type === 'CREATE');
+      const effectiveObjectWrite = (rowsObserved.object_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
+        && writePrivilegeTypes.has(String(item.privilege_type)));
       if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
         blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
       }
       if (databaseCatalog.some((candidate) => candidate.datallowconn === true
         && candidate.datistemplate === false && candidate.current_user_can_connect !== true)) {
         blockers.push('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
+      }
+      if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite) {
+        blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
       }
       if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
         || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
@@ -744,6 +783,12 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         current_user_can_connect: asBoolean(item.current_user_can_connect, 'database_connect_privilege'),
         is_template: asBoolean(item.datistemplate, 'datistemplate'),
         acl_reference: typeof item.acl_reference === 'string' ? item.acl_reference.slice(0, 2048) : null,
+      })),
+      database_privileges: (rowsObserved.database_privileges ?? []).map((item) => ({
+        grantee: requiredString(item.grantee, 'database_grantee'),
+        database_name: requiredString(item.database_name, 'database_name'),
+        privilege_type: requiredString(item.privilege_type, 'database_privilege'),
+        is_grantable: asBoolean(item.is_grantable, 'database_is_grantable'),
       })),
       schema_privileges: (rowsObserved.schema_privileges ?? []).map((item) => ({
         grantee: requiredString(item.grantee, 'schema_grantee'),
@@ -846,6 +891,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       database_roles: [],
       role_memberships: [],
       database_access: [],
+      database_privileges: [],
       schema_privileges: [],
       object_privileges: [],
       function_privileges: [],
