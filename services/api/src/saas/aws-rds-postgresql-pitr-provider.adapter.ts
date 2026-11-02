@@ -238,7 +238,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     return fail('organization account or read-only role name is invalid');
   }
   const organizationRegion = config.organization_region ?? 'us-east-1';
-  if (!/^[a-z]{2}(?:-[a-z0-9]+)+-\\d$/.test(organizationRegion)) {
+  if (!/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(organizationRegion)) {
     return fail('organization region is invalid');
   }
   const pageSize = config.page_size ?? 100;
@@ -320,7 +320,7 @@ class AwsQueryApi {
     const bodyParams = { Action: action, Version: QUERY_VERSIONS[service], ...parameters };
     const body = Object.keys(bodyParams).sort().map((key) => encode(key) + '=' + encode(bodyParams[key]!)).join('&');
     const payloadHash = sha256(body);
-    const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\\.\\d{3}/, '');
+    const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
     const dateStamp = amzDate.slice(0, 8);
     const headers: Record<string, string> = {
       'content-type': 'application/x-www-form-urlencoded; charset=utf-8',
@@ -331,9 +331,9 @@ class AwsQueryApi {
     if (credentials.session_token) headers['x-amz-security-token'] = credentials.session_token;
     const signedNames = Object.keys(headers).sort();
     const canonicalHeaders = signedNames.map((name) =>
-      name + ':' + headers[name]!.trim().replace(/\\s+/g, ' ') + '\\n').join('');
+      name + ':' + headers[name]!.trim().replace(/\s+/g, ' ') + '\n').join('');
     const signedHeaders = signedNames.join(';');
-    const canonicalRequest = ['POST', '/', '', canonicalHeaders, signedHeaders, payloadHash].join('\\n');
+    const canonicalRequest = ['POST', '/', '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
     const scope = dateStamp + '/' + region + '/' + service + '/aws4_request';
     const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256(canonicalRequest)].join('\\n');
     const signingKey = hmac(
@@ -585,7 +585,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       region: xmlText(block, 'regionName') ?? '',
       optInStatus: xmlText(block, 'optInStatus') ?? 'unknown',
     }));
-    if (regions.length < 1 || regions.some((region) => !/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region.region))) {
+    if (regions.length < 1 || regions.some((region) => !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(region.region))) {
       return fail('AWS EC2 DescribeRegions returned an incomplete or invalid region catalog for account ' + accountId);
     }
     if (new Set(regions.map((region) => region.region)).size !== regions.length) {
