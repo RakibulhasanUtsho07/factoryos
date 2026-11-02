@@ -1309,8 +1309,44 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   if (resource && inventory) {
     const linkedRecoveryPointArn = resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT'
       ? resource.resource_arn : resource.attributes.AwsBackupRecoveryPointArn;
-    if (linkedRecoveryPointArn && inventory.aws_backup_legal_hold_recovery_point_arns?.includes(linkedRecoveryPointArn)) {
-      blockers.push('Candidate recovery point is covered by an active AWS Backup legal hold.');
+    const linkedRecoveryPoint = resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT'
+      ? resource
+      : linkedRecoveryPointArn
+        ? inventoryItems.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT'
+          && item.resource_arn === linkedRecoveryPointArn)
+        : undefined;
+    if (resource.resource_type === 'RDS_AUTOMATED_BACKUP' && linkedRecoveryPointArn && !linkedRecoveryPoint) {
+      blockers.push('RDS automated backup references an AWS Backup recovery point absent from the complete vault inventory.');
+    }
+    if (linkedRecoveryPoint) {
+      if (linkedRecoveryPoint.status?.toUpperCase() !== 'COMPLETED') {
+        blockers.push('Linked AWS Backup recovery point is not in COMPLETED state.');
+      }
+      if (linkedRecoveryPoint.attributes.BackupVaultLocked !== 'false'
+        || linkedRecoveryPoint.attributes.BackupVaultLockDate) {
+        blockers.push('Linked AWS Backup vault lock is active, in grace-period configuration, or unknown.');
+      }
+      const sourceArn = resource.resource_type === 'RDS_AUTOMATED_BACKUP'
+        ? resource.attributes.DBInstanceArn : linkedRecoveryPoint.attributes.ResourceArn;
+      if (sourceArn && linkedRecoveryPoint.attributes.ResourceArn !== sourceArn) {
+        blockers.push('Linked AWS Backup recovery point source ARN does not match the RDS backup source.');
+      }
+      const linkedDeleteAt = linkedRecoveryPoint.attributes.LifecycleDeleteAt;
+      if (linkedDeleteAt) {
+        const linkedDeleteTime = Date.parse(linkedDeleteAt);
+        if (!Number.isFinite(linkedDeleteTime) || (expiry !== null && expiry < linkedDeleteTime)) {
+          blockers.push('Requested retention expiry precedes the linked AWS Backup lifecycle delete time.');
+        }
+      }
+      const linkedMinDays = Number(linkedRecoveryPoint.attributes.BackupVaultMinRetentionDays);
+      const linkedCreatedAt = linkedRecoveryPoint.created_at ? Date.parse(linkedRecoveryPoint.created_at) : Number.NaN;
+      if (Number.isSafeInteger(linkedMinDays) && linkedMinDays > 0 && Number.isFinite(linkedCreatedAt)
+        && expiry !== null && expiry < linkedCreatedAt + linkedMinDays * 86400000) {
+        blockers.push('Requested retention expiry violates the linked AWS Backup vault minimum retention period.');
+      }
+      if (inventory.aws_backup_legal_hold_recovery_point_arns?.includes(linkedRecoveryPointArn ?? '')) {
+        blockers.push('Candidate recovery point is covered by an active AWS Backup legal hold.');
+      }
     }
     if (inventory.aws_backup_legal_hold_scope_status_uncertain) {
       blockers.push('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
