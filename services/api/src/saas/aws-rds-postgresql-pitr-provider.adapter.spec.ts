@@ -474,7 +474,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const mock = makeFetch({
       legalHoldPages: [JSON.stringify({ LegalHolds: [{
         LegalHoldId: 'hold-2026-001',
-        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:legal-hold:hold-2026-001',
+        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:hold-2026-001',
         Status: 'ACTIVE',
         CreationDate: '2026-10-31T00:00:00.000Z',
       }] })],
@@ -508,6 +508,20 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.status).toBe('BLOCKED');
     expect(plan.provider_delete_identity_kind).toBe('AWS_BACKUP_RECOVERY_POINT_ARN');
     expect(plan.blockers).toContain('Candidate recovery point is covered by an active AWS Backup legal hold.');
+  });
+
+
+  it('accepts the documented AWS Backup legal-hold ARN resource form while retaining exact account/region binding', async () => {
+    const mock = makeFetch({
+      legalHoldPages: [JSON.stringify({ LegalHolds: [{
+        LegalHoldId: 'hold-documented-arn',
+        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:hold-documented-arn',
+        Status: 'ACTIVE',
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    expect(inventory.aws_backup_legal_holds[0]?.legal_hold_arn)
+      .toBe('arn:aws:backup:ap-southeast-1:111111111111:recovery-point:hold-documented-arn');
   });
 
   it('blocks retention planning while an AWS Backup legal hold is creating or canceling', async () => {
@@ -561,7 +575,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       }] })],
       legalHoldPages: [JSON.stringify({ LegalHolds: [{
         LegalHoldId: 'hold-rds-link-01',
-        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:legal-hold:hold-rds-link-01',
+        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:hold-rds-link-01',
         Status: 'ACTIVE',
       }] })],
       legalHoldRecoveryPointPages: {
