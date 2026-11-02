@@ -255,13 +255,26 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const mock = makeFetch();
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const source = inventory.sources.find((entry) => entry.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG');
-    const backup = source?.items.find((item) => item.resource_type === 'RDS_RETAINED_AUTOMATED_BACKUP');
+    const backup = source?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
     expect(backup?.resource_arn).toBeNull();
     expect(backup?.identity_kind).toBe('SOURCE_DB_COMPOSITE');
     expect(backup?.provider_identity_reference).toMatch(/^aws-rds-resource\./);
     expect(backup?.attributes.DBIResourceId ?? backup?.attributes.DbiResourceId).toBe('db-ABCDEFGHIJKLMNOP');
     expect(backup?.source_database_reference).toBe('orders-db');
     expect(backup?.attributes.DBInstanceArn).toBe(databaseArn);
+
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_resource_arn: replicatedArn,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.blockers).toContain('Candidate resource was not observed in the supplied inventory.');
   });
 
   it('uses the separate replicated automated-backup ARN when AWS supplies one', async () => {
@@ -276,7 +289,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const mock = makeFetch({ automatedBackupXml });
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const backup = inventory.sources.find((entry) => entry.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
-      ?.items.find((item) => item.resource_type === 'RDS_RETAINED_AUTOMATED_BACKUP');
+      ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
     expect(backup?.resource_arn).toBe(replicatedArn);
     expect(backup?.identity_kind).toBe('IMMUTABLE_RESOURCE_ARN');
     expect(backup?.attributes.DBInstanceArn).toBe(databaseArn);
