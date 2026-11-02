@@ -1659,7 +1659,17 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     }
   }
   if (inventory) {
-    blockers.push('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
+    if (inventory.provider_managed_wal_segments_individually_enumerated !== true) {
+      blockers.push('Provider-managed RDS WAL segments remain opaque and have no individual inventory identities.');
+    }
+    if (inventory.database_writer_principals_fully_enumerated !== true) {
+      blockers.push('Database-native writer-principal coverage is incomplete or not enumerated.');
+    }
+    const replicationCatalog = inventorySources.find((source) =>
+      isRecord(source) && source.source_kind === 'WAL_REPLICATION_PATH_CATALOG');
+    if (!replicationCatalog || replicationCatalog.status !== 'COMPLETE') {
+      blockers.push('AWS-side and external replication-path actors remain partially enumerated.');
+    }
   }
   const identityDigest = resource ? sha256(JSON.stringify({
     provider_identity_reference: resource.provider_identity_reference,
