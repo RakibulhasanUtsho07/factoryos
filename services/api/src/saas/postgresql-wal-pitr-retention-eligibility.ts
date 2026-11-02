@@ -14,6 +14,7 @@ export const REQUIRED_POSTGRESQL_WAL_PITR_RETENTION_SOURCES = [
 
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SEGMENT = /^[A-F0-9]{24}$/;
 const TIMELINE = /^[A-F0-9]{8}$/;
 const MAX_INVENTORY_AGE_MS = 24 * 60 * 60 * 1000;
@@ -124,12 +125,13 @@ function digest(value: unknown): string {
  */
 export function evaluatePostgresqlWalPitrRetentionEligibility(
   value: unknown,
+  expectedTenantId: string,
   nowValue: Date | number = Date.now(),
 ): PostgresqlWalPitrRetentionEligibilityResult {
   const now = nowValue instanceof Date ? nowValue.getTime() : nowValue;
   const blockers: string[] = [];
 
-  if (!Number.isFinite(now)) {
+  if (!Number.isFinite(now) || !Number.isFinite(new Date(now).getTime())) {
     return {
       schema: POSTGRESQL_WAL_PITR_RETENTION_ELIGIBILITY_SCHEMA,
       status: 'BLOCKED',
@@ -162,7 +164,9 @@ export function evaluatePostgresqlWalPitrRetentionEligibility(
     };
   }
 
-  add(blockers, isReference(input.tenant_id), 'Tenant identity is missing or invalid.');
+  add(blockers, typeof expectedTenantId === 'string' && UUID.test(expectedTenantId)
+    && UUID.test(input.tenant_id) && input.tenant_id.toLowerCase() === expectedTenantId.toLowerCase(),
+  'Evidence tenant does not match the authoritative expected tenant.');
   add(blockers, isReference(input.evaluation_reference), 'Evaluation reference is missing or invalid.');
   const declaredEvaluationTime = timestamp(input.evaluated_at);
   add(blockers, declaredEvaluationTime !== null
