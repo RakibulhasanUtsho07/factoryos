@@ -42,6 +42,9 @@ export interface AwsRdsExternalIamPotentialPrincipal {
   principal_type: 'ROLE' | 'USER';
   identity: string;
   permissions_boundary_present: boolean;
+  permissions_boundary_policy_reference: string | null;
+  permissions_boundary_policy_sha256: string | null;
+  permissions_boundary_statements: AwsRdsExternalIamPotentialStatement[];
   role_trust_policy_present: boolean;
   role_trust_policy_sha256: string | null;
   potential_statements: AwsRdsExternalIamPotentialStatement[];
@@ -520,12 +523,18 @@ export async function captureAwsRdsExternalIamPrincipalInventory(
     const trustDigest = trustPolicy ? sha256(trustPolicy) : null;
     if (entry.type === 'ROLE' && !trustPolicy) blockers.add('IAM_ROLE_TRUST_POLICY_NOT_RETURNED');
     const boundary = xmlElementBlocks(entry.xml, 'PermissionsBoundary')[0];
-    if (potentialStatements.length > 0) {
+    const boundaryArn = boundary ? xmlText(boundary, 'PermissionsBoundaryArn') : null;
+    const boundaryPolicy = boundaryArn ? managed.get(boundaryArn) : undefined;
+    if (boundaryArn && !boundaryPolicy) blockers.add('IAM_PERMISSIONS_BOUNDARY_POLICY_DOCUMENT_UNAVAILABLE');
+    if (potentialStatements.length > 0 || boundaryArn) {
       principals.push({
         principal_arn: arn,
         principal_type: entry.type,
         identity: name,
         permissions_boundary_present: Boolean(boundary),
+        permissions_boundary_policy_reference: boundaryPolicy?.reference ?? boundaryArn,
+        permissions_boundary_policy_sha256: boundaryPolicy?.sha256 ?? null,
+        permissions_boundary_statements: boundaryPolicy ? policyStatements(boundaryPolicy) : [],
         role_trust_policy_present: entry.type === 'ROLE' && Boolean(trustPolicy),
         role_trust_policy_sha256: trustDigest,
         potential_statements: potentialStatements,
