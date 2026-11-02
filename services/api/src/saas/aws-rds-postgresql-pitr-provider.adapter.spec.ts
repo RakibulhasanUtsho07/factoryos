@@ -496,6 +496,41 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.blockers).toContain('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
   });
 
+
+  it('captures RDS automated-backup cross-region replication ARN links exactly', async () => {
+    const destinationArn = 'arn:aws:rds:us-east-1:111111111111:auto-backup:ab-0123456789ABCDEF';
+    const automatedBackupXml = '<DBInstanceAutomatedBackup>'
+      + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
+      + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
+      + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+      + '<Engine>postgres</Engine><Status>active</Status>'
+      + '<DBInstanceAutomatedBackupsReplications><DBInstanceAutomatedBackupsReplication>'
+      + '<DBInstanceAutomatedBackupsArn>' + destinationArn + '</DBInstanceAutomatedBackupsArn>'
+      + '</DBInstanceAutomatedBackupsReplication></DBInstanceAutomatedBackupsReplications>'
+      + '</DBInstanceAutomatedBackup>';
+    const mock = makeFetch({ automatedBackupXml });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const backup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
+    expect(backup?.replication_destination_arns).toEqual([destinationArn]);
+    expect(inventory.sources.find((source) => source.source_kind === 'WAL_REPLICATION_PATH_CATALOG')
+      ?.items.some((item) => item.provider_identity_reference === backup?.provider_identity_reference)).toBe(true);
+  });
+
+  it('excludes non-PostgreSQL RDS engines from the PostgreSQL PITR cluster catalog', async () => {
+    const mysqlArn = 'arn:aws:rds:ap-southeast-1:111111111111:db:legacy-mysql';
+    const mysql = '<DBInstance><DBInstanceArn>' + mysqlArn + '</DBInstanceArn>'
+      + '<DBInstanceIdentifier>legacy-mysql</DBInstanceIdentifier>'
+      + '<DbiResourceId>db-MYSQL123456</DbiResourceId>'
+      + '<Engine>mysql</Engine><DBInstanceStatus>available</DBInstanceStatus>'
+      + '</DBInstance>';
+    const mock = makeFetch({ instanceXml: instanceXml() + mysql });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const items = inventory.sources.find((source) => source.source_kind === 'POSTGRESQL_CLUSTER_CATALOG')?.items ?? [];
+    expect(items.map((item) => item.resource_arn)).toContain(databaseArn);
+    expect(items.map((item) => item.resource_arn)).not.toContain(mysqlArn);
+  });
+
   it('exchanges a bounded OIDC token for short-lived STS credentials without signing or logging the token', async () => {
     const token = 'oidc.' + 'a'.repeat(120) + '.signature';
     const fetcher = jest.fn<typeof fetch>().mockImplementation(async (input, init) => {
