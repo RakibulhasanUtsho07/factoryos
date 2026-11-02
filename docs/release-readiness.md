@@ -128,4 +128,8 @@ Before production acceptance, the cloud owner must enable and validate AWS Backu
 
 Only `backup:ListCopyJobs` and `backup:DescribeCopyJob` are added to the reader policy. AWS publishes no resource type for these read actions, so their allow statements use `Resource: "*"`; the explicit `NotAction` deny fence remains in place. No copy, restore, start, stop, delete, vault mutation or legal-hold mutation API is granted or implemented.
 
+Two companion CloudFormation contracts now define the retention path for history beyond AWS Backup's 30-day copy-job API window: an indefinite EventBridge Copy Job State Change archive per account/Region, and a multi-Region CloudTrail trail per account writing integrity-validated logs/digests into a KMS-encrypted, versioned S3 bucket with a mandatory owner-selected Object Lock Compliance duration. The regional archive and trail are **not deployed**; best-effort delivery is not loss-free, CloudTrail digest validation must be executed and retained, and the cold-start baseline must capture the overlapping current ListCopyJobs window plus any available 90-day regional CloudTrail Event history. The approved retention duration is intentionally not guessed or defaulted.
+
+Repository structural test: `scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs`; dedicated workflow: `.github/workflows/aws-backup-copy-job-event-retention-contract.yml`. Passing this test validates template shape only, not AWS resource creation, event delivery, key policy or live Object Lock behavior.
+
 **Release disposition:** mocked API contract evidence only. No live AWS role, account aggregation, copy job, destination recovery point or restore was exercised. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL.
