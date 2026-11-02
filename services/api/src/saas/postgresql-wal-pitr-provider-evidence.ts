@@ -452,7 +452,6 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
     return fail('caller expected provider scope digest does not match its canonical scope');
   }
   const discovery = validateDiscovery(await gateway.discoverScopes());
-  if (discovery.pagesFetched > maxTotalPages) return fail('independent residual discovery exceeded its total page budget');
   if (scopeKeyList(discovery.scopes) !== scopeKeyList(expectedScopes)) {
     return fail('independent residual scanner did not enumerate the exact expected provider/account/region scope');
   }
@@ -477,6 +476,7 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
   }
   const now = input.now ?? new Date();
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return fail('independent residual scan clock is invalid');
+  if (discovery.pagesFetched > maxTotalPages) return fail('independent residual discovery exceeded its total page budget');
   const candidates = new Map<string, PostgresqlWalPitrResidualIdentity>();
   for (const candidate of input.candidate_identities) {
     const normalized = normalizeResidual(candidate);
