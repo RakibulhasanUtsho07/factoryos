@@ -385,6 +385,7 @@ describe('AWS Backup vault and recovery-point inventory', () => {
     expect(result.restore_access_vault_relationships[0]?.restore_access_backup_vault_arn).toBe(restoreVaultArn);
     expect(result.restore_access_relationships_complete).toBe(true);
     expect(result.copy_jobs).toHaveLength(1);
+    expect(result.copy_job_terminal_record_retention_days).toBe(30);
     expect(result.copy_jobs[0]?.copy_job_id).toBe('copy-job-0001');
     expect(result.copy_jobs[0]?.state).toBe('COMPLETED');
     expect(result.copy_jobs[0]?.source_backup_vault_arn).toBe(standardVaultArn);
