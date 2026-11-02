@@ -122,7 +122,9 @@ const SQL = {
   ].join(' '),
   memberships: [
     'SELECT granted.rolname AS granted_role, member.rolname AS member_role,',
-    ' grantor.rolname AS grantor_role, m.admin_option',
+    ' grantor.rolname AS grantor_role, m.admin_option,',
+    " (pg_catalog.to_jsonb(m)->>'inherit_option')::boolean AS inherit_option,",
+    " (pg_catalog.to_jsonb(m)->>'set_option')::boolean AS set_option",
     ' FROM pg_catalog.pg_auth_members m',
     ' JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid',
     ' JOIN pg_catalog.pg_roles member ON member.oid = m.member',
@@ -251,8 +253,7 @@ const SQL = {
   ].join(' '),
   replicationSlots: [
     'SELECT slot_name, plugin, slot_type, database, active, temporary,',
-    ' restart_lsn::text AS restart_lsn, confirmed_flush_lsn::text AS confirmed_flush_lsn,',
-    ' wal_status',
+    ' restart_lsn::text AS restart_lsn, confirmed_flush_lsn::text AS confirmed_flush_lsn',
     ' FROM pg_catalog.pg_replication_slots ORDER BY slot_name LIMIT $1',
   ].join(' '),
   walReceiver: [
