@@ -213,7 +213,12 @@ async function readBoundedResponse(response: Response): Promise<string> {
   let total = 0;
   try {
     while (true) {
-      const part = await reader.read();
+      let part: ReadableStreamReadResult<Uint8Array>;
+      try {
+        part = await reader.read();
+      } catch {
+        return fail('AWS response stream was interrupted');
+      }
       if (part.done) break;
       total += part.value.byteLength;
       if (total > MAX_RESPONSE_BYTES) {
@@ -222,14 +227,15 @@ async function readBoundedResponse(response: Response): Promise<string> {
       }
       chunks.push(Buffer.from(part.value));
     }
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total));
-  } catch {
-    return fail('AWS response was incomplete or was not valid UTF-8');
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total));
+    } catch {
+      return fail('AWS response was not valid UTF-8');
+    }
   } finally {
     reader.releaseLock();
   }
 }
-
 function requireAwsArn(value: string | null, field: string): string {
   if (!value || !RDS_ARN.test(value)) return fail(field + ' did not return an exact AWS RDS resource ARN');
   return value;
@@ -309,6 +315,66 @@ function validateCredentials(value: AwsRdsPitrCredentials): AwsRdsPitrCredential
     return fail('source credential provider returned incomplete or malformed credentials');
   }
   return value;
+}
+
+export interface AwsRdsPitrWebIdentityInput {
+  role_arn: string;
+  region: string;
+  role_session_name: string;
+  web_identity_token: string;
+}
+
+/** Exchanges an externally read OIDC/web-identity token for short-lived STS credentials. */
+export async function exchangeAwsRdsPitrWebIdentityToken(
+  input: AwsRdsPitrWebIdentityInput,
+  fetcher: typeof fetch = globalThis.fetch,
+  timeoutMs = 10000,
+): Promise<AwsRdsPitrCredentials> {
+  const arn = /^arn:(aws|aws-us-gov|aws-cn):iam::(\d{12}):role\/([A-Za-z0-9+=,.@_/-]{1,512})$/.exec(input.role_arn);
+  if (!arn || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(input.region)
+    || !/^[A-Za-z0-9+=,.@_-]{2,64}$/.test(input.role_session_name)
+    || typeof input.web_identity_token !== 'string'
+    || input.web_identity_token.length < 32 || input.web_identity_token.length > 65536
+    || /[\r\n]/.test(input.web_identity_token)
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) {
+    return fail('AWS web-identity input is incomplete or outside supported bounds');
+  }
+  const dnsSuffix = input.region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
+  const endpoint = 'https://sts.' + input.region + '.' + dnsSuffix + '/';
+  const body = new URLSearchParams({
+    Action: 'AssumeRoleWithWebIdentity',
+    Version: QUERY_VERSIONS.sts,
+    RoleArn: input.role_arn,
+    RoleSessionName: input.role_session_name,
+    DurationSeconds: '900',
+    WebIdentityToken: input.web_identity_token,
+  }).toString();
+  let response: Response;
+  try {
+    response = await fetcher(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return fail('AWS STS web-identity exchange failed before a verified response');
+  }
+  const xml = await readBoundedResponse(response);
+  if (!response.ok) {
+    const code = xmlText(xml, 'Code') ?? 'HTTP_' + response.status;
+    return fail('AWS STS web-identity exchange was denied or failed (' + code + ')');
+  }
+  if (!xml.includes('<AssumeRoleWithWebIdentityResult')) {
+    return fail('AWS STS web-identity response has an unexpected shape');
+  }
+  const credentialBlock = xmlBlocks(xml, 'Credentials')[0];
+  if (!credentialBlock) return fail('AWS STS web-identity response omitted temporary credentials');
+  return validateCredentials({
+    access_key_id: xmlText(credentialBlock, 'AccessKeyId') ?? '',
+    secret_access_key: xmlText(credentialBlock, 'SecretAccessKey') ?? '',
+    session_token: xmlText(credentialBlock, 'SessionToken') ?? '',
+  });
 }
 
 interface QueryResult {
