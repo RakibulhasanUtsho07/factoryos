@@ -94,42 +94,6 @@ export interface AwsRdsPitrCatalogSource {
   items: AwsRdsPitrResource[];
 }
 
-export interface AwsBackupVaultRecord {
-  account_id: string;
-  region: string;
-  backup_vault_arn: string;
-  backup_vault_name: string;
-  vault_type: string | null;
-  vault_state: string | null;
-  locked: boolean | null;
-  lock_date: string | null;
-  min_retention_days: number | null;
-  max_retention_days: number | null;
-  number_of_recovery_points: number | null;
-  encryption_key_arn: string | null;
-  creation_date: string | null;
-}
-
-export interface AwsBackupRecoveryPointRecord {
-  account_id: string;
-  region: string;
-  recovery_point_arn: string;
-  backup_vault_arn: string;
-  backup_vault_name: string;
-  resource_arn: string;
-  resource_type: 'RDS' | 'Aurora';
-  status: string | null;
-  creation_date: string | null;
-  completion_date: string | null;
-  last_restore_time: string | null;
-  lifecycle_delete_at: string | null;
-  lifecycle_move_to_cold_storage_at: string | null;
-  is_encrypted: boolean | null;
-  encryption_key_arn: string | null;
-  backup_size_bytes: number | null;
-  source_backup_vault_arn: string | null;
-}
-
 export interface AwsRdsPostgresqlPitrInventory {
   schema: typeof AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA;
   status: 'INCOMPLETE' | 'ENUMERATED_WITH_EXPLICIT_GAPS';
@@ -1130,8 +1094,6 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         SourceBackupVaultArn: point.source_backup_vault_arn,
         BackupVaultType: point.backup_vault_type,
         BackupVaultState: point.backup_vault_state,
-        BackupVaultType: point.backup_vault_type,
-        BackupVaultState: point.backup_vault_state,
         BackupVaultLocked: point.backup_vault_locked === null ? null : String(point.backup_vault_locked),
         BackupVaultLockDate: point.backup_vault_lock_date,
         BackupVaultMinRetentionDays: point.backup_vault_min_retention_days === null ? null : String(point.backup_vault_min_retention_days),
@@ -1159,9 +1121,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? [], sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0,
         sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []),
       sourceFromItems('PITR_RESTORE_PATH_CATALOG', 'PARTIAL',
-        'RDS automated-backup restore windows and RDS snapshots are enumerated. AWS Backup vault/recovery-point catalogs and live restore rehearsal are not included.',
-        sourceItems.get('PITR_RESTORE_PATH_CATALOG') ?? [], sourcePages.get('PITR_RESTORE_PATH_CATALOG') ?? 0,
-        sourceReceipts.get('PITR_RESTORE_PATH_CATALOG') ?? []),
+        'RDS automated-backup restore windows, RDS snapshots, AWS Backup RDS/Aurora recovery points and legal-hold membership are enumerated; live restore rehearsal and independent provider audit attestation remain pending.',
+        [...(sourceItems.get('PITR_RESTORE_PATH_CATALOG') ?? []), ...backupRecoveryResources],
+        (sourcePages.get('PITR_RESTORE_PATH_CATALOG') ?? 0) + backupPages,
+        [...(sourceReceipts.get('PITR_RESTORE_PATH_CATALOG') ?? []), ...backupReceiptReferences]),
     ];
     const incomplete = !accountDiscoveryComplete || !regionDiscoveryComplete;
     const sourcePrincipalReference = await this.callerIdentity(this.sourceCredentials, this.config.organization_account_id);
@@ -1190,9 +1153,15 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       excluded_regions: excludedRegions,
       sources,
       backup_vault_catalog_complete: backupCatalogComplete,
-      backup_vaults,
+      backup_vaults: backupVaults,
       aws_backup_recovery_points_enumerated: backupCatalogComplete,
       aws_backup_recovery_points: backupRecoveryPoints,
+      aws_backup_legal_holds_enumerated: backupCatalogComplete,
+      aws_backup_legal_holds: backupLegalHolds,
+      aws_backup_legal_hold_recovery_point_arns: [...backupLegalHoldRecoveryPointArns].sort(),
+      aws_backup_legal_hold_scope_status_uncertain: backupLegalHoldScopeStatusUncertain,
+      aws_backup_receipt_references: [...new Set(backupReceiptReferences)].sort(),
+      unresolved_replication_destination_arns: unresolvedReplicationDestinationArns,
       provider_managed_wal_segments_individually_enumerated: false,
       database_writer_principals_fully_enumerated: false,
       source_receipts_signable: false,
@@ -1246,9 +1215,13 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     blockers.push('Retention expiry or minimum recovery horizon timestamp is invalid.');
   }
   const inventorySources = Array.isArray(inventory?.sources) ? inventory.sources : [];
-  const inventoryItems = inventorySources.filter((source: unknown) =>
-    isRecord(source) && Array.isArray(source.items)).flatMap((source: Record<string, unknown>) =>
-    source.items as AwsRdsPitrResource[]);
+  const inventoryItems: AwsRdsPitrResource[] = [];
+  for (const source of inventorySources) {
+    if (!isRecord(source) || !Array.isArray(source.items)) continue;
+    for (const item of source.items) {
+      if (isRecord(item)) inventoryItems.push(item as unknown as AwsRdsPitrResource);
+    }
+  }
   const resource = candidateReference
     ? inventoryItems.find((item) => item.provider_identity_reference === candidateReference
       && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT', 'AWS_BACKUP_RECOVERY_POINT'].includes(item.resource_type))
