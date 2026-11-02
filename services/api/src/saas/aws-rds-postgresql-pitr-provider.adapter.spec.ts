@@ -43,6 +43,8 @@ function makeFetch(options: {
   regionXml?: string;
   instanceXml?: string;
   automatedBackupXml?: string;
+  dbSnapshotXml?: string;
+  dbClusterSnapshotXml?: string;
   backupStatus?: string;
   backupVaultPages?: string[];
   backupRecoveryPointPages?: string[];
@@ -195,6 +197,8 @@ function makeFetch(options: {
             : action === 'DescribeDBInstanceAutomatedBackups' ? 'DBInstanceAutomatedBackups'
               : action === 'DescribeDBSnapshots' ? 'DBSnapshots' : 'DBClusterSnapshots';
       const item = action === 'DescribeDBInstances' ? (options.instanceXml ?? instanceXml()) : '';
+      const snapshotItem = action === 'DescribeDBSnapshots' ? (options.dbSnapshotXml ?? '') : '';
+      const clusterSnapshotItem = action === 'DescribeDBClusterSnapshots' ? (options.dbClusterSnapshotXml ?? '') : '';
       const backupItem = action === 'DescribeDBInstanceAutomatedBackups'
         ? (options.automatedBackupXml ?? '<DBInstanceAutomatedBackup>'
           + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
@@ -207,7 +211,7 @@ function makeFetch(options: {
           + '</DBInstanceAutomatedBackup>')
         : '';
       return xml('<' + action + 'Response><' + resultTag + '><' + collectionTag + '>'
-        + item + backupItem + '</' + collectionTag + '></' + resultTag + '></' + action + 'Response>');
+        + item + backupItem + snapshotItem + clusterSnapshotItem + '</' + collectionTag + '></' + resultTag + '></' + action + 'Response>');
     }
     return xml('<ErrorResponse><Error><Code>UnsupportedAction</Code></Error></ErrorResponse>');
   });
@@ -578,6 +582,110 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const items = inventory.sources.find((source) => source.source_kind === 'POSTGRESQL_CLUSTER_CATALOG')?.items ?? [];
     expect(items.map((item) => item.resource_arn)).toContain(databaseArn);
     expect(items.map((item) => item.resource_arn)).not.toContain(mysqlArn);
+  });
+
+
+  it('binds RDS snapshot deletion to the provider identifier while preserving the immutable ARN', async () => {
+    const snapshotArn = 'arn:aws:rds:ap-southeast-1:111111111111:snapshot:orders-manual-20261031';
+    const dbSnapshotXml = '<DBSnapshot>'
+      + '<DBSnapshotArn>' + snapshotArn + '</DBSnapshotArn>'
+      + '<DBSnapshotIdentifier>orders-manual-20261031</DBSnapshotIdentifier>'
+      + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+      + '<Engine>postgres</Engine><Status>available</Status>'
+      + '<SnapshotType>manual</SnapshotType><Encrypted>true</Encrypted>'
+      + '</DBSnapshot>';
+    const mock = makeFetch({ dbSnapshotXml });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const snapshot = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_DB_SNAPSHOT');
+    expect(snapshot?.resource_arn).toBe(snapshotArn);
+    expect(snapshot?.provider_delete_identity_kind).toBe('SNAPSHOT_IDENTIFIER');
+    expect(snapshot?.provider_delete_identity_reference).toBe('orders-manual-20261031');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: snapshot!.provider_identity_reference,
+      candidate_resource_arn: snapshotArn,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.provider_delete_identity_kind).toBe('SNAPSHOT_IDENTIFIER');
+    expect(plan.provider_delete_identity_reference).toBe('orders-manual-20261031');
+    expect(plan.deletion_authorized).toBe(false);
+  });
+
+  it('blocks AWS Backup recovery points while the vault is locked', async () => {
+    const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
+    const mock = makeFetch({
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [{
+        BackupVaultName: 'default',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        Locked: true,
+        LockDate: '2026-10-30T00:00:00.000Z',
+        MinRetentionDays: 30,
+        NumberOfRecoveryPoints: 1,
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-11-30T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.blockers).toContain('AWS Backup recovery point is not in COMPLETED state.');
+    expect(plan.blockers).toContain('AWS Backup vault lock is active, in grace-period configuration, or unknown.');
+  });
+
+  it('blocks an RDS automated backup if its linked AWS Backup recovery point is absent from the complete vault catalog', async () => {
+    const linkedArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const automatedBackupXml = '<DBInstanceAutomatedBackup>'
+      + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
+      + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
+      + '<AwsBackupRecoveryPointArn>' + linkedArn + '</AwsBackupRecoveryPointArn>'
+      + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+      + '<Engine>postgres</Engine><Status>retained</Status>'
+      + '</DBInstanceAutomatedBackup>';
+    const mock = makeFetch({
+      automatedBackupXml,
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const backup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: backup!.provider_identity_reference,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.blockers).toContain('RDS automated backup references an AWS Backup recovery point absent from the complete vault inventory.');
+  });
+
+  it('rejects a missing cross-account external ID before making a provider request', async () => {
+    const mock = makeFetch();
+    const adapter = new AwsRdsPostgresqlPitrProviderAdapter({
+      organization_account_id: organizationAccount,
+      read_only_role_name: roleName,
+    }, sourceCredentials, mock.fetcher);
+    await expect(adapter.captureInventory()).rejects.toThrow(/external ID is required/i);
+    expect(mock.fetcher).not.toHaveBeenCalled();
   });
 
   it('exchanges a bounded OIDC token for short-lived STS credentials without signing or logging the token', async () => {
