@@ -44,11 +44,11 @@ function globalReplicationGroup(): string {
   return '<GlobalReplicationGroup><GlobalReplicationGroupId>global-cache-01</GlobalReplicationGroupId>'
     + '<Status>available</Status><Engine>redis</Engine><EngineVersion>7.1</EngineVersion>'
     + '<CacheNodeType>cache.r7g.large</CacheNodeType><ClusterEnabled>true</ClusterEnabled>'
-    + '<Members><ReplicationGroup><ReplicationGroupId>rg-primary</ReplicationGroupId>'
+    + '<Members><GlobalReplicationGroupMember><ReplicationGroupId>rg-primary</ReplicationGroupId>'
     + '<ReplicationGroupRegion>ap-southeast-1</ReplicationGroupRegion><Role>PRIMARY</Role><Status>available</Status>'
     + '</ReplicationGroup><ReplicationGroup><ReplicationGroupId>rg-replica</ReplicationGroupId>'
     + '<ReplicationGroupRegion>ap-northeast-1</ReplicationGroupRegion><Role>SECONDARY</Role><Status>available</Status>'
-    + '</ReplicationGroup></Members></GlobalReplicationGroup>';
+    + '</GlobalReplicationGroupMember></Members></GlobalReplicationGroup>';
 }
 
 function snapshot(id: string, createdAt = '2026-11-01T05:30:00.000Z'): string {
