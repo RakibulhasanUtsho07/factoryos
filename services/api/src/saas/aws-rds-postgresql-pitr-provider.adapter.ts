@@ -1176,10 +1176,12 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     blockers.push('AWS account/region inventory is incomplete.');
   }
   const candidateReference = typeof value.candidate_provider_identity_reference === 'string'
-    && /^aws-rds-resource\.[a-f0-9]{40}$/.test(value.candidate_provider_identity_reference)
+    && /^aws-(?:rds-resource|backup-recovery-point)\.[a-f0-9]{40}$/.test(value.candidate_provider_identity_reference)
     ? value.candidate_provider_identity_reference : null;
   if (!candidateReference) blockers.push('Candidate must use an exact provider inventory identity reference.');
-  const candidateArn = typeof value.candidate_resource_arn === 'string' && RDS_ARN.test(value.candidate_resource_arn)
+  const candidateArn = typeof value.candidate_resource_arn === 'string'
+    && (RDS_ARN.test(value.candidate_resource_arn)
+      || /^arn:(aws|aws-us-gov|aws-cn):backup:[a-z0-9-]+:\\d{12}:recovery-point:[A-Za-z0-9._:/-]+$/.test(value.candidate_resource_arn))
     ? value.candidate_resource_arn : null;
   if (value.candidate_resource_arn !== undefined && !candidateArn) {
     blockers.push('Optional candidate resource ARN is malformed.');
@@ -1212,6 +1214,17 @@ export function createAwsRdsPitrRetentionDryRunPlan(
       if (!resource.provider_delete_identity_reference
         || !['DBI_RESOURCE_ID', 'REPLICATED_BACKUP_ARN'].includes(resource.provider_delete_identity_kind ?? '')) {
         blockers.push('Automated backup lacks an exact AWS-supported retention identity.');
+      }
+    } else if (resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT') {
+      if (resource.status?.toUpperCase() !== 'COMPLETED') {
+        blockers.push('AWS Backup recovery point is not in COMPLETED state.');
+      }
+      if (resource.provider_delete_identity_kind !== 'AWS_BACKUP_RECOVERY_POINT_ARN'
+        || !resource.provider_delete_identity_reference) {
+        blockers.push('AWS Backup recovery point lacks its exact recovery-point ARN.');
+      }
+      if (resource.attributes.BackupVaultLocked !== 'false') {
+        blockers.push('AWS Backup vault lock state is active or unknown.');
       }
     } else if (resource.status?.toLowerCase() !== 'available'
       || resource.provider_delete_identity_kind !== 'SNAPSHOT_ARN'
@@ -1247,8 +1260,12 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   ] as const) {
     try { safeReference(reference, field); } catch { blockers.push(field + ' is missing or invalid.'); }
   }
+  if (inventory && (inventory.backup_vault_catalog_complete !== true
+    || inventory.aws_backup_recovery_points_enumerated !== true)) {
+    blockers.push('AWS Backup vault/recovery-point catalog coverage is incomplete.');
+  }
   if (inventory) {
-    blockers.push('Provider-managed WAL, database writer and AWS Backup recovery-point catalog coverage remain unresolved.');
+    blockers.push('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
   }
   const identityDigest = resource ? sha256(JSON.stringify({
     provider_identity_reference: resource.provider_identity_reference,
