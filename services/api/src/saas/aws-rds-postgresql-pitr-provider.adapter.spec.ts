@@ -274,7 +274,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       dependency_status: 'NO_DEPENDENCY',
     });
     expect(plan.status).toBe('BLOCKED');
-    expect(plan.blockers).toContain('Candidate resource was not observed in the supplied inventory.');
+    expect(plan.blockers).toContain('Backup/snapshot lifecycle state is not eligible for retention review.');
   });
 
   it('uses the separate replicated automated-backup ARN when AWS supplies one', async () => {
@@ -310,6 +310,30 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     });
     expect(plan.status).toBe('BLOCKED');
     expect(plan.blockers.join(' ')).toMatch(/expected AWS account and region/i);
+  });
+
+
+  it('rejects unknown AWS region opt-in states instead of silently dropping the region', async () => {
+    const regionXml = '<DescribeRegionsResponse><DescribeRegionsResult><regionInfo>'
+      + '<item><regionName>ap-southeast-1</regionName><optInStatus>future-state</optInStatus></item>'
+      + '</regionInfo></DescribeRegionsResult></DescribeRegionsResponse>';
+    const mock = makeFetch({ regionXml });
+    await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/unknown opt-in status/i);
+  });
+
+  it('rejects an AWS RDS response page larger than the requested MaxRecords', async () => {
+    const oversized = Array.from({ length: 101 }, () => instanceXml()).join('');
+    const mock = makeFetch({ instanceXml: oversized });
+    await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/more items than its requested page size/i);
+  });
+
+  it('rejects an Organizations JSON page larger than its MaxResults limit', async () => {
+    const manyAccounts = Array.from({ length: 21 }, (_, index) => ({
+      Id: String(200000000000 + index),
+      State: 'ACTIVE',
+    }));
+    const mock = makeFetch({ accountPages: [JSON.stringify({ Accounts: manyAccounts })] });
+    await expect(createAdapter(mock.fetcher).captureInventory()).rejects.toThrow(/per-page or total account item budget/i);
   });
 
   it('exchanges a bounded OIDC token for short-lived STS credentials without signing or logging the token', async () => {
