@@ -1167,16 +1167,18 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               source_database_reference: resource.attributes.DBInstanceIdentifier
                 ?? resource.attributes.DBClusterIdentifier ?? resource.provider_identity_reference,
             };
-            const catalog = await this.databasePrincipalReader.capture(target, {
+            const catalogs = await this.databasePrincipalReader.captureAll(target, {
               role_arn: dbRole.arn,
               principal_reference: dbRole.principal,
               credentials: dbRole.credentials,
             }, remainingDatabasePrincipalRows);
-            databasePrincipalCatalogs.push(catalog);
-            remainingDatabasePrincipalRows = Math.max(0, remainingDatabasePrincipalRows - catalog.rows_observed);
-            this.totalDatabaseQueries += catalog.queries_executed;
-            this.totalDatabasePrincipalRows += catalog.rows_observed;
-            this.addItems(catalog.rows_observed);
+            databasePrincipalCatalogs.push(...catalogs);
+            const targetRows = catalogs.reduce((sum, catalog) => sum + catalog.rows_observed, 0);
+            const targetQueries = catalogs.reduce((sum, catalog) => sum + catalog.queries_executed, 0);
+            remainingDatabasePrincipalRows = Math.max(0, remainingDatabasePrincipalRows - targetRows);
+            this.totalDatabaseQueries += targetQueries;
+            this.totalDatabasePrincipalRows += targetRows;
+            this.addItems(targetRows);
           } catch {
             databasePrincipalCatalogs.push(unavailableDatabasePrincipalCatalog(
               resource,
@@ -1270,11 +1272,11 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
     const databaseWriterPrincipalsComplete = Boolean(this.databasePrincipalReader)
       && databaseTargetsDiscovered > 0
-      && databasePrincipalCatalogs.length === databaseTargetsDiscovered
+      && databasePrincipalCatalogs.length >= databaseTargetsDiscovered
       && databasePrincipalCatalogs.every((catalog) => catalog.status === 'COMPLETE');
     const databasePrincipalSourceItems: AwsRdsPitrResource[] = databasePrincipalCatalogs.map((catalog) => ({
       resource_arn: catalog.database_resource_arn,
-      provider_identity_reference: 'aws-rds-db-principals.' + sha256(catalog.database_resource_arn).slice(0, 40),
+      provider_identity_reference: 'aws-rds-db-principals.' + sha256(catalog.database_resource_arn + '\\u0000' + catalog.database_name).slice(0, 40),
       identity_kind: 'IMMUTABLE_RESOURCE_ARN',
       provider_delete_identity_reference: null,
       provider_delete_identity_kind: null,
