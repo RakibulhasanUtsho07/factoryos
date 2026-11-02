@@ -46,7 +46,7 @@ function globalReplicationGroup(): string {
     + '<CacheNodeType>cache.r7g.large</CacheNodeType><ClusterEnabled>true</ClusterEnabled>'
     + '<Members><GlobalReplicationGroupMember><ReplicationGroupId>rg-primary</ReplicationGroupId>'
     + '<ReplicationGroupRegion>ap-southeast-1</ReplicationGroupRegion><Role>PRIMARY</Role><Status>available</Status>'
-    + '</ReplicationGroup><ReplicationGroup><ReplicationGroupId>rg-replica</ReplicationGroupId>'
+    + '</GlobalReplicationGroupMember><GlobalReplicationGroupMember><ReplicationGroupId>rg-replica</ReplicationGroupId>'
     + '<ReplicationGroupRegion>ap-northeast-1</ReplicationGroupRegion><Role>SECONDARY</Role><Status>available</Status>'
     + '</GlobalReplicationGroupMember></Members></GlobalReplicationGroup>';
 }
