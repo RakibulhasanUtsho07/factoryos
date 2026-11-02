@@ -42,6 +42,7 @@ function makeFetch(options: {
   roleAccount?: string;
   regionXml?: string;
   instanceXml?: string;
+  automatedBackupXml?: string;
   failAction?: string;
 } = {}) {
   const requests: Array<{
@@ -117,8 +118,19 @@ function makeFetch(options: {
             : action === 'DescribeDBInstanceAutomatedBackups' ? 'DBInstanceAutomatedBackups'
               : action === 'DescribeDBSnapshots' ? 'DBSnapshots' : 'DBClusterSnapshots';
       const item = action === 'DescribeDBInstances' ? (options.instanceXml ?? instanceXml()) : '';
+      const backupItem = action === 'DescribeDBInstanceAutomatedBackups'
+        ? (options.automatedBackupXml ?? '<DBInstanceAutomatedBackup>'
+          + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
+          + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
+          + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+          + '<Region>ap-southeast-1</Region><Engine>postgres</Engine>'
+          + '<Status>active</Status><BackupRetentionPeriod>7</BackupRetentionPeriod>'
+          + '<RestoreWindow><EarliestTime>2026-10-27T00:00:00.000Z</EarliestTime>'
+          + '<LatestTime>2026-11-01T10:00:00.000Z</LatestTime></RestoreWindow>'
+          + '</DBInstanceAutomatedBackup>')
+        : '';
       return xml('<' + action + 'Response><' + resultTag + '><' + collectionTag + '>'
-        + item + '</' + collectionTag + '></' + resultTag + '></' + action + 'Response>');
+        + item + backupItem + '</' + collectionTag + '></' + resultTag + '></' + action + 'Response>');
     }
     return xml('<ErrorResponse><Error><Code>UnsupportedAction</Code></Error></ErrorResponse>');
   });
@@ -237,6 +249,37 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.provider_mutation_performed).toBe(false);
     expect(plan.delete_api_available).toBe(false);
     expect(plan.deletion_authorized).toBe(false);
+  });
+
+  it('does not mistake a retained backup source DB ARN for the backup resource ARN', async () => {
+    const mock = makeFetch();
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const source = inventory.sources.find((entry) => entry.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG');
+    const backup = source?.items.find((item) => item.resource_type === 'RDS_RETAINED_AUTOMATED_BACKUP');
+    expect(backup?.resource_arn).toBeNull();
+    expect(backup?.identity_kind).toBe('SOURCE_DB_COMPOSITE');
+    expect(backup?.provider_identity_reference).toMatch(/^aws-rds-resource\./);
+    expect(backup?.attributes.DBIResourceId ?? backup?.attributes.DbiResourceId).toBe('db-ABCDEFGHIJKLMNOP');
+    expect(backup?.source_database_reference).toBe('orders-db');
+    expect(backup?.attributes.DBInstanceArn).toBe(databaseArn);
+  });
+
+  it('uses the separate replicated automated-backup ARN when AWS supplies one', async () => {
+    const replicatedArn = 'arn:aws:rds:ap-southeast-1:111111111111:auto-backup:ab-0123456789ABCDEF';
+    const automatedBackupXml = '<DBInstanceAutomatedBackup>'
+      + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
+      + '<DBInstanceAutomatedBackupsArn>' + replicatedArn + '</DBInstanceAutomatedBackupsArn>'
+      + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
+      + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+      + '<Region>ap-southeast-1</Region><Engine>postgres</Engine><Status>replicating</Status>'
+      + '</DBInstanceAutomatedBackup>';
+    const mock = makeFetch({ automatedBackupXml });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const backup = inventory.sources.find((entry) => entry.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_RETAINED_AUTOMATED_BACKUP');
+    expect(backup?.resource_arn).toBe(replicatedArn);
+    expect(backup?.identity_kind).toBe('IMMUTABLE_RESOURCE_ARN');
+    expect(backup?.attributes.DBInstanceArn).toBe(databaseArn);
   });
 
   it('blocks a candidate ARN whose account or region does not match the selected scope', async () => {
