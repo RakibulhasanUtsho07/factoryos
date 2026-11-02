@@ -4,13 +4,14 @@ import {
   REQUIRED_POSTGRESQL_WAL_PITR_RETENTION_SOURCES,
 } from './postgresql-wal-pitr-retention-eligibility';
 
+const tenant = '31000000-0000-4000-8000-000000000001';
 const now = Date.parse('2026-11-02T04:00:00.000Z');
 const iso = (milliseconds: number) => new Date(milliseconds).toISOString();
 
 function eligibleEvidence() {
   return {
     schema: POSTGRESQL_WAL_PITR_RETENTION_ELIGIBILITY_SCHEMA,
-    tenant_id: '31000000-0000-4000-8000-000000000001',
+    tenant_id: tenant,
     evaluation_reference: 'retention-evaluation.run-001',
     evaluated_at: iso(now),
     inventory: {
@@ -69,7 +70,7 @@ function eligibleEvidence() {
 }
 
 function evaluate(value: unknown = eligibleEvidence()) {
-  return evaluatePostgresqlWalPitrRetentionEligibility(value, now);
+  return evaluatePostgresqlWalPitrRetentionEligibility(value, tenant, now);
 }
 
 describe('PostgreSQL WAL/PITR retention eligibility evaluator', () => {
@@ -88,6 +89,14 @@ describe('PostgreSQL WAL/PITR retention eligibility evaluator', () => {
     expect(result.destructive_action_permitted).toBe(false);
     expect(result.deletion_authorized).toBe(false);
     expect(result.requires_independent_review).toBe(true);
+  });
+
+  it('rejects a complete inventory bound to a different tenant', () => {
+    const evidence = eligibleEvidence();
+    evidence.tenant_id = '31000000-0000-4000-8000-000000000099';
+    const result = evaluate(evidence);
+    expect(result.status).toBe('BLOCKED');
+    expect(result.blockers).toContain('Evidence tenant does not match the authoritative expected tenant.');
   });
 
   it('fails closed when provider-native read-only identity verification is absent', () => {
@@ -240,7 +249,7 @@ describe('PostgreSQL WAL/PITR retention eligibility evaluator', () => {
     const invalid = eligibleEvidence();
     invalid.schema = 'factoryos.unknown/v1' as typeof POSTGRESQL_WAL_PITR_RETENTION_ELIGIBILITY_SCHEMA;
     expect(evaluate(invalid).status).toBe('BLOCKED');
-    const invalidClock = evaluatePostgresqlWalPitrRetentionEligibility(eligibleEvidence(), Number.NaN);
+    const invalidClock = evaluatePostgresqlWalPitrRetentionEligibility(eligibleEvidence(), tenant, Number.NaN);
     expect(invalidClock.status).toBe('BLOCKED');
     expect(invalidClock.deletion_authorized).toBe(false);
   });
