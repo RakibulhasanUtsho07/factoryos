@@ -52,6 +52,7 @@ function makePoolFactory(settings: {
   sessionUser?: string;
   databaseNames?: string[];
   inaccessibleDatabaseNames?: string[];
+  nonConnectableDatabaseNames?: string[];
   privilegedMemberships?: string[];
   roleMemberships?: Array<{ granted_role: string; member_role: string; granted_by: string; admin_option: boolean }>;
   databasePrivilegeRows?: unknown[];
@@ -103,7 +104,7 @@ function makePoolFactory(settings: {
             return { rows: databaseNames.map((datname) => ({
               datname,
               owner: 'rdsadmin',
-              datallowconn: true,
+              datallowconn: !(settings.nonConnectableDatabaseNames ?? []).includes(datname),
               current_user_can_connect: !(settings.inaccessibleDatabaseNames ?? []).includes(datname),
               datistemplate: false,
               acl_reference: null,
@@ -272,6 +273,20 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalogs.every((item) => item.status === 'COMPLETE')).toBe(true);
     expect(mock.poolConfig.map((item) => item.database).sort()).toEqual(['analytics', 'orders', 'postgres']);
     expect(catalogs.every((item) => item.identity?.transaction_read_only === true)).toBe(true);
+  });
+
+
+  it('keeps native principal coverage partial when a non-template database disables connections', async () => {
+    const mock = makePoolFactory({
+      databaseNames: ['postgres', 'orders'],
+      nonConnectableDatabaseNames: ['orders'],
+    });
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory);
+    const catalogs = await reader.captureAll(target, role);
+    expect(catalogs).toHaveLength(1);
+    expect(catalogs[0]?.status).toBe('PARTIAL');
+    expect(catalogs[0]?.blockers).toContain('DATABASE_NON_TEMPLATE_DATABASE_DISALLOWS_CONNECTIONS');
+    expect(mock.poolConfig.map((item) => item.database)).toEqual(['postgres']);
   });
 
   it('keeps multi-database coverage partial when the IAM reader cannot connect to an application database', async () => {
