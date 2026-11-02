@@ -19,6 +19,15 @@ export interface AwsBackupRequestBudget {
   maximum: number;
 }
 
+export interface AwsBackupLegalHoldRecord {
+  legal_hold_id: string;
+  legal_hold_arn: string | null;
+  status: 'CREATING' | 'ACTIVE' | 'CANCELING' | 'CANCELED';
+  creation_date: string | null;
+  cancellation_date: string | null;
+  recovery_point_arns: string[];
+}
+
 export interface AwsBackupVaultRecord {
   account_id: string;
   region: string;
@@ -227,6 +236,122 @@ export class AwsBackupInventoryApi {
     }
     if (!isRecord(parsed)) return fail('AWS Backup returned an unexpected JSON response');
     return parsed;
+  }
+
+  async listLegalHolds(
+    scope: AwsBackupInventoryScope,
+    credentials: AwsBackupInventoryCredentials,
+  ): Promise<{
+    legal_holds: AwsBackupLegalHoldRecord[];
+    recovery_point_arns: string[];
+    pages: number;
+    total_items_seen: number;
+    scope_status_uncertain: boolean;
+  }> {
+    const legalHolds: AwsBackupLegalHoldRecord[] = [];
+    const recoveryPointArns = new Set<string>();
+    const seenTokens = new Set<string>();
+    let nextToken: string | null = null;
+    let pages = 0;
+    let totalItemsSeen = 0;
+    let scopeStatusUncertain = false;
+    do {
+      const parameters: Record<string, string> = { maxResults: '1000' };
+      if (nextToken) parameters.nextToken = nextToken;
+      const response = await this.getJson(scope, credentials, '/legal-holds/', parameters);
+      const page = response.LegalHolds;
+      if (!Array.isArray(page) || page.length > 1000 || totalItemsSeen + page.length > this.maxItems) {
+        return fail('AWS Backup ListLegalHolds exceeded its per-page or total item budget');
+      }
+      totalItemsSeen += page.length;
+      for (const item of page) {
+        if (!isRecord(item)) return fail('AWS Backup returned a malformed legal-hold record');
+        const id = typeof item.LegalHoldId === 'string' ? item.LegalHoldId : '';
+        const status = typeof item.Status === 'string' ? item.Status.toUpperCase() : '';
+        if (!/^[A-Za-z0-9-]{1,64}$/.test(id)
+          || !['CREATING', 'ACTIVE', 'CANCELING', 'CANCELED'].includes(status)) {
+          return fail('AWS Backup returned an invalid legal-hold identity or status');
+        }
+        const record: AwsBackupLegalHoldRecord = {
+          legal_hold_id: id,
+          legal_hold_arn: typeof item.LegalHoldArn === 'string' ? item.LegalHoldArn : null,
+          status: status as AwsBackupLegalHoldRecord['status'],
+          creation_date: timestamp(item.CreationDate),
+          cancellation_date: timestamp(item.CancellationDate),
+          recovery_point_arns: [],
+        };
+        if (status === 'CREATING' || status === 'CANCELING') scopeStatusUncertain = true;
+        if (status === 'ACTIVE') {
+          const heldPoints = await this.listRecoveryPointsByLegalHold(scope, credentials, id);
+          pages += heldPoints.pages;
+          totalItemsSeen += heldPoints.total_items_seen;
+          for (const arn of heldPoints.recovery_point_arns) {
+            record.recovery_point_arns.push(arn);
+            recoveryPointArns.add(arn);
+          }
+          if (record.recovery_point_arns.length !== new Set(record.recovery_point_arns).size) {
+            return fail('AWS Backup legal hold returned duplicate recovery-point references');
+          }
+        }
+        legalHolds.push(record);
+      }
+      pages += 1;
+      const token = response.NextToken;
+      if (token !== undefined && token !== null && token !== '') {
+        if (typeof token !== 'string' || token.length > 100000 || seenTokens.has(token)) {
+          return fail('AWS Backup ListLegalHolds returned an invalid or repeated continuation token');
+        }
+        seenTokens.add(token);
+        nextToken = token;
+      } else nextToken = null;
+    } while (nextToken !== null);
+    if (new Set(legalHolds.map((hold) => hold.legal_hold_id)).size !== legalHolds.length) {
+      return fail('AWS Backup ListLegalHolds returned duplicate legal-hold IDs');
+    }
+    return {
+      legal_holds: legalHolds,
+      recovery_point_arns: [...recoveryPointArns].sort(),
+      pages,
+      total_items_seen: totalItemsSeen,
+      scope_status_uncertain: scopeStatusUncertain,
+    };
+  }
+
+  private async listRecoveryPointsByLegalHold(
+    scope: AwsBackupInventoryScope,
+    credentials: AwsBackupInventoryCredentials,
+    legalHoldId: string,
+  ): Promise<{ recovery_point_arns: string[]; pages: number; total_items_seen: number }> {
+    const recoveryPointArns: string[] = [];
+    const seenTokens = new Set<string>();
+    let nextToken: string | null = null;
+    let pages = 0;
+    let totalItemsSeen = 0;
+    do {
+      const parameters: Record<string, string> = { maxResults: '1000' };
+      if (nextToken) parameters.nextToken = nextToken;
+      const path = '/legal-holds/' + encode(legalHoldId) + '/recovery-points';
+      const response = await this.getJson(scope, credentials, path, parameters);
+      const page = response.RecoveryPoints;
+      if (!Array.isArray(page) || page.length > 1000 || totalItemsSeen + page.length > this.maxItems) {
+        return fail('AWS Backup ListRecoveryPointsByLegalHold exceeded its per-page or total item budget');
+      }
+      totalItemsSeen += page.length;
+      for (const item of page) {
+        if (!isRecord(item)) return fail('AWS Backup returned a malformed legal-hold recovery-point entry');
+        recoveryPointArns.push(validateAwsBackupArn(item.RecoveryPointArn, scope, 'recovery-point'));
+      }
+      pages += 1;
+      const token = response.NextToken;
+      if (token !== undefined && token !== null && token !== '') {
+        if (typeof token !== 'string' || token.length > 100000 || seenTokens.has(token)) {
+          return fail('AWS Backup ListRecoveryPointsByLegalHold returned an invalid or repeated continuation token');
+        }
+        seenTokens.add(token);
+        nextToken = token;
+      } else nextToken = null;
+    } while (nextToken !== null);
+    return { recovery_point_arns: recoveryPointArns, pages, total_items_seen: totalItemsSeen };
   }
 
   async listBackupVaults(
