@@ -331,7 +331,7 @@ retries; every known replication and restore path explicitly reports `candidate_
 replay.
 
 A `REVIEW_ELIGIBLE` result means only that the mechanical preconditions for an independent
-review have been met. The result permanently carries `destructive_action_permitted=false`,
+review have been met. It does not authorize deletion. The result permanently carries `destructive_action_permitted=false`,
 `deletion_authorized=false` and `requires_independent_review=true`. This evaluator does not
 call a provider, validate Ed25519 signatures itself, perform a residual scan, register an
 erasure adapter, or delete/expire any object. The caller must authenticate the evidence and
