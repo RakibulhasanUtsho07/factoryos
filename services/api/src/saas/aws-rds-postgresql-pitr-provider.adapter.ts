@@ -33,7 +33,7 @@ export interface AwsRdsPitrCredentials {
 export interface AwsRdsPitrProviderConfig {
   organization_account_id: string;
   read_only_role_name: string;
-  external_id?: string;
+  external_id: string;
   organization_region?: string;
   page_size?: number;
   max_total_pages?: number;
@@ -68,7 +68,7 @@ export interface AwsRdsPitrResource {
   provider_identity_reference: string;
   identity_kind: 'IMMUTABLE_RESOURCE_ARN' | 'SOURCE_DB_RESOURCE_ID';
   provider_delete_identity_reference: string | null;
-  provider_delete_identity_kind: 'DBI_RESOURCE_ID' | 'REPLICATED_BACKUP_ARN' | 'SNAPSHOT_ARN' | 'AWS_BACKUP_RECOVERY_POINT_ARN' | null;
+  provider_delete_identity_kind: 'DBI_RESOURCE_ID' | 'REPLICATED_BACKUP_ARN' | 'SNAPSHOT_IDENTIFIER' | 'AWS_BACKUP_RECOVERY_POINT_ARN' | null;
   replication_destination_arns: string[];
   resource_type: string;
   account_id: string;
@@ -344,9 +344,9 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 30000) {
     return fail('AWS pagination, item or request timeout bounds are outside supported limits');
   }
-  if (config.external_id !== undefined
-    && (typeof config.external_id !== 'string' || config.external_id.length < 2 || config.external_id.length > 1224)) {
-    return fail('external ID is invalid');
+  if (typeof config.external_id !== 'string' || config.external_id.length < 2 || config.external_id.length > 1224
+    || /[\\r\\n]/.test(config.external_id)) {
+    return fail('a valid non-empty external ID is required by the cross-account trust policy');
   }
   if (config.read_only_policy_sha256 !== undefined && !SHA256.test(config.read_only_policy_sha256)) {
     return fail('read-only policy SHA-256 is invalid');
@@ -606,7 +606,8 @@ class AwsQueryApi {
       for (const item of parsed.Accounts) {
         if (!isRecord(item)) return fail('AWS Organizations returned a malformed account entry');
         const id = typeof item.Id === 'string' ? item.Id : '';
-        const state = typeof item.State === 'string' ? item.State.toUpperCase() : 'UNKNOWN';
+        const state = typeof item.State === 'string' ? item.State.toUpperCase()
+          : typeof item.Status === 'string' ? item.Status.toUpperCase() : 'UNKNOWN';
         accounts.push({ id, state });
       }
       pages += 1;
@@ -701,10 +702,12 @@ function resourceFromBlock(
   const providerIdentityReference = 'aws-rds-resource.' + sha256(identityMaterial).slice(0, 40);
   const isAutomatedBackup = resourceType === 'RDS_AUTOMATED_BACKUP';
   const isSnapshot = resourceType === 'RDS_DB_SNAPSHOT' || resourceType === 'RDS_DB_CLUSTER_SNAPSHOT';
+  const snapshotIdentifier = resourceType === 'RDS_DB_SNAPSHOT' ? optionalString(xmlText(block, 'DBSnapshotIdentifier'))
+    : resourceType === 'RDS_DB_CLUSTER_SNAPSHOT' ? optionalString(xmlText(block, 'DBClusterSnapshotIdentifier')) : null;
   const providerDeleteIdentity = isAutomatedBackup ? (arn ?? dbiResourceId)
-    : isSnapshot ? arn : null;
+    : isSnapshot ? snapshotIdentifier : null;
   const providerDeleteIdentityKind = isAutomatedBackup ? (arn ? 'REPLICATED_BACKUP_ARN' : 'DBI_RESOURCE_ID')
-    : isSnapshot ? 'SNAPSHOT_ARN' : null;
+    : isSnapshot && snapshotIdentifier ? 'SNAPSHOT_IDENTIFIER' : null;
   const replicationDestinationArns = resourceType === 'RDS_AUTOMATED_BACKUP'
     ? xmlBlocks(block, 'DBInstanceAutomatedBackupsReplication').map((entry) => xmlText(entry, 'DBInstanceAutomatedBackupsArn'))
       .filter((entry): entry is string => entry !== null).map((entry) => {
@@ -1277,7 +1280,7 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         blockers.push('Requested retention expiry violates the AWS Backup vault minimum retention period.');
       }
     } else if (resource.status?.toLowerCase() !== 'available'
-      || resource.provider_delete_identity_kind !== 'SNAPSHOT_ARN'
+      || resource.provider_delete_identity_kind !== 'SNAPSHOT_IDENTIFIER'
       || !resource.provider_delete_identity_reference) {
       blockers.push('Snapshot is not available or lacks an exact snapshot ARN identity.');
     }
