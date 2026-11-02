@@ -550,14 +550,11 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       + target.account_id + ':role/' + this.options.database_role_name;
     const expectedPrincipalPrefix = 'arn:' + expectedPartition(target.region) + ':sts::'
       + target.account_id + ':assumed-role/' + this.options.database_role_name + '/';
+    const principalSessionName = accessRole.principal_reference.startsWith(expectedPrincipalPrefix)
+      ? accessRole.principal_reference.slice(expectedPrincipalPrefix.length) : '';
     if (accessRole.role_arn !== expectedRoleArn
-      || !new RegExp('^' + expectedPrincipalPrefix.replace(/[.*+?^${}()|[\\]\\]/g, '\\    const expectedRoleArn = new RegExp('^arn:' + expectedPartition(target.region)
-      + ':iam::' + target.account_id + ':role/' + this.options.database_role_name + '$');
-    if (!expectedRoleArn.test(accessRole.role_arn)
-      || !accessRole.principal_reference.startsWith('arn:' + expectedPartition(target.region)
-        + ':sts::' + target.account_id + ':assumed-role/' + this.options.database_role_name + '/')) {')
-        + '[A-Za-z0-9+=,.@_-]{2,64}
-      return refuse('database access role identity does not match the expected account and role');
+      || !/^[A-Za-z0-9+=,.@_-]{2,64}$/.test(principalSessionName)) {
+      return refuse('database access role identity does not match the exact expected account and role');
     }
     if (!Number.isSafeInteger(remainingRowBudget) || remainingRowBudget < 1
       || remainingRowBudget > this.options.max_total_rows) {
