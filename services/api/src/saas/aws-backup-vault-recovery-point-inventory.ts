@@ -1210,7 +1210,6 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
   const suppliedScopeKeys = new Set(scopes.map((scope) =>
     scope.partition + ':' + scope.account_id + ':' + scope.region));
   const vaultArns = new Set(vaults.map((vault) => vault.backup_vault_arn));
-  const recoveryPointArns = new Set(recoveryPoints.map((point) => point.recovery_point_arn));
   const copySourceScopeGaps = new Set<string>();
   const copyDestinationScopeGaps = new Set<string>();
   const copyVaultCatalogGaps = new Set<string>();
