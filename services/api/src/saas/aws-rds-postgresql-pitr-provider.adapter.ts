@@ -143,6 +143,8 @@ export interface AwsRdsPostgresqlPitrInventory {
   aws_backup_receipt_references: string[];
   unresolved_replication_destination_arns: string[];
   provider_managed_wal_segments_individually_enumerated: false;
+  database_native_principals_fully_enumerated: boolean;
+  database_iam_connect_principals_fully_enumerated: false;
   database_writer_principals_fully_enumerated: boolean;
   database_principal_catalogs: AwsRdsPitrDatabasePrincipalCatalog[];
 
@@ -1270,10 +1272,16 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       },
     }));
     const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
-    const databaseWriterPrincipalsComplete = Boolean(this.databasePrincipalReader)
+    const databaseNativePrincipalsComplete = Boolean(this.databasePrincipalReader)
       && databaseTargetsDiscovered > 0
       && databasePrincipalCatalogs.length >= databaseTargetsDiscovered
       && databasePrincipalCatalogs.every((catalog) => catalog.status === 'COMPLETE');
+    // IAM rds-db:connect role/user grants, trust policies and SCP inheritance
+    // are not yet independently inventoried; native PostgreSQL catalogs alone
+    // must never be presented as complete external writer identity coverage.
+    const databaseIamConnectPrincipalsComplete = false as const;
+    const databaseWriterPrincipalsComplete = databaseNativePrincipalsComplete
+      && databaseIamConnectPrincipalsComplete;
     const databasePrincipalSourceItems: AwsRdsPitrResource[] = databasePrincipalCatalogs.map((catalog) => ({
       resource_arn: catalog.database_resource_arn,
       provider_identity_reference: 'aws-rds-db-principals.' + sha256(catalog.database_resource_arn + '\\u0000' + catalog.database_name).slice(0, 40),
@@ -1330,11 +1338,12 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       sourceFromItems(
         'WAL_WRITER_PRINCIPAL_CATALOG',
         databaseWriterPrincipalsComplete ? 'COMPLETE'
-          : this.databasePrincipalReader ? 'PARTIAL' : 'NOT_ENUMERATED',
-        databaseWriterPrincipalsComplete
-          ? 'Every discovered PostgreSQL RDS instance/Aurora cluster was inspected through a separate IAM DB-authenticated read-only role; database roles, memberships, effective write ACLs, current sessions and replication catalogs are recorded without subscription connection strings.'
+          : databaseNativePrincipalsComplete ? 'PARTIAL'
+            : this.databasePrincipalReader ? 'PARTIAL' : 'NOT_ENUMERATED',
+        databaseNativePrincipalsComplete
+          ? 'PostgreSQL-native roles, memberships, database/schema/object/large-object/default ACLs, active sessions and replication catalogs are complete across every connectable database. Overall writer identity remains PARTIAL because AWS IAM rds-db:connect principals, attached/inline policy documents, trust policies and SCP inheritance are not independently enumerated.'
           : this.databasePrincipalReader
-            ? 'Database-native inspection was configured but at least one target was unavailable, over budget, truncated or denied; inspect per-target blockers. Writer-principal coverage remains incomplete.'
+            ? 'Database-native inspection was configured but at least one database target was unavailable, over budget, truncated or denied; inspect per-target blockers. Overall writer-principal coverage remains incomplete.'
             : 'Database-native IAM DB-authenticated inspection is not configured; database writer, grants and replication principals remain an explicit release blocker.',
         databasePrincipalSourceItems,
         databasePrincipalCatalogs.reduce((sum, catalog) => sum + catalog.catalog_status.length, 0),
@@ -1389,6 +1398,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       aws_backup_receipt_references: [...new Set(backupReceiptReferences)].sort(),
       unresolved_replication_destination_arns: unresolvedReplicationDestinationArns,
       provider_managed_wal_segments_individually_enumerated: false,
+      database_native_principals_fully_enumerated: databaseNativePrincipalsComplete,
+      database_iam_connect_principals_fully_enumerated: databaseIamConnectPrincipalsComplete,
       database_writer_principals_fully_enumerated: databaseWriterPrincipalsComplete,
       database_principal_catalogs: databasePrincipalCatalogs,
       source_receipts_signable: false,
@@ -1623,8 +1634,14 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   if (inventory && inventory.provider_managed_wal_segments_individually_enumerated !== true) {
     blockers.push('Provider-managed WAL segments remain opaque and are not individually enumerated.');
   }
+  if (inventory && inventory.database_native_principals_fully_enumerated !== true) {
+    blockers.push('Database-native PostgreSQL roles, grants and replication principal coverage is incomplete or unavailable.');
+  }
+  if (inventory && inventory.database_iam_connect_principals_fully_enumerated !== true) {
+    blockers.push('AWS IAM rds-db:connect principal/policy/trust/SCP inventory is not independently enumerated.');
+  }
   if (inventory && inventory.database_writer_principals_fully_enumerated !== true) {
-    blockers.push('Database-native writer and replication principal coverage is incomplete or unavailable.');
+    blockers.push('Overall database writer identity cannot be marked complete without database-native and AWS IAM principal coverage.');
   }
   const identityDigest = resource ? sha256(JSON.stringify({
     provider_identity_reference: resource.provider_identity_reference,
