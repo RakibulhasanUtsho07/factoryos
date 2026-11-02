@@ -14,7 +14,13 @@
       "Resource": [
         "arn:aws:iam::*:role/FactoryOSRdsPitrReadOnly",
         "arn:aws:iam::*:role/FactoryOSRdsDbPrincipalReader",
-        "arn:aws:iam::*:role/FactoryOSIamPrincipalReader"
+        "arn:aws:iam::*:role/FactoryOSIamPrincipalReader",
+        "arn:aws-us-gov:iam::*:role/FactoryOSRdsPitrReadOnly",
+        "arn:aws-us-gov:iam::*:role/FactoryOSRdsDbPrincipalReader",
+        "arn:aws-us-gov:iam::*:role/FactoryOSIamPrincipalReader",
+        "arn:aws-cn:iam::*:role/FactoryOSRdsPitrReadOnly",
+        "arn:aws-cn:iam::*:role/FactoryOSRdsDbPrincipalReader",
+        "arn:aws-cn:iam::*:role/FactoryOSIamPrincipalReader"
       ]
     }
   ]
