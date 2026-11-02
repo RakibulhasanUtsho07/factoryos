@@ -618,7 +618,7 @@ function parseGlobalReplicationGroup(
   scope: AwsElastiCacheRedisBackupScope,
 ): AwsElastiCacheRedisGlobalReplicationGroupRecord {
   const memberContainer = xmlBlocks(xml, 'Members')[0];
-  const members = memberContainer ? xmlBlocks(memberContainer, 'ReplicationGroup') : [];
+  const members = memberContainer ? xmlBlocks(memberContainer, 'GlobalReplicationGroupMember') : [];
   const parsedMembers = members.map((member) => ({
     region: validIdentifier(xmlText(member, 'ReplicationGroupRegion'), 'Global Datastore member region'),
     replication_group_id: validIdentifier(xmlText(member, 'ReplicationGroupId'), 'Global Datastore member ReplicationGroupId'),
