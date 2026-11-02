@@ -34,6 +34,47 @@
           "aws:PrincipalArn": "arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>"
         }
       }
+    },
+    {
+      "Sid": "DenyRemovalOrWeakeningOfCloudTrailAuditBucketControls",
+      "Effect": "Deny",
+      "Action": [
+        "s3:DeleteBucket",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutBucketObjectLockConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:PutBucketEncryption",
+        "s3:DeleteBucketEncryption",
+        "s3:PutLifecycleConfiguration"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:s3:::<AUDIT_BUCKET_NAME>"
+      ],
+      "Condition": {
+        "ArnNotEquals": {
+          "aws:PrincipalArn": "arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyDisablementOrKeyPolicyChangesToCloudTrailAuditKey",
+      "Effect": "Deny",
+      "Action": [
+        "kms:DisableKey",
+        "kms:ScheduleKeyDeletion",
+        "kms:PutKeyPolicy",
+        "kms:RevokeGrant",
+        "kms:RetireGrant"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:kms:<TRAIL_HOME_REGION>:<ACCOUNT_ID>:key/<KMS_KEY_ID>"
+      ],
+      "Condition": {
+        "ArnNotEquals": {
+          "aws:PrincipalArn": "arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>"
+        }
+      }
     }
   ]
 }
