@@ -688,15 +688,15 @@ function resourceFromBlock(
     : requireAwsArn(rawArn, resourceType + ' ARN', scope);
   const sourceDatabaseReference = sourceDatabaseTag ? optionalString(xmlText(block, sourceDatabaseTag)) : null;
   const dbiResourceId = optionalString(xmlText(block, 'DbiResourceId'));
-  if (resourceType === 'RDS_AUTOMATED_BACKUP' && !arn && !dbiResourceId) {
-    return fail('RDS automated backup omitted both its replicated-backup ARN and stable source DbiResourceId');
+  if (resourceType === 'RDS_AUTOMATED_BACKUP' && !arn
+    && (typeof dbiResourceId !== 'string' || !/^db-[A-Za-z0-9]+$/.test(dbiResourceId))) {
+    return fail('RDS automated backup omitted a valid stable source DbiResourceId and replicated-backup ARN');
   }
   const identityMaterial = arn ?? [
     scope.account_reference,
     scope.region_reference,
     resourceType,
     dbiResourceId ?? '',
-    sourceDatabaseReference ?? '',
   ].join('\u0000');
   const providerIdentityReference = 'aws-rds-resource.' + sha256(identityMaterial).slice(0, 40);
   const isAutomatedBackup = resourceType === 'RDS_AUTOMATED_BACKUP';
