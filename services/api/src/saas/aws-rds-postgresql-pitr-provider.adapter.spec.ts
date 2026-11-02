@@ -14,8 +14,8 @@ const sourceCredentials = {
   secret_access_key: 'source-secret-key-material-0123456789',
 };
 
-function xml(body: string): Response {
-  return new Response(body, { status: 200, headers: { 'content-type': 'text/xml' } });
+function xml(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { 'content-type': 'text/xml' } });
 }
 
 function instanceXml(): string {
@@ -52,10 +52,10 @@ function makeFetch(options: {
     const action = body.get('Action') ?? '';
     const authorization = String((init?.headers as Record<string, string> | undefined)?.authorization ?? '');
     requests.push({ host: url.host, action, body, authorization });
-    if (options.failAction === action) return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>').then?.(() => undefined) as never;
+    if (options.failAction === action) return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>', 403);
     if (action === 'GetCallerIdentity') {
       const temporary = authorization.includes('ASIAABCDEFGHIJKLMNOP');
-      const account = options.roleAccount ?? organizationAccount;
+      const account = temporary ? (options.roleAccount ?? organizationAccount) : organizationAccount;
       const arn = temporary
         ? 'arn:aws:sts::' + account + ':assumed-role/' + roleName + '/FactoryOSPitrInventory'
         : 'arn:aws:sts::' + organizationAccount + ':assumed-role/OrganizationReadOnly/source-session';
