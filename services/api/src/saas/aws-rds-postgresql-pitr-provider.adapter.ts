@@ -1194,7 +1194,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
           .map((candidate) => candidate.target)
           .filter((target): target is AwsRdsDatabasePrincipalTarget => target !== null);
         if (validTargets.length > 0) {
-          const remainingQueries = this.budget.maximum - this.budget.total;
+          // Reserve two shared-budget requests for AssumeRole and GetCallerIdentity.
+          const remainingQueries = this.budget.maximum - this.budget.total - 2;
           const remainingRows = this.config.max_total_items - this.totalItems;
           if (remainingQueries < 1 || remainingRows < 1) {
             databasePrincipalScanComplete = false;
