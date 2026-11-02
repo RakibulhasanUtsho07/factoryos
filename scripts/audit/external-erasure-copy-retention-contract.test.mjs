@@ -1,6 +1,3 @@
-  assert.match(evaluator, /expectedTenantId: string/);
-  assert.match(evaluator, /input\.tenant_id\.toLowerCase\(\) === expectedTenantId\.toLowerCase\(\)/);
-  assert.match(evaluatorTests, /rejects a complete inventory bound to a different tenant/);
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -550,6 +547,9 @@ test('PostgreSQL WAL/PITR retention eligibility is non-destructive and requires 
   const coverageService = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
   const runbook = await readRepoFile(RUNBOOK);
   assert.match(evaluator, /factoryos\.postgresql-wal-pitr-retention-eligibility\/v1/);
+  assert.match(evaluator, /expectedTenantId: string/);
+  assert.match(evaluator, /input\.tenant_id\.toLowerCase\(\) === expectedTenantId\.toLowerCase\(\)/);
+  assert.match(evaluatorTests, /rejects a complete inventory bound to a different tenant/);
   assert.match(evaluator, /provider_native_read_only_identity_verified === true/);
   assert.match(evaluator, /all_accounts_and_regions_enumerated === true/);
   assert.match(evaluator, /source_receipts_verified === true/);
