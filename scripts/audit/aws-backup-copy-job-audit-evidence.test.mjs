@@ -70,7 +70,7 @@ test('CloudTrail verbose parser requires all standard/backfill digest and log co
   assert.equal(parseCloudTrailValidateLogsOutput(spacedCliOutput).requestedWindowFullyCovered, true);
   assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('1/1 digest files valid', '0/1 digest files valid')), /digest/i);
   assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('1/1 log files valid', '0/1 log files valid')), /log/i);
-  assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('1/1 backfill digest files valid', '1/2 backfill digest files valid')), /summary counts/i);
+  assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('1/1 backfill digest files valid', '1/2 backfill digest files valid')), /digest validation/i);
   assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('1/1 backfill digest files valid', '1/1 backfill digest files INVALID')), /INVALID/i);
   assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('Results found for 2026-11-02T08:00:00Z to 2026-11-02T13:00:00Z:\n', '')), /time ranges/i);
   assert.throws(() => parseCloudTrailValidateLogsOutput(output.replace('s3://audit-bucket/digest.json.gz', 's3://audit-bucket/backfill.json.gz')), /duplicate/i);
