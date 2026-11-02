@@ -1,0 +1,53 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowReviewedRdsPostgresqlPitrCatalogReads",
+      "Effect": "Allow",
+      "Action": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
+        "rds:DescribeGlobalClusters",
+        "rds:DescribeDBInstanceAutomatedBackups",
+        "rds:DescribeDBSnapshots",
+        "rds:DescribeDBClusterSnapshots"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowEnabledRegionCatalogRead",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeRegions",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowAwsBackupVaultRecoveryPointAndLegalHoldReads",
+      "Effect": "Allow",
+      "Action": [
+        "backup:ListBackupVaults",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:ListRecoveryPointsByLegalHold"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEveryActionExceptReviewedInventoryReads",
+      "Effect": "Deny",
+      "NotAction": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
+        "rds:DescribeGlobalClusters",
+        "rds:DescribeDBInstanceAutomatedBackups",
+        "rds:DescribeDBSnapshots",
+        "rds:DescribeDBClusterSnapshots",
+        "ec2:DescribeRegions",
+        "backup:ListBackupVaults",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:ListRecoveryPointsByLegalHold"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
