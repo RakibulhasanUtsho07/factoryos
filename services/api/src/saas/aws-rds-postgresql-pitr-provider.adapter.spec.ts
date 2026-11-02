@@ -276,6 +276,9 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(result.aws_backup_legal_holds).toEqual([]);
     expect(result.backup_vaults).toHaveLength(1);
     expect(result.aws_backup_recovery_points).toHaveLength(1);
+    expect(result.aws_backup_receipt_references.length).toBeGreaterThan(0);
+    expect(result.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')?.query_receipt_references)
+      .toEqual(expect.arrayContaining(result.aws_backup_receipt_references));
     expect(result.aws_backup_recovery_points[0]?.recovery_point_arn)
       .toBe('arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012');
   });
@@ -567,6 +570,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const backup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
       ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
     expect(backup?.replication_destination_arns).toEqual([destinationArn]);
+    expect(inventory.unresolved_replication_destination_arns).toEqual([destinationArn]);
     expect(inventory.sources.find((source) => source.source_kind === 'WAL_REPLICATION_PATH_CATALOG')
       ?.items.some((item) => item.provider_identity_reference === backup?.provider_identity_reference)).toBe(true);
   });
@@ -676,6 +680,64 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     });
     expect(plan.status).toBe('BLOCKED');
     expect(plan.blockers).toContain('RDS automated backup references an AWS Backup recovery point absent from the complete vault inventory.');
+  });
+
+
+  it('uses AWS Backup CalculatedLifecycle.DeleteAt and enforces vault minimum retention days', async () => {
+    const mock = makeFetch({
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [{
+        BackupVaultName: 'default',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        Locked: false,
+        MinRetentionDays: 30,
+        NumberOfRecoveryPoints: 1,
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    expect(recoveryPoint?.attributes.LifecycleDeleteAt).toBeDefined();
+    expect(recoveryPoint?.attributes.LifecycleDeleteAfterDays).toBe('365');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-11-03T00:00:00.000Z',
+      retention_expires_at: '2026-11-20T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.blockers).toContain('Requested retention expiry violates the AWS Backup vault minimum retention period.');
+  });
+
+  it('blocks a requested retention horizon beyond the AWS Backup vault maximum retention days', async () => {
+    const mock = makeFetch({
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [{
+        BackupVaultName: 'default',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        Locked: false,
+        MinRetentionDays: 1,
+        MaxRetentionDays: 7,
+        NumberOfRecoveryPoints: 1,
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-11-03T00:00:00.000Z',
+      retention_expires_at: '2026-11-20T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.blockers).toContain('Requested retention expiry exceeds the AWS Backup vault maximum retention period.');
   });
 
   it('rejects a missing cross-account external ID before making a provider request', async () => {
