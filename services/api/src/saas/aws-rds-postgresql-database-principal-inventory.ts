@@ -556,7 +556,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
     const first = await this.capture(target, accessRole, remainingRowBudget);
     const catalogs = [first];
     if (!first.identity || first.catalog_status.find((item) => item.catalog === 'database_access')?.status !== 'COMPLETE'
-      || first.blockers.includes('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE')) {
+      || first.blockers.includes('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE')
+      || first.blockers.includes('DATABASE_NON_TEMPLATE_DATABASE_DISALLOWS_CONNECTIONS')) {
       if (!first.blockers.includes('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY')) {
         first.blockers.push('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY');
         first.status = 'PARTIAL';
@@ -772,6 +773,10 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         && (item.privilege_type === 'SELECT' || writePrivilegeTypes.has(String(item.privilege_type))));
       if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
         blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
+      }
+      if (databaseCatalog.some((candidate) => candidate.datistemplate === false
+        && candidate.datallowconn === false)) {
+        blockers.push('DATABASE_NON_TEMPLATE_DATABASE_DISALLOWS_CONNECTIONS');
       }
       if (databaseCatalog.some((candidate) => candidate.datallowconn === true
         && candidate.datistemplate === false && candidate.current_user_can_connect !== true)) {
