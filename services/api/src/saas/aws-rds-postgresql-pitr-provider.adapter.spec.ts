@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
+import type { AwsRdsDatabasePrincipalPgClientFactory } from './aws-rds-postgresql-database-principal-inventory';
 import {
   AwsRdsPostgresqlPitrProviderAdapter,
   createAwsRdsPitrRetentionDryRunPlan,
@@ -25,6 +27,8 @@ function instanceXml(): string {
     + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
     + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
     + '<Engine>postgres</Engine><DBInstanceStatus>available</DBInstanceStatus>'
+    + '<Endpoint><Address>orders-db.abcdefghijkl.ap-southeast-1.rds.amazonaws.com</Address><Port>5432</Port></Endpoint>'
+    + '<IAMDatabaseAuthenticationEnabled>true</IAMDatabaseAuthenticationEnabled>'
     + '<BackupRetentionPeriod>7</BackupRetentionPeriod>'
     + '<LatestRestorableTime>2026-11-01T10:00:00.000Z</LatestRestorableTime>'
     + '<StorageEncrypted>true</StorageEncrypted><MultiAZ>true</MultiAZ>'
@@ -93,23 +97,29 @@ function makeFetch(options: {
         : xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>', 403);
     }
     if (action === 'GetCallerIdentity') {
-      const temporary = authorization.includes('ASIAABCDEFGHIJKLMNOP');
+      const temporaryReader = authorization.includes('ASIAREADERSCAN1234567');
+      const temporary = temporaryReader || authorization.includes('ASIAABCDEFGHIJKLMNOP');
       const account = temporary ? (options.roleAccount ?? organizationAccount) : organizationAccount;
+      const assumedRole = temporaryReader ? 'FactoryOSRdsDbPrincipalReader' : roleName;
+      const sessionName = temporaryReader ? 'FactoryOSDbPrincipalScan' : 'FactoryOSPitrInventory';
       const arn = temporary
-        ? 'arn:aws:sts::' + account + ':assumed-role/' + roleName + '/FactoryOSPitrInventory'
+        ? 'arn:aws:sts::' + account + ':assumed-role/' + assumedRole + '/' + sessionName
         : 'arn:aws:sts::' + organizationAccount + ':assumed-role/OrganizationReadOnly/source-session';
       return xml('<GetCallerIdentityResponse><GetCallerIdentityResult><Account>'
         + account + '</Account><Arn>' + arn + '</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>');
     }
     if (action === 'AssumeRole') {
       const queryBody = body as URLSearchParams;
-      if (queryBody.get('RoleArn') !== 'arn:aws:iam::' + organizationAccount + ':role/' + roleName) {
+      const requestedRole = queryBody.get('RoleArn')?.split('/').pop() ?? '';
+      if (!['FactoryOSRdsPitrReadOnly', 'FactoryOSRdsDbPrincipalReader'].includes(requestedRole)
+        || queryBody.get('ExternalId') !== 'factoryos-wp10-aws-pitr-test-external-id') {
         return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>');
       }
+      const readerRole = requestedRole === 'FactoryOSRdsDbPrincipalReader';
       return xml('<AssumeRoleResponse><AssumeRoleResult><Credentials>'
-        + '<AccessKeyId>ASIAABCDEFGHIJKLMNOP</AccessKeyId>'
-        + '<SecretAccessKey>temporary-secret-key-material-0123456789</SecretAccessKey>'
-        + '<SessionToken>temporary-session-token-material-0123456789</SessionToken>'
+        + '<AccessKeyId>' + (readerRole ? 'ASIAREADERSCAN1234567' : 'ASIAABCDEFGHIJKLMNOP') + '</AccessKeyId>'
+        + '<SecretAccessKey>' + (readerRole ? 'reader-secret-key-material-012345678901' : 'temporary-secret-key-material-0123456789') + '</SecretAccessKey>'
+        + '<SessionToken>' + (readerRole ? 'reader-session-token-material-0123456789' : 'temporary-session-token-material-0123456789') + '</SessionToken>'
         + '</Credentials></AssumeRoleResult></AssumeRoleResponse>');
     }
     if (action === 'ListBackupVaults') {
@@ -217,7 +227,11 @@ function makeFetch(options: {
   return { fetcher, requests };
 }
 
-function createAdapter(fetcher: typeof fetch, overrides: Record<string, unknown> = {}) {
+function createAdapter(
+  fetcher: typeof fetch,
+  overrides: Record<string, unknown> = {},
+  databaseClientFactory?: AwsRdsDatabasePrincipalPgClientFactory,
+) {
   return new AwsRdsPostgresqlPitrProviderAdapter({
     organization_account_id: organizationAccount,
     read_only_role_name: roleName,
@@ -226,7 +240,7 @@ function createAdapter(fetcher: typeof fetch, overrides: Record<string, unknown>
     read_only_policy_sha256: 'a'.repeat(64),
     policy_review_reference: 'review.aws.read-only-role.v1',
     ...overrides,
-  }, sourceCredentials, fetcher, () => new Date('2026-11-02T04:00:00.000Z'));
+  }, sourceCredentials, fetcher, () => new Date('2026-11-02T04:00:00.000Z'), databaseClientFactory);
 }
 
 describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
@@ -889,6 +903,81 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       return new Response('x'.repeat(4 * 1024 * 1024 + 1), { status: 200 });
     });
     await expect(createAdapter(fetcher).captureInventory()).rejects.toThrow(/byte limit/i);
+  });
+
+  it('integrates the separate IAM database reader into writer and replication source catalogs', async () => {
+    const mock = makeFetch();
+    const caBundle = '-----BEGIN CERTIFICATE-----\n' + 'B'.repeat(160) + '\n-----END CERTIFICATE-----';
+    const dbQueries: string[] = [];
+    const databaseClientFactory: AwsRdsDatabasePrincipalPgClientFactory = (options) => {
+      const database = String(options.database);
+      return {
+        connect: jest.fn(async () => undefined),
+        query: jest.fn(async (sql: string) => {
+          dbQueries.push(sql);
+          if (sql === 'BEGIN READ ONLY' || sql === 'ROLLBACK' || sql.includes('set_config')) return { rows: [] };
+          if (sql.includes('current_user AS database_user')) return { rows: [{
+            database_user: 'factoryos_db_inventory_reader',
+            database_name: database,
+            transaction_read_only: 'on',
+            rolcanlogin: true, rolsuper: false, rolinherit: true,
+            rolcreaterole: false, rolcreatedb: false, rolreplication: false, rolbypassrls: false,
+            has_pg_monitor: true, has_rds_superuser: false, has_rds_replication: false,
+            has_pg_write_all_data: false, has_pg_write_server_files: false,
+            has_pg_execute_server_program: false,
+          }] };
+          if (sql.includes('count(*)::text AS database_count')) return { rows: [{ database_count: '1' }] };
+          if (sql.startsWith('SELECT datname, datallowconn, datistemplate')) {
+            return { rows: [{ datname: 'postgres', datallowconn: true, datistemplate: false }] };
+          }
+          if (sql.includes('FROM pg_catalog.pg_roles ORDER BY')) {
+            return { rows: [{ role_oid: '16384', rolname: 'factoryos_db_inventory_reader' }] };
+          }
+          return { rows: [] };
+        }),
+        end: jest.fn(async () => undefined),
+      };
+    };
+    const inventory = await createAdapter(mock.fetcher, {
+      database_principal_reader: {
+        role_name: 'FactoryOSRdsDbPrincipalReader',
+        database_username: 'factoryos_db_inventory_reader',
+        ca_bundle_pem: caBundle,
+        ca_bundle_sha256: createHash('sha256').update(caBundle, 'utf8').digest('hex'),
+        max_databases_per_target: 10,
+        max_rows_per_query: 50,
+        max_total_rows: 1000,
+        max_total_queries: 100,
+        statement_timeout_ms: 5000,
+        connection_timeout_ms: 5000,
+        policy_sha256: 'b'.repeat(64),
+        policy_review_reference: 'review.aws.db-principal-reader.v1',
+      },
+    }, databaseClientFactory).captureInventory();
+
+    const writerCatalog = inventory.sources.find((source) => source.source_kind === 'WAL_WRITER_PRINCIPAL_CATALOG');
+    const replicationCatalog = inventory.sources.find((source) => source.source_kind === 'WAL_REPLICATION_PATH_CATALOG');
+    expect(writerCatalog?.status).toBe('COMPLETE');
+    expect(writerCatalog?.items.some((item) => item.resource_type === 'POSTGRESQL_DATABASE_ROLE')).toBe(true);
+    expect(replicationCatalog?.status).toBe('PARTIAL');
+    expect(inventory.database_writer_principals_fully_enumerated).toBe(true);
+    expect(inventory.database_principal_scan_complete).toBe(true);
+    expect(inventory.database_principal_reader_role_name).toBe('FactoryOSRdsDbPrincipalReader');
+    expect(inventory.database_principal_reader_policy_sha256).toBe('b'.repeat(64));
+    expect(inventory.database_principal_reader_policy_independently_verified).toBe(false);
+    expect(inventory.database_principal_targets_discovered).toBe(1);
+    expect(inventory.database_principal_targets_scanned).toBe(1);
+    expect(inventory.database_principal_databases_discovered).toBe(1);
+    expect(inventory.database_principal_databases_scanned).toBe(1);
+    expect(inventory.database_principal_receipt_references.length).toBeGreaterThan(0);
+    expect(inventory.source_receipts_signable).toBe(false);
+    expect(inventory.manifest_eligible).toBe(false);
+    expect(inventory.deletion_authorized).toBe(false);
+    expect(mock.requests.some((request) => request.action === 'AssumeRole'
+      && (request.body as URLSearchParams).get('RoleArn')
+        === 'arn:aws:iam::111111111111:role/FactoryOSRdsDbPrincipalReader')).toBe(true);
+    expect(dbQueries).toContain('BEGIN READ ONLY');
+    expect(dbQueries).toContain('ROLLBACK');
   });
 
 });
