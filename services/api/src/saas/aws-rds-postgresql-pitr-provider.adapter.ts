@@ -1199,7 +1199,7 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   if (!candidateReference) blockers.push('Candidate must use an exact provider inventory identity reference.');
   const candidateArn = typeof value.candidate_resource_arn === 'string'
     && (RDS_ARN.test(value.candidate_resource_arn)
-      || /^arn:(aws|aws-us-gov|aws-cn):backup:[a-z0-9-]+:\\d{12}:recovery-point:[A-Za-z0-9._:/-]+$/.test(value.candidate_resource_arn))
+      || /^arn:(aws|aws-us-gov|aws-cn):backup:[a-z0-9-]+:\d{12}:recovery-point:[A-Za-z0-9._:/-]+$/.test(value.candidate_resource_arn))
     ? value.candidate_resource_arn : null;
   if (value.candidate_resource_arn !== undefined && !candidateArn) {
     blockers.push('Optional candidate resource ARN is malformed.');
