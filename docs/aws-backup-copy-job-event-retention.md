@@ -39,6 +39,23 @@ Immediately before/after deployment, capture a bounded baseline for every suppli
 
 The one-time ListCopyJobs baseline is not a perpetual source and does not extend the AWS API's retention. EventBridge archive does not ingest the CloudTrail Event history export automatically. Keep baseline records separate from ongoing events and bind both into the same reviewed evidence period only after comparing scopes and duplicate/correlation identities.
 
+## Privileged administration guardrail
+
+The companion SCP template `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` provides four explicit Deny statements for the exact retained resources:
+
+- EventBridge archive: `events:DeleteArchive` and `events:UpdateArchive` on `arn:<PARTITION>:events:*:<ACCOUNT_ID>:archive/<ARCHIVE_NAME>`.
+- CloudTrail trail: `cloudtrail:StopLogging`, `cloudtrail:DeleteTrail`, `cloudtrail:UpdateTrail` and `cloudtrail:PutEventSelectors` on `arn:<PARTITION>:cloudtrail:*:<ACCOUNT_ID>:trail/<TRAIL_NAME>`.
+- S3 audit bucket: bucket deletion, bucket-policy replacement/removal, Object Lock default-retention changes, versioning/encryption changes and lifecycle changes on the exact bucket ARN.
+- KMS audit key: disablement, scheduled deletion, key-policy replacement and grant revocation/retirement on the exact KMS key ARN.
+
+Each statement exempts only the exact same-account role ARN `arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>` through `ArnNotEquals` on `aws:PrincipalArn`. Fill every placeholder from reviewed CloudFormation outputs/approved account inventory. The archive and trail names must match the deployed stack parameters; the audit bucket name comes from the CloudTrail stack output; the KMS key ARN must identify the pre-provisioned trail-home-Region key. Do not replace the account ID or break-glass role with wildcards. The policy has no Allow statement and grants no new permission.
+
+Attach the SCP from AWS Organizations to every relevant **member account** or parent OU after the trail, archive, bucket and KMS key identities are confirmed. SCPs are guardrails, not grants: the operator identities still require their normal IAM permissions. SCPs do not restrict the Organizations management account or service-linked roles, and an authorized Organizations administrator can detach or change the SCP. Protect the Organizations management account, SCP attachment/change permissions, break-glass role trust/MFA and alert on any SCP detach/change in a separate administrative control plane. Validate the inherited policy using the exact account, role session and resource ARNs before calling the guardrail active.
+
+The exception role is a controlled emergency path, not an everyday operator role. Its owner, MFA/workload authentication, session duration, approval, monitored use, post-incident review and credential revocation must be separately documented. A role assumption or policy change through this identity should trigger an alert and invalidate any affected evidence period until a new archive/trail/bucket/KMS verification is completed.
+
+This SCP template is a policy document, not an Organizations attachment. Repository tests validate its exact action/resource/exception contract; they do not prove that SCPs are enabled in the Organization, that the policy is attached to the correct OUs/accounts, or that an AWS administrator cannot change the management-account control plane.
+
 ## Event shape, ordering and deduplication
 
 Keep the **raw envelope bytes** as evidence. The documented EventBridge event includes the envelope id, account, region, time, detail-type, source, and a detail object. AWS copy-job detail can include copyJobId, state, source/destination vault ARNs, creation/completion time and destination recovery-point ARN. Some early-state examples omit copyJobId; a consumer must not drop such an event just because that field is absent.
@@ -95,3 +112,10 @@ The repository contract test verifies the CloudFormation resource shape only. It
 - [CloudFormation AWS::Events::Archive](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-events-archive.html)
 - [CloudFormation AWS::CloudTrail::Trail](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-cloudtrail-trail.html)
 - [CloudFormation AWS::S3::Bucket](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-s3-bucket.html)
+
+- [AWS EventBridge archive IAM resource ARN](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-manage-iam-access.html)
+- [AWS CloudTrail IAM and trail resource ARN](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/security_iam_service-with-iam.html)
+- [AWS Organizations SCPs](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html)
+- [AWS global aws:PrincipalArn condition key](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html)
+- [Amazon S3 PutBucketLifecycleConfiguration retention implications](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html)
+- [AWS KMS service authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_kms.html)
