@@ -129,7 +129,9 @@ test('documentation distinguishes best-effort events, event retention, CloudTrai
   assert.match(doc, /out of order/i);
   assert.match(doc, /No event consumer/i);
   assert.match(doc, /Issue #298 stays OPEN/);
-  assert.match(doc, /guardrail SCP/i);
+  assert.match(doc, /SCP template/i);
+  assert.match(doc, /exact same-account role ARN/i);
+  assert.match(doc, /does not restrict the Organizations management account/i);
   assert.match(doc, /management account/i);
   assert.match(doc, /service-linked roles/i);
 });
