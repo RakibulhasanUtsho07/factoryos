@@ -97,6 +97,21 @@ export interface AwsRdsPitrDatabasePrincipalCatalog {
     privilege_type: string;
     is_grantable: boolean;
   }>;
+  large_object_privileges: Array<{
+    grantee: string;
+    large_object_id: string;
+    owner: string;
+    privilege_type: string;
+    is_grantable: boolean;
+  }>;
+  default_privileges: Array<{
+    owner_role: string;
+    schema_name: string | null;
+    object_type: string;
+    grantee: string;
+    privilege_type: string;
+    is_grantable: boolean;
+  }>;
   object_privileges: Array<{
     grantee: string;
     schema_name: string;
@@ -379,6 +394,33 @@ const CATALOGS = [
       + 'WHERE namespace.nspname NOT IN (\'pg_catalog\', \'information_schema\') '
       + 'AND grants.privilege_type IN (\'CREATE\', \'USAGE\') '
       + 'ORDER BY namespace.nspname, grantee, grants.privilege_type LIMIT $1',
+  },
+  {
+    name: 'large_object_privileges',
+    sql: '/* factoryos:pitr:large_object_privileges */\n'
+      + 'SELECT CASE WHEN grants.grantee = 0 THEN \'PUBLIC\' '
+      + 'ELSE pg_catalog.pg_get_userbyid(grants.grantee) END AS grantee, '
+      + 'large_object.loid::text AS large_object_id, '
+      + 'pg_catalog.pg_get_userbyid(large_object.lomowner) AS owner, '
+      + 'grants.privilege_type, grants.is_grantable '
+      + 'FROM pg_catalog.pg_largeobject_metadata AS large_object '
+      + 'CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(large_object.lomacl, '
+      + 'pg_catalog.acldefault(\'L\', large_object.lomowner))) AS grants '
+      + 'ORDER BY large_object.loid, grantee LIMIT $1',
+  },
+  {
+    name: 'default_privileges',
+    sql: '/* factoryos:pitr:default_privileges */\n'
+      + 'SELECT owner.rolname AS owner_role, namespace.nspname AS schema_name, '
+      + 'default_acl.defaclobjtype::text AS object_type, '
+      + 'CASE WHEN grants.grantee = 0 THEN \'PUBLIC\' '
+      + 'ELSE pg_catalog.pg_get_userbyid(grants.grantee) END AS grantee, '
+      + 'grants.privilege_type, grants.is_grantable '
+      + 'FROM pg_catalog.pg_default_acl AS default_acl '
+      + 'JOIN pg_catalog.pg_roles AS owner ON owner.oid = default_acl.defaclrole '
+      + 'LEFT JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = default_acl.defaclnamespace '
+      + 'CROSS JOIN LATERAL pg_catalog.aclexplode(default_acl.defaclacl) AS grants '
+      + 'ORDER BY owner.rolname, namespace.nspname, default_acl.defaclobjtype, grantee LIMIT $1',
   },
   {
     name: 'object_privileges',
@@ -715,6 +757,12 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       const effectiveObjectWrite = (rowsObserved.object_privileges ?? []).some((item) =>
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
         && writePrivilegeTypes.has(String(item.privilege_type)));
+      const effectiveLargeObjectAccess = (rowsObserved.large_object_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
+        && ['SELECT', 'UPDATE'].includes(String(item.privilege_type)));
+      const effectiveFutureWrite = (rowsObserved.default_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
+        && writePrivilegeTypes.has(String(item.privilege_type)));
       if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
         blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
       }
@@ -722,7 +770,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         && candidate.datistemplate === false && candidate.current_user_can_connect !== true)) {
         blockers.push('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
       }
-      if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite) {
+      if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite
+        || effectiveLargeObjectAccess || effectiveFutureWrite) {
         blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
       }
       if (Number(identity.server_version_num) < 140000) {
@@ -799,6 +848,21 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         schema_name: requiredString(item.schema_name, 'schema_name'),
         privilege_type: requiredString(item.privilege_type, 'schema_privilege'),
         is_grantable: asBoolean(item.is_grantable, 'schema_is_grantable'),
+      })),
+      large_object_privileges: (rowsObserved.large_object_privileges ?? []).map((item) => ({
+        grantee: requiredString(item.grantee, 'large_object_grantee'),
+        large_object_id: requiredString(item.large_object_id, 'large_object_id'),
+        owner: requiredString(item.owner, 'large_object_owner'),
+        privilege_type: requiredString(item.privilege_type, 'large_object_privilege'),
+        is_grantable: asBoolean(item.is_grantable, 'large_object_is_grantable'),
+      })),
+      default_privileges: (rowsObserved.default_privileges ?? []).map((item) => ({
+        owner_role: requiredString(item.owner_role, 'default_privilege_owner'),
+        schema_name: typeof item.schema_name === 'string' ? item.schema_name : null,
+        object_type: requiredString(item.object_type, 'default_privilege_object_type'),
+        grantee: requiredString(item.grantee, 'default_privilege_grantee'),
+        privilege_type: requiredString(item.privilege_type, 'default_privilege'),
+        is_grantable: asBoolean(item.is_grantable, 'default_privilege_is_grantable'),
       })),
       object_privileges: (rowsObserved.object_privileges ?? []).map((item) => ({
         grantee: requiredString(item.grantee, 'object_grantee'),
@@ -898,6 +962,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       database_access: [],
       database_privileges: [],
       schema_privileges: [],
+      large_object_privileges: [],
+      default_privileges: [],
       object_privileges: [],
       function_privileges: [],
       active_sessions: [],
