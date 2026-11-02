@@ -250,7 +250,7 @@ function canonicalScopes(scopes: unknown): PostgresqlWalPitrProviderScope[] {
 
 function validateDiscovery(
   value: PostgresqlWalPitrProviderScopeDiscovery,
-): { scopes: PostgresqlWalPitrProviderScope[]; principal: string; policyAudit: string; discovery: string; audit: string } {
+): { scopes: PostgresqlWalPitrProviderScope[]; principal: string; policyAudit: string; discovery: string; audit: string; pagesFetched: number } {
   if (!isRecord(value)) return fail('provider scope discovery evidence is missing');
   const scopes = canonicalScopes(value.scopes);
   const principal = safeReference(value.principal_reference, 'provider collector principal');
@@ -265,7 +265,7 @@ function validateDiscovery(
   if (!Number.isSafeInteger(value.pages_fetched) || value.pages_fetched < 1 || value.pages_fetched > 100000) {
     return fail('provider scope discovery page count is invalid');
   }
-  return { scopes, principal, policyAudit, discovery, audit };
+  return { scopes, principal, policyAudit, discovery, audit, pagesFetched: value.pages_fetched };
 }
 
 function validateInput(input: PostgresqlWalPitrProviderInventoryCaptureInput): {
@@ -382,8 +382,9 @@ export async function capturePostgresqlWalPitrProviderInventory(
   }
   const bounds = validateInput(input);
   const discovery = validateDiscovery(await gateway.discoverScopes());
+  if (discovery.pagesFetched > bounds.maxTotalPages) return fail('provider inventory discovery exceeded its total page budget');
   const itemBudget = { total: 0, maximum: bounds.maxItems };
-  const pageBudget = { total: 0, maximum: bounds.maxTotalPages };
+  const pageBudget = { total: discovery.pagesFetched, maximum: bounds.maxTotalPages };
   const captures: PostgresqlWalPitrProviderSourceCapture[] = [];
   for (const kind of POSTGRESQL_WAL_PITR_PROVIDER_SOURCE_KINDS) {
     captures.push(await enumerateSource(
@@ -451,6 +452,7 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
     return fail('caller expected provider scope digest does not match its canonical scope');
   }
   const discovery = validateDiscovery(await gateway.discoverScopes());
+  if (discovery.pagesFetched > maxTotalPages) return fail('independent residual discovery exceeded its total page budget');
   if (scopeKeyList(discovery.scopes) !== scopeKeyList(expectedScopes)) {
     return fail('independent residual scanner did not enumerate the exact expected provider/account/region scope');
   }
@@ -485,13 +487,15 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
   const residuals = new Map<string, PostgresqlWalPitrResidualIdentity>();
   const auditReferences = new Set<string>([discovery.audit, discovery.policyAudit]);
   let pagesFetched = 0;
+  let totalPagesBudgetUsed = discovery.pagesFetched;
   let copiesScanned = 0;
   for (const scope of expectedScopes) {
     let pageToken: string | null = null;
     const seenTokens = new Set<string>();
     let pagesForScope = 0;
     do {
-      if (pagesFetched >= maxTotalPages) return fail('independent residual scan exceeded its total page budget');
+      if (totalPagesBudgetUsed >= maxTotalPages) return fail('independent residual scan exceeded its total page budget');
+      totalPagesBudgetUsed += 1;
       const page = await gateway.listResidualPage({ scope, page_token: pageToken, page_size: pageSize });
       if (!isRecord(page) || scopeKey(normalizeScope(page.scope)) !== scopeKey(scope)) {
         return fail('independent residual page was returned for an unexpected provider scope');
