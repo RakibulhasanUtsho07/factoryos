@@ -796,6 +796,7 @@ function unavailableDatabasePrincipalCatalog(
     database_roles: [],
     role_memberships: [],
     database_access: [],
+    database_privileges: [],
     schema_privileges: [],
     object_privileges: [],
     function_privileges: [],
