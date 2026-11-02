@@ -237,16 +237,28 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       return unit.id;
     };
 
-    const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', '2026-11-01', 'wms-fefo-early-' + randomUUID());
-    const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', '2027-01-01', 'wms-fefo-late-' + randomUUID());
-    const expiredLotId = await createLot('LOT-EXPIRED-' + randomUUID().slice(0, 6), '0.5000', '2026-10-20', 'wms-fefo-expired-' + randomUUID());
-    const damagedLotId = await createLot('LOT-DAMAGED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-damaged-' + randomUUID(), {
+    const databaseDateResult = await adminPool.query<{ current_date: string }>(
+      'SELECT CURRENT_DATE::text AS current_date',
+    );
+    const databaseCurrentDate = databaseDateResult.rows[0]?.current_date;
+    if (!databaseCurrentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(databaseCurrentDate)) {
+      throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO expiry fixtures');
+    }
+    const expiryFromDatabaseDate = (offsetDays: number): string => {
+      const date = new Date(databaseCurrentDate + 'T00:00:00.000Z');
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    };
+    const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', expiryFromDatabaseDate(30), 'wms-fefo-early-' + randomUUID());
+    const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', expiryFromDatabaseDate(90), 'wms-fefo-late-' + randomUUID());
+    const expiredLotId = await createLot('LOT-EXPIRED-' + randomUUID().slice(0, 6), '0.5000', expiryFromDatabaseDate(-1), 'wms-fefo-expired-' + randomUUID());
+    const damagedLotId = await createLot('LOT-DAMAGED-' + randomUUID().slice(0, 6), '0.5000', expiryFromDatabaseDate(90), 'wms-fefo-damaged-' + randomUUID(), {
       attributes: { damaged: true, condition: 'DAMAGED' },
     });
-    const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-held-' + randomUUID(), {
+    const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', expiryFromDatabaseDate(90), 'wms-fefo-held-' + randomUUID(), {
       attributes: { held: true, condition: 'HELD' },
     });
-    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID());
+    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', expiryFromDatabaseDate(90), 'wms-fefo-quarantine-' + randomUUID());
     // New traceability identities must begin ACTIVE. Exercise quarantine through
     // the audited lifecycle so the candidate query excludes a real quarantined unit.
     await traceabilityService.changeUnitStatus(
