@@ -707,8 +707,17 @@ function resourceFromBlock(
       })
     : [];
   const retention = optionalInteger(xmlText(primaryBlock, 'BackupRetentionPeriod'));
+  const rawEndpoint = optionalString(xmlText(primaryBlock, 'Endpoint'));
+  const endpointIsNested = rawEndpoint !== null && rawEndpoint.includes('<');
+  const endpointAddress = endpointIsNested ? xmlText(rawEndpoint!, 'Address') : rawEndpoint;
+  const endpointPort = endpointIsNested ? xmlText(rawEndpoint!, 'Port') : xmlText(primaryBlock, 'Port');
+  const clusterResourceId = optionalString(xmlText(primaryBlock, 'DBClusterResourceId'));
   const attrs: Record<string, string | null> = {};
   for (const name of fieldNames) attrs[name] = optionalString(xmlText(primaryBlock, name));
+  attrs.DatabaseEndpointAddress = endpointAddress;
+  attrs.DatabaseEndpointPort = endpointPort;
+  attrs.DbiResourceId = dbiResourceId;
+  attrs.DBClusterResourceId = clusterResourceId;
   return {
     resource_arn: arn,
     provider_identity_reference: providerIdentityReference,
