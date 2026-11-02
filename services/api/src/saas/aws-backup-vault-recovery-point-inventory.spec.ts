@@ -80,6 +80,50 @@ function recoveryPoint(
   };
 }
 
+function copyJob(options: FixtureOptions = {}): Record<string, unknown> {
+  const destinationVaultArn = options.copyDestinationOutsideScope
+    ? 'arn:aws:backup:ap-northeast-1:222222222222:backup-vault:external-destination'
+    : airgapVaultArn;
+  const destinationRecoveryPointArn = options.copyDestinationOutsideScope
+    ? 'arn:aws:backup:ap-northeast-1:222222222222:recovery-point:external-copy'
+    : options.copyJobMissingDestinationPoint ? undefined : airgapRecoveryPointArn;
+  return {
+    AccountId: account,
+    CopyJobId: 'copy-job-0001',
+    CreationDate: 1790985600,
+    CompletionDate: 1790985900,
+    State: 'COMPLETED',
+    BackupSizeInBytes: 123456789,
+    ResourceArn: 'arn:aws:rds:ap-southeast-1:111111111111:db:factoryos-db',
+    ResourceType: 'RDS',
+    SourceBackupVaultArn: standardVaultArn,
+    SourceRecoveryPointArn: sourceRecoveryPointArn,
+    DestinationBackupVaultArn: destinationVaultArn,
+    ...(destinationRecoveryPointArn ? { DestinationRecoveryPointArn: destinationRecoveryPointArn } : {}),
+    DestinationEncryptionKeyArn: 'arn:aws:kms:ap-southeast-1:111111111111:key/33333333-3333-4333-8333-333333333333',
+    DestinationRecoveryPointLifecycle: {
+      DeleteAfterDays: 90,
+      MoveToColdStorageAfterDays: 30,
+      OptInToArchiveForSupportedResources: true,
+    },
+    DestinationVaultLockState: 'LOCKED',
+    DestinationVaultType: options.copyDestinationOutsideScope
+      ? 'BACKUP_VAULT' : 'LOGICALLY_AIR_GAPPED_BACKUP_VAULT',
+    CreatedBy: {
+      BackupPlanArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-plan:plan-1',
+      BackupPlanId: 'plan-1',
+      BackupPlanName: 'factoryos-daily',
+      BackupPlanVersion: 'v3',
+      BackupRuleId: 'rule-1',
+      BackupRuleName: 'daily-copy',
+    },
+    CreatedByBackupJobId: 'backup-job-0001',
+    IsParent: false,
+    NumberOfChildJobs: 0,
+    MessageCategory: 'SUCCESS',
+  };
+}
+
 function stsResponse(identityAccount = account, identityRole = roleName): string {
   return '<GetCallerIdentityResponse><GetCallerIdentityResult><Account>' + identityAccount + '</Account>'
     + '<Arn>arn:aws:sts::' + identityAccount + ':assumed-role/' + identityRole + '/ci-run</Arn>'
@@ -107,6 +151,9 @@ interface FixtureOptions {
   missingCreationDate?: boolean;
   unknownLegalHoldPoint?: boolean;
   sourceVaultOutsideScope?: boolean;
+  copyJobEmptyContinuation?: boolean;
+  copyDestinationOutsideScope?: boolean;
+  copyJobMissingDestinationPoint?: boolean;
   maxPages?: number;
   pageOverrides?: Record<string, unknown[]>;
 }
@@ -146,13 +193,15 @@ function makeInput(options: FixtureOptions = {}): {
     const action =
       path === '/backup-vaults/' ? 'ListBackupVaults'
         : path === '/legal-holds/' ? 'ListLegalHolds'
-          : /^\/backup-vaults\/[^/]+\/recovery-points\/$/.test(path) ? 'ListRecoveryPointsByBackupVault'
-            : /^\/backup-vaults\/[^/]+$/.test(path) ? 'DescribeBackupVault'
-              : /^\/logically-air-gapped-backup-vaults\/[^/]+\/restore-access-backup-vaults\/$/.test(path)
-                ? 'ListRestoreAccessBackupVaults'
-                : /^\/legal-holds\/[^/]+\/recovery-points$/.test(path) ? 'ListRecoveryPointsByLegalHold'
-                  : /^\/legal-holds\/[^/]+\/$/.test(path) ? 'GetLegalHold'
-                    : 'Unknown';
+          : path === '/copy-jobs/' ? 'ListCopyJobs'
+            : /^\/copy-jobs\/[^/]+$/.test(path) ? 'DescribeCopyJob'
+              : /^\/backup-vaults\/[^/]+\/recovery-points\/$/.test(path) ? 'ListRecoveryPointsByBackupVault'
+                : /^\/backup-vaults\/[^/]+$/.test(path) ? 'DescribeBackupVault'
+                  : /^\/logically-air-gapped-backup-vaults\/[^/]+\/restore-access-backup-vaults\/$/.test(path)
+                    ? 'ListRestoreAccessBackupVaults'
+                    : /^\/legal-holds\/[^/]+\/recovery-points$/.test(path) ? 'ListRecoveryPointsByLegalHold'
+                      : /^\/legal-holds\/[^/]+\/$/.test(path) ? 'GetLegalHold'
+                        : 'Unknown';
 
     if (options.deniedAction === action) return jsonResponse({ message: 'denied' }, 403);
 
@@ -160,6 +209,18 @@ function makeInput(options: FixtureOptions = {}): {
     const indexKey = action + ':' + path;
     const index = pageCounts.get(indexKey) ?? 0;
     pageCounts.set(indexKey, index + 1);
+
+    if (action === 'ListCopyJobs') {
+      if (token === 'copy-page-2') return jsonResponse({ CopyJobs: [] });
+      return jsonResponse({
+        CopyJobs: [copyJob(options)],
+        ...(options.copyJobEmptyContinuation ? { NextToken: 'copy-page-2' } : {}),
+      });
+    }
+
+    if (action === 'DescribeCopyJob') {
+      return jsonResponse({ CopyJob: copyJob(options) });
+    }
 
     if (action === 'ListBackupVaults') {
       if (token === 'vault-page-2') return jsonResponse({ BackupVaultList: [] });
@@ -323,6 +384,17 @@ describe('AWS Backup vault and recovery-point inventory', () => {
     expect(result.restore_access_vault_relationships).toHaveLength(1);
     expect(result.restore_access_vault_relationships[0]?.restore_access_backup_vault_arn).toBe(restoreVaultArn);
     expect(result.restore_access_relationships_complete).toBe(true);
+    expect(result.copy_jobs).toHaveLength(1);
+    expect(result.copy_jobs[0]?.copy_job_id).toBe('copy-job-0001');
+    expect(result.copy_jobs[0]?.state).toBe('COMPLETED');
+    expect(result.copy_jobs[0]?.source_backup_vault_arn).toBe(standardVaultArn);
+    expect(result.copy_jobs[0]?.destination_backup_vault_arn).toBe(airgapVaultArn);
+    expect(result.copy_jobs[0]?.destination_recovery_point_arn).toBe(airgapRecoveryPointArn);
+    expect(result.copy_job_catalog_complete).toBe(true);
+    expect(result.aws_backup_copy_job_catalog_enumerated).toBe(true);
+    expect(result.copy_job_destination_reconciliation_complete).toBe(true);
+    expect(result.cross_account_copy_job_count).toBe(0);
+    expect(result.cross_region_copy_job_count).toBe(0);
     expect(result.query_receipt_references.length).toBeGreaterThan(0);
     expect(result.pages_fetched).toBeGreaterThanOrEqual(8);
     expect(result.requests_attempted).toBeGreaterThan(result.pages_fetched);
@@ -344,7 +416,75 @@ describe('AWS Backup vault and recovery-point inventory', () => {
       || /^\/legal-holds\/[A-Za-z0-9-]+\/$/.test(call.url.pathname)
       || /^\/legal-holds\/[A-Za-z0-9-]+\/recovery-points$/.test(call.url.pathname)
       || /^\/logically-air-gapped-backup-vaults\/[A-Za-z0-9_-]+\/restore-access-backup-vaults\/$/.test(call.url.pathname)
+      || call.url.pathname === '/copy-jobs/'
+      || /^\/copy-jobs\/[A-Za-z0-9-]+$/.test(call.url.pathname)
     ))).toBe(false);
+  });
+
+  test('enumerates and describes AWS Backup copy jobs with source/destination recovery-point reconciliation', async () => {
+    const { input, calls } = makeInput();
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    const listCalls = calls.filter((call) => call.url.pathname === '/copy-jobs/');
+    const detailCalls = calls.filter((call) => /^\/copy-jobs\/[^/]+$/.test(call.url.pathname));
+    expect(listCalls).toHaveLength(1);
+    expect(detailCalls).toHaveLength(1);
+    expect(detailCalls[0]?.url.pathname).toBe('/copy-jobs/copy-job-0001');
+    expect(listCalls[0]?.url.searchParams.get('maxResults')).toBe('1000');
+    expect(result.copy_job_catalog_complete).toBe(true);
+    expect(result.copy_job_destination_reconciliation_complete).toBe(true);
+    expect(result.copy_jobs[0]?.backup_plan_name).toBe('factoryos-daily');
+    expect(result.copy_jobs[0]?.destination_lifecycle_delete_after_days).toBe(90);
+    expect(result.status).toBe('COMPLETE');
+  });
+
+  test('follows an empty ListCopyJobs continuation page', async () => {
+    const { input, calls } = makeInput({ copyJobEmptyContinuation: true });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    const listCalls = calls.filter((call) => call.url.pathname === '/copy-jobs/');
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls[1]?.url.searchParams.get('nextToken')).toBe('copy-page-2');
+    expect(result.copy_job_catalog_complete).toBe(true);
+  });
+
+  test('fails closed when ListCopyJobs is denied', async () => {
+    const { input } = makeInput({ deniedAction: 'ListCopyJobs' });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.copy_job_catalog_complete).toBe(false);
+    expect(result.aws_backup_copy_job_catalog_enumerated).toBe(false);
+    expect(result.blockers.join(' ')).toContain('ListCopyJobs');
+    expect(result.vault_catalog_complete).toBe(true);
+    expect(result.recovery_point_catalog_complete).toBe(true);
+    expect(result.legal_hold_catalog_complete).toBe(true);
+  });
+
+  test('fails closed when DescribeCopyJob is denied', async () => {
+    const { input } = makeInput({ deniedAction: 'DescribeCopyJob' });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.copy_job_catalog_complete).toBe(false);
+    expect(result.blockers.join(' ')).toContain('DescribeCopyJob');
+  });
+
+  test('records cross-account and cross-Region destination scopes that were not supplied', async () => {
+    const { input } = makeInput({ copyDestinationOutsideScope: true });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.copy_job_catalog_complete).toBe(true);
+    expect(result.copy_job_destination_reconciliation_complete).toBe(false);
+    expect(result.copy_job_destination_scope_gaps).toContain(
+      'arn:aws:backup:ap-northeast-1:222222222222:backup-vault:external-destination',
+    );
+    expect(result.cross_account_copy_job_count).toBe(1);
+    expect(result.cross_region_copy_job_count).toBe(1);
+  });
+
+  test('requires completed copy jobs to identify their destination recovery point', async () => {
+    const { input } = makeInput({ copyJobMissingDestinationPoint: true });
+    const result = await captureAwsBackupVaultRecoveryPointInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.copy_job_catalog_complete).toBe(false);
+    expect(result.blockers.join(' ')).toContain('has no destination recovery-point ARN');
   });
 
   test('follows an empty ListBackupVaults continuation page and signs both pages', async () => {
