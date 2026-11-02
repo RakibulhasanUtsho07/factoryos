@@ -44,7 +44,7 @@ The adapter records hold ID/ARN/status, creation/cancellation/record-retention t
 
 \`ListRecoveryPointsByLegalHold\` produces explicit association rows. This preserves the AWS Backup many-to-many model: a recovery point may be associated with more than one hold, and a hold may cover more than one recovery point. If a hold references a recovery point that is absent from the enumerated vault catalogs, the result is PARTIAL rather than silently dropping the relationship.
 
-A legal-hold status of ACTIVE is observed provider metadata only. The inventory does not create, cancel or release holds and does not independently prove the legal sufficiency of any retention policy.
+A legal-hold status of ACTIVE is observed provider metadata only. The inventory does not create, cancel or release holds and does not independently prove the legal sufficiency of any retention policy. AWS documents that copies made to another Region or account do not inherit the source recovery point's legal hold; therefore each copy destination must be enumerated and its hold/retention state evaluated independently. A source hold relationship is not evidence that a destination copy is protected by the same hold.
 
 ## Request, pagination and evidence bounds
 
@@ -79,7 +79,7 @@ The reader role policy allows only:
 - \`backup:ListRestoreAccessBackupVaults\`
 - \`sts:GetCallerIdentity\`
 
-The policy explicitly denies every action outside that reviewed allowlist. It grants no \`StartBackupJob\`, \`StartCopyJob\`, \`StartRestoreJob\`, \`DeleteRecoveryPoint\`, legal-hold create/cancel, vault mutation, access-policy mutation, tag mutation or KMS data-key operation. The trust template limits the principal to the designated FactoryOS source role and requires a unique ExternalId. The source-role template permits assuming only the dedicated reader role.
+The policy explicitly denies every action outside that reviewed allowlist. It grants no \`StartBackupJob\`, \`StartCopyJob\`, \`StartRestoreJob\`, \`DeleteRecoveryPoint\`, legal-hold create/cancel, vault mutation, access-policy mutation, tag mutation or KMS data-key operation. The trust template limits the principal to the designated FactoryOS source role and requires a unique ExternalId. The source-role template permits assuming only the dedicated reader role in an explicit target-account allowlist. Add one exact target role ARN for each approved account/partition; do not replace the account placeholder with a wildcard. The reader policy scopes vault-read actions to the approved account/Region backup-vault ARN and legal-hold actions to the matching legal-hold ARN. Only the two account/Region-wide catalog discovery actions and STS identity verification use Resource: "*", because AWS publishes no resource type for those list/identity actions.
 
 Replace placeholders only through the approved cloud-owner process. Independently inspect the deployed trust policy, permission boundary, SCPs, session policies, organization controls and effective permissions. A checked-in policy template is not evidence that a live role exists or is least-privileged.
 
