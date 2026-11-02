@@ -1603,8 +1603,11 @@ export function createAwsRdsPitrRetentionDryRunPlan(
       blockers.push('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
     }
   }
-  if (inventory) {
-    blockers.push('Provider-managed WAL segments and database writer principal coverage remain unresolved.');
+  if (inventory && inventory.provider_managed_wal_segments_individually_enumerated !== true) {
+    blockers.push('Provider-managed WAL segments remain opaque and are not individually enumerated.');
+  }
+  if (inventory && inventory.database_writer_principals_fully_enumerated !== true) {
+    blockers.push('Database-native writer and replication principal coverage is incomplete or unavailable.');
   }
   const identityDigest = resource ? sha256(JSON.stringify({
     provider_identity_reference: resource.provider_identity_reference,
