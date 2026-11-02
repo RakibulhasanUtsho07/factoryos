@@ -13,7 +13,8 @@
       "Action": "sts:AssumeRole",
       "Resource": [
         "arn:aws:iam::*:role/FactoryOSRdsPitrReadOnly",
-        "arn:aws:iam::*:role/FactoryOSRdsDbPrincipalReader"
+        "arn:aws:iam::*:role/FactoryOSRdsDbPrincipalReader",
+        "arn:aws:iam::*:role/FactoryOSIamPrincipalReader"
       ]
     }
   ]
