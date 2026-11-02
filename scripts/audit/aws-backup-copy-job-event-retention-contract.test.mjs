@@ -129,4 +129,59 @@ test('documentation distinguishes best-effort events, event retention, CloudTrai
   assert.match(doc, /out of order/i);
   assert.match(doc, /No event consumer/i);
   assert.match(doc, /Issue #298 stays OPEN/);
+  assert.match(doc, /guardrail SCP/i);
+  assert.match(doc, /management account/i);
+  assert.match(doc, /service-linked roles/i);
+});
+
+
+test('SCP protects the exact archive, trail, audit bucket and KMS key except one exact break-glass role', async () => {
+  const raw = await readFile(new URL('deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json', root), 'utf8');
+  const policy = JSON.parse(raw);
+  assert.equal(policy.Version, '2012-10-17');
+  assert.equal(policy.Statement.length, 4);
+  assert.ok(policy.Statement.every((statement) => statement.Effect === 'Deny'));
+  assert.ok(policy.Statement.every((statement) => Array.isArray(statement.Resource) && statement.Resource.length === 1));
+  assert.ok(policy.Statement.every((statement) => !statement.Resource[0].includes('*<ACCOUNT_ID>')));
+  assert.ok(policy.Statement.every((statement) =>
+    statement.Condition?.ArnNotEquals?.['aws:PrincipalArn']
+      === 'arn:<PARTITION>:iam::<ACCOUNT_ID>:role/<BREAK_GLASS_ROLE_NAME>'));
+
+  const archive = policy.Statement.find((s) => s.Sid === 'DenyMutationOrDeletionOfFactoryOSBackupCopyEventArchive');
+  assert.deepEqual(archive.Action, ['events:DeleteArchive', 'events:UpdateArchive']);
+  assert.equal(archive.Resource[0], 'arn:<PARTITION>:events:*:<ACCOUNT_ID>:archive/<ARCHIVE_NAME>');
+
+  const trail = policy.Statement.find((s) => s.Sid === 'DenyStopDeleteOrConfigurationChangesToFactoryOSBackupCopyCloudTrail');
+  assert.deepEqual(trail.Action, [
+    'cloudtrail:StopLogging',
+    'cloudtrail:DeleteTrail',
+    'cloudtrail:UpdateTrail',
+    'cloudtrail:PutEventSelectors',
+  ]);
+  assert.equal(trail.Resource[0], 'arn:<PARTITION>:cloudtrail:*:<ACCOUNT_ID>:trail/<TRAIL_NAME>');
+
+  const bucket = policy.Statement.find((s) => s.Sid === 'DenyRemovalOrWeakeningOfCloudTrailAuditBucketControls');
+  assert.deepEqual(bucket.Action, [
+    's3:DeleteBucket',
+    's3:PutBucketPolicy',
+    's3:DeleteBucketPolicy',
+    's3:PutBucketObjectLockConfiguration',
+    's3:PutBucketVersioning',
+    's3:PutBucketEncryption',
+    's3:DeleteBucketEncryption',
+    's3:PutLifecycleConfiguration',
+  ]);
+  assert.equal(bucket.Resource[0], 'arn:<PARTITION>:s3:::<AUDIT_BUCKET_NAME>');
+
+  const key = policy.Statement.find((s) => s.Sid === 'DenyDisablementOrKeyPolicyChangesToCloudTrailAuditKey');
+  assert.deepEqual(key.Action, [
+    'kms:DisableKey',
+    'kms:ScheduleKeyDeletion',
+    'kms:PutKeyPolicy',
+    'kms:RevokeGrant',
+    'kms:RetireGrant',
+  ]);
+  assert.equal(key.Resource[0], 'arn:<PARTITION>:kms:<TRAIL_HOME_REGION>:<ACCOUNT_ID>:key/<KMS_KEY_ID>');
+  assert.equal(policy.Statement.some((s) => s.Effect === 'Allow'), false);
+  assert.equal(policy.Statement.some((s) => s.Resource[0] === '*'), false);
 });
