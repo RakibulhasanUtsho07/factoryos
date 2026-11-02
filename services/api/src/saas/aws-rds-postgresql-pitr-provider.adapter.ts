@@ -1,7 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { AwsBackupInventoryApi, AwsBackupLegalHoldRecord, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
-import {
-  captureAwsRdsDatabasePrincipalInventory,
+import { captureAwsRdsDatabasePrincipalInventory } from './aws-rds-postgresql-database-principal-inventory';
+import type {
   AwsRdsDatabasePrincipalPgClientFactory,
   AwsRdsDatabasePrincipalReaderConfig,
   AwsRdsDatabasePrincipalTarget,
@@ -1128,7 +1128,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         const resourceArn = xmlText(block, 'DBInstanceArn') ?? '';
         const endpoint = nestedXmlText(block, 'Endpoint', 'Address') ?? '';
         const portText = nestedXmlText(block, 'Endpoint', 'Port');
-        const port = portText !== null && /^\\d{1,5}$/.test(portText) ? Number(portText) : 0;
+        const port = portText !== null && /^\d{1,5}$/.test(portText) ? Number(portText) : 0;
         const iamAuth = optionalBoolean(xmlText(block, 'IAMDatabaseAuthenticationEnabled'));
         let target: AwsRdsDatabasePrincipalTarget | null = null;
         let blocker: string | null = null;
@@ -1153,13 +1153,13 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       }
       for (const block of clusters.blocks) {
         const engine = xmlText(block, 'Engine')?.toLowerCase();
-        if (engine !== 'aurora-postgresql') continue;
+        if (engine !== 'aurora-postgresql' && engine !== 'postgres') continue;
         const identifier = xmlText(block, 'DBClusterIdentifier') ?? 'unknown-cluster';
         const resourceId = xmlText(block, 'DbClusterResourceId') ?? '';
         const resourceArn = xmlText(block, 'DBClusterArn') ?? '';
         const endpoint = nestedXmlText(block, 'Endpoint', 'Address') ?? xmlText(block, 'Endpoint') ?? '';
         const portText = nestedXmlText(block, 'Endpoint', 'Port') ?? xmlText(block, 'Port');
-        const port = portText !== null && /^\\d{1,5}$/.test(portText) ? Number(portText) : 0;
+        const port = portText !== null && /^\d{1,5}$/.test(portText) ? Number(portText) : 0;
         const iamAuth = optionalBoolean(xmlText(block, 'IAMDatabaseAuthenticationEnabled'));
         let target: AwsRdsDatabasePrincipalTarget | null = null;
         let blocker: string | null = null;
@@ -1172,7 +1172,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
             resource_arn: requireAwsArn(resourceArn, 'DB cluster ARN', scope),
             resource_id: resourceId,
             resource_type: 'RDS_DB_CLUSTER',
-            engine: 'aurora-postgresql',
+            engine: engine as 'postgres' | 'aurora-postgresql',
             endpoint,
             port,
             iam_database_authentication_enabled: iamAuth,
