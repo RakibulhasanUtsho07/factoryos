@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowOnlyRdsPostgresqlPitrInventoryReads",
+      "Effect": "Allow",
+      "Action": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
+        "rds:DescribeGlobalClusters",
+        "rds:DescribeDBInstanceAutomatedBackups",
+        "rds:DescribeDBSnapshots",
+        "rds:DescribeDBClusterSnapshots"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowOnlyRegionCatalogRead",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeRegions",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyAllRdsMutationsFromInventoryRole",
+      "Effect": "Deny",
+      "NotAction": "rds:Describe*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyAllEc2MutationsFromInventoryRole",
+      "Effect": "Deny",
+      "NotAction": "ec2:DescribeRegions",
+      "Resource": "*"
+    }
+  ]
+}
