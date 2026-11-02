@@ -315,7 +315,9 @@ The API package now contains a pure preflight evaluator at
 `services/api/src/saas/postgresql-wal-pitr-retention-eligibility.ts` with contract
 `factoryos.postgresql-wal-pitr-retention-eligibility/v1`. It accepts a provider-owned
 candidate object-generation reference and evidence references/digests after the caller has
-already authenticated the six source receipts and provider audit evidence.
+already authenticated the six source receipts and provider audit evidence. The caller must
+also pass the authoritative expected tenant UUID separately; the evaluator compares it to the
+artifact tenant UUID and fails closed on any mismatch.
 
 The evaluator returns `BLOCKED` unless all of the following are evidenced: a fresh (maximum
 24-hour) complete inventory with all six unique signed source kinds, exhausted pagination,
