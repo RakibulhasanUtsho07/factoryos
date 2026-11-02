@@ -65,7 +65,9 @@ export type AwsRdsPitrSourceStatus =
 export interface AwsRdsPitrResource {
   resource_arn: string | null;
   provider_identity_reference: string;
-  identity_kind: 'IMMUTABLE_RESOURCE_ARN' | 'SOURCE_DB_COMPOSITE';
+  identity_kind: 'IMMUTABLE_RESOURCE_ARN' | 'SOURCE_DB_RESOURCE_ID';
+  provider_delete_identity_reference: string | null;
+  provider_delete_identity_kind: 'DBI_RESOURCE_ID' | 'REPLICATED_BACKUP_ARN' | 'SNAPSHOT_ARN' | null;
   resource_type: string;
   account_id: string;
   region: string;
@@ -127,7 +129,8 @@ export interface AwsRdsPostgresqlPitrInventory {
 
 export interface AwsRdsPitrRetentionDryRunInput {
   inventory: AwsRdsPostgresqlPitrInventory;
-  candidate_resource_arn: string;
+  candidate_provider_identity_reference: string;
+  candidate_resource_arn?: string;
   expected_account_id: string;
   expected_region: string;
   minimum_recovery_horizon_end_at: string;
@@ -142,7 +145,10 @@ export interface AwsRdsPitrRetentionDryRunInput {
 export interface AwsRdsPitrRetentionDryRunPlan {
   schema: typeof AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA;
   status: 'BLOCKED' | 'REVIEW_REQUIRED';
+  candidate_provider_identity_reference: string | null;
   candidate_resource_arn: string | null;
+  provider_delete_identity_reference: string | null;
+  provider_delete_identity_kind: AwsRdsPitrResource['provider_delete_identity_kind'];
   candidate_identity_sha256: string | null;
   blockers: string[];
   operation: 'DRY_RUN_ONLY';
@@ -647,13 +653,21 @@ function resourceFromBlock(
     sourceDatabaseReference ?? '',
   ].join('\u0000');
   const providerIdentityReference = 'aws-rds-resource.' + sha256(identityMaterial).slice(0, 40);
+  const isAutomatedBackup = resourceType === 'RDS_AUTOMATED_BACKUP';
+  const isSnapshot = resourceType === 'RDS_DB_SNAPSHOT' || resourceType === 'RDS_DB_CLUSTER_SNAPSHOT';
+  const providerDeleteIdentity = isAutomatedBackup ? (arn ?? dbiResourceId)
+    : isSnapshot ? arn : null;
+  const providerDeleteIdentityKind = isAutomatedBackup ? (arn ? 'REPLICATED_BACKUP_ARN' : 'DBI_RESOURCE_ID')
+    : isSnapshot ? 'SNAPSHOT_ARN' : null;
   const retention = optionalInteger(xmlText(block, 'BackupRetentionPeriod'));
   const attrs: Record<string, string | null> = {};
   for (const name of fieldNames) attrs[name] = optionalString(xmlText(block, name));
   return {
     resource_arn: arn,
     provider_identity_reference: providerIdentityReference,
-    identity_kind: arn ? 'IMMUTABLE_RESOURCE_ARN' : 'SOURCE_DB_COMPOSITE',
+    identity_kind: arn ? 'IMMUTABLE_RESOURCE_ARN' : 'SOURCE_DB_RESOURCE_ID',
+    provider_delete_identity_reference: providerDeleteIdentity,
+    provider_delete_identity_kind: providerDeleteIdentityKind,
     resource_type: resourceType,
     account_id: scope.account_reference,
     region: scope.region_reference,
@@ -938,7 +952,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       const archiveResources = [
         ...automated.blocks.map((block) => resourceFromBlock(block, 'DBInstanceAutomatedBackup', scope, 'RDS_AUTOMATED_BACKUP',
           'DBInstanceAutomatedBackupsArn', 'DBInstanceIdentifier',
-          ['DBInstanceArn', 'DBInstanceAutomatedBackupsArn', 'DBInstanceIdentifier', 'DbiResourceId', 'Region', 'Status', 'BackupRetentionPeriod'])),
+          ['DBInstanceArn', 'DBInstanceAutomatedBackupsArn', 'AwsBackupRecoveryPointArn', 'DBInstanceIdentifier', 'DbiResourceId', 'Region', 'Status', 'BackupRetentionPeriod'])),
         ...snapshots.blocks.map((block) => resourceFromBlock(block, 'DBSnapshot', scope, 'RDS_DB_SNAPSHOT', 'DBSnapshotArn',
           'DBInstanceIdentifier', ['DBSnapshotIdentifier', 'DBInstanceIdentifier', 'SnapshotType', 'Status', 'Encrypted', 'KmsKeyId'])),
         ...clusterSnapshots.blocks.map((block) => resourceFromBlock(block, 'DBClusterSnapshot', scope, 'RDS_DB_CLUSTER_SNAPSHOT', 'DBClusterSnapshotArn',
@@ -1030,38 +1044,67 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   value: AwsRdsPitrRetentionDryRunInput,
 ): AwsRdsPitrRetentionDryRunPlan {
   const blockers: string[] = [];
-  const arn = typeof value?.candidate_resource_arn === 'string' && RDS_ARN.test(value.candidate_resource_arn)
-    ? value.candidate_resource_arn : null;
-  const inventory = value?.inventory;
-  if (!inventory || inventory.schema !== AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA) {
-    blockers.push('A supported AWS RDS PostgreSQL PITR inventory is required.');
+  if (!isRecord(value)) return fail('retention dry-run input must be an object');
+  const inventory = value.inventory;
+  if (!isRecord(inventory) || inventory.schema !== AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA
+    || !Array.isArray(inventory.sources) || !Array.isArray(inventory.scopes)) {
+    blockers.push('A supported AWS RDS PostgreSQL PITR inventory with source and scope catalogs is required.');
   }
   if (inventory && (inventory.status !== 'ENUMERATED_WITH_EXPLICIT_GAPS'
     || !inventory.account_discovery_complete || !inventory.region_discovery_complete
     || inventory.pagination_exhausted !== true)) {
     blockers.push('AWS account/region inventory is incomplete.');
   }
-  if (!arn) blockers.push('Candidate must be an exact AWS RDS resource ARN.');
-  if (!AWS_ACCOUNT_ID.test(value?.expected_account_id ?? '')
-    || !arn?.includes(':' + (value?.expected_region ?? '') + ':' + (value?.expected_account_id ?? '') + ':')) {
-    blockers.push('Candidate ARN does not match the expected AWS account and region.');
+  const candidateReference = typeof value.candidate_provider_identity_reference === 'string'
+    && /^aws-rds-resource\.[a-f0-9]{40}$/.test(value.candidate_provider_identity_reference)
+    ? value.candidate_provider_identity_reference : null;
+  if (!candidateReference) blockers.push('Candidate must use an exact provider inventory identity reference.');
+  const candidateArn = typeof value.candidate_resource_arn === 'string' && RDS_ARN.test(value.candidate_resource_arn)
+    ? value.candidate_resource_arn : null;
+  if (value.candidate_resource_arn !== undefined && !candidateArn) {
+    blockers.push('Optional candidate resource ARN is malformed.');
   }
-  const inventoryItems = Array.isArray(inventory?.sources)
-    ? inventory.sources.filter((source) => Array.isArray(source.items)).flatMap((source) => source.items)
-    : [];
-  const resource = arn && inventoryItems.find((item) => item.resource_arn === arn
-    && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type));
+  if (!AWS_ACCOUNT_ID.test(value.expected_account_id ?? '')
+    || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(value.expected_region ?? '')) {
+    blockers.push('Expected AWS account or region is invalid.');
+  }
+  const inventorySources = Array.isArray(inventory?.sources) ? inventory.sources : [];
+  const inventoryItems = inventorySources.filter((source: unknown) =>
+    isRecord(source) && Array.isArray(source.items)).flatMap((source: Record<string, unknown>) =>
+    source.items as AwsRdsPitrResource[]);
+  const resource = candidateReference
+    ? inventoryItems.find((item) => item.provider_identity_reference === candidateReference
+      && ['RDS_AUTOMATED_BACKUP', 'RDS_DB_SNAPSHOT', 'RDS_DB_CLUSTER_SNAPSHOT'].includes(item.resource_type))
+    : undefined;
   if (!resource) {
-    blockers.push('Candidate resource was not observed as an exact backup/snapshot ARN in the supplied inventory.');
+    blockers.push('Candidate resource was not observed as an exact backup/snapshot provider identity in the supplied inventory.');
   } else {
     if (resource.account_id !== value.expected_account_id || resource.region !== value.expected_region) {
       blockers.push('Observed resource record is outside the expected inventory account/region scope.');
     }
-    const allowedStatus = resource.resource_type === 'RDS_AUTOMATED_BACKUP'
-      ? resource.status?.toLowerCase() === 'retained'
-      : resource.status?.toLowerCase() === 'available';
-    if (!allowedStatus) blockers.push('Backup/snapshot lifecycle state is not eligible for retention review.');
+    if (candidateArn !== null && resource.resource_arn !== candidateArn) {
+      blockers.push('Candidate ARN does not match the exact provider inventory identity.');
+    }
+    if (resource.resource_type === 'RDS_AUTOMATED_BACKUP') {
+      if (resource.status?.toLowerCase() !== 'retained') {
+        blockers.push('Automated backup is not in retained state.');
+      }
+      if (!resource.provider_delete_identity_reference
+        || !['DBI_RESOURCE_ID', 'REPLICATED_BACKUP_ARN'].includes(resource.provider_delete_identity_kind ?? '')) {
+        blockers.push('Automated backup lacks an exact AWS-supported retention identity.');
+      }
+    } else if (resource.status?.toLowerCase() !== 'available'
+      || resource.provider_delete_identity_kind !== 'SNAPSHOT_ARN'
+      || !resource.provider_delete_identity_reference) {
+      blockers.push('Snapshot is not available or lacks an exact snapshot ARN identity.');
+    }
   }
+  const scopeExists = Array.isArray(inventory?.scopes)
+    && inventory.scopes.some((entry: unknown) => isRecord(entry)
+      && isRecord(entry.scope)
+      && entry.scope.account_reference === value.expected_account_id
+      && entry.scope.region_reference === value.expected_region);
+  if (!scopeExists) blockers.push('Expected account/region is not present in the captured inventory scope.');
   const now = Date.now();
   let expiry: number | null = null;
   let horizon: number | null = null;
@@ -1085,20 +1128,26 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     try { safeReference(reference, field); } catch { blockers.push(field + ' is missing or invalid.'); }
   }
   if (inventory) {
-    blockers.push('Provider-managed WAL, database writer and AWS Backup recovery-point coverage remain unresolved.');
+    blockers.push('Provider-managed WAL, database writer and AWS Backup recovery-point catalog coverage remain unresolved.');
   }
-  const identityDigest = arn ? sha256(JSON.stringify({
-    arn,
-    account_id: value.expected_account_id,
-    region: value.expected_region,
-    inventory_scope: inventory?.scopes_discovered ?? 0,
+  const identityDigest = resource ? sha256(JSON.stringify({
+    provider_identity_reference: resource.provider_identity_reference,
+    resource_arn: resource.resource_arn,
+    provider_delete_identity_reference: resource.provider_delete_identity_reference,
+    provider_delete_identity_kind: resource.provider_delete_identity_kind,
+    account_id: resource.account_id,
+    region: resource.region,
+    inventory_scope_sha256: sha256(JSON.stringify(inventory?.scopes ?? [])),
     inventory_generated_at: inventory?.generated_at ?? null,
     policy_reference: value.policy_reference ?? null,
   })) : null;
   return {
     schema: AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA,
     status: blockers.length ? 'BLOCKED' : 'REVIEW_REQUIRED',
-    candidate_resource_arn: arn,
+    candidate_provider_identity_reference: resource?.provider_identity_reference ?? null,
+    candidate_resource_arn: resource?.resource_arn ?? null,
+    provider_delete_identity_reference: resource?.provider_delete_identity_reference ?? null,
+    provider_delete_identity_kind: resource?.provider_delete_identity_kind ?? null,
     candidate_identity_sha256: identityDigest,
     blockers,
     operation: 'DRY_RUN_ONLY',
