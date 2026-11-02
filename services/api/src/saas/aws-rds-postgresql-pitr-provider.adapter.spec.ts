@@ -359,7 +359,9 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       },
     }, databasePoolFactory).captureInventory();
 
-    expect(inventory.database_writer_principals_fully_enumerated).toBe(true);
+    expect(inventory.database_native_principals_fully_enumerated).toBe(true);
+    expect(inventory.database_iam_connect_principals_fully_enumerated).toBe(false);
+    expect(inventory.database_writer_principals_fully_enumerated).toBe(false);
     expect(inventory.database_principal_catalogs).toHaveLength(1);
     expect(inventory.database_principal_catalogs[0]?.status).toBe('COMPLETE');
     expect(inventory.database_principal_catalogs[0]?.replication_senders).toHaveLength(1);
@@ -369,7 +371,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(inventory.total_database_queries).toBeGreaterThan(0);
     expect(inventory.total_database_principal_rows).toBeGreaterThan(0);
     const writerSource = inventory.sources.find((source) => source.source_kind === 'WAL_WRITER_PRINCIPAL_CATALOG');
-    expect(writerSource?.status).toBe('COMPLETE');
+    expect(writerSource?.status).toBe('PARTIAL');
+    expect(writerSource?.reason).toMatch(/AWS IAM rds-db:connect principals/i);
     expect(writerSource?.items[0]?.resource_type).toBe('POSTGRESQL_DATABASE_PRINCIPAL_SNAPSHOT');
     expect(mock.requests.filter((request) => request.action === 'AssumeRole')
       .some((request) => (request.body as URLSearchParams).get('RoleArn')
@@ -456,7 +459,9 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.schema).toBe(AWS_RDS_POSTGRESQL_PITR_RETENTION_PLAN_SCHEMA);
     expect(plan.status).toBe('BLOCKED');
     expect(plan.blockers).toContain('Provider-managed WAL segments remain opaque and are not individually enumerated.');
-    expect(plan.blockers).toContain('Database-native writer and replication principal coverage is incomplete or unavailable.');
+    expect(plan.blockers).toContain('Database-native PostgreSQL roles, grants and replication principal coverage is incomplete or unavailable.');
+    expect(plan.blockers).toContain('AWS IAM rds-db:connect principal/policy/trust/SCP inventory is not independently enumerated.');
+    expect(plan.blockers).toContain('Overall database writer identity cannot be marked complete without database-native and AWS IAM principal coverage.');
     expect(plan.operation).toBe('DRY_RUN_ONLY');
     expect(plan.provider_mutation_performed).toBe(false);
     expect(plan.delete_api_available).toBe(false);
