@@ -3,6 +3,8 @@ import { jest } from '@jest/globals';
 import {
   captureAwsRdsDatabasePrincipalInventory,
   createAwsRdsIamDatabaseAuthToken,
+} from './aws-rds-postgresql-database-principal-inventory';
+import type {
   AwsRdsDatabasePrincipalPgClientFactory,
   AwsRdsDatabasePrincipalTarget,
 } from './aws-rds-postgresql-database-principal-inventory';
