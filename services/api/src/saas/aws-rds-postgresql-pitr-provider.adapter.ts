@@ -1596,10 +1596,10 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     || inventory.aws_backup_legal_holds_enumerated !== true)) {
     blockers.push('AWS Backup vault/recovery-point/legal-hold catalog coverage is incomplete.');
   }
-  if (inventory && inventory.collector_policy_independently_verified !== true) {
+  if (inventory && inventory.collector_policy_independently_verified === false) {
     blockers.push('RDS/AWS Backup inventory-role effective permissions have not been independently verified.');
   }
-  if (inventory && inventory.database_principal_reader_policy_independently_verified !== true) {
+  if (inventory && inventory.database_principal_reader_policy_independently_verified === false) {
     blockers.push('Database-principal reader-role effective permissions have not been independently verified.');
   }
   if (resource && inventory) {
@@ -1665,7 +1665,7 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     }
   }
   if (inventory) {
-    if (inventory.provider_managed_wal_segments_individually_enumerated !== true) {
+    if (inventory.provider_managed_wal_segments_individually_enumerated === false) {
       blockers.push('Provider-managed RDS WAL segments remain opaque and have no individual inventory identities.');
     }
     if (inventory.database_writer_principals_fully_enumerated !== true) {
