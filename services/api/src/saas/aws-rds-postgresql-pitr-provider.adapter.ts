@@ -1,5 +1,11 @@
 import { createHash, createHmac } from 'node:crypto';
 import { AwsBackupInventoryApi, AwsBackupLegalHoldRecord, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
+import {
+  captureAwsRdsDatabasePrincipalInventory,
+  AwsRdsDatabasePrincipalPgClientFactory,
+  AwsRdsDatabasePrincipalReaderConfig,
+  AwsRdsDatabasePrincipalTarget,
+} from './aws-rds-postgresql-database-principal-inventory';
 
 export const AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA =
   'factoryos.aws-rds-postgresql-pitr-inventory/v1';
@@ -30,6 +36,12 @@ export interface AwsRdsPitrCredentials {
   session_token?: string;
 }
 
+export interface AwsRdsPitrDatabasePrincipalReaderConfig extends AwsRdsDatabasePrincipalReaderConfig {
+  role_name: string;
+  policy_sha256?: string;
+  policy_review_reference?: string;
+}
+
 export interface AwsRdsPitrProviderConfig {
   organization_account_id: string;
   read_only_role_name: string;
@@ -41,6 +53,7 @@ export interface AwsRdsPitrProviderConfig {
   request_timeout_ms?: number;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
+  database_principal_reader?: AwsRdsPitrDatabasePrincipalReaderConfig;
 }
 
 export interface AwsRdsPitrProviderScope {
@@ -133,7 +146,18 @@ export interface AwsRdsPostgresqlPitrInventory {
   aws_backup_receipt_references: string[];
   unresolved_replication_destination_arns: string[];
   provider_managed_wal_segments_individually_enumerated: false;
-  database_writer_principals_fully_enumerated: false;
+  database_writer_principals_fully_enumerated: boolean;
+  database_principal_reader_role_name: string | null;
+  database_principal_reader_policy_sha256: string | null;
+  database_principal_reader_policy_review_reference: string | null;
+  database_principal_reader_policy_independently_verified: false;
+  database_principal_scan_complete: boolean;
+  database_principal_scan_blockers: string[];
+  database_principal_receipt_references: string[];
+  database_principal_targets_discovered: number;
+  database_principal_targets_scanned: number;
+  database_principal_databases_discovered: number;
+  database_principal_databases_scanned: number;
   source_receipts_signable: false;
   manifest_eligible: false;
   deletion_authorized: false;
@@ -274,6 +298,18 @@ function optionalString(value: string | null): string | null {
   return value === null || value === '' ? null : value;
 }
 
+function nestedXmlText(block: string, parentTag: string, childTag: string): string | null {
+  const parent = xmlBlocks(block, parentTag)[0];
+  return parent ? xmlText(parent, childTag) : null;
+}
+
+function optionalBoolean(value: string | null): boolean | null {
+  if (value === null) return null;
+  if (value.toLowerCase() === 'true') return true;
+  if (value.toLowerCase() === 'false') return false;
+  return null;
+}
+
 function optionalInteger(value: string | null): number | null {
   if (value === null || !/^\d{1,6}$/.test(value)) return null;
   const parsed = Number(value);
@@ -291,6 +327,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   external_id: string;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
+  database_principal_reader?: AwsRdsPitrDatabasePrincipalReaderConfig;
 } {
   if (!isRecord(config) || !AWS_ACCOUNT_ID.test(config.organization_account_id)
     || !ROLE_NAME.test(config.read_only_role_name)) {
@@ -320,6 +357,17 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   if (config.policy_review_reference !== undefined) {
     safeReference(config.policy_review_reference, 'read-only policy review reference');
   }
+  const databaseReader = config.database_principal_reader;
+  if (databaseReader !== undefined) {
+    if (!isRecord(databaseReader) || !ROLE_NAME.test(databaseReader.role_name)
+      || databaseReader.role_name === config.read_only_role_name
+      || (databaseReader.policy_sha256 !== undefined && !SHA256.test(databaseReader.policy_sha256))) {
+      return fail('database-principal reader must be a separate, valid role with an optional SHA-256 policy digest');
+    }
+    if (databaseReader.policy_review_reference !== undefined) {
+      safeReference(databaseReader.policy_review_reference, 'database-principal policy review reference');
+    }
+  }
   return {
     organization_account_id: config.organization_account_id,
     read_only_role_name: config.read_only_role_name,
@@ -331,6 +379,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
     external_id: config.external_id,
     read_only_policy_sha256: config.read_only_policy_sha256,
     policy_review_reference: config.policy_review_reference,
+    database_principal_reader: databaseReader,
   };
 }
 
@@ -768,6 +817,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     sourceCredentials: AwsRdsPitrCredentials,
     fetcher: typeof fetch = globalThis.fetch,
     now: () => Date = () => new Date(),
+    databasePrincipalClientFactory?: AwsRdsDatabasePrincipalPgClientFactory,
   ) {
     this.config = validateConfig(config);
     this.sourceCredentials = validateCredentials(sourceCredentials);
@@ -775,10 +825,12 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     this.budget = { total: 0, maximum: this.config.max_total_pages };
     this.api = new AwsQueryApi(this.config.request_timeout_ms, fetcher, this.budget);
     this.backupApi = new AwsBackupInventoryApi(this.config.request_timeout_ms, fetcher, this.budget, this.config.max_total_items);
+    this.databasePrincipalClientFactory = databasePrincipalClientFactory;
   }
 
   private readonly now: () => Date;
   private readonly budget: PageBudget;
+  private readonly databasePrincipalClientFactory?: AwsRdsDatabasePrincipalPgClientFactory;
 
   private addItems(count: number): void {
     this.totalItems += count;
@@ -795,6 +847,32 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       return fail('AWS STS identity does not match the expected account');
     }
     return safeReference(arn, 'AWS STS caller principal');
+  }
+
+  private async assumeDatabasePrincipalReaderRole(accountId: string): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
+    const reader = this.config.database_principal_reader;
+    if (!reader) return fail('separate database-principal reader role is not configured');
+    const roleArn = 'arn:' + partitionForRegion(this.config.organization_region) + ':iam::' + accountId + ':role/' + reader.role_name;
+    const response = await this.api.call('sts', this.config.organization_region, this.sourceCredentials, 'AssumeRole', {
+      RoleArn: roleArn,
+      RoleSessionName: 'FactoryOSDbPrincipalScan',
+      DurationSeconds: '900',
+      ExternalId: this.config.external_id,
+    });
+    const credentialsBlock = xmlBlocks(response.xml, 'Credentials')[0];
+    if (!credentialsBlock) return fail('AWS STS database-principal reader role omitted temporary credentials');
+    const credentials = validateCredentials({
+      access_key_id: xmlText(credentialsBlock, 'AccessKeyId') ?? '',
+      secret_access_key: xmlText(credentialsBlock, 'SecretAccessKey') ?? '',
+      session_token: xmlText(credentialsBlock, 'SessionToken') ?? '',
+    });
+    const principal = await this.callerIdentity(credentials, accountId);
+    const expectedPrefix = 'arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + accountId
+      + ':assumed-role/' + reader.role_name + '/';
+    if (!principal.startsWith(expectedPrefix) || reader.role_name === this.config.read_only_role_name) {
+      return fail('AWS database-principal reader identity is not the dedicated configured role');
+    }
+    return { credentials, arn: roleArn, principal };
   }
 
   private async assumeReadOnlyRole(accountId: string): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
@@ -959,6 +1037,16 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const backupReceiptReferences: string[] = [];
     let backupLegalHoldScopeStatusUncertain = false;
     let backupPages = 0;
+    const databasePrincipalResources: AwsRdsPitrResource[] = [];
+    const databaseReplicationResources: AwsRdsPitrResource[] = [];
+    const databasePrincipalReceipts: string[] = [];
+    const databasePrincipalBlockers: string[] = [];
+    let databasePrincipalScanComplete = this.config.database_principal_reader !== undefined;
+    let databasePrincipalPages = 0;
+    let databasePrincipalTargetsDiscovered = 0;
+    let databasePrincipalTargetsScanned = 0;
+    let databasePrincipalDatabasesDiscovered = 0;
+    let databasePrincipalDatabasesScanned = 0;
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
     const sourcePages = new Map<AwsRdsPitrSourceKind, number>();
     const sourceReceipts = new Map<AwsRdsPitrSourceKind, string[]>();
@@ -1018,9 +1106,11 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       const clusterResources = [
         ...instances.blocks.map((block) => resourceFromBlock(block, 'DBInstance', scope, 'RDS_DB_INSTANCE', 'DBInstanceArn',
           'DbiResourceId', ['DBInstanceIdentifier', 'DbiResourceId', 'DBInstanceStatus', 'BackupRetentionPeriod',
-            'LatestRestorableTime', 'ReadReplicaSourceDBInstanceIdentifier', 'MultiAZ', 'StorageEncrypted'])),
+            'LatestRestorableTime', 'ReadReplicaSourceDBInstanceIdentifier', 'DBClusterIdentifier',
+            'IAMDatabaseAuthenticationEnabled', 'MultiAZ', 'StorageEncrypted'])),
         ...clusters.blocks.map((block) => resourceFromBlock(block, 'DBCluster', scope, 'RDS_DB_CLUSTER', 'DBClusterArn',
-          'DBClusterIdentifier', ['DBClusterIdentifier', 'DBClusterStatus', 'GlobalClusterIdentifier',
+          'DBClusterIdentifier', ['DBClusterIdentifier', 'DBClusterStatus', 'DbClusterResourceId',
+            'IAMDatabaseAuthenticationEnabled', 'GlobalClusterIdentifier',
             'ReplicationSourceIdentifier', 'BackupRetentionPeriod', 'StorageEncrypted'])),
         ...globals.blocks.map((block) => resourceFromBlock(block, 'GlobalCluster', scope, 'RDS_GLOBAL_CLUSTER', 'GlobalClusterArn',
           'GlobalClusterIdentifier', ['GlobalClusterIdentifier', 'Engine', 'Status', 'EngineVersion'])),
@@ -1028,6 +1118,145 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       append('POSTGRESQL_CLUSTER_CATALOG', clusterResources,
         instances.pages + clusters.pages + globals.pages,
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
+
+      const dbPrincipalCandidates: Array<{ block: string; target: AwsRdsDatabasePrincipalTarget | null; blocker: string | null }> = [];
+      for (const block of instances.blocks) {
+        const engine = xmlText(block, 'Engine')?.toLowerCase();
+        if (engine !== 'postgres' || xmlText(block, 'DBClusterIdentifier')) continue;
+        const identifier = xmlText(block, 'DBInstanceIdentifier') ?? 'unknown-instance';
+        const resourceId = xmlText(block, 'DbiResourceId') ?? '';
+        const resourceArn = xmlText(block, 'DBInstanceArn') ?? '';
+        const endpoint = nestedXmlText(block, 'Endpoint', 'Address') ?? '';
+        const portText = nestedXmlText(block, 'Endpoint', 'Port');
+        const port = portText !== null && /^\\d{1,5}$/.test(portText) ? Number(portText) : 0;
+        const iamAuth = optionalBoolean(xmlText(block, 'IAMDatabaseAuthenticationEnabled'));
+        let target: AwsRdsDatabasePrincipalTarget | null = null;
+        let blocker: string | null = null;
+        try {
+          if (!/^db-[A-Za-z0-9]+$/.test(resourceId) || !RDS_ARN.test(resourceArn)
+            || !endpoint || !port || iamAuth !== true) throw new Error('target metadata unavailable');
+          target = {
+            account_id: scope.account_reference,
+            region: scope.region_reference,
+            resource_arn: requireAwsArn(resourceArn, 'DB instance ARN', scope),
+            resource_id: resourceId,
+            resource_type: 'RDS_DB_INSTANCE',
+            engine: 'postgres',
+            endpoint,
+            port,
+            iam_database_authentication_enabled: iamAuth,
+          };
+        } catch {
+          blocker = scope.account_reference + ':' + scope.region_reference + ':' + identifier + ':IAM_AUTH_ENDPOINT_OR_RESOURCE_ID_UNAVAILABLE';
+        }
+        dbPrincipalCandidates.push({ block, target, blocker });
+      }
+      for (const block of clusters.blocks) {
+        const engine = xmlText(block, 'Engine')?.toLowerCase();
+        if (engine !== 'aurora-postgresql') continue;
+        const identifier = xmlText(block, 'DBClusterIdentifier') ?? 'unknown-cluster';
+        const resourceId = xmlText(block, 'DbClusterResourceId') ?? '';
+        const resourceArn = xmlText(block, 'DBClusterArn') ?? '';
+        const endpoint = nestedXmlText(block, 'Endpoint', 'Address') ?? xmlText(block, 'Endpoint') ?? '';
+        const portText = nestedXmlText(block, 'Endpoint', 'Port') ?? xmlText(block, 'Port');
+        const port = portText !== null && /^\\d{1,5}$/.test(portText) ? Number(portText) : 0;
+        const iamAuth = optionalBoolean(xmlText(block, 'IAMDatabaseAuthenticationEnabled'));
+        let target: AwsRdsDatabasePrincipalTarget | null = null;
+        let blocker: string | null = null;
+        try {
+          if (!/^cluster-[A-Za-z0-9]+$/.test(resourceId) || !RDS_ARN.test(resourceArn)
+            || !endpoint || !port || iamAuth !== true) throw new Error('target metadata unavailable');
+          target = {
+            account_id: scope.account_reference,
+            region: scope.region_reference,
+            resource_arn: requireAwsArn(resourceArn, 'DB cluster ARN', scope),
+            resource_id: resourceId,
+            resource_type: 'RDS_DB_CLUSTER',
+            engine: 'aurora-postgresql',
+            endpoint,
+            port,
+            iam_database_authentication_enabled: iamAuth,
+          };
+        } catch {
+          blocker = scope.account_reference + ':' + scope.region_reference + ':' + identifier + ':IAM_AUTH_ENDPOINT_OR_RESOURCE_ID_UNAVAILABLE';
+        }
+        dbPrincipalCandidates.push({ block, target, blocker });
+      }
+      databasePrincipalTargetsDiscovered += dbPrincipalCandidates.length;
+      for (const candidate of dbPrincipalCandidates) {
+        if (candidate.blocker) {
+          databasePrincipalScanComplete = false;
+          databasePrincipalBlockers.push(candidate.blocker);
+        }
+      }
+      if (this.config.database_principal_reader) {
+        const validTargets = dbPrincipalCandidates
+          .map((candidate) => candidate.target)
+          .filter((target): target is AwsRdsDatabasePrincipalTarget => target !== null);
+        if (validTargets.length > 0) {
+          const remainingQueries = this.budget.maximum - this.budget.total;
+          const remainingRows = this.config.max_total_items - this.totalItems;
+          if (remainingQueries < 1 || remainingRows < 1) {
+            databasePrincipalScanComplete = false;
+            databasePrincipalBlockers.push('DATABASE_PRINCIPAL_GLOBAL_REQUEST_OR_ITEM_BUDGET_EXHAUSTED');
+          } else {
+            try {
+              const databaseRole = await this.assumeDatabasePrincipalReaderRole(scope.account_reference);
+              const { role_name, policy_sha256, policy_review_reference, ...readerConfig } = this.config.database_principal_reader;
+              const scan = await captureAwsRdsDatabasePrincipalInventory(
+                validTargets,
+                databaseRole.credentials,
+                {
+                  ...readerConfig,
+                  max_total_queries: Math.min(readerConfig.max_total_queries ?? 10000, remainingQueries),
+                  max_total_rows: Math.min(readerConfig.max_total_rows ?? 20000, remainingRows),
+                },
+                this.databasePrincipalClientFactory,
+              );
+              if (scan.queries_attempted + this.budget.total > this.budget.maximum) {
+                return fail('database-principal scan exceeded the shared AWS/API request budget');
+              }
+              this.budget.total += scan.queries_attempted;
+              this.totalPaginationPages += scan.pages_fetched;
+              databasePrincipalPages += scan.pages_fetched;
+              this.addItems(scan.total_rows_observed);
+              databasePrincipalTargetsScanned += scan.targets_scanned;
+              databasePrincipalDatabasesDiscovered += scan.databases_discovered;
+              databasePrincipalDatabasesScanned += scan.databases_scanned;
+              databasePrincipalReceipts.push(...scan.receipt_references);
+              databasePrincipalBlockers.push(...scan.blockers);
+              const convert = (record: typeof scan.records[number]): AwsRdsPitrResource => ({
+                resource_arn: record.resource_arn,
+                provider_identity_reference: record.provider_identity_reference,
+                identity_kind: 'IMMUTABLE_RESOURCE_ARN',
+                provider_delete_identity_reference: null,
+                provider_delete_identity_kind: null,
+                replication_destination_arns: [],
+                resource_type: record.resource_type,
+                account_id: record.account_id,
+                region: record.region,
+                engine: record.engine,
+                source_database_reference: record.database_name,
+                status: null,
+                created_at: null,
+                earliest_restorable_time: null,
+                latest_restorable_time: null,
+                retention_days: null,
+                attributes: record.attributes,
+              });
+              databasePrincipalResources.push(...scan.records.map(convert));
+              databaseReplicationResources.push(...scan.replication_records.map(convert));
+              if (!scan.coverage_complete) databasePrincipalScanComplete = false;
+            } catch {
+              databasePrincipalScanComplete = false;
+              databasePrincipalBlockers.push(scope.account_reference + ':' + scope.region_reference
+                + ':DATABASE_PRINCIPAL_READER_ROLE_OR_CATALOG_SCAN_FAILED');
+            }
+          }
+        }
+      } else {
+        databasePrincipalScanComplete = false;
+      }
 
       const archiveResources = [
         ...automated.blocks.map((block) => resourceFromBlock(block, 'DBInstanceAutomatedBackup', scope, 'RDS_AUTOMATED_BACKUP',
@@ -1046,6 +1275,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         ...clusterResources.filter((resource) => resource.attributes.ReadReplicaSourceDBInstanceIdentifier
           || resource.attributes.GlobalClusterIdentifier || resource.attributes.ReplicationSourceIdentifier),
         ...archiveResources.filter((resource) => resource.replication_destination_arns.length > 0),
+        ...databaseReplicationResources,
       ];
       append('WAL_REPLICATION_PATH_CATALOG', replicationResources,
         instances.pages + clusters.pages + globals.pages + automated.pages,
@@ -1110,6 +1340,14 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       },
     }));
     const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
+    if (!this.config.database_principal_reader) {
+      databasePrincipalBlockers.push('DATABASE_PRINCIPAL_READER_NOT_CONFIGURED');
+    }
+    if (!accountDiscoveryComplete || !regionDiscoveryComplete) {
+      databasePrincipalScanComplete = false;
+      databasePrincipalBlockers.push('AWS_ACCOUNT_OR_REGION_DISCOVERY_INCOMPLETE');
+    }
+    const uniqueDatabasePrincipalBlockers = [...new Set(databasePrincipalBlockers)].sort();
     const sources: AwsRdsPitrCatalogSource[] = [
       sourceFromItems('POSTGRESQL_CLUSTER_CATALOG', accountDiscoveryComplete && regionDiscoveryComplete ? 'COMPLETE' : 'PARTIAL',
         'RDS DB instance, DB cluster and global-cluster catalogs were enumerated for every discovered enabled account/region scope.',
@@ -1122,13 +1360,19 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       sourceFromItems('WAL_SEGMENT_CATALOG', 'OPAQUE_PROVIDER_MANAGED',
         'RDS-managed PostgreSQL WAL/system-backup chains are provider-managed; AWS RDS Describe APIs do not expose every WAL segment as an independently addressable object generation.',
         [], 0, []),
-      sourceFromItems('WAL_WRITER_PRINCIPAL_CATALOG', 'NOT_ENUMERATED',
-        'IAM role discovery and database-native login/replication principal inventory are not included in this adapter and remain a hard release blocker.',
-        [], 0, []),
+      sourceFromItems('WAL_WRITER_PRINCIPAL_CATALOG', !this.config.database_principal_reader ? 'NOT_ENUMERATED'
+        : databasePrincipalScanComplete ? 'COMPLETE' : 'PARTIAL',
+        !this.config.database_principal_reader
+          ? 'Database-native writer/replication principal discovery requires a separately configured IAM-authenticated reader role and pinned RDS CA bundle.'
+          : databasePrincipalScanComplete
+            ? 'PostgreSQL roles, memberships, database/schema/object/function write-capable grants, sessions and replication metadata were read in bounded read-only transactions across every discovered connectable non-template database.'
+            : 'Database-native principal collection was attempted with a separate IAM reader role, but target, database, privilege, access or global budget blockers remain; no missing catalog is treated as empty.',
+        databasePrincipalResources, databasePrincipalPages, databasePrincipalReceipts),
       sourceFromItems('WAL_REPLICATION_PATH_CATALOG', 'PARTIAL',
-        'Read-replica, global-cluster and automated-backup cross-region relationships are captured; external delivery queues and database-side replication identities are not covered.',
-        sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? [], sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0,
-        sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []),
+        'RDS read-replica/global-cluster and automated-backup relationships plus database-native senders, slots, WAL receivers and logical subscriptions are captured; external IAM producers, queues and custom archive actors remain outside this catalog.',
+        [...(sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? []), ...databaseReplicationResources],
+        (sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0) + databasePrincipalPages,
+        [...(sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []), ...databasePrincipalReceipts]),
       sourceFromItems('PITR_RESTORE_PATH_CATALOG', 'PARTIAL',
         'RDS automated-backup restore windows, RDS snapshots, AWS Backup RDS/Aurora recovery points and legal-hold membership are enumerated; live restore rehearsal and independent provider audit attestation remain pending.',
         [...(sourceItems.get('PITR_RESTORE_PATH_CATALOG') ?? []), ...backupRecoveryResources],
@@ -1172,7 +1416,18 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       aws_backup_receipt_references: [...new Set(backupReceiptReferences)].sort(),
       unresolved_replication_destination_arns: unresolvedReplicationDestinationArns,
       provider_managed_wal_segments_individually_enumerated: false,
-      database_writer_principals_fully_enumerated: false,
+      database_writer_principals_fully_enumerated: databasePrincipalScanComplete,
+      database_principal_reader_role_name: this.config.database_principal_reader?.role_name ?? null,
+      database_principal_reader_policy_sha256: this.config.database_principal_reader?.policy_sha256 ?? null,
+      database_principal_reader_policy_review_reference: this.config.database_principal_reader?.policy_review_reference ?? null,
+      database_principal_reader_policy_independently_verified: false,
+      database_principal_scan_complete: databasePrincipalScanComplete,
+      database_principal_scan_blockers: uniqueDatabasePrincipalBlockers,
+      database_principal_receipt_references: [...new Set(databasePrincipalReceipts)].sort(),
+      database_principal_targets_discovered: databasePrincipalTargetsDiscovered,
+      database_principal_targets_scanned: databasePrincipalTargetsScanned,
+      database_principal_databases_discovered: databasePrincipalDatabasesDiscovered,
+      database_principal_databases_scanned: databasePrincipalDatabasesScanned,
       source_receipts_signable: false,
       manifest_eligible: false,
       deletion_authorized: false,
