@@ -716,6 +716,37 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.blockers).toContain('Requested retention expiry violates the AWS Backup vault minimum retention period.');
   });
 
+
+  it('blocks recovery-point retention review for logically air-gapped or non-available vaults', async () => {
+    const mock = makeFetch({
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [{
+        BackupVaultName: 'default',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        VaultType: 'LOGICALLY_AIR_GAPPED_BACKUP_VAULT',
+        VaultState: 'DELETING',
+        Locked: false,
+        NumberOfRecoveryPoints: 1,
+      }] })],
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const recoveryPoint = inventory.sources.find((source) => source.source_kind === 'PITR_RESTORE_PATH_CATALOG')
+      ?.items.find((item) => item.resource_type === 'AWS_BACKUP_RECOVERY_POINT');
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: recoveryPoint!.provider_identity_reference,
+      candidate_resource_arn: recoveryPoint!.resource_arn ?? undefined,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-11-03T00:00:00.000Z',
+      retention_expires_at: '2026-11-30T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.blockers).toContain('AWS Backup recovery point is not in a standard BACKUP_VAULT.');
+    expect(plan.blockers).toContain('AWS Backup vault is not AVAILABLE.');
+  });
+
   it('blocks a requested retention horizon beyond the AWS Backup vault maximum retention days', async () => {
     const mock = makeFetch({
       backupVaultPages: [JSON.stringify({ BackupVaultList: [{
