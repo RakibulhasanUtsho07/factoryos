@@ -360,6 +360,24 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.blockers).toContain(account + ':ap-southeast-1:SERVERLESS_DESCRIBESERVERLESSCACHES_INVENTORY_INCOMPLETE');
   });
 
+
+  test('keeps a retained Serverless snapshot even when its source cache is absent from the current cache listing', async () => {
+    const pages: PageMap = {
+      'ap-southeast-1:DescribeServerlessCaches': [
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', []),
+      ],
+      'ap-northeast-1:DescribeServerlessCaches': [
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', []),
+      ],
+    };
+    const { input } = makeInput({ pages });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.serverless_caches).toEqual([]);
+    expect(result.serverless_snapshots).toHaveLength(2);
+    expect(result.serverless_catalog_complete).toBe(true);
+    expect(result.status).toBe('COMPLETE');
+  });
+
   test('preserves serverless snapshot ARN but marks missing creation time as incomplete', async () => {
     const pages: PageMap = {
       'ap-southeast-1:DescribeServerlessCacheSnapshots': [
