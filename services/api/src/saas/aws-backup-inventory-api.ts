@@ -466,7 +466,10 @@ export class AwsBackupInventoryApi {
           creation_date: timestamp(item.CreationDate),
           completion_date: timestamp(item.CompletionDate),
           last_restore_time: timestamp(item.LastRestoreTime),
-          lifecycle_delete_at: isRecord(item.Lifecycle) ? timestamp(item.Lifecycle.DeleteAt) : null,
+          lifecycle_delete_at: isRecord(item.CalculatedLifecycle) ? timestamp(item.CalculatedLifecycle.DeleteAt) : null,
+          lifecycle_delete_after_days: isRecord(item.Lifecycle) ? safeNumber(item.Lifecycle.DeleteAfterDays) : null,
+          lifecycle_move_to_cold_storage_after_days: isRecord(item.Lifecycle)
+            ? safeNumber(item.Lifecycle.MoveToColdStorageAfterDays) : null,
           lifecycle_move_to_cold_storage_at: isRecord(item.CalculatedLifecycle)
             ? timestamp(item.CalculatedLifecycle.MoveToColdStorageAt) : null,
           is_encrypted: safeBoolean(item.IsEncrypted),
