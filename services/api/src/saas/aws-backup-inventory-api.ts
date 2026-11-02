@@ -22,7 +22,7 @@ export interface AwsBackupRequestBudget {
 export interface AwsBackupLegalHoldRecord {
   legal_hold_id: string;
   legal_hold_arn: string | null;
-  status: 'CREATING' | 'ACTIVE' | 'CANCELING' | 'CANCELED';
+  status: 'CREATING' | 'ACTIVE' | 'CANCELING' | 'CANCELLING' | 'CANCELED';
   creation_date: string | null;
   cancellation_date: string | null;
   recovery_point_arns: string[];
@@ -112,7 +112,7 @@ function safeBoolean(value: unknown): boolean | null {
 function validateAwsBackupArn(
   value: unknown,
   scope: AwsBackupInventoryScope,
-  resource: 'backup-vault' | 'recovery-point',
+  resource: 'backup-vault' | 'recovery-point' | 'legal-hold',
 ): string {
   if (typeof value !== 'string') return fail('AWS Backup response omitted exact ' + resource + ' ARN');
   const match = /^arn:(aws|aws-us-gov|aws-cn):backup:([a-z0-9-]+):(\d{12}):([a-z0-9-]+):([A-Za-z0-9._:/-]{1,512})$/.exec(value);
@@ -269,18 +269,19 @@ export class AwsBackupInventoryApi {
         const id = typeof item.LegalHoldId === 'string' ? item.LegalHoldId : '';
         const status = typeof item.Status === 'string' ? item.Status.toUpperCase() : '';
         if (!/^[A-Za-z0-9-]{1,64}$/.test(id)
-          || !['CREATING', 'ACTIVE', 'CANCELING', 'CANCELED'].includes(status)) {
+          || !['CREATING', 'ACTIVE', 'CANCELING', 'CANCELLING', 'CANCELED'].includes(status)) {
           return fail('AWS Backup returned an invalid legal-hold identity or status');
         }
         const record: AwsBackupLegalHoldRecord = {
           legal_hold_id: id,
-          legal_hold_arn: typeof item.LegalHoldArn === 'string' ? item.LegalHoldArn : null,
+          legal_hold_arn: item.LegalHoldArn === undefined || item.LegalHoldArn === null
+            ? null : validateAwsBackupArn(item.LegalHoldArn, scope, 'legal-hold'),
           status: status as AwsBackupLegalHoldRecord['status'],
           creation_date: timestamp(item.CreationDate),
           cancellation_date: timestamp(item.CancellationDate),
           recovery_point_arns: [],
         };
-        if (status === 'CREATING' || status === 'CANCELING') scopeStatusUncertain = true;
+        if (status === 'CREATING' || status === 'CANCELING' || status === 'CANCELLING') scopeStatusUncertain = true;
         if (status === 'ACTIVE') {
           const heldPoints = await this.listRecoveryPointsByLegalHold(scope, credentials, id);
           pages += heldPoints.pages;
@@ -352,6 +353,9 @@ export class AwsBackupInventoryApi {
         nextToken = token;
       } else nextToken = null;
     } while (nextToken !== null);
+    if (new Set(recoveryPointArns).size !== recoveryPointArns.length) {
+      return fail('AWS Backup ListRecoveryPointsByLegalHold returned duplicate recovery-point ARNs');
+    }
     return { recovery_point_arns: recoveryPointArns, pages, total_items_seen: totalItemsSeen };
   }
 
