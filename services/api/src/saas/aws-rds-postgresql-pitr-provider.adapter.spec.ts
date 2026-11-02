@@ -438,6 +438,39 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
   });
 
 
+
+  it('rejects an AWS Backup recovery point whose source DB ARN belongs to another account or region', async () => {
+    const mock = makeFetch({
+      backupRecoveryPointPages: [JSON.stringify({ RecoveryPoints: [{
+        RecoveryPointArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        BackupVaultName: 'default',
+        ResourceArn: 'arn:aws:rds:us-east-1:999999999999:db:foreign-db',
+        ResourceType: 'RDS',
+        Status: 'COMPLETED',
+        CreationDate: '2026-11-01T00:00:00.000Z',
+      }] })],
+    });
+    await expect(createAdapter(mock.fetcher).captureInventory())
+      .rejects.toThrow(/outside the exact requested source account\/region/i);
+  });
+
+  it('rejects an AWS Backup recovery point returned under a different vault identity', async () => {
+    const mock = makeFetch({
+      backupRecoveryPointPages: [JSON.stringify({ RecoveryPoints: [{
+        RecoveryPointArn: 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:foreign-vault',
+        BackupVaultName: 'foreign-vault',
+        ResourceArn: databaseArn,
+        ResourceType: 'RDS',
+        Status: 'COMPLETED',
+        CreationDate: '2026-11-01T00:00:00.000Z',
+      }] })],
+    });
+    await expect(createAdapter(mock.fetcher).captureInventory())
+      .rejects.toThrow(/exact requested vault identity/i);
+  });
+
   it('enumerates active AWS Backup legal-hold recovery points and blocks a matching retention candidate', async () => {
     const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
     const mock = makeFetch({
