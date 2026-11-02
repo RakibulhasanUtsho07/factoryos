@@ -308,3 +308,43 @@ archive/vault collectors; complete writer/replication/restore discovery; a class
 retention-expiry adapter; independent residual verification; and controlled staging PITR
 restore/tombstone-replay acceptance. Until those steps are complete, keep
 `POSTGRESQL_WAL_PITR` **UNRESOLVED**, and keep AS-137 / NFR-PROD-14 **PARTIAL**, not PASS.
+
+### Non-destructive WAL/PITR retention eligibility preflight
+
+The API package now contains a pure preflight evaluator at
+`services/api/src/saas/postgresql-wal-pitr-retention-eligibility.ts` with contract
+`factoryos.postgresql-wal-pitr-retention-eligibility/v1`. It accepts a provider-owned
+candidate object-generation reference and evidence references/digests after the caller has
+already authenticated the six source receipts and provider audit evidence.
+
+The evaluator returns `BLOCKED` unless all of the following are evidenced: a fresh (maximum
+24-hour) complete inventory with all six unique signed source kinds, exhausted pagination,
+complete authoritative account/project and region discovery, independently verified
+provider-enforced read-only identity, zero unclassified copies, and exact candidate
+generation membership; approved retention policy/version and data/infrastructure owner
+approvals; elapsed provider retention expiry and minimum PITR recovery horizon; legal-hold
+status explicitly `NONE`; complete writer-principal inventory and zero delayed archive
+retries; every known replication and restore path explicitly reports `candidate_dependency`
+`NO`; and a current successful PITR restore rehearsal with verified application tombstone
+replay.
+
+A `REVIEW_ELIGIBLE` result means only that the mechanical preconditions for an independent
+review have been met. The result permanently carries `destructive_action_permitted=false`,
+`deletion_authorized=false` and `requires_independent_review=true`. This evaluator does not
+call a provider, validate Ed25519 signatures itself, perform a residual scan, register an
+erasure adapter, or delete/expire any object. The caller must authenticate the evidence and
+provider audit chain before supplying it. A review-eligible object still requires a
+provider-specific retention/deletion adapter, a separate independent reviewer decision,
+an exact immutable-generation delete receipt and an independent post-action residual scan.
+
+Most PostgreSQL WAL is cluster-shared recovery material and will correctly remain `BLOCKED`
+because `tenant_exclusive` cannot be proven. Do not fabricate tenant isolation by assigning
+a tenant reference to a shared WAL object. Only a provider object with independently
+evidenced tenant-exclusive isolation can proceed to the review-only preflight. This
+evaluator is not a path to delete shared `pg_wal` files or cluster recovery chains.
+
+Focused Jest regressions cover stale inventory, missing/duplicate sources, unknown legal
+holds, unexpired retention, shortened recovery horizons, incomplete writer discovery,
+delayed retries, active/unknown replication or restore dependencies, stale restore
+rehearsals, failed tombstone replay, non-exclusive WAL and the invariant that no result
+ever authorizes a destructive action.
