@@ -2,7 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { AwsBackupInventoryApi, AwsBackupLegalHoldRecord, AwsBackupRecoveryPointRecord, AwsBackupVaultRecord } from './aws-backup-inventory-api';
 import {
   AwsRdsPitrDatabasePrincipalCatalog,
-  AwsRdsPitrDatabasePrincipalInventoryOptions,
+  AwsRdsPitrDatabasePrincipalOptions,
   AwsRdsPitrDatabasePrincipalInventoryReader,
   AwsRdsPitrDatabaseTarget,
   AwsRdsPitrPgPoolFactory,
@@ -48,7 +48,7 @@ export interface AwsRdsPitrProviderConfig {
   request_timeout_ms?: number;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
-  database_principal_inventory?: AwsRdsPitrDatabasePrincipalInventoryOptions;
+  database_principal_inventory?: AwsRdsPitrDatabasePrincipalOptions;
 }
 
 export interface AwsRdsPitrProviderScope {
@@ -305,7 +305,7 @@ function validateConfig(config: AwsRdsPitrProviderConfig): Required<Pick<
   external_id: string;
   read_only_policy_sha256?: string;
   policy_review_reference?: string;
-  database_principal_inventory?: AwsRdsPitrDatabasePrincipalInventoryOptions;
+  database_principal_inventory?: AwsRdsPitrDatabasePrincipalOptions;
 } {
   if (!isRecord(config) || !AWS_ACCOUNT_ID.test(config.organization_account_id)
     || !ROLE_NAME.test(config.read_only_role_name)) {
@@ -769,7 +769,7 @@ function sourceFromItems(
 
 function unavailableDatabasePrincipalCatalog(
   resource: AwsRdsPitrResource,
-  options: AwsRdsPitrDatabasePrincipalInventoryOptions,
+  options: AwsRdsPitrDatabasePrincipalOptions,
   blocker: string,
 ): AwsRdsPitrDatabasePrincipalCatalog {
   const account = resource.account_id;
@@ -1631,13 +1631,13 @@ export function createAwsRdsPitrRetentionDryRunPlan(
       blockers.push('An AWS Backup legal hold is being created/canceled; legal-hold scope is not stable.');
     }
   }
-  if (inventory && inventory.provider_managed_wal_segments_individually_enumerated !== true) {
+  if (inventory) {
     blockers.push('Provider-managed WAL segments remain opaque and are not individually enumerated.');
   }
   if (inventory && inventory.database_native_principals_fully_enumerated !== true) {
     blockers.push('Database-native PostgreSQL roles, grants and replication principal coverage is incomplete or unavailable.');
   }
-  if (inventory && inventory.database_iam_connect_principals_fully_enumerated !== true) {
+  if (inventory) {
     blockers.push('AWS IAM rds-db:connect principal/policy/trust/SCP inventory is not independently enumerated.');
   }
   if (inventory && inventory.database_writer_principals_fully_enumerated !== true) {
