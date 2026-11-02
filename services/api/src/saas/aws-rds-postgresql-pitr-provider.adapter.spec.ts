@@ -307,7 +307,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
         rolcreaterole: false, rolcreatedb: false, rolreplication: false, rolbypassrls: false, rolinherit: true,
       }],
       role_memberships: [
-        { granted_role: 'pg_monitor', member_role: 'factoryos_pitr_inventory', granted_by: 'rds_superuser', admin_option: false },
+        { granted_role: 'pg_read_all_stats', member_role: 'factoryos_pitr_inventory', granted_by: 'rds_superuser', admin_option: false },
         { granted_role: 'rds_iam', member_role: 'factoryos_pitr_inventory', granted_by: 'rds_superuser', admin_option: false },
       ],
       database_access: [],
@@ -331,7 +331,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
               current_database: 'postgres',
               transaction_read_only: 'on',
               in_recovery: false,
-              has_pg_monitor: true,
+              has_pg_read_all_stats: true,
               has_rds_iam: true,
               server_version_num: '160004',
             }] };
