@@ -11,7 +11,10 @@
       "Sid": "AssumeOnlyFactoryOSRdsPitrInventoryRoles",
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::*:role/FactoryOSRdsPitrReadOnly"
+      "Resource": [
+        "arn:aws:iam::*:role/FactoryOSRdsPitrReadOnly",
+        "arn:aws:iam::*:role/FactoryOSRdsDbPrincipalReader"
+      ]
     }
   ]
 }
