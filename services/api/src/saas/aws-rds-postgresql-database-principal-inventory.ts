@@ -651,7 +651,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         has_pg_read_all_stats: asBoolean(row.has_pg_read_all_stats, 'has_pg_read_all_stats'),
         has_rds_iam: asBoolean(row.has_rds_iam, 'has_rds_iam'),
         privileged_memberships: Array.isArray(row.privileged_memberships)
-          ? row.privileged_memberships.map((item) => requiredString(item, 'privileged_membership')) : [],
+          ? row.privileged_memberships.map((item) => requiredString(item, 'privileged_membership'))
+          : refuse('database returned invalid privileged membership inventory'),
         server_version_num: requiredString(row.server_version_num, 'server_version_num'),
       };
 
@@ -723,6 +724,9 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       }
       if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite) {
         blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
+      }
+      if (Number(identity.server_version_num) < 140000) {
+        blockers.push('DATABASE_POSTGRESQL_VERSION_DOES_NOT_SUPPORT_PG_READ_ALL_STATS');
       }
       if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
         || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
@@ -844,7 +848,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         enabled: asBoolean(item.enabled, 'subscription_enabled'),
         slot_name: typeof item.slot_name === 'string' ? item.slot_name : null,
         publications: Array.isArray(item.publications)
-          ? item.publications.map((value) => requiredString(value, 'publication_name')) : [],
+          ? item.publications.map((value) => requiredString(value, 'publication_name'))
+          : refuse('database returned invalid logical subscription publications'),
       })),
       publications: (rowsObserved.publications ?? []).map((item) => ({
         publication_name: requiredString(item.publication_name, 'publication_name'),
