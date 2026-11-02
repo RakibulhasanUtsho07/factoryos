@@ -63,7 +63,9 @@ export type AwsRdsPitrSourceStatus =
   | 'NOT_ENUMERATED';
 
 export interface AwsRdsPitrResource {
-  resource_arn: string;
+  resource_arn: string | null;
+  provider_identity_reference: string;
+  identity_kind: 'IMMUTABLE_RESOURCE_ARN' | 'SOURCE_DB_COMPOSITE';
   resource_type: string;
   account_id: string;
   region: string;
@@ -612,17 +614,35 @@ function resourceFromBlock(
   sourceDatabaseTag: string | null,
   fieldNames: string[],
 ): AwsRdsPitrResource {
-  const arn = requireAwsArn(xmlText(block, arnTag), resourceType + ' ARN', scope);
+  const rawArn = xmlText(block, arnTag);
+  const arn = rawArn === null && resourceType === 'RDS_RETAINED_AUTOMATED_BACKUP'
+    ? null
+    : requireAwsArn(rawArn, resourceType + ' ARN', scope);
+  const sourceDatabaseReference = sourceDatabaseTag ? optionalString(xmlText(block, sourceDatabaseTag)) : null;
+  const dbiResourceId = optionalString(xmlText(block, 'DbiResourceId'));
+  if (resourceType === 'RDS_RETAINED_AUTOMATED_BACKUP' && !arn && !dbiResourceId) {
+    return fail('RDS automated backup omitted both its replicated-backup ARN and stable source DbiResourceId');
+  }
+  const identityMaterial = arn ?? [
+    scope.account_reference,
+    scope.region_reference,
+    resourceType,
+    dbiResourceId ?? '',
+    sourceDatabaseReference ?? '',
+  ].join('\u0000');
+  const providerIdentityReference = 'aws-rds-resource.' + sha256(identityMaterial).slice(0, 40);
   const retention = optionalInteger(xmlText(block, 'BackupRetentionPeriod'));
   const attrs: Record<string, string | null> = {};
   for (const name of fieldNames) attrs[name] = optionalString(xmlText(block, name));
   return {
     resource_arn: arn,
+    provider_identity_reference: providerIdentityReference,
+    identity_kind: arn ? 'IMMUTABLE_RESOURCE_ARN' : 'SOURCE_DB_COMPOSITE',
     resource_type: resourceType,
     account_id: scope.account_reference,
     region: scope.region_reference,
     engine: optionalString(xmlText(block, 'Engine')),
-    source_database_reference: sourceDatabaseTag ? optionalString(xmlText(block, sourceDatabaseTag)) : null,
+    source_database_reference: sourceDatabaseReference,
     status: optionalString(xmlText(block, 'Status') ?? xmlText(block, 'DBInstanceStatus') ?? xmlText(block, 'DBClusterStatus')),
     created_at: optionalString(xmlText(block, 'SnapshotCreateTime') ?? xmlText(block, 'InstanceCreateTime')),
     earliest_restorable_time: optionalString(xmlText(block, 'EarliestTime')),
@@ -631,7 +651,6 @@ function resourceFromBlock(
     attributes: { account_id: scope.account_reference, region: scope.region_reference, ...attrs },
   };
 }
-
 function sourceFromItems(
   sourceKind: AwsRdsPitrSourceKind,
   status: AwsRdsPitrSourceStatus,
@@ -641,8 +660,8 @@ function sourceFromItems(
   receipts: string[],
 ): AwsRdsPitrCatalogSource {
   const sorted = [...items].sort((a, b) => a.resource_arn < b.resource_arn ? -1 : a.resource_arn > b.resource_arn ? 1 : 0);
-  const unique = new Set(sorted.map((item) => item.resource_arn));
-  if (unique.size !== sorted.length) return fail(sourceKind + ' contains a duplicate immutable resource ARN');
+  const unique = new Set(sorted.map((item) => item.provider_identity_reference));
+  if (unique.size !== sorted.length) return fail(sourceKind + ' contains a duplicate provider resource identity');
   const normalized = JSON.stringify(sorted);
   return {
     source_kind: sourceKind,
