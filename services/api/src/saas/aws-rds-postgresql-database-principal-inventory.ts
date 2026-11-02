@@ -491,7 +491,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
   ): Promise<AwsRdsPitrDatabasePrincipalCatalog[]> {
     const first = await this.capture(target, accessRole, remainingRowBudget);
     const catalogs = [first];
-    if (!first.identity || first.catalog_status.find((item) => item.catalog === 'database_access')?.status !== 'COMPLETE') {
+    if (!first.identity || first.catalog_status.find((item) => item.catalog === 'database_access')?.status !== 'COMPLETE'
+      || first.blockers.includes('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE')) {
       if (!first.blockers.includes('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY')) {
         first.blockers.push('DATABASE_LIST_NOT_COMPLETE_FOR_CLUSTER_INVENTORY');
         first.status = 'PARTIAL';
@@ -545,11 +546,329 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
   ): Promise<AwsRdsPitrDatabasePrincipalCatalog> {
     const target = validateTarget(targetInput);
     const credentials = validateCredentials(accessRole.credentials);
-    const expectedRoleArn = new RegExp('^arn:' + expectedPartition(target.region)
+    const expectedRoleArn = 'arn:' + expectedPartition(target.region) + ':iam::'
+      + target.account_id + ':role/' + this.options.database_role_name;
+    const expectedPrincipalPrefix = 'arn:' + expectedPartition(target.region) + ':sts::'
+      + target.account_id + ':assumed-role/' + this.options.database_role_name + '/';
+    if (accessRole.role_arn !== expectedRoleArn
+      || !new RegExp('^' + expectedPrincipalPrefix.replace(/[.*+?^${}()|[\\]\\]/g, '\\    const expectedRoleArn = new RegExp('^arn:' + expectedPartition(target.region)
       + ':iam::' + target.account_id + ':role/' + this.options.database_role_name + '$');
     if (!expectedRoleArn.test(accessRole.role_arn)
       || !accessRole.principal_reference.startsWith('arn:' + expectedPartition(target.region)
-        + ':sts::' + target.account_id + ':assumed-role/' + this.options.database_role_name + '/')) {
+        + ':sts::' + target.account_id + ':assumed-role/' + this.options.database_role_name + '/')) {')
+        + '[A-Za-z0-9+=,.@_-]{2,64}
+      return refuse('database access role identity does not match the expected account and role');
+    }
+    if (!Number.isSafeInteger(remainingRowBudget) || remainingRowBudget < 1
+      || remainingRowBudget > this.options.max_total_rows) {
+      return refuse('remaining database principal row budget is invalid');
+    }
+    const observedAt = this.now().toISOString();
+    const endpointReference = 'aws-rds-endpoint.' + sha256(target.endpoint_host).slice(0, 32);
+    const token = createAwsRdsPitrIamDatabaseAuthToken({
+      host: target.endpoint_host,
+      port: target.endpoint_port,
+      region: target.region,
+      username: this.options.database_username,
+    }, credentials, this.now());
+    const poolConfig: PoolConfig = {
+      host: target.endpoint_host,
+      port: target.endpoint_port,
+      database: this.options.database_name,
+      user: this.options.database_username,
+      password: token,
+      ssl: { ca: this.options.ca_certificate_pem, rejectUnauthorized: true },
+      max: 1,
+      connectionTimeoutMillis: this.options.connect_timeout_ms,
+      idleTimeoutMillis: 1000,
+      application_name: 'factoryos-pitr-principal-inventory',
+      allowExitOnIdle: true,
+    };
+    const pool = this.poolFactory(poolConfig);
+    let client: PgClientLike | null = null;
+    let inTransaction = false;
+    const blockers: string[] = [];
+    const catalogStatus: AwsRdsPitrDatabasePrincipalCatalog['catalog_status'] = [];
+    const rowsObserved: Record<string, QueryResultRow[]> = {};
+    let queriesExecuted = 0;
+    let identity: AwsRdsPitrDatabasePrincipalCatalog['identity'] = null;
+    let rowBudget = remainingRowBudget;
+    try {
+      try {
+        client = await pool.connect();
+      } catch {
+        blockers.push('DATABASE_IAM_CONNECTION_FAILED');
+        return this.emptyResult(target, endpointReference, accessRole, observedAt, blockers, catalogStatus, queriesExecuted);
+      }
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      inTransaction = true;
+      await client.query('SET LOCAL statement_timeout = ' + this.options.statement_timeout_ms);
+      await client.query('SET LOCAL lock_timeout = 1000');
+      const identityResult = await client.query(
+        '/* factoryos:pitr:session_identity */ SELECT current_user AS current_user, '
+        + 'session_user AS session_user, current_database() AS current_database, '
+        + 'current_setting(\'transaction_read_only\') AS transaction_read_only, '
+        + 'pg_catalog.pg_is_in_recovery() AS in_recovery, '
+        + 'pg_catalog.pg_has_role(current_user, \'pg_read_all_stats\', \'member\') AS has_pg_read_all_stats, '
+        + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
+        + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role '
+        + 'WHERE role.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
+        + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\') '
+        + 'AND pg_catalog.pg_has_role(current_user, role.oid, \'MEMBER\') ORDER BY role.rolname) AS privileged_memberships, '
+        + 'current_setting(\'server_version_num\') AS server_version_num',
+      );
+      queriesExecuted += 1;
+      const row = identityResult.rows[0];
+      if (!row || row.current_user !== this.options.database_username
+        || row.session_user !== this.options.database_username
+        || row.current_database !== this.options.database_name
+        || row.transaction_read_only !== 'on') {
+        blockers.push('DATABASE_SESSION_IDENTITY_OR_READ_ONLY_GUARD_FAILED');
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return this.emptyResult(target, endpointReference, accessRole, observedAt, blockers, catalogStatus, queriesExecuted);
+      }
+      identity = {
+        current_user: requiredString(row.current_user, 'current_user'),
+        session_user: requiredString(row.session_user, 'session_user'),
+        current_database: requiredString(row.current_database, 'current_database'),
+        transaction_read_only: true,
+        in_recovery: asBoolean(row.in_recovery, 'in_recovery'),
+        has_pg_read_all_stats: asBoolean(row.has_pg_read_all_stats, 'has_pg_read_all_stats'),
+        has_rds_iam: asBoolean(row.has_rds_iam, 'has_rds_iam'),
+        privileged_memberships: Array.isArray(row.privileged_memberships)
+          ? row.privileged_memberships.map((item) => requiredString(item, 'privileged_membership')) : [],
+        server_version_num: requiredString(row.server_version_num, 'server_version_num'),
+      };
+
+      for (const catalog of CATALOGS) {
+        if (rowBudget <= 0) {
+          catalogStatus.push({ catalog: catalog.name, status: 'SKIPPED_BUDGET', rows_observed: 0, error_code: null });
+          blockers.push('DATABASE_PRINCIPAL_GLOBAL_ROW_BUDGET_EXHAUSTED');
+          continue;
+        }
+        await client.query('SAVEPOINT factoryos_pitr_catalog');
+        let resultRows: QueryResultRow[] = [];
+        let state: 'COMPLETE' | 'TRUNCATED' | 'FAILED' = 'COMPLETE';
+        let errorCode: string | null = null;
+        const limit = Math.min(this.options.max_rows_per_catalog, rowBudget);
+        try {
+          queriesExecuted += 1;
+          const result = await client.query(catalog.sql, [limit + 1]);
+          resultRows = result.rows;
+          if (resultRows.length > limit) {
+            state = 'TRUNCATED';
+            resultRows = resultRows.slice(0, limit);
+            blockers.push('DATABASE_PRINCIPAL_CATALOG_TRUNCATED:' + catalog.name);
+          }
+          rowBudget -= resultRows.length;
+          rowsObserved[catalog.name] = resultRows;
+        } catch (error) {
+          const code = sqlState(error);
+          errorCode = queryErrorCode(code);
+          state = 'FAILED';
+          blockers.push('DATABASE_PRINCIPAL_CATALOG_FAILED:' + catalog.name + ':' + errorCode);
+          await client.query('ROLLBACK TO SAVEPOINT factoryos_pitr_catalog');
+        }
+        catalogStatus.push({
+          catalog: catalog.name,
+          status: state,
+          rows_observed: resultRows.length,
+          error_code: errorCode,
+        });
+        await client.query('RELEASE SAVEPOINT factoryos_pitr_catalog');
+      }
+      const roleRows = rowsObserved.database_roles ?? [];
+      const readerRole = roleRows.find((candidate) => candidate.rolname === this.options.database_username);
+      const databaseCatalog = rowsObserved.database_access ?? [];
+      if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
+        blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
+      }
+      if (databaseCatalog.some((candidate) => candidate.datallowconn === true
+        && candidate.datistemplate === false && candidate.current_user_can_connect !== true)) {
+        blockers.push('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
+      }
+      if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
+        || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
+        || readerRole.rolbypassrls !== false || readerRole.rolcanlogin !== true
+        || readerRole.rolinherit !== true || identity.has_pg_read_all_stats !== true || identity.has_rds_iam !== true
+        || identity.privileged_memberships.length > 0) {
+        blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_IS_MISSING_OR_OVERPRIVILEGED');
+      }
+      await client.query('COMMIT');
+      inTransaction = false;
+    } catch (error) {
+      if (inTransaction && client) await client.query('ROLLBACK').catch(() => undefined);
+      blockers.push('DATABASE_PRINCIPAL_SNAPSHOT_FAILED:' + queryErrorCode(sqlState(error)));
+    } finally {
+      client?.release();
+      await pool.end().catch(() => undefined);
+    }
+
+    const allCatalogsComplete = catalogStatus.length === CATALOGS.length
+      && catalogStatus.every((entry) => entry.status === 'COMPLETE');
+    const complete = Boolean(identity) && allCatalogsComplete && blockers.length === 0;
+    const roles = rowsObserved.database_roles ?? [];
+    const result: AwsRdsPitrDatabasePrincipalCatalog = {
+      schema: 'factoryos.aws-rds-postgresql-database-principals/v1',
+      account_id: target.account_id,
+      region: target.region,
+      database_resource_arn: target.resource_arn,
+      database_resource_id: target.db_resource_id,
+      source_database_reference: target.source_database_reference,
+      endpoint_reference: endpointReference,
+      database_name: this.options.database_name,
+      database_username: this.options.database_username,
+      database_access_role_arn: accessRole.role_arn,
+      database_access_principal_reference: accessRole.principal_reference,
+      status: complete ? 'COMPLETE' : identity ? 'PARTIAL' : 'UNAVAILABLE',
+      observed_at: observedAt,
+      identity,
+      database_roles: roles.map((item) => ({
+        role_name: requiredString(item.rolname, 'role_name'),
+        can_login: asBoolean(item.rolcanlogin, 'rolcanlogin'),
+        is_superuser: asBoolean(item.rolsuper, 'rolsuper'),
+        can_create_role: asBoolean(item.rolcreaterole, 'rolcreaterole'),
+        can_create_database: asBoolean(item.rolcreatedb, 'rolcreatedb'),
+        can_replicate: asBoolean(item.rolreplication, 'rolreplication'),
+        bypasses_rls: asBoolean(item.rolbypassrls, 'rolbypassrls'),
+        inherits: asBoolean(item.rolinherit, 'rolinherit'),
+      })),
+      role_memberships: (rowsObserved.role_memberships ?? []).map((item) => ({
+        granted_role: requiredString(item.granted_role, 'granted_role'),
+        member_role: requiredString(item.member_role, 'member_role'),
+        granted_by: requiredString(item.granted_by, 'granted_by'),
+        admin_option: asBoolean(item.admin_option, 'admin_option'),
+      })),
+      database_access: (rowsObserved.database_access ?? []).map((item) => ({
+        database_name: requiredString(item.datname, 'datname'),
+        owner: requiredString(item.owner, 'database_owner'),
+        allow_connections: asBoolean(item.datallowconn, 'datallowconn'),
+        current_user_can_connect: asBoolean(item.current_user_can_connect, 'database_connect_privilege'),
+        is_template: asBoolean(item.datistemplate, 'datistemplate'),
+        acl_reference: typeof item.acl_reference === 'string' ? item.acl_reference.slice(0, 2048) : null,
+      })),
+      schema_privileges: (rowsObserved.schema_privileges ?? []).map((item) => ({
+        grantee: requiredString(item.grantee, 'schema_grantee'),
+        schema_name: requiredString(item.schema_name, 'schema_name'),
+        privilege_type: requiredString(item.privilege_type, 'schema_privilege'),
+        is_grantable: asBoolean(item.is_grantable, 'schema_is_grantable'),
+      })),
+      object_privileges: (rowsObserved.object_privileges ?? []).map((item) => ({
+        grantee: requiredString(item.grantee, 'object_grantee'),
+        schema_name: requiredString(item.schema_name, 'schema_name'),
+        object_name: requiredString(item.object_name, 'object_name'),
+        object_owner: requiredString(item.object_owner, 'object_owner'),
+        object_type: requiredString(item.object_type, 'object_type'),
+        privilege_type: requiredString(item.privilege_type, 'object_privilege'),
+        is_grantable: asBoolean(item.is_grantable, 'object_is_grantable'),
+      })),
+      function_privileges: (rowsObserved.function_privileges ?? []).map((item) => ({
+        grantee: requiredString(item.grantee, 'function_grantee'),
+        schema_name: requiredString(item.schema_name, 'schema_name'),
+        function_name: requiredString(item.function_name, 'function_name'),
+        function_owner: requiredString(item.function_owner, 'function_owner'),
+        is_grantable: asBoolean(item.is_grantable, 'function_is_grantable'),
+      })),
+      active_sessions: (rowsObserved.active_sessions ?? []).map((item) => ({
+        database_user: typeof item.database_user === 'string' ? item.database_user : null,
+        database_name: typeof item.database_name === 'string' ? item.database_name : null,
+        backend_type: requiredString(item.backend_type, 'backend_type'),
+        state: typeof item.state === 'string' ? item.state : null,
+        session_count: asCount(item.session_count),
+      })),
+      replication_senders: (rowsObserved.replication_senders ?? []).map((item) => ({
+        database_user: typeof item.database_user === 'string' ? item.database_user : null,
+        application_reference: 'pg-application.' + sha256(String(item.application_name ?? '')).slice(0, 32),
+        state: typeof item.state === 'string' ? item.state : null,
+        sync_state: typeof item.sync_state === 'string' ? item.sync_state : null,
+        sender_count: asCount(item.sender_count),
+      })),
+      replication_slots: (rowsObserved.replication_slots ?? []).map((item) => ({
+        slot_name: requiredString(item.slot_name, 'slot_name'),
+        plugin: typeof item.plugin === 'string' ? item.plugin : null,
+        slot_type: requiredString(item.slot_type, 'slot_type'),
+        database_name: typeof item.database === 'string' ? item.database : null,
+        active: asBoolean(item.active, 'slot_active'),
+        temporary: asBoolean(item.temporary, 'slot_temporary'),
+      })),
+      wal_receivers: (rowsObserved.wal_receivers ?? []).map((item) => ({
+        status: requiredString(item.status, 'wal_receiver_status'),
+        slot_name: typeof item.slot_name === 'string' ? item.slot_name : null,
+      })),
+      logical_subscriptions: (rowsObserved.logical_subscriptions ?? []).map((item) => ({
+        subscription_name: requiredString(item.subscription_name, 'subscription_name'),
+        owner: requiredString(item.owner, 'subscription_owner'),
+        enabled: asBoolean(item.enabled, 'subscription_enabled'),
+        slot_name: typeof item.slot_name === 'string' ? item.slot_name : null,
+        publications: Array.isArray(item.publications)
+          ? item.publications.map((value) => requiredString(value, 'publication_name')) : [],
+      })),
+      publications: (rowsObserved.publications ?? []).map((item) => ({
+        publication_name: requiredString(item.publication_name, 'publication_name'),
+        all_tables: asBoolean(item.all_tables, 'publication_all_tables'),
+        inserts: asBoolean(item.inserts, 'publication_inserts'),
+        updates: asBoolean(item.updates, 'publication_updates'),
+        deletes: asBoolean(item.deletes, 'publication_deletes'),
+        truncates: asBoolean(item.truncates, 'publication_truncates'),
+      })),
+      catalog_status: catalogStatus,
+      rows_observed: catalogStatus.reduce((sum, item) => sum + item.rows_observed, 0),
+      queries_executed: queriesExecuted,
+      snapshot_sha256: '',
+      blockers,
+    };
+    result.snapshot_sha256 = sha256(JSON.stringify(result));
+    return result;
+  }
+
+  private emptyResult(
+    target: AwsRdsPitrDatabaseTarget,
+    endpointReference: string,
+    accessRole: AwsRdsPitrDatabaseAccessRole,
+    observedAt: string,
+    blockers: string[],
+    catalogStatus: AwsRdsPitrDatabasePrincipalCatalog['catalog_status'],
+    queriesExecuted: number,
+  ): AwsRdsPitrDatabasePrincipalCatalog {
+    const result: AwsRdsPitrDatabasePrincipalCatalog = {
+      schema: 'factoryos.aws-rds-postgresql-database-principals/v1',
+      account_id: target.account_id,
+      region: target.region,
+      database_resource_arn: target.resource_arn,
+      database_resource_id: target.db_resource_id,
+      source_database_reference: target.source_database_reference,
+      endpoint_reference: endpointReference,
+      database_name: this.options.database_name,
+      database_username: this.options.database_username,
+      database_access_role_arn: accessRole.role_arn,
+      database_access_principal_reference: accessRole.principal_reference,
+      status: 'UNAVAILABLE',
+      observed_at: observedAt,
+      identity: null,
+      database_roles: [],
+      role_memberships: [],
+      database_access: [],
+      schema_privileges: [],
+      object_privileges: [],
+      function_privileges: [],
+      active_sessions: [],
+      replication_senders: [],
+      replication_slots: [],
+      wal_receivers: [],
+      logical_subscriptions: [],
+      publications: [],
+      catalog_status: catalogStatus,
+      rows_observed: 0,
+      queries_executed: queriesExecuted,
+      snapshot_sha256: '',
+      blockers,
+    };
+    result.snapshot_sha256 = sha256(JSON.stringify(result));
+    return result;
+  }
+}
+).test(accessRole.principal_reference)) {
       return refuse('database access role identity does not match the expected account and role');
     }
     if (!Number.isSafeInteger(remainingRowBudget) || remainingRowBudget < 1
