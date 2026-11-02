@@ -1053,7 +1053,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const databasePrincipalCatalogs: AwsRdsPitrDatabasePrincipalCatalog[] = [];
     const databaseRoleCache = new Map<string, Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }>>();
     let databaseTargetsDiscovered = 0;
-    let remainingDatabasePrincipalRows = this.config.database_principal_inventory?.max_total_rows ?? 10000;
+    let remainingDatabasePrincipalRows = Math.min(
+      this.config.database_principal_inventory?.max_total_rows ?? 10000,
+      Math.max(0, this.config.max_total_items - this.totalItems),
+    );
     const append = (kind: AwsRdsPitrSourceKind, resources: AwsRdsPitrResource[], pages: number, receipts: string[]) => {
       const current = sourceItems.get(kind) ?? [];
       current.push(...resources);
@@ -1132,6 +1135,10 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
             const endpointHost = resource.attributes.DatabaseEndpointAddress;
             const endpointPort = Number(resource.attributes.DatabaseEndpointPort ?? 0);
+            if (remainingDatabasePrincipalRows < 1) {
+              unavailableReason = 'DATABASE_PRINCIPAL_GLOBAL_ITEM_BUDGET_EXHAUSTED';
+              throw new Error('database principal global item budget exhausted');
+            }
             if (resource.attributes.IAMDatabaseAuthenticationEnabled !== 'true') {
               unavailableReason = 'IAM_DATABASE_AUTHENTICATION_DISABLED_OR_UNKNOWN';
               throw new Error('IAM database authentication is disabled or unknown');
@@ -1157,7 +1164,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               engine: resource.engine as 'postgres' | 'aurora-postgresql',
               endpoint_host: endpointHost,
               endpoint_port: endpointPort,
-              source_database_reference: resource.source_database_reference ?? resource.provider_identity_reference,
+              source_database_reference: resource.attributes.DBInstanceIdentifier
+                ?? resource.attributes.DBClusterIdentifier ?? resource.provider_identity_reference,
             };
             const catalog = await this.databasePrincipalReader.capture(target, {
               role_arn: dbRole.arn,
@@ -1261,6 +1269,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     }));
     const backupCatalogComplete = accountDiscoveryComplete && regionDiscoveryComplete;
     const databaseWriterPrincipalsComplete = Boolean(this.databasePrincipalReader)
+      && databaseTargetsDiscovered > 0
       && databasePrincipalCatalogs.length === databaseTargetsDiscovered
       && databasePrincipalCatalogs.every((catalog) => catalog.status === 'COMPLETE');
     const databasePrincipalSourceItems: AwsRdsPitrResource[] = databasePrincipalCatalogs.map((catalog) => ({
