@@ -69,7 +69,7 @@ function makePoolFactory(settings: {
               current_database: 'postgres',
               transaction_read_only: settings.readOnly ?? 'on',
               in_recovery: false,
-              has_pg_monitor: true,
+              has_pg_read_all_stats: true,
               has_rds_iam: true,
               server_version_num: '160004',
             }] };
@@ -85,7 +85,7 @@ function makePoolFactory(settings: {
           }
           if (sql.includes('factoryos:pitr:role_memberships')) {
             return { rows: [
-              { granted_role: 'pg_monitor', member_role: username, granted_by: 'rds_superuser', admin_option: false },
+              { granted_role: 'pg_read_all_stats', member_role: username, granted_by: 'rds_superuser', admin_option: false },
               { granted_role: 'rds_iam', member_role: username, granted_by: 'rds_superuser', admin_option: false },
             ] };
           }
@@ -160,7 +160,7 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
 
     expect(catalog.status).toBe('COMPLETE');
     expect(catalog.identity?.transaction_read_only).toBe(true);
-    expect(catalog.identity?.has_pg_monitor).toBe(true);
+    expect(catalog.identity?.has_pg_read_all_stats).toBe(true);
     expect(catalog.identity?.has_rds_iam).toBe(true);
     expect(catalog.database_roles.map((item) => item.role_name)).toEqual([username, 'app_writer']);
     expect(catalog.role_memberships).toHaveLength(1);
