@@ -236,8 +236,18 @@ async function readBoundedResponse(response: Response): Promise<string> {
     reader.releaseLock();
   }
 }
-function requireAwsArn(value: string | null, field: string): string {
-  if (!value || !RDS_ARN.test(value)) return fail(field + ' did not return an exact AWS RDS resource ARN');
+function partitionForRegion(region: string): 'aws' | 'aws-us-gov' | 'aws-cn' {
+  return region.startsWith('cn-') ? 'aws-cn' : region.startsWith('us-gov-') ? 'aws-us-gov' : 'aws';
+}
+
+function requireAwsArn(value: string | null, field: string, scope: AwsRdsPitrProviderScope): string {
+  const match = value && RDS_ARN.exec(value);
+  if (!match || !value) return fail(field + ' did not return an exact AWS RDS resource ARN');
+  const identity = /^arn:(aws|aws-us-gov|aws-cn):rds:([a-z0-9-]+):(\d{12}):/.exec(value);
+  if (!identity || identity[1] !== partitionForRegion(scope.region_reference)
+    || identity[2] !== scope.region_reference || identity[3] !== scope.account_reference) {
+    return fail(field + ' ARN is outside the requested account/region scope');
+  }
   return value;
 }
 
@@ -408,7 +418,7 @@ class AwsQueryApi {
       ? 'sts.' + region + '.' + dnsSuffix
       : service + '.' + region + '.' + dnsSuffix;
     const endpoint = 'https://' + host + '/';
-    const bodyParams = { Action: action, Version: QUERY_VERSIONS[service], ...parameters };
+    const bodyParams: Record<string, string> = { Action: action, Version: QUERY_VERSIONS[service], ...parameters };
     const body = Object.keys(bodyParams).sort().map((key) => encode(key) + '=' + encode(bodyParams[key]!)).join('&');
     const payloadHash = sha256(body);
     const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
@@ -503,7 +513,7 @@ function resourceFromBlock(
   sourceDatabaseTag: string | null,
   fieldNames: string[],
 ): AwsRdsPitrResource {
-  const arn = requireAwsArn(xmlText(block, arnTag), resourceType + ' ARN');
+  const arn = requireAwsArn(xmlText(block, arnTag), resourceType + ' ARN', scope);
   const retention = optionalInteger(xmlText(block, 'BackupRetentionPeriod'));
   const attrs: Record<string, string | null> = {};
   for (const name of fieldNames) attrs[name] = optionalString(xmlText(block, name));
@@ -593,14 +603,14 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     const response = await this.api.call('sts', this.config.organization_region, credentials, 'GetCallerIdentity');
     const account = xmlText(response.xml, 'Account');
     const arn = xmlText(response.xml, 'Arn');
-    if (account !== expectedAccount || !arn || !arn.startsWith('arn:aws:sts::' + expectedAccount + ':')) {
+    if (account !== expectedAccount || !arn || !arn.startsWith('arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + expectedAccount + ':')) {
       return fail('AWS STS identity does not match the expected account');
     }
     return safeReference(arn, 'AWS STS caller principal');
   }
 
   private async assumeReadOnlyRole(accountId: string): Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }> {
-    const roleArn = 'arn:aws:iam::' + accountId + ':role/' + this.config.read_only_role_name;
+    const roleArn = 'arn:' + partitionForRegion(this.config.organization_region) + ':iam::' + accountId + ':role/' + this.config.read_only_role_name;
     const params: Record<string, string> = {
       RoleArn: roleArn,
       RoleSessionName: 'FactoryOSPitrInventory',
@@ -616,7 +626,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
       session_token: xmlText(credentialsBlock, 'SessionToken') ?? '',
     });
     const principal = await this.callerIdentity(credentials, accountId);
-    const expectedPrincipalPrefix = 'arn:aws:sts::' + accountId + ':assumed-role/' + this.config.read_only_role_name + '/';
+    const expectedPrincipalPrefix = 'arn:' + partitionForRegion(this.config.organization_region) + ':sts::' + accountId + ':assumed-role/' + this.config.read_only_role_name + '/';
     if (!principal.startsWith(expectedPrincipalPrefix)) {
       return fail('assumed AWS principal does not match the configured read-only role');
     }
@@ -628,7 +638,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     pages: number;
     receipts: string[];
   }> {
-    const sourcePrincipal = await this.callerIdentity(this.sourceCredentials, this.config.organization_account_id);
+    await this.callerIdentity(this.sourceCredentials, this.config.organization_account_id);
     const result = await this.api.paginate(
       'organizations',
       this.config.organization_region,
