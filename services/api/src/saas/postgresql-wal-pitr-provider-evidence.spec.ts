@@ -246,8 +246,8 @@ describe('PostgreSQL WAL/PITR provider inventory capture contract', () => {
 
   it('enforces a global page budget across source catalogs and provider scopes', async () => {
     await expect(capturePostgresqlWalPitrProviderInventory(
-      inventoryGateway({ nextToken: 'cursor.page.2' }),
-      { ...captureInput(), max_total_pages: 1 },
+      inventoryGateway({ nextToken: 'cursor.page.2', discovery: { pages_fetched: 1 } }),
+      { ...captureInput(), max_total_pages: 2 },
     )).rejects.toThrow(/exceeded its total page budget/);
   });
 
@@ -344,8 +344,8 @@ describe('PostgreSQL WAL/PITR independent residual verification contract', () =>
 
   it('enforces a global page budget across independent residual scopes', async () => {
     await expect(scanPostgresqlWalPitrResidualsIndependently(
-      residualGateway(),
-      { ...residualInput(), max_total_pages: 1 },
+      residualGateway({ discovery: { pages_fetched: 1 } }),
+      { ...residualInput(), max_total_pages: 2 },
     )).rejects.toThrow(/exceeded its total page budget/);
   });
 
