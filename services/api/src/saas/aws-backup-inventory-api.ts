@@ -115,6 +115,21 @@ function safeBoolean(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
   return fail('AWS Backup returned an invalid boolean field');
 }
+function validateAwsBackupLegalHoldArn(
+  value: unknown,
+  scope: AwsBackupInventoryScope,
+): string {
+  if (typeof value !== 'string') return fail('AWS Backup legal hold omitted its provider ARN');
+  const match = /^arn:(aws|aws-us-gov|aws-cn):backup:([a-z0-9-]+):(\d{12}):(legal-hold|recovery-point):([A-Za-z0-9._:/-]{1,512})$/.exec(value);
+  const expectedPartition = scope.region_reference.startsWith('cn-') ? 'aws-cn'
+    : scope.region_reference.startsWith('us-gov-') ? 'aws-us-gov' : 'aws';
+  if (!match || match[1] !== expectedPartition || match[2] !== scope.region_reference
+    || match[3] !== scope.account_reference) {
+    return fail('AWS Backup legal-hold ARN is outside the requested account/region scope or malformed');
+  }
+  return value;
+}
+
 function validateAwsBackupArn(
   value: unknown,
   scope: AwsBackupInventoryScope,
@@ -283,7 +298,7 @@ export class AwsBackupInventoryApi {
         const record: AwsBackupLegalHoldRecord = {
           legal_hold_id: id,
           legal_hold_arn: item.LegalHoldArn === undefined || item.LegalHoldArn === null
-            ? null : validateAwsBackupArn(item.LegalHoldArn, scope, 'legal-hold'),
+            ? null : validateAwsBackupLegalHoldArn(item.LegalHoldArn, scope),
           status: status as AwsBackupLegalHoldRecord['status'],
           creation_date: timestamp(item.CreatedTime ?? item.CreationDate),
           cancellation_date: timestamp(item.CanceledTime ?? item.CancellationDate),
