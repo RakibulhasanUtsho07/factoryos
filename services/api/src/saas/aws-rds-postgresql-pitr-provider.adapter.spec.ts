@@ -498,6 +498,53 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
   });
 
 
+
+  it('reconciles an RDS automated backup AwsBackupRecoveryPointArn with AWS Backup legal-hold membership', async () => {
+    const recoveryPointArn = 'arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012';
+    const automatedBackupXml = '<DBInstanceAutomatedBackup>'
+      + '<DBInstanceArn>' + databaseArn + '</DBInstanceArn>'
+      + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
+      + '<AwsBackupRecoveryPointArn>' + recoveryPointArn + '</AwsBackupRecoveryPointArn>'
+      + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
+      + '<Region>ap-southeast-1</Region><Engine>postgres</Engine>'
+      + '<Status>retained</Status><BackupRetentionPeriod>7</BackupRetentionPeriod>'
+      + '</DBInstanceAutomatedBackup>';
+    const mock = makeFetch({
+      automatedBackupXml,
+      backupVaultPages: [JSON.stringify({ BackupVaultList: [{
+        BackupVaultName: 'default',
+        BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        Locked: false,
+        NumberOfRecoveryPoints: 1,
+      }] })],
+      legalHoldPages: [JSON.stringify({ LegalHolds: [{
+        LegalHoldId: 'hold-rds-link-01',
+        LegalHoldArn: 'arn:aws:backup:ap-southeast-1:111111111111:legal-hold:hold-rds-link-01',
+        Status: 'ACTIVE',
+      }] })],
+      legalHoldRecoveryPointPages: {
+        'hold-rds-link-01': [JSON.stringify({ RecoveryPoints: [{ RecoveryPointArn: recoveryPointArn }] })],
+      },
+    });
+    const inventory = await createAdapter(mock.fetcher).captureInventory();
+    const backup = inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')
+      ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
+    expect(backup?.attributes.AwsBackupRecoveryPointArn).toBe(recoveryPointArn);
+    const plan = createAwsRdsPitrRetentionDryRunPlan({
+      inventory,
+      candidate_provider_identity_reference: backup!.provider_identity_reference,
+      expected_account_id: organizationAccount,
+      expected_region: 'ap-southeast-1',
+      minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
+      retention_expires_at: '2026-10-31T00:00:00.000Z',
+      legal_hold_status: 'NONE',
+      dependency_status: 'NO_DEPENDENCY',
+    });
+    expect(plan.status).toBe('BLOCKED');
+    expect(plan.provider_delete_identity_reference).toBe('db-ABCDEFGHIJKLMNOP');
+    expect(plan.blockers).toContain('Candidate recovery point is covered by an active AWS Backup legal hold.');
+  });
+
   it('captures RDS automated-backup cross-region replication ARN links exactly', async () => {
     const destinationArn = 'arn:aws:rds:us-east-1:111111111111:auto-backup:ab-0123456789ABCDEF';
     const automatedBackupXml = '<DBInstanceAutomatedBackup>'
