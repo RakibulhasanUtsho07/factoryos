@@ -454,6 +454,10 @@ export class AwsBackupInventoryApi {
         if (!isRecord(item)) return fail('AWS Backup returned a malformed recovery-point entry');
         if (item.ResourceType !== 'RDS' && item.ResourceType !== 'Aurora') continue;
         const recoveryPointArn = validateAwsBackupArn(item.RecoveryPointArn, scope, 'recovery-point');
+        const responseVaultArn = validateAwsBackupArn(item.BackupVaultArn, scope, 'backup-vault');
+        if (responseVaultArn !== vault.backup_vault_arn || item.BackupVaultName !== vault.backup_vault_name) {
+          return fail('AWS Backup recovery point does not belong to the exact requested vault identity');
+        }
         const resourceArn = item.ResourceArn;
         const resourceMatch = typeof resourceArn === 'string'
           ? /^arn:(aws|aws-us-gov|aws-cn):rds:([a-z0-9-]+):(\d{12}):(db|cluster):[A-Za-z0-9:_-]+$/.exec(resourceArn)
@@ -461,9 +465,10 @@ export class AwsBackupInventoryApi {
         const expectedPartition = scope.region_reference.startsWith('cn-') ? 'aws-cn'
           : scope.region_reference.startsWith('us-gov-') ? 'aws-us-gov' : 'aws';
         if (!resourceMatch || resourceMatch[1] !== expectedPartition
+          || resourceMatch[2] !== scope.region_reference || resourceMatch[3] !== scope.account_reference
           || (item.ResourceType === 'RDS' && resourceMatch[4] !== 'db')
           || (item.ResourceType === 'Aurora' && resourceMatch[4] !== 'cluster')) {
-          return fail('AWS Backup returned an RDS/Aurora recovery point with an invalid source resource ARN');
+          return fail('AWS Backup returned an RDS/Aurora recovery point outside the exact requested source account/region or resource type');
         }
         points.push({
           account_id: scope.account_reference,
