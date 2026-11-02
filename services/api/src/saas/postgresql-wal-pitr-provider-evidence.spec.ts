@@ -70,8 +70,10 @@ function inventoryGateway(
       const count = (calls.get(key) ?? 0) + 1;
       calls.set(key, count);
       const returnedScope = options.outsideScope ? scopeA : scope;
-      const reference = options.duplicateReference ? 'same.provider.item'
+      const baseReference = options.duplicateReference ? 'same.provider.item'
         : source_kind.toLowerCase() + '.' + scope.account_reference;
+      const reference = options.duplicateReference ? baseReference
+        : baseReference + (count > 1 ? '.page.' + count : '');
       const value: Record<string, unknown> = options.sensitiveValue
         ? { archive_reference: 'archive.one', secret_access_key: 'do-not-capture' }
         : { resource_reference: reference, discovered: true, object_count: 2 };
@@ -137,8 +139,8 @@ function residualGateway(options: {
       const count = (calls.get(key) ?? 0) + 1;
       calls.set(key, count);
       const returnedItems = options.duplicateItems
-        ? [candidate, candidate]
-        : options.items ?? [];
+        ? (scope.account_reference === scopeA.account_reference ? [candidate, candidate] : [])
+        : (scope.account_reference === scopeA.account_reference ? options.items ?? [] : []);
       return {
         scope: options.outsideScope ? scopeA : scope,
         principal_reference: options.principal ?? 'principal.independent.residual-reader',
