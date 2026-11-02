@@ -1128,6 +1128,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         EncryptionKeyArn: point.encryption_key_arn,
         BackupSizeInBytes: point.backup_size_bytes === null ? null : String(point.backup_size_bytes),
         SourceBackupVaultArn: point.source_backup_vault_arn,
+        BackupVaultType: point.backup_vault_type,
+        BackupVaultState: point.backup_vault_state,
         BackupVaultLocked: point.backup_vault_locked === null ? null : String(point.backup_vault_locked),
         BackupVaultLockDate: point.backup_vault_lock_date,
         BackupVaultMinRetentionDays: point.backup_vault_min_retention_days === null ? null : String(point.backup_vault_min_retention_days),
@@ -1285,6 +1287,12 @@ export function createAwsRdsPitrRetentionDryRunPlan(
       if (resource.provider_delete_identity_kind !== 'AWS_BACKUP_RECOVERY_POINT_ARN'
         || !resource.provider_delete_identity_reference) {
         blockers.push('AWS Backup recovery point lacks its exact recovery-point ARN.');
+      }
+      if (resource.attributes.BackupVaultType !== 'BACKUP_VAULT') {
+        blockers.push('AWS Backup recovery point is not in a standard BACKUP_VAULT.');
+      }
+      if (resource.attributes.BackupVaultState !== 'AVAILABLE') {
+        blockers.push('AWS Backup vault is not AVAILABLE.');
       }
       if (resource.attributes.BackupVaultLocked !== 'false' || resource.attributes.BackupVaultLockDate) {
         blockers.push('AWS Backup vault lock is active, in grace-period configuration, or unknown.');
