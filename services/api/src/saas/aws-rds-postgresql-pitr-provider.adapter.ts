@@ -1211,6 +1211,15 @@ export function createAwsRdsPitrRetentionDryRunPlan(
     || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(value.expected_region ?? '')) {
     blockers.push('Expected AWS account or region is invalid.');
   }
+  const now = Date.now();
+  let expiry: number | null = null;
+  let horizon: number | null = null;
+  try {
+    expiry = validateTimestamp(value.retention_expires_at, 'retention_expires_at');
+    horizon = validateTimestamp(value.minimum_recovery_horizon_end_at, 'minimum_recovery_horizon_end_at');
+  } catch {
+    blockers.push('Retention expiry or minimum recovery horizon timestamp is invalid.');
+  }
   const inventorySources = Array.isArray(inventory?.sources) ? inventory.sources : [];
   const inventoryItems = inventorySources.filter((source: unknown) =>
     isRecord(source) && Array.isArray(source.items)).flatMap((source: Record<string, unknown>) =>
@@ -1279,15 +1288,6 @@ export function createAwsRdsPitrRetentionDryRunPlan(
       && entry.scope.account_reference === value.expected_account_id
       && entry.scope.region_reference === value.expected_region);
   if (!scopeExists) blockers.push('Expected account/region is not present in the captured inventory scope.');
-  const now = Date.now();
-  let expiry: number | null = null;
-  let horizon: number | null = null;
-  try {
-    expiry = validateTimestamp(value.retention_expires_at, 'retention_expires_at');
-    horizon = validateTimestamp(value.minimum_recovery_horizon_end_at, 'minimum_recovery_horizon_end_at');
-  } catch {
-    blockers.push('Retention expiry or minimum recovery horizon timestamp is invalid.');
-  }
   if (expiry !== null && horizon !== null && expiry < horizon) {
     blockers.push('Candidate retention expires before the approved minimum recovery horizon.');
   }
