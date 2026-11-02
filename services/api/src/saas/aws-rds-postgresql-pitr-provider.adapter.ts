@@ -763,6 +763,7 @@ export class AwsRdsPostgresqlPitrProviderAdapter {
     );
     const accounts = result.accounts;
 if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
+      || accounts.some((account) => !AWS_ACCOUNT_ID.test(account.id))) {
       return fail('AWS Organizations did not return a complete, valid account catalog');
     }
     if (new Set(accounts.map((account) => account.id)).size !== accounts.length) {
@@ -1052,11 +1053,7 @@ export function createAwsRdsPitrRetentionDryRunPlan(
   ] as const) {
     try { safeReference(reference, field); } catch { blockers.push(field + ' is missing or invalid.'); }
   }
-  if (inventory && (
-    inventory.provider_managed_wal_segments_individually_enumerated !== true
-    || inventory.database_writer_principals_fully_enumerated !== true
-    || inventory.aws_backup_recovery_points_enumerated !== true
-  )) {
+  if (inventory) {
     blockers.push('Provider-managed WAL, database writer and AWS Backup recovery-point coverage remain unresolved.');
   }
   const identityDigest = arn ? sha256(JSON.stringify({
