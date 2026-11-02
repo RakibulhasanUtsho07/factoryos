@@ -111,7 +111,7 @@ function add(blockers: string[], condition: boolean, message: string): void {
 }
 
 function digest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+  return createHash('sha256').update(JSON.stringify(value) ?? 'null', 'utf8').digest('hex');
 }
 
 /**
@@ -127,7 +127,6 @@ export function evaluatePostgresqlWalPitrRetentionEligibility(
   nowValue: Date | number = Date.now(),
 ): PostgresqlWalPitrRetentionEligibilityResult {
   const now = nowValue instanceof Date ? nowValue.getTime() : nowValue;
-  const evaluatedAt = new Date(now).toISOString();
   const blockers: string[] = [];
 
   if (!Number.isFinite(now)) {
@@ -143,6 +142,7 @@ export function evaluatePostgresqlWalPitrRetentionEligibility(
       requires_independent_review: true,
     };
   }
+  const evaluatedAt = new Date(now).toISOString();
   if (!isRecord(value) || value.schema !== POSTGRESQL_WAL_PITR_RETENTION_ELIGIBILITY_SCHEMA) {
     blockers.push('Eligibility evidence schema is missing or unsupported.');
   }
@@ -243,7 +243,7 @@ export function evaluatePostgresqlWalPitrRetentionEligibility(
       });
     }
     add(blockers, inventory !== null && Array.isArray(inventory.candidate_references)
-      && inventory.candidate_references.includes(candidateReference),
+      && inventory.candidate_references.includes(candidateReference ?? ''),
     'Exact candidate generation is not included in the verified provider inventory.');
   }
 
