@@ -91,7 +91,7 @@ function makePoolFactory(settings: {
             return { rows: settings.truncateCatalog === 'database_roles' ? [...rows, ...rows] : rows };
           }
           if (sql.includes('factoryos:pitr:role_memberships')) {
-            return { rows: [
+            return { rows: settings.roleMemberships ?? [
               { granted_role: 'pg_read_all_stats', member_role: username, granted_by: 'rds_superuser', admin_option: false },
               { granted_role: 'rds_iam', member_role: username, granted_by: 'rds_superuser', admin_option: false },
             ] };
