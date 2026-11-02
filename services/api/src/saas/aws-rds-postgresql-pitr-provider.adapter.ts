@@ -1266,6 +1266,11 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         || !['DBI_RESOURCE_ID', 'REPLICATED_BACKUP_ARN'].includes(resource.provider_delete_identity_kind ?? '')) {
         blockers.push('Automated backup lacks an exact AWS-supported retention identity.');
       }
+      for (const destinationArn of resource.replication_destination_arns) {
+        if (inventory?.unresolved_replication_destination_arns?.includes(destinationArn)) {
+          blockers.push('An RDS automated-backup replication destination is absent from the discovered account/region catalogs.');
+        }
+      }
     } else if (resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT') {
       const postgresSource = inventoryItems.find((item) =>
         item.resource_arn === resource.attributes.ResourceArn
@@ -1292,10 +1297,26 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         }
       }
       const vaultMinimumDays = Number(resource.attributes.BackupVaultMinRetentionDays);
+      const vaultMaximumDays = Number(resource.attributes.BackupVaultMaxRetentionDays);
       const pointCreatedAt = resource.created_at ? Date.parse(resource.created_at) : Number.NaN;
-      if (Number.isSafeInteger(vaultMinimumDays) && vaultMinimumDays > 0 && Number.isFinite(pointCreatedAt)
-        && expiry !== null && expiry < pointCreatedAt + vaultMinimumDays * 86400000) {
-        blockers.push('Requested retention expiry violates the AWS Backup vault minimum retention period.');
+      if (Number.isSafeInteger(vaultMinimumDays) && vaultMinimumDays > 0) {
+        if (!Number.isFinite(pointCreatedAt)) {
+          blockers.push('AWS Backup recovery-point creation time is missing for vault minimum-retention validation.');
+        } else if (expiry !== null && expiry < pointCreatedAt + vaultMinimumDays * 86400000) {
+          blockers.push('Requested retention expiry violates the AWS Backup vault minimum retention period.');
+        }
+      }
+      if (Number.isSafeInteger(vaultMaximumDays) && vaultMaximumDays > 0) {
+        if (!Number.isFinite(pointCreatedAt)) {
+          blockers.push('AWS Backup recovery-point creation time is missing for vault maximum-retention validation.');
+        } else if (expiry !== null && expiry > pointCreatedAt + vaultMaximumDays * 86400000) {
+          blockers.push('Requested retention expiry exceeds the AWS Backup vault maximum retention period.');
+        }
+      }
+      if (resource.attributes.LifecycleDeleteAfterDays !== null
+        && resource.attributes.LifecycleDeleteAfterDays !== undefined
+        && !resource.attributes.LifecycleDeleteAt) {
+        blockers.push('AWS Backup configured DeleteAfterDays has no calculated provider deletion timestamp.');
       }
     } else if (resource.status?.toLowerCase() !== 'available'
       || resource.provider_delete_identity_kind !== 'SNAPSHOT_IDENTIFIER'
@@ -1360,10 +1381,26 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         }
       }
       const linkedMinDays = Number(linkedRecoveryPoint.attributes.BackupVaultMinRetentionDays);
+      const linkedMaxDays = Number(linkedRecoveryPoint.attributes.BackupVaultMaxRetentionDays);
       const linkedCreatedAt = linkedRecoveryPoint.created_at ? Date.parse(linkedRecoveryPoint.created_at) : Number.NaN;
-      if (Number.isSafeInteger(linkedMinDays) && linkedMinDays > 0 && Number.isFinite(linkedCreatedAt)
-        && expiry !== null && expiry < linkedCreatedAt + linkedMinDays * 86400000) {
-        blockers.push('Requested retention expiry violates the linked AWS Backup vault minimum retention period.');
+      if (Number.isSafeInteger(linkedMinDays) && linkedMinDays > 0) {
+        if (!Number.isFinite(linkedCreatedAt)) {
+          blockers.push('Linked AWS Backup recovery-point creation time is missing for minimum-retention validation.');
+        } else if (expiry !== null && expiry < linkedCreatedAt + linkedMinDays * 86400000) {
+          blockers.push('Requested retention expiry violates the linked AWS Backup vault minimum retention period.');
+        }
+      }
+      if (Number.isSafeInteger(linkedMaxDays) && linkedMaxDays > 0) {
+        if (!Number.isFinite(linkedCreatedAt)) {
+          blockers.push('Linked AWS Backup recovery-point creation time is missing for maximum-retention validation.');
+        } else if (expiry !== null && expiry > linkedCreatedAt + linkedMaxDays * 86400000) {
+          blockers.push('Requested retention expiry exceeds the linked AWS Backup vault maximum retention period.');
+        }
+      }
+      if (linkedRecoveryPoint.attributes.LifecycleDeleteAfterDays !== null
+        && linkedRecoveryPoint.attributes.LifecycleDeleteAfterDays !== undefined
+        && !linkedRecoveryPoint.attributes.LifecycleDeleteAt) {
+        blockers.push('Linked AWS Backup configured DeleteAfterDays has no calculated provider deletion timestamp.');
       }
       if (inventory.aws_backup_legal_hold_recovery_point_arns?.includes(linkedRecoveryPointArn ?? '')) {
         blockers.push('Candidate recovery point is covered by an active AWS Backup legal hold.');
