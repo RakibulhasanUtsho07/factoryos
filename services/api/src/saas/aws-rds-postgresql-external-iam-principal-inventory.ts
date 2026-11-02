@@ -126,7 +126,7 @@ function xmlElementBlocks(xml: string, tag: string): string[] {
       depth -= 1;
       if (depth < 0) return fail('IAM returned malformed XML element nesting');
       if (depth === 0 && start >= 0) {
-        blocks.push(xml.slice(start, token.lastIndex));
+        blocks.push(xml.slice(start, index + text.length));
         start = -1;
       }
     } else if (text.endsWith('/>')) {
