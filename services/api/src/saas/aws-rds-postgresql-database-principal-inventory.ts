@@ -674,7 +674,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
         + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role_item '
         + 'WHERE role_item.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
-        + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\') '
+        + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\', \'pg_signal_backend\', \'pg_checkpoint\', \'pg_maintain\', \'pg_use_reserved_connections\', \'pg_create_subscription\') '
         + 'AND pg_catalog.pg_has_role(current_user, role_item.oid, \'MEMBER\') ORDER BY role_item.rolname) AS privileged_memberships, '
         + 'current_setting(\'server_version_num\') AS server_version_num',
       );
@@ -759,15 +759,17 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC') && item.privilege_type === 'CREATE');
       const effectiveSchemaCreate = (rowsObserved.schema_privileges ?? []).some((item) =>
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC') && item.privilege_type === 'CREATE');
+      const effectiveObjectRead = (rowsObserved.object_privileges ?? []).some((item) =>
+        (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC') && item.privilege_type === 'SELECT');
       const effectiveObjectWrite = (rowsObserved.object_privileges ?? []).some((item) =>
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
         && writePrivilegeTypes.has(String(item.privilege_type)));
       const effectiveLargeObjectAccess = (rowsObserved.large_object_privileges ?? []).some((item) =>
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
         && ['SELECT', 'UPDATE'].includes(String(item.privilege_type)));
-      const effectiveFutureWrite = (rowsObserved.default_privileges ?? []).some((item) =>
+      const effectiveFutureReadOrWrite = (rowsObserved.default_privileges ?? []).some((item) =>
         (inheritedRoles.has(String(item.grantee)) || item.grantee === 'PUBLIC')
-        && writePrivilegeTypes.has(String(item.privilege_type)));
+        && (item.privilege_type === 'SELECT' || writePrivilegeTypes.has(String(item.privilege_type))));
       if (!databaseCatalog.some((candidate) => candidate.datname === this.options.database_name)) {
         blockers.push('DATABASE_CURRENT_DATABASE_NOT_PRESENT_IN_COMPLETE_DATABASE_CATALOG');
       }
@@ -776,7 +778,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         blockers.push('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
       }
       if (effectiveDatabaseCreate || effectiveSchemaCreate || effectiveObjectWrite
-        || effectiveLargeObjectAccess || effectiveFutureWrite) {
+        || effectiveObjectRead || effectiveLargeObjectAccess || effectiveFutureReadOrWrite) {
         blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
       }
       if (Number(identity.server_version_num) < 140000) {
