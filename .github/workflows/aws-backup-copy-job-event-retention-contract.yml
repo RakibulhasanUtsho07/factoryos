@@ -1,0 +1,26 @@
+name: AWS Backup Copy Job Event Retention Contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/aws-backup-copy-job-event-retention-contract.yml"
+      - "deploy/aws/aws-backup-copy-job-*.template.json"
+      - "docs/aws-backup-copy-job-event-retention.md"
+      - "scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retention-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate AWS Backup event-retention infrastructure contract
+        run: node --test scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs
