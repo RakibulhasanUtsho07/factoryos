@@ -198,8 +198,9 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     };
     const { input, requests } = makeInput({ regions: ['ap-southeast-1'], pages });
     const result = await captureAwsElastiCacheRedisBackupInventory(input);
-    expect(result.status).toBe('COMPLETE');
+    expect(result.status).toBe('PARTIAL');
     expect(result.snapshots).toHaveLength(1);
+    expect(result.blockers).toContain(account + ':ap-northeast-1:GLOBAL_DATASTORE_MEMBER_REGION_NOT_SCANNED');
     expect(result.pages_fetched).toBe(5);
     const snapshotRequests = requests.filter((request) => request.action === 'DescribeSnapshots');
     expect(snapshotRequests).toHaveLength(2);
