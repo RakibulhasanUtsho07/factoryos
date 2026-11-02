@@ -58,6 +58,7 @@ The checked-in inventory role policy explicitly denies all actions except this r
 - Each response body is capped at 4 MiB; each request has a bounded timeout.
 - Empty continuation pages still consume the global request/page budget.
 - AWS Backup vault, recovery-point, legal-hold and held-recovery-point endpoints use the AWS Backup REST/JSON API and their own NextToken pagination. AWS Backup response objects and recovery-point lists are byte-, page-, item- and request-bounded.
+- Every AWS Backup recovery point must report the exact vault ARN/name currently being paginated, and its RDS/Aurora source ARN must match the discovered account and region. Cross-account, cross-region and foreign-vault responses fail closed.
 - AWS Backup `Lifecycle.DeleteAfterDays` and `Lifecycle.MoveToColdStorageAfterDays` are preserved separately from the provider-computed `CalculatedLifecycle.DeleteAt` and `CalculatedLifecycle.MoveToColdStorageAt`; a configured delete-after period with no calculated deletion time blocks retention review.
 - Vault `MinRetentionDays` and `MaxRetentionDays` are checked against the recovery-point creation date and proposed expiry; missing creation time blocks when a vault bound applies.
 - Every AWS Backup page has a local opaque receipt digest, which is attached to the PITR catalog. These are not CloudTrail event IDs or provider-signed audit records.
@@ -99,7 +100,7 @@ A future deletion implementation must be a separate adapter and release gate. It
 
 Focused regression suite: **services/api/src/saas/aws-rds-postgresql-pitr-provider.adapter.spec.ts**
 
-It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
+It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection including exact AWS Backup source account/region and vault binding, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
 
 The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. They do not connect to AWS or validate live IAM/SCP policy behavior.
 
