@@ -107,7 +107,7 @@ const SQL = {
   ].join(' '),
   databaseCount: [
     'SELECT count(*)::text AS database_count',
-    ' FROM pg_catalog.pg_database WHERE datistemplate = false',
+    ' FROM pg_catalog.pg_database WHERE datistemplate = false LIMIT $1',
   ].join(' '),
   databases: [
     'SELECT datname, datallowconn, datistemplate',
