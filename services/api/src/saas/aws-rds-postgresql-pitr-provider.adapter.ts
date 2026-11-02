@@ -548,6 +548,9 @@ class AwsQueryApi {
       if (!isRecord(parsed) || !Array.isArray(parsed.Accounts)) {
         return fail('AWS Organizations ListAccounts response has an unexpected JSON shape');
       }
+      if (parsed.Accounts.length > 20 || accounts.length + parsed.Accounts.length > MAX_ACCOUNTS) {
+        return fail('AWS Organizations ListAccounts exceeded its per-page or total account item budget');
+      }
       for (const item of parsed.Accounts) {
         if (!isRecord(item)) return fail('AWS Organizations returned a malformed account entry');
         const id = typeof item.Id === 'string' ? item.Id : '';
@@ -579,7 +582,13 @@ class AwsQueryApi {
     itemTag: string,
     markerName: 'NextToken' | 'Marker',
     parameters: Record<string, string> = {},
+    maxItems = MAX_TOTAL_ITEMS,
   ): Promise<{ blocks: string[]; pages: number; receipts: string[] }> {
+    const requestedPageSize = Number(parameters.MaxRecords ?? parameters.MaxResults ?? 100);
+    if (!Number.isSafeInteger(requestedPageSize) || requestedPageSize < 1 || requestedPageSize > 1000
+      || !Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > MAX_TOTAL_ITEMS) {
+      return fail('AWS ' + action + ' pagination limits are invalid');
+    }
     const blocks: string[] = [];
     const receipts: string[] = [];
     const seenMarkers = new Set<string>();
@@ -591,7 +600,14 @@ class AwsQueryApi {
       const response = await this.call(service, region, credentials, action, params);
       pages += 1;
       receipts.push(response.queryReceiptReference);
-      blocks.push(...xmlBlocks(response.xml, itemTag));
+      const pageItems = xmlBlocks(response.xml, itemTag);
+      if (pageItems.length > requestedPageSize) {
+        return fail('AWS ' + action + ' returned more items than its requested page size');
+      }
+      if (blocks.length + pageItems.length > maxItems) {
+        return fail('AWS ' + action + ' exceeded its bounded catalog item limit');
+      }
+      blocks.push(...pageItems);
       const next = xmlText(response.xml, markerName);
       if (next !== null && next !== '') {
         if (next.length > 4096 || seenMarkers.has(next)) {
@@ -791,8 +807,9 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
       region: xmlText(block, 'regionName') ?? '',
       optInStatus: xmlText(block, 'optInStatus') ?? 'unknown',
     }));
-    if (regions.length < 1 || regions.some((region) => !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(region.region))) {
-      return fail('AWS EC2 DescribeRegions returned an incomplete or invalid region catalog for account ' + accountId);
+    if (regions.length < 1 || regions.some((region) => !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(region.region)
+      || !['opted-in', 'opt-in-not-required', 'not-opted-in'].includes(region.optInStatus))) {
+      return fail('AWS EC2 DescribeRegions returned an incomplete region or unknown opt-in status for account ' + accountId);
     }
     if (new Set(regions.map((region) => region.region)).size !== regions.length) {
       return fail('AWS EC2 DescribeRegions returned duplicate regions');
