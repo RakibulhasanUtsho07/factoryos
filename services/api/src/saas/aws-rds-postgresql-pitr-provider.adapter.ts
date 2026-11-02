@@ -1130,6 +1130,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         SourceBackupVaultArn: point.source_backup_vault_arn,
         BackupVaultType: point.backup_vault_type,
         BackupVaultState: point.backup_vault_state,
+        BackupVaultType: point.backup_vault_type,
+        BackupVaultState: point.backup_vault_state,
         BackupVaultLocked: point.backup_vault_locked === null ? null : String(point.backup_vault_locked),
         BackupVaultLockDate: point.backup_vault_lock_date,
         BackupVaultMinRetentionDays: point.backup_vault_min_retention_days === null ? null : String(point.backup_vault_min_retention_days),
