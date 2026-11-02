@@ -67,6 +67,28 @@ The checked-in inventory role policy explicitly denies all actions except this r
 - RDS automated-backup cross-region destination ARNs are reconciled against the discovered automated-backup catalog; destinations not found in the enumerated account/region scopes are recorded in `unresolved_replication_destination_arns` and block a retention plan for the source backup.
 - AWS API query receipts in this output are local opaque request/response digests, **not CloudTrail event IDs or provider-signed audit evidence**.
 
+
+## Database-native writer and replication principal inventory
+
+The optional `database_principal_inventory` configuration adds a **separate database-access role**; it is never the RDS Describe/AWS Backup collector role. The adapter assumes that role per account, verifies the STS account and exact role ARN, and uses only the short-lived credentials to create an RDS IAM database authentication token for the AWS-reported DB instance or Aurora cluster writer endpoint.
+
+The data-plane role is deliberately separate:
+- Attach `deploy/aws/rds-postgresql-pitr-database-connect-role-policy.template.json` after replacing the placeholders with one exact Region, account, DbiResourceId/DBClusterResourceId and database username. Add one exact `db-user` ARN per permitted PostgreSQL target; do not use a wildcard resource ID or database username.
+- Reuse the cross-account trust template only after changing the role name and verifying the external ID independently. The database-access role policy grants `rds-db:connect` only and explicitly denies every other AWS action.
+- Provision the database login with `deploy/aws/rds-postgresql-pitr-database-principal-reader-bootstrap.sql`. It grants only `rds_iam`, `pg_monitor`, and `CONNECT` on the configured metadata database. It does not grant `pg_read_all_data`, table SELECT, `rds_superuser`, superuser, role creation, database creation, or replication.
+- The collector requires a configured RDS CA bundle and exact SHA-256 pin. TLS certificate verification is always enabled; only the AWS RDS endpoint in the discovered region is accepted. A custom DNS CNAME or plaintext/password fallback is not allowed.
+- Every inspection starts with `BEGIN READ ONLY`, verifies `transaction_read_only=on`, the exact IAM database username and the `pg_monitor`/`rds_iam` role memberships, applies statement and lock timeouts, and closes the one-connection pool after the snapshot.
+- Catalogs include PostgreSQL roles and login/replication flags, role memberships, database owners/ACLs, schema/table/sequence/function grants, aggregated active sessions, WAL senders, replication slots, WAL receivers, logical subscriptions and publications.
+- The logical-subscription query intentionally omits `pg_subscription.subconninfo`; role and settings queries never select password hashes; activity queries never persist SQL text; sender application names are hashed before storage.
+- Row limits are per catalog and global. Any permission denial, timeout, truncation, missing endpoint, wrong role identity or disabled/unknown IAM DB authentication marks that DB target PARTIAL/UNAVAILABLE. The writer-principal source becomes COMPLETE only when every discovered PostgreSQL instance/cluster has a complete database-native snapshot.
+- IAM DB authentication is used for the metadata login only. It is not used to create PostgreSQL physical/logical replication connections. IAM DB authentication events are not an independent CloudTrail audit trail; separate Config/CloudTrail/network and owner verification remain open.
+
+Without this optional configuration, `WAL_WRITER_PRINCIPAL_CATALOG` remains `NOT_ENUMERATED` and `database_writer_principals_fully_enumerated=false`. A configured but inaccessible or IAM-auth-disabled DB remains an explicit unavailable catalog; the adapter does not infer that it has no writer users.
+
+### Production prerequisites and acceptance still required
+
+The feature is code- and mock-tested only. Before setting the database-principal requirement PASS, an approved staging owner must enable IAM DB authentication where policy allows, deploy the distinct exact-resource role and dedicated non-privileged PostgreSQL login, pin the current RDS CA bundle, confirm pg_monitor/catalog visibility on RDS PostgreSQL and Aurora PostgreSQL versions in use, exercise failover/reader endpoints and validate every DB target. This adapter performs no production provisioning, role grant, parameter-group modification or database mutation.
+
 ## Catalog disposition
 
 | Source | Current disposition | Meaning |
@@ -100,7 +122,7 @@ A future deletion implementation must be a separate adapter and release gate. It
 
 Focused regression suite: **services/api/src/saas/aws-rds-postgresql-pitr-provider.adapter.spec.ts**
 
-It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection including exact AWS Backup source account/region and vault binding, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
+It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, separate IAM DB role verification, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection including exact AWS Backup source account/region and vault binding, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, IAM DB-authenticated PostgreSQL role/grant/replication inventory, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
 
 The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. They do not connect to AWS or validate live IAM/SCP policy behavior.
 
@@ -108,7 +130,7 @@ The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backu
 
 1. Wire the adapter to a deployment-owned workload identity or secret-backed credential provider; do not commit credentials or rely on a developer key.
 2. Independently review role trust, policy, permissions boundary, SCP/session policy and all alternate writer principals.
-3. Add AWS Config/CloudTrail event linkage and DB-native user/role inventory; AWS Backup vaults, recovery points and active legal holds are now captured but provider audit evidence is not yet independently attested.
+3. Add AWS Config/CloudTrail event linkage and independent network/owner attestation; database-native principals are now optionally inventoried through a separate IAM DB role, but live account staging and independent verification are not yet accepted.
 4. Resolve account closure/suspension and opt-in-region coverage with the cloud owner.
 5. Run a synthetic RDS PostgreSQL and Aurora PostgreSQL staging inventory and controlled PITR restore in an approved isolated account.
 6. Keep deletion disabled until the provider owners approve retention/legal-hold policy, dependencies, exact-resource plan and independent residual-read acceptance. The adapter intentionally exposes no Delete API call.
