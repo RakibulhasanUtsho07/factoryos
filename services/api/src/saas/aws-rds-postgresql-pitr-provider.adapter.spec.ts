@@ -43,6 +43,7 @@ function makeFetch(options: {
   regionXml?: string;
   instanceXml?: string;
   automatedBackupXml?: string;
+  backupStatus?: string;
   failAction?: string;
 } = {}) {
   const requests: Array<{
@@ -124,7 +125,7 @@ function makeFetch(options: {
           + '<DbiResourceId>db-ABCDEFGHIJKLMNOP</DbiResourceId>'
           + '<DBInstanceIdentifier>orders-db</DBInstanceIdentifier>'
           + '<Region>ap-southeast-1</Region><Engine>postgres</Engine>'
-          + '<Status>active</Status><BackupRetentionPeriod>7</BackupRetentionPeriod>'
+          + '<Status>' + (options.backupStatus ?? 'active') + '</Status><BackupRetentionPeriod>7</BackupRetentionPeriod>'
           + '<RestoreWindow><EarliestTime>2026-10-27T00:00:00.000Z</EarliestTime>'
           + '<LatestTime>2026-11-01T10:00:00.000Z</LatestTime></RestoreWindow>'
           + '</DBInstanceAutomatedBackup>')
@@ -231,7 +232,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const plan = createAwsRdsPitrRetentionDryRunPlan({
       inventory,
-      candidate_resource_arn: databaseArn,
+      candidate_provider_identity_reference: inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')!.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP')!.provider_identity_reference,
       expected_account_id: organizationAccount,
       expected_region: 'ap-southeast-1',
       minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
@@ -251,13 +252,15 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(plan.deletion_authorized).toBe(false);
   });
 
-  it('does not mistake a retained backup source DB ARN for the backup resource ARN', async () => {
-    const mock = makeFetch();
+  it('binds a retained backup to its stable DbiResourceId, not its DBInstanceArn field', async () => {
+    const mock = makeFetch({ backupStatus: 'retained' });
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const source = inventory.sources.find((entry) => entry.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG');
     const backup = source?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
     expect(backup?.resource_arn).toBeNull();
-    expect(backup?.identity_kind).toBe('SOURCE_DB_COMPOSITE');
+    expect(backup?.identity_kind).toBe('SOURCE_DB_RESOURCE_ID');
+    expect(backup?.provider_delete_identity_reference).toBe('db-ABCDEFGHIJKLMNOP');
+    expect(backup?.provider_delete_identity_kind).toBe('DBI_RESOURCE_ID');
     expect(backup?.provider_identity_reference).toMatch(/^aws-rds-resource\./);
     expect(backup?.attributes.DBIResourceId ?? backup?.attributes.DbiResourceId).toBe('db-ABCDEFGHIJKLMNOP');
     expect(backup?.source_database_reference).toBe('orders-db');
@@ -265,7 +268,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
 
     const plan = createAwsRdsPitrRetentionDryRunPlan({
       inventory,
-      candidate_resource_arn: replicatedArn,
+      candidate_provider_identity_reference: backup!.provider_identity_reference,
       expected_account_id: organizationAccount,
       expected_region: 'ap-southeast-1',
       minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
@@ -274,7 +277,10 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       dependency_status: 'NO_DEPENDENCY',
     });
     expect(plan.status).toBe('BLOCKED');
-    expect(plan.blockers).toContain('Backup/snapshot lifecycle state is not eligible for retention review.');
+    expect(plan.candidate_resource_arn).toBeNull();
+    expect(plan.provider_delete_identity_reference).toBe('db-ABCDEFGHIJKLMNOP');
+    expect(plan.provider_delete_identity_kind).toBe('DBI_RESOURCE_ID');
+    expect(plan.blockers.join(' ')).toMatch(/WAL, database writer and AWS Backup/i);
   });
 
   it('uses the separate replicated automated-backup ARN when AWS supplies one', async () => {
@@ -292,6 +298,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       ?.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP');
     expect(backup?.resource_arn).toBe(replicatedArn);
     expect(backup?.identity_kind).toBe('IMMUTABLE_RESOURCE_ARN');
+    expect(backup?.provider_delete_identity_reference).toBe(replicatedArn);
+    expect(backup?.provider_delete_identity_kind).toBe('REPLICATED_BACKUP_ARN');
     expect(backup?.attributes.DBInstanceArn).toBe(databaseArn);
   });
 
@@ -300,7 +308,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     const inventory = await createAdapter(mock.fetcher).captureInventory();
     const plan = createAwsRdsPitrRetentionDryRunPlan({
       inventory,
-      candidate_resource_arn: databaseArn,
+      candidate_provider_identity_reference: inventory.sources.find((source) => source.source_kind === 'WAL_ARCHIVE_DESTINATION_CATALOG')!.items.find((item) => item.resource_type === 'RDS_AUTOMATED_BACKUP')!.provider_identity_reference,
       expected_account_id: organizationAccount,
       expected_region: 'us-east-1',
       minimum_recovery_horizon_end_at: '2026-10-30T00:00:00.000Z',
@@ -309,7 +317,7 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       dependency_status: 'NO_DEPENDENCY',
     });
     expect(plan.status).toBe('BLOCKED');
-    expect(plan.blockers.join(' ')).toMatch(/expected AWS account and region/i);
+    expect(plan.blockers.join(' ')).toMatch(/expected inventory account\/region scope|Expected account\/region is not present/i);
   });
 
 
