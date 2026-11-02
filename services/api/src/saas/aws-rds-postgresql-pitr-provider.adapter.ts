@@ -67,7 +67,8 @@ export interface AwsRdsPitrResource {
   provider_identity_reference: string;
   identity_kind: 'IMMUTABLE_RESOURCE_ARN' | 'SOURCE_DB_RESOURCE_ID';
   provider_delete_identity_reference: string | null;
-  provider_delete_identity_kind: 'DBI_RESOURCE_ID' | 'REPLICATED_BACKUP_ARN' | 'SNAPSHOT_ARN' | null;
+  provider_delete_identity_kind: 'DBI_RESOURCE_ID' | 'REPLICATED_BACKUP_ARN' | 'SNAPSHOT_ARN' | 'AWS_BACKUP_RECOVERY_POINT_ARN' | null;
+  replication_destination_arns: string[];
   resource_type: string;
   account_id: string;
   region: string;
@@ -92,6 +93,42 @@ export interface AwsRdsPitrCatalogSource {
   items: AwsRdsPitrResource[];
 }
 
+export interface AwsBackupVaultRecord {
+  account_id: string;
+  region: string;
+  backup_vault_arn: string;
+  backup_vault_name: string;
+  vault_type: string | null;
+  vault_state: string | null;
+  locked: boolean | null;
+  lock_date: string | null;
+  min_retention_days: number | null;
+  max_retention_days: number | null;
+  number_of_recovery_points: number | null;
+  encryption_key_arn: string | null;
+  creation_date: string | null;
+}
+
+export interface AwsBackupRecoveryPointRecord {
+  account_id: string;
+  region: string;
+  recovery_point_arn: string;
+  backup_vault_arn: string;
+  backup_vault_name: string;
+  resource_arn: string;
+  resource_type: 'RDS' | 'Aurora';
+  status: string | null;
+  creation_date: string | null;
+  completion_date: string | null;
+  last_restore_time: string | null;
+  lifecycle_delete_at: string | null;
+  lifecycle_move_to_cold_storage_at: string | null;
+  is_encrypted: boolean | null;
+  encryption_key_arn: string | null;
+  backup_size_bytes: number | null;
+  source_backup_vault_arn: string | null;
+}
+
 export interface AwsRdsPostgresqlPitrInventory {
   schema: typeof AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA;
   status: 'INCOMPLETE' | 'ENUMERATED_WITH_EXPLICIT_GAPS';
@@ -110,6 +147,7 @@ export interface AwsRdsPostgresqlPitrInventory {
   regions_discovered: number;
   scopes_discovered: number;
   total_pages_fetched: number;
+  total_provider_requests: number;
   total_items_observed: number;
   scopes: Array<{
     scope: AwsRdsPitrProviderScope;
@@ -119,9 +157,12 @@ export interface AwsRdsPostgresqlPitrInventory {
   excluded_accounts: Array<{ account_id: string; state: string; reason: string }>;
   excluded_regions: Array<{ account_id: string; region: string; opt_in_status: string }>;
   sources: AwsRdsPitrCatalogSource[];
+  backup_vault_catalog_complete: boolean;
+  backup_vaults: AwsBackupVaultRecord[];
+  aws_backup_recovery_points_enumerated: boolean;
+  aws_backup_recovery_points: AwsBackupRecoveryPointRecord[];
   provider_managed_wal_segments_individually_enumerated: false;
   database_writer_principals_fully_enumerated: false;
-  aws_backup_recovery_points_enumerated: false;
   source_receipts_signable: false;
   manifest_eligible: false;
   deletion_authorized: false;
@@ -659,6 +700,17 @@ function resourceFromBlock(
     : isSnapshot ? arn : null;
   const providerDeleteIdentityKind = isAutomatedBackup ? (arn ? 'REPLICATED_BACKUP_ARN' : 'DBI_RESOURCE_ID')
     : isSnapshot ? 'SNAPSHOT_ARN' : null;
+  const replicationDestinationArns = resourceType === 'RDS_AUTOMATED_BACKUP'
+    ? xmlBlocks(block, 'DBInstanceAutomatedBackupsReplication').map((entry) => xmlText(entry, 'DBInstanceAutomatedBackupsArn'))
+      .filter((entry): entry is string => entry !== null).map((entry) => {
+        const match = /^arn:(aws|aws-us-gov|aws-cn):rds:([a-z0-9-]+):(\\d{12}):auto-backup:[A-Za-z0-9_-]+$/.exec(entry);
+        if (!match || match[1] !== partitionForRegion(scope.region_reference)
+          || match[3] !== scope.account_reference || !/^[a-z]{2}(?:-[a-z0-9]+)+-\\d$/.test(match[2]!)) {
+          return fail('RDS automated-backup replication returned an invalid cross-region backup ARN');
+        }
+        return entry;
+      })
+    : [];
   const retention = optionalInteger(xmlText(block, 'BackupRetentionPeriod'));
   const attrs: Record<string, string | null> = {};
   for (const name of fieldNames) attrs[name] = optionalString(xmlText(block, name));
@@ -668,6 +720,7 @@ function resourceFromBlock(
     identity_kind: arn ? 'IMMUTABLE_RESOURCE_ARN' : 'SOURCE_DB_RESOURCE_ID',
     provider_delete_identity_reference: providerDeleteIdentity,
     provider_delete_identity_kind: providerDeleteIdentityKind,
+    replication_destination_arns: replicationDestinationArns,
     resource_type: resourceType,
     account_id: scope.account_reference,
     region: scope.region_reference,
