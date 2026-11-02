@@ -54,6 +54,8 @@ function makePoolFactory(settings: {
   databaseNames?: string[];
   inaccessibleDatabaseNames?: string[];
   privilegedMemberships?: string[];
+  roleMemberships?: Array<{ granted_role: string; member_role: string; granted_by: string; admin_option: boolean }>;
+  databasePrivilegeRows?: unknown[];
 } = {}) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   const poolConfig: Array<Record<string, unknown>> = [];
@@ -104,6 +106,9 @@ function makePoolFactory(settings: {
               datistemplate: false,
               acl_reference: null,
             })) };
+          }
+          if (sql.includes('factoryos:pitr:database_privileges')) {
+            return { rows: settings.databasePrivilegeRows ?? [] };
           }
           if (sql.includes('factoryos:pitr:schema_privileges')) {
             return { rows: [{ grantee: 'app_writer', schema_name: 'public', privilege_type: 'CREATE', is_grantable: false }] };
@@ -186,7 +191,7 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalog.wal_receivers[0]?.status).toBe('streaming');
     expect(catalog.logical_subscriptions[0]?.subscription_name).toBe('orders_subscription');
     expect(catalog.logical_subscriptions[0]).not.toHaveProperty('subconninfo');
-    expect(catalog.catalog_status).toHaveLength(12);
+    expect(catalog.catalog_status).toHaveLength(13);
     expect(catalog.rows_observed).toBeGreaterThan(0);
     expect(catalog.snapshot_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(mock.poolConfig[0]?.ssl).toEqual({ ca: caPem, rejectUnauthorized: true });
@@ -272,6 +277,18 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalogs[0]?.status).toBe('PARTIAL');
     expect(catalogs[0]?.blockers).toContain('DATABASE_PRINCIPAL_READER_CANNOT_CONNECT_TO_EVERY_CONNECTABLE_DATABASE');
     expect(mock.poolConfig.map((item) => item.database)).toEqual(['postgres']);
+  });
+
+
+  it('rejects the reader login when an inherited role grants database CREATE', async () => {
+    const mock = makePoolFactory({
+      roleMemberships: [{ granted_role: 'database_builder', member_role: username, granted_by: 'rds_superuser', admin_option: false }],
+      databasePrivilegeRows: [{ grantee: 'database_builder', database_name: 'postgres', privilege_type: 'CREATE', is_grantable: false }],
+    });
+    const reader = new AwsRdsPitrDatabasePrincipalInventoryReader(options, mock.poolFactory);
+    const catalog = await reader.capture(target, role);
+    expect(catalog.status).toBe('PARTIAL');
+    expect(catalog.blockers).toContain('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
   });
 
   it('rejects the database reader when it inherits a privileged RDS/PostgreSQL role', async () => {
