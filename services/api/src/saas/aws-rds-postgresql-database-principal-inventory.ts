@@ -56,7 +56,7 @@ export interface AwsRdsPitrDatabasePrincipalCatalog {
     current_database: string;
     transaction_read_only: true;
     in_recovery: boolean;
-    has_pg_monitor: boolean;
+    has_pg_read_all_stats: boolean;
     has_rds_iam: boolean;
     server_version_num: string;
   } | null;
@@ -545,7 +545,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         + 'session_user AS session_user, current_database() AS current_database, '
         + 'current_setting(\'transaction_read_only\') AS transaction_read_only, '
         + 'pg_catalog.pg_is_in_recovery() AS in_recovery, '
-        + 'pg_catalog.pg_has_role(current_user, \'pg_monitor\', \'member\') AS has_pg_monitor, '
+        + 'pg_catalog.pg_has_role(current_user, \'pg_read_all_stats\', \'member\') AS has_pg_read_all_stats, '
         + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
         + 'current_setting(\'server_version_num\') AS server_version_num',
       );
@@ -566,7 +566,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         current_database: requiredString(row.current_database, 'current_database'),
         transaction_read_only: true,
         in_recovery: asBoolean(row.in_recovery, 'in_recovery'),
-        has_pg_monitor: asBoolean(row.has_pg_monitor, 'has_pg_monitor'),
+        has_pg_read_all_stats: asBoolean(row.has_pg_read_all_stats, 'has_pg_read_all_stats'),
         has_rds_iam: asBoolean(row.has_rds_iam, 'has_rds_iam'),
         server_version_num: requiredString(row.server_version_num, 'server_version_num'),
       };
@@ -613,7 +613,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
         || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
         || readerRole.rolbypassrls !== false || readerRole.rolcanlogin !== true
-        || readerRole.rolinherit !== true || identity.has_pg_monitor !== true || identity.has_rds_iam !== true) {
+        || readerRole.rolinherit !== true || identity.has_pg_read_all_stats !== true || identity.has_rds_iam !== true) {
         blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_IS_MISSING_OR_OVERPRIVILEGED');
       }
       await client.query('COMMIT');
