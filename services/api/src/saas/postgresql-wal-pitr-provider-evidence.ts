@@ -25,6 +25,8 @@ const DEFAULT_MAX_PAGES_PER_SCOPE = 1000;
 const MAX_PAGES_PER_SCOPE = 5000;
 const DEFAULT_MAX_TOTAL_ITEMS = 20000;
 const MAX_TOTAL_ITEMS = 100000;
+const DEFAULT_MAX_TOTAL_PAGES = 10000;
+const MAX_TOTAL_PAGES = 50000;
 const MAX_ITEM_BYTES = 64 * 1024;
 const MAX_SCOPES = 1000;
 const SENSITIVE_KEY = /(secret|password|credential|access.?key|session.?token|private.?key|connection.?string|authorization|bearer|raw.?payload)/i;
@@ -87,6 +89,7 @@ export interface PostgresqlWalPitrProviderInventoryCaptureInput {
   page_size?: number;
   max_pages_per_scope?: number;
   max_total_items?: number;
+  max_total_pages?: number;
   now?: Date;
 }
 
@@ -159,6 +162,7 @@ export interface PostgresqlWalPitrIndependentResidualScanInput {
   page_size?: number;
   max_pages_per_scope?: number;
   max_total_items?: number;
+  max_total_pages?: number;
   now?: Date;
 }
 
@@ -276,14 +280,16 @@ function validateInput(input: PostgresqlWalPitrProviderInventoryCaptureInput): {
   const pageSize = input.page_size ?? DEFAULT_PAGE_SIZE;
   const maxPages = input.max_pages_per_scope ?? DEFAULT_MAX_PAGES_PER_SCOPE;
   const maxItems = input.max_total_items ?? DEFAULT_MAX_TOTAL_ITEMS;
+  const maxTotalPages = input.max_total_pages ?? DEFAULT_MAX_TOTAL_PAGES;
   if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE
     || !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > MAX_PAGES_PER_SCOPE
-    || !Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > MAX_TOTAL_ITEMS) {
+    || !Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > MAX_TOTAL_ITEMS
+    || !Number.isSafeInteger(maxTotalPages) || maxTotalPages < 1 || maxTotalPages > MAX_TOTAL_PAGES) {
     return fail('provider inventory bounds are outside supported limits');
   }
   const now = input.now ?? new Date();
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return fail('capture clock is invalid');
-  return { pageSize, maxPages, maxItems, now };
+  return { pageSize, maxPages, maxItems, maxTotalPages, now };
 }
 
 async function enumerateSource(
@@ -294,6 +300,7 @@ async function enumerateSource(
   pageSize: number,
   maxPages: number,
   itemBudget: { total: number; maximum: number },
+  pageBudget: { total: number; maximum: number },
 ): Promise<PostgresqlWalPitrProviderSourceCapture> {
   const items = new Map<string, { reference: string; value: Record<string, unknown> }>();
   const auditReferences = new Set<string>();
@@ -303,6 +310,8 @@ async function enumerateSource(
     const seenTokens = new Set<string>();
     let pagesForScope = 0;
     do {
+      if (pageBudget.total >= pageBudget.maximum) return fail('provider inventory exceeded its total page budget');
+      pageBudget.total += 1;
       const page = await gateway.listSourcePage({ source_kind: kind, scope, page_token: pageToken, page_size: pageSize });
       if (!isRecord(page) || scopeKey(normalizeScope(page.scope)) !== scopeKey(scope)) {
         return fail(kind + ' returned a page outside the requested provider/account/region scope');
@@ -313,6 +322,7 @@ async function enumerateSource(
       const auditReference = safeReference(page.audit_reference, kind + ' provider query audit reference');
       auditReferences.add(auditReference);
       if (!Array.isArray(page.items)) return fail(kind + ' page items must be an array');
+      if (page.items.length > pageSize) return fail(kind + ' page exceeded the requested page size');
       pagesFetched += 1;
       pagesForScope += 1;
       if (pagesForScope > maxPages) return fail(kind + ' exceeded its per-scope page limit');
@@ -373,11 +383,12 @@ export async function capturePostgresqlWalPitrProviderInventory(
   const bounds = validateInput(input);
   const discovery = validateDiscovery(await gateway.discoverScopes());
   const itemBudget = { total: 0, maximum: bounds.maxItems };
+  const pageBudget = { total: 0, maximum: bounds.maxTotalPages };
   const captures: PostgresqlWalPitrProviderSourceCapture[] = [];
   for (const kind of POSTGRESQL_WAL_PITR_PROVIDER_SOURCE_KINDS) {
     captures.push(await enumerateSource(
       gateway, kind, discovery.scopes, discovery.principal, bounds.pageSize,
-      bounds.maxPages, itemBudget,
+      bounds.maxPages, itemBudget, pageBudget,
     ));
   }
   const scopeSha = sha256(JSON.stringify(discovery.scopes));
@@ -455,9 +466,11 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
   const pageSize = input.page_size ?? DEFAULT_PAGE_SIZE;
   const maxPages = input.max_pages_per_scope ?? DEFAULT_MAX_PAGES_PER_SCOPE;
   const maxItems = input.max_total_items ?? DEFAULT_MAX_TOTAL_ITEMS;
+  const maxTotalPages = input.max_total_pages ?? DEFAULT_MAX_TOTAL_PAGES;
   if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE
     || !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > MAX_PAGES_PER_SCOPE
-    || !Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > MAX_TOTAL_ITEMS) {
+    || !Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > MAX_TOTAL_ITEMS
+    || !Number.isSafeInteger(maxTotalPages) || maxTotalPages < 1 || maxTotalPages > MAX_TOTAL_PAGES) {
     return fail('independent residual scan bounds are outside supported limits');
   }
   const now = input.now ?? new Date();
@@ -478,6 +491,7 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
     const seenTokens = new Set<string>();
     let pagesForScope = 0;
     do {
+      if (pagesFetched >= maxTotalPages) return fail('independent residual scan exceeded its total page budget');
       const page = await gateway.listResidualPage({ scope, page_token: pageToken, page_size: pageSize });
       if (!isRecord(page) || scopeKey(normalizeScope(page.scope)) !== scopeKey(scope)) {
         return fail('independent residual page was returned for an unexpected provider scope');
@@ -487,6 +501,7 @@ export async function scanPostgresqlWalPitrResidualsIndependently(
       }
       auditReferences.add(safeReference(page.audit_reference, 'independent residual query audit reference'));
       if (!Array.isArray(page.items)) return fail('independent residual page items must be an array');
+      if (page.items.length > pageSize) return fail('independent residual page exceeded the requested page size');
       pagesFetched += 1;
       pagesForScope += 1;
       if (pagesForScope > maxPages) return fail('independent residual scan exceeded its per-scope page limit');
