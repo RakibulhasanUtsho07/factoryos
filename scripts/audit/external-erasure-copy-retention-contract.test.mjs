@@ -569,7 +569,7 @@ test('PostgreSQL WAL/PITR retention eligibility is non-destructive and requires 
   assert.match(evaluatorTests, /verified tombstone replay/);
   assert.match(coverageService, /copyClass === 'POSTGRESQL_WAL_PITR' && disposition === 'SUPPORTED'/);
   assert.match(coverageService, /class-specific provider retention\/deletion adapter/);
-  assert.match(runbook, /non-destructive WAL\\/PITR retention eligibility/i);
+  assert.match(runbook, /non-destructive WAL\/PITR retention eligibility/i);
   assert.match(runbook, /REVIEW_ELIGIBLE/);
   assert.match(runbook, /does not authorize deletion/);
 });
