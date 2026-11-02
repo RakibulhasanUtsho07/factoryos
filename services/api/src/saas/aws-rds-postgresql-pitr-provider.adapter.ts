@@ -166,6 +166,8 @@ export interface AwsRdsPostgresqlPitrInventory {
   aws_backup_legal_holds: AwsBackupLegalHoldRecord[];
   aws_backup_legal_hold_recovery_point_arns: string[];
   aws_backup_legal_hold_scope_status_uncertain: boolean;
+  aws_backup_receipt_references: string[];
+  unresolved_replication_destination_arns: string[];
   provider_managed_wal_segments_individually_enumerated: false;
   database_writer_principals_fully_enumerated: false;
   source_receipts_signable: false;
@@ -981,6 +983,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const backupRecoveryPoints: AwsBackupRecoveryPointRecord[] = [];
     const backupLegalHolds: AwsBackupLegalHoldRecord[] = [];
     const backupLegalHoldRecoveryPointArns = new Set<string>();
+    const backupReceiptReferences: string[] = [];
     let backupLegalHoldScopeStatusUncertain = false;
     let backupPages = 0;
     const sourceItems = new Map<AwsRdsPitrSourceKind, AwsRdsPitrResource[]>();
@@ -1012,12 +1015,14 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       this.totalPaginationPages += instances.pages + clusters.pages + globals.pages
         + automated.pages + snapshots.pages + clusterSnapshots.pages;
       const backupVaultResult = await this.backupApi.listBackupVaults(scope, role.credentials);
+      backupReceiptReferences.push(...backupVaultResult.receipts);
       backupVaults.push(...backupVaultResult.vaults);
       backupPages += backupVaultResult.pages;
       this.totalPaginationPages += backupVaultResult.pages;
       this.addItems(backupVaultResult.vaults.length);
       for (const vault of backupVaultResult.vaults) {
         const recoveryResult = await this.backupApi.listRecoveryPointsByVault(scope, role.credentials, vault);
+        backupReceiptReferences.push(...recoveryResult.receipts);
         backupRecoveryPoints.push(...recoveryResult.points);
         backupPages += recoveryResult.pages;
         this.totalPaginationPages += recoveryResult.pages;
@@ -1028,6 +1033,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
         }
       }
       const legalHoldResult = await this.backupApi.listLegalHolds(scope, role.credentials);
+      backupReceiptReferences.push(...legalHoldResult.receipts);
       backupLegalHolds.push(...legalHoldResult.legal_holds);
       legalHoldResult.recovery_point_arns.forEach((arn) => backupLegalHoldRecoveryPointArns.add(arn));
       backupLegalHoldScopeStatusUncertain ||= legalHoldResult.scope_status_uncertain;
@@ -1080,6 +1086,15 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       [...automated.receipts, ...snapshots.receipts, ...clusterSnapshots.receipts]);
     }
 
+    const discoveredAutomatedBackupArns = new Set(
+      (sourceItems.get('WAL_ARCHIVE_DESTINATION_CATALOG') ?? [])
+        .filter((resource) => resource.resource_type === 'RDS_AUTOMATED_BACKUP' && resource.resource_arn !== null)
+        .map((resource) => resource.resource_arn as string),
+    );
+    const unresolvedReplicationDestinationArns = [...new Set(
+      (sourceItems.get('WAL_ARCHIVE_DESTINATION_CATALOG') ?? [])
+        .flatMap((resource) => resource.replication_destination_arns),
+    )].filter((arn) => !discoveredAutomatedBackupArns.has(arn)).sort();
     const backupRecoveryResources: AwsRdsPitrResource[] = backupRecoveryPoints.map((point) => ({
       resource_arn: point.recovery_point_arn,
       provider_identity_reference: 'aws-backup-recovery-point.' + sha256(point.recovery_point_arn).slice(0, 40),
