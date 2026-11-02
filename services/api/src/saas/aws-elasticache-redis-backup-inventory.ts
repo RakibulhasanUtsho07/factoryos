@@ -110,6 +110,38 @@ export interface AwsElastiCacheRedisSnapshotRecord {
   }>;
 }
 
+export interface AwsElastiCacheServerlessCacheRecord {
+  account_id: string;
+  region: string;
+  cache_name: string;
+  cache_arn: string;
+  engine: 'redis' | 'valkey' | 'memcached';
+  major_engine_version: string | null;
+  full_engine_version: string | null;
+  status: string;
+  snapshot_retention_limit_days: number | null;
+  daily_snapshot_time: string | null;
+  storage_encryption_type: string | null;
+  create_time: string | null;
+}
+
+export interface AwsElastiCacheServerlessSnapshotRecord {
+  account_id: string;
+  region: string;
+  snapshot_name: string;
+  snapshot_arn: string;
+  snapshot_identity_reference: string;
+  snapshot_identity_kind: 'PROVIDER_SNAPSHOT_ARN';
+  cache_name: string;
+  snapshot_type: string;
+  status: string;
+  create_time: string | null;
+  expiry_time: string | null;
+  bytes_used_for_cache: string | null;
+  engine: 'redis' | 'valkey' | 'memcached' | null;
+  major_engine_version: string | null;
+}
+
 export interface AwsElastiCacheRedisBackupInventory {
   schema: 'factoryos.aws-elasticache-redis-backup-inventory/v1';
   status: 'COMPLETE' | 'PARTIAL';
@@ -120,6 +152,8 @@ export interface AwsElastiCacheRedisBackupInventory {
   replication_groups: AwsElastiCacheRedisReplicationGroupRecord[];
   global_replication_groups: AwsElastiCacheRedisGlobalReplicationGroupRecord[];
   snapshots: AwsElastiCacheRedisSnapshotRecord[];
+  serverless_caches: AwsElastiCacheServerlessCacheRecord[];
+  serverless_snapshots: AwsElastiCacheServerlessSnapshotRecord[];
   non_redis_cache_clusters_excluded: number;
   unscanned_global_member_scopes: Array<{
     account_id: string;
@@ -134,7 +168,8 @@ export interface AwsElastiCacheRedisBackupInventory {
   query_receipt_references: string[];
   blockers: string[];
   node_based_catalog_complete: boolean;
-  serverless_cache_and_snapshot_surfaces_enumerated: false;
+  serverless_catalog_complete: boolean;
+  serverless_cache_and_snapshot_surfaces_enumerated: boolean;
   self_managed_redis_aof_rdb_and_volume_backup_surfaces_enumerated: false;
   whole_cache_backup_coverage_complete: false;
   provider_mutation_performed: false;
@@ -549,6 +584,138 @@ async function paginate(
   return { records, pages, receipts };
 }
 
+
+async function paginateNextToken(
+  scope: AwsElastiCacheRedisBackupScope,
+  action: string,
+  resultTag: string,
+  collectionTag: string,
+  itemTag: string,
+  parameters: Record<string, string>,
+  fetcher: typeof fetch,
+  timeoutMs: number,
+  now: () => Date,
+  budget: MutableBudget,
+  limits: ValidatedLimits,
+): Promise<PageResult> {
+  const records: string[] = [];
+  const receipts: string[] = [];
+  const seenTokens = new Set<string>();
+  let nextToken: string | null = null;
+  let pages = 0;
+  do {
+    if (pages >= limits.max_pages || budget.pages >= limits.max_pages) {
+      return fail(action + ' exhausted the global page budget');
+    }
+    const requestParameters = { ...parameters };
+    if (nextToken !== null) requestParameters.NextToken = nextToken;
+    const xml = await signedQuery('elasticache', scope, action, requestParameters,
+      fetcher, timeoutMs, now, budget, limits.max_pages);
+    const result = xmlBlocks(xml, resultTag)[0];
+    if (!result) return fail(action + ' response omitted its result container');
+    const collection = xmlBlocks(result, collectionTag)[0];
+    if (!collection) return fail(action + ' response omitted its collection container');
+    const pageRecords = xmlBlocks(collection, itemTag);
+    if (budget.items + pageRecords.length > limits.max_items) {
+      return fail(action + ' exceeded the global item budget');
+    }
+    budget.items += pageRecords.length;
+    records.push(...pageRecords);
+    pages += 1;
+    budget.pages += 1;
+    receipts.push('elasticache.' + action.toLowerCase() + '.' + scope.account_id + '.'
+      + scope.region + '.' + sha256(xml).slice(0, 32));
+    const next = xmlText(result, 'NextToken');
+    const normalizedNext = next === null || next.length === 0 ? null : next;
+    if (normalizedNext !== null && normalizedNext.length > 4096) {
+      return fail(action + ' returned an oversized continuation token');
+    }
+    if (normalizedNext !== null && seenTokens.has(normalizedNext)) {
+      return fail(action + ' returned a repeated continuation token');
+    }
+    if (normalizedNext !== null) seenTokens.add(normalizedNext);
+    nextToken = normalizedNext;
+  } while (nextToken !== null);
+  return { records, pages, receipts };
+}
+
+function serverlessEngine(value: string | null): 'redis' | 'valkey' | 'memcached' {
+  const engine = value?.toLowerCase();
+  if (engine === 'redis' || engine === 'valkey' || engine === 'memcached') return engine;
+  return fail('DescribeServerlessCaches returned an unsupported engine value');
+}
+
+function validScopedElastiCacheArn(
+  value: string | null,
+  scope: AwsElastiCacheRedisBackupScope,
+  field: string,
+): string {
+  const arn = validIdentifier(value, field);
+  const expectedPrefix = 'arn:' + scope.partition + ':elasticache:' + scope.region + ':' + scope.account_id + ':';
+  if (!arn.startsWith(expectedPrefix) || arn.length > 1024) {
+    return fail(field + ' does not belong to the verified account and region');
+  }
+  return arn;
+}
+
+function parseServerlessCache(
+  xml: string,
+  scope: AwsElastiCacheRedisBackupScope,
+): AwsElastiCacheServerlessCacheRecord {
+  const cacheName = validIdentifier(directXmlText(xml, 'ServerlessCacheName'), 'ServerlessCacheName');
+  return {
+    account_id: scope.account_id,
+    region: scope.region,
+    cache_name: cacheName,
+    cache_arn: validScopedElastiCacheArn(directXmlText(xml, 'ARN'), scope, 'ServerlessCache ARN'),
+    engine: serverlessEngine(directXmlText(xml, 'Engine')),
+    major_engine_version: directXmlText(xml, 'MajorEngineVersion'),
+    full_engine_version: directXmlText(xml, 'FullEngineVersion'),
+    status: validIdentifier(directXmlText(xml, 'Status'), 'ServerlessCache Status'),
+    snapshot_retention_limit_days: optionalInteger(directXmlText(xml, 'SnapshotRetentionLimit')),
+    daily_snapshot_time: directXmlText(xml, 'DailySnapshotTime'),
+    storage_encryption_type: directXmlText(xml, 'StorageEncryptionType'),
+    create_time: canonicalTimestamp(directXmlText(xml, 'CreateTime')),
+  };
+}
+
+function parseServerlessSnapshot(
+  xml: string,
+  scope: AwsElastiCacheRedisBackupScope,
+): AwsElastiCacheServerlessSnapshotRecord {
+  const snapshotName = validIdentifier(
+    directXmlText(xml, 'ServerlessCacheSnapshotName'), 'ServerlessCacheSnapshotName',
+  );
+  const configuration = xmlBlocks(xml, 'ServerlessCacheConfiguration')[0] ?? '';
+  const cacheName = validIdentifier(
+    directXmlText(configuration, 'ServerlessCacheName'), 'ServerlessCacheConfiguration ServerlessCacheName',
+  );
+  const engineValue = directXmlText(configuration, 'Engine');
+  const engine = engineValue ? serverlessEngine(engineValue) : null;
+  const bytes = directXmlText(xml, 'BytesUsedForCache');
+  if (bytes !== null && !/^\\d{1,20}$/.test(bytes)) {
+    return fail('serverless snapshot byte count is malformed');
+  }
+  const snapshotArn = validScopedElastiCacheArn(directXmlText(xml, 'ARN'), scope, 'ServerlessCacheSnapshot ARN');
+  const createTime = canonicalTimestamp(directXmlText(xml, 'CreateTime'));
+  return {
+    account_id: scope.account_id,
+    region: scope.region,
+    snapshot_name: snapshotName,
+    snapshot_arn: snapshotArn,
+    snapshot_identity_reference: 'elasticache-serverless-snapshot.' + sha256(snapshotArn).slice(0, 40),
+    snapshot_identity_kind: 'PROVIDER_SNAPSHOT_ARN',
+    cache_name: cacheName,
+    snapshot_type: validIdentifier(directXmlText(xml, 'SnapshotType'), 'ServerlessCacheSnapshot SnapshotType'),
+    status: validIdentifier(directXmlText(xml, 'Status'), 'ServerlessCacheSnapshot Status'),
+    create_time: createTime,
+    expiry_time: canonicalTimestamp(directXmlText(xml, 'ExpiryTime')),
+    bytes_used_for_cache: bytes,
+    engine,
+    major_engine_version: directXmlText(configuration, 'MajorEngineVersion'),
+  };
+}
+
 function redisEngine(value: string | null): 'redis' | 'valkey' | null {
   const engine = value?.toLowerCase();
   return engine === 'redis' || engine === 'valkey' ? engine : null;
@@ -734,6 +901,10 @@ export async function captureAwsElastiCacheRedisBackupInventory(
   const replicationGroups: AwsElastiCacheRedisReplicationGroupRecord[] = [];
   const globalReplicationGroups: AwsElastiCacheRedisGlobalReplicationGroupRecord[] = [];
   const snapshots: AwsElastiCacheRedisSnapshotRecord[] = [];
+  const serverlessCaches: AwsElastiCacheServerlessCacheRecord[] = [];
+  const serverlessSnapshots: AwsElastiCacheServerlessSnapshotRecord[] = [];
+  const serverlessBlockers = new Set<string>();
+  let serverlessActionsCompleted = 0;
   const nonRedisClusters: number[] = [];
   const verifiedScopes: ApiScopeState[] = [];
   let pageFailure = false;
@@ -754,6 +925,7 @@ export async function captureAwsElastiCacheRedisBackupInventory(
       collection: string;
       item: string;
       parameters: Record<string, string>;
+      nextToken?: boolean;
     }> = [
       {
         action: 'DescribeCacheClusters',
@@ -783,13 +955,34 @@ export async function captureAwsElastiCacheRedisBackupInventory(
         item: 'Snapshot',
         parameters: { MaxRecords: '50', ShowNodeGroupConfig: 'true' },
       },
+      {
+        action: 'DescribeServerlessCaches',
+        result: 'DescribeServerlessCachesResult',
+        collection: 'ServerlessCaches',
+        item: 'member',
+        parameters: { MaxResults: '50' },
+        nextToken: true,
+      },
+      {
+        action: 'DescribeServerlessCacheSnapshots',
+        result: 'DescribeServerlessCacheSnapshotsResult',
+        collection: 'ServerlessCacheSnapshots',
+        item: 'ServerlessCacheSnapshot',
+        parameters: { MaxResults: '50' },
+        nextToken: true,
+      },
     ];
     for (const action of actions) {
       try {
-        const result = await paginate(
-          scope, action.action, action.result, action.collection, action.item,
-          action.parameters, fetcher, limits.request_timeout_ms, now, budget, limits,
-        );
+        const result = action.nextToken
+          ? await paginateNextToken(
+            scope, action.action, action.result, action.collection, action.item,
+            action.parameters, fetcher, limits.request_timeout_ms, now, budget, limits,
+          )
+          : await paginate(
+            scope, action.action, action.result, action.collection, action.item,
+            action.parameters, fetcher, limits.request_timeout_ms, now, budget, limits,
+          );
         receipts.push(...result.receipts);
         if (action.action === 'DescribeCacheClusters') {
           for (const raw of result.records) {
@@ -810,20 +1003,49 @@ export async function captureAwsElastiCacheRedisBackupInventory(
               snapshots.push(record);
             }
           }
+        } else if (action.action === 'DescribeServerlessCaches') {
+          for (const raw of result.records) {
+            const record = parseServerlessCache(raw, scope);
+            if (!record.create_time) {
+              const blocker = scope.account_id + ':' + scope.region
+                + ':SERVERLESS_CACHE_CREATE_TIME_MISSING:' + record.cache_name;
+              serverlessBlockers.add(blocker);
+              blockers.add(blocker);
+            }
+            serverlessCaches.push(record);
+          }
+          serverlessActionsCompleted += 1;
+        } else if (action.action === 'DescribeServerlessCacheSnapshots') {
+          for (const raw of result.records) {
+            const record = parseServerlessSnapshot(raw, scope);
+            if (!record.create_time) {
+              const blocker = scope.account_id + ':' + scope.region
+                + ':SERVERLESS_SNAPSHOT_CREATE_TIME_MISSING:' + record.snapshot_name;
+              serverlessBlockers.add(blocker);
+              blockers.add(blocker);
+            }
+            serverlessSnapshots.push(record);
+          }
+          serverlessActionsCompleted += 1;
         }
       } catch (error) {
         const errorText = error instanceof Error ? error.message : '';
         if (errorText.includes('global AWS request/page budget')) {
           blockers.add('GLOBAL_AWS_REQUEST_OR_PAGE_BUDGET_EXHAUSTED');
+          if (action.nextToken) serverlessBlockers.add(scope.account_id + ':' + scope.region + ':SERVERLESS_CATALOG_BUDGET_EXHAUSTED');
           pageFailure = true;
           break;
         }
         if (errorText.includes('global item budget')) {
           blockers.add('GLOBAL_AWS_ITEM_BUDGET_EXHAUSTED');
+          if (action.nextToken) serverlessBlockers.add(scope.account_id + ':' + scope.region + ':SERVERLESS_CATALOG_ITEM_BUDGET_EXHAUSTED');
           pageFailure = true;
           break;
         }
-        blockers.add(scope.account_id + ':' + scope.region + ':' + action.action.toUpperCase() + '_INVENTORY_INCOMPLETE');
+        const actionBlocker = scope.account_id + ':' + scope.region + ':'
+          + (action.nextToken ? 'SERVERLESS_' : '') + action.action.toUpperCase() + '_INVENTORY_INCOMPLETE';
+        blockers.add(actionBlocker);
+        if (action.nextToken) serverlessBlockers.add(actionBlocker);
       }
     }
     if (pageFailure) break;
@@ -860,11 +1082,26 @@ export async function captureAwsElastiCacheRedisBackupInventory(
     }
   }
   const mergedGlobals = mergeGlobalReplicationGroups(globalReplicationGroups, blockers);
+  const cacheNames = new Set(serverlessCaches.map((cache) => cache.account_id + ':' + cache.region + ':' + cache.cache_name));
+  for (const snapshot of serverlessSnapshots) {
+    if (!cacheNames.has(snapshot.account_id + ':' + snapshot.region + ':' + snapshot.cache_name)) {
+      const blocker = snapshot.account_id + ':' + snapshot.region
+        + ':SERVERLESS_SNAPSHOT_SOURCE_CACHE_NOT_IN_CURRENT_CATALOG:' + snapshot.cache_name;
+      serverlessBlockers.add(blocker);
+      blockers.add(blocker);
+    }
+  }
+  for (const blocker of serverlessBlockers) blockers.add(blocker);
   const uniqueBlockers = [...blockers].sort();
-  const nodeBasedComplete = uniqueBlockers.length === 0 && verifiedScopes.length === scopes.length;
+  const nodeBasedBlockers = uniqueBlockers.filter((blocker) => !serverlessBlockers.has(blocker));
+  const nodeBasedComplete = nodeBasedBlockers.length === 0 && verifiedScopes.length === scopes.length;
+  const serverlessCatalogComplete = serverlessBlockers.size === 0
+    && serverlessActionsCompleted === scopes.length * 2
+    && verifiedScopes.length === scopes.length;
+  const inventoryComplete = nodeBasedComplete && serverlessCatalogComplete;
   return {
     schema: 'factoryos.aws-elasticache-redis-backup-inventory/v1',
-    status: nodeBasedComplete ? 'COMPLETE' : 'PARTIAL',
+    status: inventoryComplete ? 'COMPLETE' : 'PARTIAL',
     generated_at: clock.toISOString(),
     requested_scopes: scopes.map(({ account_id, partition, region }) => ({ account_id, partition, region })),
     verified_scope_count: verifiedScopes.length,
@@ -874,6 +1111,11 @@ export async function captureAwsElastiCacheRedisBackupInventory(
       a.account_id.localeCompare(b.account_id) || a.region.localeCompare(b.region) || a.replication_group_id.localeCompare(b.replication_group_id)),
     global_replication_groups: mergedGlobals,
     snapshots: snapshots.sort((a, b) =>
+      a.account_id.localeCompare(b.account_id) || a.region.localeCompare(b.region)
+      || a.snapshot_name.localeCompare(b.snapshot_name) || (a.create_time ?? '').localeCompare(b.create_time ?? '')),
+    serverless_caches: serverlessCaches.sort((a, b) =>
+      a.account_id.localeCompare(b.account_id) || a.region.localeCompare(b.region) || a.cache_name.localeCompare(b.cache_name)),
+    serverless_snapshots: serverlessSnapshots.sort((a, b) =>
       a.account_id.localeCompare(b.account_id) || a.region.localeCompare(b.region)
       || a.snapshot_name.localeCompare(b.snapshot_name) || (a.create_time ?? '').localeCompare(b.create_time ?? '')),
     non_redis_cache_clusters_excluded: nonRedisClusters.length,
@@ -886,7 +1128,8 @@ export async function captureAwsElastiCacheRedisBackupInventory(
     query_receipt_references: [...new Set(receipts)].sort(),
     blockers: uniqueBlockers,
     node_based_catalog_complete: nodeBasedComplete,
-    serverless_cache_and_snapshot_surfaces_enumerated: false,
+    serverless_catalog_complete: serverlessCatalogComplete,
+    serverless_cache_and_snapshot_surfaces_enumerated: serverlessCatalogComplete,
     self_managed_redis_aof_rdb_and_volume_backup_surfaces_enumerated: false,
     whole_cache_backup_coverage_complete: false,
     provider_mutation_performed: false,
