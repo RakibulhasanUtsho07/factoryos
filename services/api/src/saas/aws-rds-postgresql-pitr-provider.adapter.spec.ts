@@ -218,6 +218,7 @@ function createAdapter(fetcher: typeof fetch, overrides: Record<string, unknown>
   return new AwsRdsPostgresqlPitrProviderAdapter({
     organization_account_id: organizationAccount,
     read_only_role_name: roleName,
+    external_id: 'factoryos-wp10-aws-pitr-test-external-id',
     organization_region: 'us-east-1',
     read_only_policy_sha256: 'a'.repeat(64),
     policy_review_reference: 'review.aws.read-only-role.v1',
