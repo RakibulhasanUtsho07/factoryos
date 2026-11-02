@@ -231,3 +231,14 @@ Rollback must cover application config and secret-version references, not only t
 - approval_utc: <pending>
 
 The approval register must be updated only by authorized release personnel once evidence is complete. Do not mark the release approved from the implementation branch or this report draft.
+
+
+## AWS ElastiCache Redis OSS / Valkey backup inventory reader
+
+The ElastiCache inventory uses a separate `FactoryOSElasticacheBackupReader` identity. The checked-in policy template `deploy/aws/elasticache-redis-backup-inventory-reader-role-policy.template.json` allows only `elasticache:DescribeCacheClusters`, `elasticache:DescribeReplicationGroups`, `elasticache:DescribeGlobalReplicationGroups` and `elasticache:DescribeSnapshots`, and explicitly denies other actions. The matching trust template requires the designated source role and a unique ExternalId. The source-role policy template allows assumption of only that dedicated role across the AWS partitions represented in the file.
+
+The API requires already-assumed temporary credentials and verifies STS `GetCallerIdentity` against the exact account and reader-role name before ElastiCache requests. It captures no endpoints, cache content, security-group details, parameter values, credentials or raw descriptions. Review the actual provisioned role trust, permissions boundary, SCP and session policy independently; the checked-in templates are not deployment evidence.
+
+This slice covers node-based Redis OSS/Valkey API surfaces only. Serverless caches/snapshots use distinct APIs and are intentionally not reported as covered. Self-managed Redis AOF/RDB files and volume-level backup chains are also outside this provider adapter. Snapshot name plus creation time is a correlation reference, not an immutable provider version. The output permanently leaves `whole_cache_backup_coverage_complete` and all deletion flags false.
+
+**Independent review and production staging remain pending.** A successful mocked test suite is not evidence that AWS roles were provisioned, all enabled regions were scanned, Global Datastore replicas were restored/failover-tested, or external copies were discovered.
