@@ -918,11 +918,13 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
           if (sql === 'BEGIN READ ONLY' || sql === 'ROLLBACK' || sql.includes('set_config')) return { rows: [] };
           if (sql.includes('current_user AS database_user')) return { rows: [{
             database_user: 'factoryos_db_inventory_reader',
+            authenticated_database_user: 'factoryos_db_inventory_reader',
             database_name: database,
             transaction_read_only: 'on',
             rolcanlogin: true, rolsuper: false, rolinherit: true,
             rolcreaterole: false, rolcreatedb: false, rolreplication: false, rolbypassrls: false,
             has_pg_monitor: true, has_rds_superuser: false, has_rds_replication: false,
+            has_pg_read_all_data: false, has_pg_read_server_files: false,
             has_pg_write_all_data: false, has_pg_write_server_files: false,
             has_pg_execute_server_program: false,
           }] };
