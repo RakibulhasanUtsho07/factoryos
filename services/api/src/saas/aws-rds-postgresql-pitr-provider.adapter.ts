@@ -206,6 +206,30 @@ function xmlBlocks(xml: string, tag: string): string[] {
   return [...xml.matchAll(expression)].map((match) => match[1]!);
 }
 
+async function readBoundedResponse(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return fail('AWS response body is missing');
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return fail('AWS response exceeded its byte limit');
+      }
+      chunks.push(Buffer.from(part.value));
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total));
+  } catch {
+    return fail('AWS response was incomplete or was not valid UTF-8');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function requireAwsArn(value: string | null, field: string): string {
   if (!value || !RDS_ARN.test(value)) return fail(field + ' did not return an exact AWS RDS resource ARN');
   return value;
@@ -313,9 +337,10 @@ class AwsQueryApi {
   ): Promise<QueryResult> {
     if (this.budget.total >= this.budget.maximum) return fail('AWS provider calls exceeded the global page/request budget');
     this.budget.total += 1;
+    const dnsSuffix = region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
     const host = service === 'sts'
-      ? 'sts.' + region + '.amazonaws.com'
-      : service + '.' + region + '.amazonaws.com';
+      ? 'sts.' + region + '.' + dnsSuffix
+      : service + '.' + region + '.' + dnsSuffix;
     const endpoint = 'https://' + host + '/';
     const bodyParams = { Action: action, Version: QUERY_VERSIONS[service], ...parameters };
     const body = Object.keys(bodyParams).sort().map((key) => encode(key) + '=' + encode(bodyParams[key]!)).join('&');
@@ -355,14 +380,7 @@ class AwsQueryApi {
     } catch {
       return fail('AWS ' + service + ' ' + action + ' request failed before a verified response');
     }
-    let bytes: ArrayBuffer;
-    try {
-      bytes = await response.arrayBuffer();
-    } catch {
-      return fail('AWS ' + service + ' ' + action + ' response could not be read completely');
-    }
-    if (bytes.byteLength > MAX_RESPONSE_BYTES) return fail('AWS ' + service + ' response exceeded its byte limit');
-    const xml = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const xml = await readBoundedResponse(response);
     if (!response.ok) {
       const code = xmlText(xml, 'Code') ?? 'HTTP_' + response.status;
       if (!/^[A-Za-z0-9_.-]{1,100}$/.test(code)) return fail('AWS returned an invalid service error code');
@@ -372,7 +390,7 @@ class AwsQueryApi {
       return fail('AWS ' + service + ' ' + action + ' returned an unexpected XML response');
     }
     const queryReceiptReference = 'aws-query.' + service + '.' + action.toLowerCase() + '.'
-      + sha256(endpoint + action + sha256(xml)).slice(0, 32);
+      + sha256(endpoint + action + sha256(credentials.access_key_id) + sha256(xml)).slice(0, 32);
     return { xml, queryReceiptReference };
   }
 
@@ -447,7 +465,7 @@ function sourceFromItems(
   pages: number,
   receipts: string[],
 ): AwsRdsPitrCatalogSource {
-  const sorted = [...items].sort((a, b) => a.resource_arn.localeCompare(b.resource_arn));
+  const sorted = [...items].sort((a, b) => a.resource_arn < b.resource_arn ? -1 : a.resource_arn > b.resource_arn ? 1 : 0);
   const unique = new Set(sorted.map((item) => item.resource_arn));
   if (unique.size !== sorted.length) return fail(sourceKind + ' contains a duplicate immutable resource ARN');
   const normalized = JSON.stringify(sorted);
@@ -595,7 +613,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
     return {
       enabled: regions.filter((region) => region.optInStatus === 'opted-in' || region.optInStatus === 'opt-in-not-required')
         .map((region) => region.region).sort(),
-      excluded: regions.filter((region) => region.optInStatus === 'not-opted-in' || region.optInStatus === 'not-opted-in-required')
+      excluded: regions.filter((region) => region.optInStatus === 'not-opted-in')
         .map((region) => ({ region: region.region, optInStatus: region.optInStatus })),
       pages: result.pages,
       receipts: result.receipts,
@@ -753,7 +771,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       sourceFromItems('WAL_WRITER_PRINCIPAL_CATALOG', 'NOT_ENUMERATED',
         'IAM role discovery and database-native login/replication principal inventory are not included in this adapter and remain a hard release blocker.',
         [], 0, []),
-      sourceFromItems('WAL_REPLICATION_PATH_CATALOG', accountDiscoveryComplete && regionDiscoveryComplete ? 'COMPLETE' : 'PARTIAL',
+      sourceFromItems('WAL_REPLICATION_PATH_CATALOG', 'PARTIAL',
         'Read-replica and global-cluster relationships are derived from the complete RDS instance/cluster catalogs; external delivery queues and database-side replication identities are not covered.',
         sourceItems.get('WAL_REPLICATION_PATH_CATALOG') ?? [], sourcePages.get('WAL_REPLICATION_PATH_CATALOG') ?? 0,
         sourceReceipts.get('WAL_REPLICATION_PATH_CATALOG') ?? []),
