@@ -693,7 +693,7 @@ function parseServerlessSnapshot(
   const engineValue = directXmlText(configuration, 'Engine');
   const engine = engineValue ? serverlessEngine(engineValue) : null;
   const bytes = directXmlText(xml, 'BytesUsedForCache');
-  if (bytes !== null && !/^\\d{1,20}$/.test(bytes)) {
+  if (bytes !== null && !/^\d{1,20}$/.test(bytes)) {
     return fail('serverless snapshot byte count is malformed');
   }
   const snapshotArn = validScopedElastiCacheArn(directXmlText(xml, 'ARN'), scope, 'ServerlessCacheSnapshot ARN');
