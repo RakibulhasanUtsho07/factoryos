@@ -96,7 +96,7 @@ const SQL = {
   session: [
     'SELECT current_user AS database_user, session_user AS authenticated_database_user, current_database() AS database_name,',
     " current_setting('transaction_read_only') AS transaction_read_only,",
-    ' r.rolcanlogin, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
+    ' r.rolcanlogin, r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
     " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_superuser'), false) AS has_rds_superuser,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_replication'), false) AS has_rds_replication,",
