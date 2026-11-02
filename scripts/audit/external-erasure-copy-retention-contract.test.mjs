@@ -540,3 +540,33 @@ test('PostgreSQL WAL/PITR diagnostics remain read-only, non-signable and retenti
   assert.match(runbook, /WAL segments are cluster-level recovery material and may serve multiple tenants/);
   assert.match(runbook, /POSTGRESQL_WAL_PITR` \*\*UNRESOLVED\*\*/);
 });
+
+test('PostgreSQL WAL/PITR retention eligibility is non-destructive and requires complete recovery evidence', async () => {
+  const evaluator = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-retention-eligibility.ts');
+  const evaluatorTests = await readRepoFile('services/api/src/saas/postgresql-wal-pitr-retention-eligibility.spec.ts');
+  const coverageService = await readRepoFile('services/api/src/saas/saas-tenant-backup-copy-class-coverage.service.ts');
+  const runbook = await readRepoFile(RUNBOOK);
+  assert.match(evaluator, /factoryos\.postgresql-wal-pitr-retention-eligibility\/v1/);
+  assert.match(evaluator, /provider_native_read_only_identity_verified === true/);
+  assert.match(evaluator, /all_accounts_and_regions_enumerated === true/);
+  assert.match(evaluator, /source_receipts_verified === true/);
+  assert.match(evaluator, /unclassified_copy_count === 0/);
+  assert.match(evaluator, /candidate\.tenant_exclusive === true/);
+  assert.match(evaluator, /legal_hold_status === 'NONE'/);
+  assert.match(evaluator, /candidateExpiry <= now/);
+  assert.match(evaluator, /candidate_dependency === 'NO'/);
+  assert.match(evaluator, /restore_rehearsal_status === 'PASS'/);
+  assert.match(evaluator, /tombstone_replay_status === 'VERIFIED'/);
+  assert.match(evaluator, /destructive_action_permitted: false/);
+  assert.match(evaluator, /deletion_authorized: false/);
+  assert.match(evaluator, /requires_independent_review: true/);
+  assert.match(evaluatorTests, /never authorizes a destructive action/);
+  assert.match(evaluatorTests, /blocks active or unknown legal holds/);
+  assert.match(evaluatorTests, /blocks a replication path/);
+  assert.match(evaluatorTests, /verified tombstone replay/);
+  assert.match(coverageService, /copyClass === 'POSTGRESQL_WAL_PITR' && disposition === 'SUPPORTED'/);
+  assert.match(coverageService, /class-specific provider retention\/deletion adapter/);
+  assert.match(runbook, /non-destructive WAL\/PITR retention eligibility/);
+  assert.match(runbook, /REVIEW_ELIGIBLE/);
+  assert.match(runbook, /does not authorize deletion/);
+});
