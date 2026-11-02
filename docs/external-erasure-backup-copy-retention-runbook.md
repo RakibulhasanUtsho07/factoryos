@@ -350,3 +350,53 @@ holds, unexpired retention, shortened recovery horizons, incomplete writer disco
 delayed retries, active/unknown replication or restore dependencies, stale restore
 rehearsals, failed tombstone replay, non-exclusive WAL and the invariant that no result
 ever authorizes a destructive action.
+
+### Provider gateway enumeration contract
+
+The API now has a provider-neutral orchestration boundary at
+`services/api/src/saas/postgresql-wal-pitr-provider-evidence.ts`. A cloud/provider-specific
+module must implement `PostgresqlWalPitrProviderInventoryGateway` with two operations:
+`discoverScopes()` must enumerate the authoritative provider/project/account and region
+catalog, and `listSourcePage()` must perform provider-native read-only pagination for each
+of the six required catalogs. The coordinator checks complete account and region discovery,
+provider read-only identity and policy-audit references, exact page/scope/principal binding,
+continuation-token progress, duplicate resource references, bounded page/item sizes, and
+sanitized normalized records. Opaque continuation tokens are never copied into evidence.
+
+Call `capturePostgresqlWalPitrProviderInventory(gateway, input)` only from a dedicated
+collector service or isolated collection job. The result deliberately reports
+`ENUMERATION_COMPLETE_UNATTESTED`, with
+`provider_native_inventory_complete=false`, `source_receipts_signable=false`, and
+`manifest_eligible=false`. It is a normalized collection observation, not a signed
+`factoryos.postgresql-wal-pitr-inventory/v1` manifest. The provider module must still map
+the six normalized catalogs into the existing manifest schema, reconcile their exact counts
+and scope arrays, collect externally reviewable IAM/query audit evidence, and issue receipts
+through the isolated Ed25519 signer. The API must never receive collector private keys.
+
+No AWS/Azure/GCP SDK is installed in the API workspace and no provider has been selected or
+connected in this repository task. This change therefore implements the bounded orchestration
+contract and fake-gateway regressions, not a claim of live cloud API connectivity. A provider
+gateway must be implemented and exercised against its actual account/project and region
+inventory in staging before any receipt can be treated as provider-native evidence.
+
+### Independent residual gateway contract
+
+The same module defines
+`PostgresqlWalPitrIndependentResidualGateway` and
+`scanPostgresqlWalPitrResidualsIndependently()`. The residual scanner independently
+rediscovers the exact sealed account/region scope, uses a dedicated read-only verifier
+principal distinct from the inventory collector, archive writers and deletion executor,
+exhausts all pages, and compares exact candidate/archive/object/immutable-generation tuples.
+It reports `ZERO_RESIDUALS_OBSERVED` or `RESIDUALS_FOUND`; even a zero result permanently
+sets `destructive_action_permitted=false`,
+`deletion_authorized=false`, and `requires_independent_review=true`.
+
+The residual gateway must be deployed with separate provider credentials/policies and an
+independent audit trail. Do not reuse the archive writer, inventory collector, or erasure
+executor identity. A zero-residual scan is still only an observation until the provider
+adapter, post-action receipt, source trust chain and independent reviewer have all been
+accepted. This contract does not delete data, does not prove a provider has no hidden copies
+outside the discovered scope, and does not turn cluster-shared WAL into tenant-exclusive
+data. Keep `POSTGRESQL_WAL_PITR` **UNRESOLVED** until a concrete provider implementation
+and controlled staging evidence exist.
+
