@@ -137,6 +137,43 @@ export interface AwsBackupRestoreAccessVaultRelationship {
   latest_revoke_expiry_date: string | null;
 }
 
+export type AwsBackupCopyJobState = 'CREATED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PARTIAL';
+
+export interface AwsBackupCopyJobRecord {
+  account_id: string;
+  partition: AwsBackupPartition;
+  region: string;
+  copy_job_id: string;
+  state: AwsBackupCopyJobState | null;
+  creation_date: string | null;
+  completion_date: string | null;
+  backup_size_in_bytes: number | null;
+  resource_arn: string | null;
+  resource_type: string | null;
+  source_backup_vault_arn: string;
+  source_recovery_point_arn: string;
+  destination_backup_vault_arn: string;
+  destination_recovery_point_arn: string | null;
+  destination_encryption_key_arn: string | null;
+  destination_vault_lock_state: string | null;
+  destination_vault_type: 'BACKUP_VAULT' | 'LOGICALLY_AIR_GAPPED_BACKUP_VAULT' | null;
+  destination_lifecycle_delete_after_days: number | null;
+  destination_lifecycle_move_to_cold_storage_after_days: number | null;
+  destination_lifecycle_opt_in_to_archive: boolean | null;
+  backup_plan_arn: string | null;
+  backup_plan_id: string | null;
+  backup_plan_name: string | null;
+  backup_plan_version: string | null;
+  backup_rule_id: string | null;
+  backup_rule_name: string | null;
+  created_by_backup_job_id: string | null;
+  parent_job_id: string | null;
+  is_parent: boolean | null;
+  number_of_child_jobs: number | null;
+  composite_member_identifier: string | null;
+  message_category: string | null;
+}
+
 export interface AwsBackupVaultRecoveryPointInventory {
   schema: 'factoryos.aws-backup-vault-recovery-point-inventory/v1';
   status: 'COMPLETE' | 'PARTIAL';
@@ -148,6 +185,15 @@ export interface AwsBackupVaultRecoveryPointInventory {
   legal_holds: AwsBackupLegalHoldRecord[];
   legal_hold_recovery_point_relationships: AwsBackupLegalHoldRecoveryPointRelationship[];
   restore_access_vault_relationships: AwsBackupRestoreAccessVaultRelationship[];
+  copy_jobs: AwsBackupCopyJobRecord[];
+  copy_job_catalog_complete: boolean;
+  copy_job_destination_reconciliation_complete: boolean;
+  copy_job_source_scope_gaps: string[];
+  copy_job_destination_scope_gaps: string[];
+  copy_job_vault_catalog_gaps: string[];
+  copy_job_recovery_point_catalog_gaps: string[];
+  cross_account_copy_job_count: number;
+  cross_region_copy_job_count: number;
   vault_types_supported: AwsBackupVaultType[];
   observed_vault_types: AwsBackupVaultType[];
   vault_catalog_complete: boolean;
@@ -160,7 +206,7 @@ export interface AwsBackupVaultRecoveryPointInventory {
   items_observed: number;
   query_receipt_references: string[];
   blockers: string[];
-  aws_backup_copy_job_catalog_enumerated: false;
+  aws_backup_copy_job_catalog_enumerated: boolean;
   non_aws_backup_external_copy_surfaces_enumerated: false;
   whole_backup_coverage_complete: false;
   provider_mutation_performed: false;
@@ -431,6 +477,8 @@ async function signedFetch(
 
 function apiActionForPath(path: string): string {
   if (path === '/backup-vaults/') return 'ListBackupVaults';
+  if (path === '/copy-jobs/') return 'ListCopyJobs';
+  if (/^\\/copy-jobs\\/[^/]+$/.test(path)) return 'DescribeCopyJob';
   if (path === '/legal-holds/') return 'ListLegalHolds';
   if (/^\/backup-vaults\/[^/]+\/recovery-points\/$/.test(path)) return 'ListRecoveryPointsByBackupVault';
   if (/^\/backup-vaults\/[^/]+$/.test(path)) return 'DescribeBackupVault';
@@ -771,6 +819,137 @@ function normalizeRestoreAccessRelationship(
   };
 }
 
+function normalizeCopyJob(
+  raw: Record<string, unknown>,
+  scope: AwsBackupInventoryScope,
+  blockers: string[],
+): AwsBackupCopyJobRecord {
+  const key = scope.account_id + '/' + scope.region;
+  const copyJobId = optionalString(raw.CopyJobId, 128);
+  if (!copyJobId || !/^[A-Za-z0-9-]{1,128}$/.test(copyJobId)) {
+    blockers.push(key + ': ListCopyJobs/DescribeCopyJob returned an invalid CopyJobId');
+  }
+  const accountId = optionalString(raw.AccountId, 12);
+  if (raw.AccountId !== undefined && (!accountId || !ACCOUNT_ID.test(accountId))) {
+    blockers.push(key + ': DescribeCopyJob returned a malformed AccountId');
+  } else if (accountId && accountId !== scope.account_id) {
+    blockers.push(key + ': DescribeCopyJob AccountId does not match the verified caller account');
+  }
+
+  const stateValue = optionalString(raw.State, 40);
+  const states: AwsBackupCopyJobState[] = ['CREATED', 'RUNNING', 'COMPLETED', 'FAILED', 'PARTIAL'];
+  const state = states.includes(stateValue as AwsBackupCopyJobState)
+    ? stateValue as AwsBackupCopyJobState : null;
+  if (!state) blockers.push(key + ': copy job has a missing or unknown State');
+
+  const creationDate = canonicalTimestamp(raw.CreationDate);
+  if (!creationDate) blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' is missing a valid CreationDate');
+  const completionDate = canonicalTimestamp(raw.CompletionDate);
+  if (state === 'COMPLETED' && !completionDate) {
+    blockers.push(key + ': completed copy job ' + (copyJobId ?? 'unknown') + ' is missing a valid CompletionDate');
+  }
+
+  const sourceVaultArn = validBackupArn(raw.SourceBackupVaultArn, scope.partition);
+  if (!sourceVaultArn || !sourceVaultArn.includes(':backup-vault:')) {
+    blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' has a missing or invalid SourceBackupVaultArn');
+  }
+  const sourceRecoveryPointArn = validBackupArn(raw.SourceRecoveryPointArn, scope.partition);
+  if (!sourceRecoveryPointArn || !sourceRecoveryPointArn.includes(':recovery-point:')) {
+    blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' has a missing or invalid SourceRecoveryPointArn');
+  }
+  const destinationVaultArn = validBackupArn(raw.DestinationBackupVaultArn, scope.partition);
+  if (!destinationVaultArn || !destinationVaultArn.includes(':backup-vault:')) {
+    blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' has a missing or invalid DestinationBackupVaultArn');
+  }
+  const destinationRecoveryPointArn = raw.DestinationRecoveryPointArn === undefined
+    || raw.DestinationRecoveryPointArn === null || raw.DestinationRecoveryPointArn === ''
+    ? null : validBackupArn(raw.DestinationRecoveryPointArn, scope.partition);
+  if (raw.DestinationRecoveryPointArn && (!destinationRecoveryPointArn
+    || !destinationRecoveryPointArn.includes(':recovery-point:'))) {
+    blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' has an invalid DestinationRecoveryPointArn');
+  }
+  if (state === 'COMPLETED' && !destinationRecoveryPointArn) {
+    blockers.push(key + ': completed copy job ' + (copyJobId ?? 'unknown') + ' has no destination recovery-point ARN');
+  }
+
+  const rawDestinationVaultType = optionalString(raw.DestinationVaultType, 100);
+  const destinationVaultType = rawDestinationVaultType === 'BACKUP_VAULT'
+    || rawDestinationVaultType === 'LOGICALLY_AIR_GAPPED_BACKUP_VAULT'
+    ? rawDestinationVaultType : null;
+  if (rawDestinationVaultType && !destinationVaultType) {
+    blockers.push(key + ': copy job ' + (copyJobId ?? 'unknown') + ' has an unknown DestinationVaultType');
+  }
+
+  const lifecycle = isRecord(raw.DestinationRecoveryPointLifecycle)
+    ? raw.DestinationRecoveryPointLifecycle : {};
+  if (raw.DestinationRecoveryPointLifecycle !== undefined
+    && !isRecord(raw.DestinationRecoveryPointLifecycle)) {
+    blockers.push(key + ': copy job returned malformed DestinationRecoveryPointLifecycle');
+  }
+  const lifecycleDays = (value: unknown): number | null => {
+    if (value === -1) return -1;
+    return optionalInteger(value);
+  };
+  const deleteAfterDays = lifecycleDays(lifecycle.DeleteAfterDays);
+  const moveToColdDays = lifecycleDays(lifecycle.MoveToColdStorageAfterDays);
+  if (lifecycle.DeleteAfterDays !== undefined && deleteAfterDays === null) {
+    blockers.push(key + ': copy job has invalid destination DeleteAfterDays');
+  }
+  if (lifecycle.MoveToColdStorageAfterDays !== undefined && moveToColdDays === null) {
+    blockers.push(key + ': copy job has invalid destination MoveToColdStorageAfterDays');
+  }
+
+  const createdBy = isRecord(raw.CreatedBy) ? raw.CreatedBy : {};
+  if (raw.CreatedBy !== undefined && !isRecord(raw.CreatedBy)) {
+    blockers.push(key + ': copy job returned malformed CreatedBy metadata');
+  }
+  const backupSize = raw.BackupSizeInBytes === undefined || raw.BackupSizeInBytes === null
+    ? null : optionalInteger(raw.BackupSizeInBytes);
+  if (raw.BackupSizeInBytes !== undefined && raw.BackupSizeInBytes !== null && backupSize === null) {
+    blockers.push(key + ': copy job BackupSizeInBytes is not a safe non-negative integer');
+  }
+  const childCount = raw.NumberOfChildJobs === undefined || raw.NumberOfChildJobs === null
+    ? null : optionalInteger(raw.NumberOfChildJobs);
+  if (raw.NumberOfChildJobs !== undefined && raw.NumberOfChildJobs !== null && childCount === null) {
+    blockers.push(key + ': copy job NumberOfChildJobs is invalid');
+  }
+
+  return {
+    account_id: scope.account_id,
+    partition: scope.partition,
+    region: scope.region,
+    copy_job_id: copyJobId ?? String(raw.CopyJobId ?? ''),
+    state,
+    creation_date: creationDate,
+    completion_date: completionDate,
+    backup_size_in_bytes: backupSize,
+    resource_arn: optionalString(raw.ResourceArn, 2048),
+    resource_type: optionalString(raw.ResourceType, 100),
+    source_backup_vault_arn: sourceVaultArn ?? String(raw.SourceBackupVaultArn ?? ''),
+    source_recovery_point_arn: sourceRecoveryPointArn ?? String(raw.SourceRecoveryPointArn ?? ''),
+    destination_backup_vault_arn: destinationVaultArn ?? String(raw.DestinationBackupVaultArn ?? ''),
+    destination_recovery_point_arn: destinationRecoveryPointArn,
+    destination_encryption_key_arn: optionalString(raw.DestinationEncryptionKeyArn, 2048),
+    destination_vault_lock_state: optionalString(raw.DestinationVaultLockState, 100),
+    destination_vault_type: destinationVaultType,
+    destination_lifecycle_delete_after_days: deleteAfterDays,
+    destination_lifecycle_move_to_cold_storage_after_days: moveToColdDays,
+    destination_lifecycle_opt_in_to_archive: optionalBoolean(lifecycle.OptInToArchiveForSupportedResources),
+    backup_plan_arn: optionalString(createdBy.BackupPlanArn, 2048),
+    backup_plan_id: optionalString(createdBy.BackupPlanId, 256),
+    backup_plan_name: optionalString(createdBy.BackupPlanName, 256),
+    backup_plan_version: optionalString(createdBy.BackupPlanVersion, 128),
+    backup_rule_id: optionalString(createdBy.BackupRuleId, 256),
+    backup_rule_name: optionalString(createdBy.BackupRuleName, 256),
+    created_by_backup_job_id: optionalString(raw.CreatedByBackupJobId, 256),
+    parent_job_id: optionalString(raw.ParentJobId, 256),
+    is_parent: optionalBoolean(raw.IsParent),
+    number_of_child_jobs: childCount,
+    composite_member_identifier: optionalString(raw.CompositeMemberIdentifier, 512),
+    message_category: optionalString(raw.MessageCategory, 100),
+  };
+}
+
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : 'unknown provider error';
   return message.replace(/[\r\n]/g, ' ').slice(0, 240);
@@ -804,12 +983,14 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
   const legalHolds: AwsBackupLegalHoldRecord[] = [];
   const legalHoldRelationships: AwsBackupLegalHoldRecoveryPointRelationship[] = [];
   const restoreAccessRelationships: AwsBackupRestoreAccessVaultRelationship[] = [];
+  const copyJobs: AwsBackupCopyJobRecord[] = [];
   const sourceVaultScopeGaps = new Set<string>();
   let verifiedScopeCount = 0;
   let vaultComplete = true;
   let recoveryComplete = true;
   let legalHoldComplete = true;
   let restoreAccessComplete = true;
+  let copyJobComplete = true;
 
   for (const scope of scopes) {
     const scopeKey = scope.account_id + '/' + scope.region;
@@ -923,9 +1104,56 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
           && blockers.length === relationshipBlockerCount;
         legalHoldRelationships.push(...relationPages.items);
       }
+
+      const copyBlockerCount = blockers.length;
+      const copyPages = await paginate(
+        scope,
+        '/copy-jobs/',
+        'CopyJobs',
+        (item) => item,
+        context,
+      );
+      copyJobComplete = copyJobComplete && copyPages.complete;
+      const seenCopyJobIds = new Set<string>();
+      for (const summary of copyPages.items) {
+        const copyJobId = optionalString(summary.CopyJobId, 128);
+        if (!copyJobId || !/^[A-Za-z0-9-]{1,128}$/.test(copyJobId)) {
+          blockers.push(scopeKey + ': ListCopyJobs returned an invalid or missing CopyJobId');
+          copyJobComplete = false;
+          continue;
+        }
+        if (seenCopyJobIds.has(copyJobId)) {
+          blockers.push(scopeKey + ': ListCopyJobs returned duplicate CopyJobId ' + copyJobId);
+          copyJobComplete = false;
+          continue;
+        }
+        seenCopyJobIds.add(copyJobId);
+        const detailResponse = await backupGet(
+          scope,
+          '/copy-jobs/' + rfc3986(copyJobId),
+          {},
+          context,
+        );
+        if (!isRecord(detailResponse.CopyJob)) {
+          blockers.push(scopeKey + ': DescribeCopyJob returned no CopyJob object for ' + copyJobId);
+          copyJobComplete = false;
+          continue;
+        }
+        const detail = detailResponse.CopyJob;
+        if (detail.CopyJobId !== copyJobId) {
+          blockers.push(scopeKey + ': DescribeCopyJob returned a different CopyJobId than ListCopyJobs');
+          copyJobComplete = false;
+          continue;
+        }
+        const job = normalizeCopyJob(detail, scope, blockers);
+        copyJobs.push(job);
+      }
+      copyJobComplete = copyJobComplete && blockers.length === copyBlockerCount;
     } catch (error) {
       const message = safeError(error);
       blockers.push(scopeKey + ': ' + message);
+      // Any earlier scope failure also means the later copy-job surface was not fully visited.
+      copyJobComplete = false;
       if (message.includes('ListBackupVaults') || message.includes('DescribeBackupVault')) {
         vaultComplete = false;
         recoveryComplete = false;
@@ -976,6 +1204,87 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     recoveryComplete = false;
   }
 
+  const suppliedScopeKeys = new Set(scopes.map((scope) =>
+    scope.partition + ':' + scope.account_id + ':' + scope.region));
+  const vaultArns = new Set(vaults.map((vault) => vault.backup_vault_arn));
+  const recoveryPointArns = new Set(recoveryPoints.map((point) => point.recovery_point_arn));
+  const copySourceScopeGaps = new Set<string>();
+  const copyDestinationScopeGaps = new Set<string>();
+  const copyVaultCatalogGaps = new Set<string>();
+  const copyRecoveryPointCatalogGaps = new Set<string>();
+  let crossAccountCopyJobCount = 0;
+  let crossRegionCopyJobCount = 0;
+
+  const reconcileArnScope = (
+    arn: string,
+    description: string,
+    scopeGaps: Set<string>,
+  ): { partition: AwsBackupPartition; account: string; region: string } | null => {
+    const identity = scopedArnIdentity(arn);
+    if (!identity || identity.partition !== scopes[0]!.partition) {
+      blockers.push(description + ' has a malformed or unsupported AWS Backup ARN');
+      return null;
+    }
+    const key = identity.partition + ':' + identity.account + ':' + identity.region;
+    if (!suppliedScopeKeys.has(key)) {
+      scopeGaps.add(arn);
+      return identity;
+    }
+    return identity;
+  };
+
+  for (const job of copyJobs) {
+    const sourceVault = reconcileArnScope(job.source_backup_vault_arn,
+      'copy job source vault ' + job.copy_job_id, copySourceScopeGaps);
+    const destinationVault = reconcileArnScope(job.destination_backup_vault_arn,
+      'copy job destination vault ' + job.copy_job_id, copyDestinationScopeGaps);
+    const sourcePoint = reconcileArnScope(job.source_recovery_point_arn,
+      'copy job source recovery point ' + job.copy_job_id, copySourceScopeGaps);
+    if (sourceVault && (sourceVault.account !== job.account_id || sourceVault.region !== job.region)) {
+      blockers.push('copy job ' + job.copy_job_id + ' source vault is outside its enumerated job account/region');
+    }
+    if (sourceVault && suppliedScopeKeys.has(sourceVault.partition + ':' + sourceVault.account + ':' + sourceVault.region)
+      && !vaultArns.has(job.source_backup_vault_arn)) {
+      copyVaultCatalogGaps.add(job.source_backup_vault_arn);
+    }
+    if (destinationVault && suppliedScopeKeys.has(destinationVault.partition + ':' + destinationVault.account + ':' + destinationVault.region)
+      && !vaultArns.has(job.destination_backup_vault_arn)) {
+      copyVaultCatalogGaps.add(job.destination_backup_vault_arn);
+    }
+    if (sourcePoint && suppliedScopeKeys.has(sourcePoint.partition + ':' + sourcePoint.account + ':' + sourcePoint.region)
+      && !recoveryPointArns.has(job.source_recovery_point_arn)) {
+      copyRecoveryPointCatalogGaps.add(job.source_recovery_point_arn);
+    }
+    if (job.destination_recovery_point_arn) {
+      const destinationPoint = reconcileArnScope(job.destination_recovery_point_arn,
+        'copy job destination recovery point ' + job.copy_job_id, copyDestinationScopeGaps);
+      if (destinationPoint && suppliedScopeKeys.has(destinationPoint.partition + ':' + destinationPoint.account + ':' + destinationPoint.region)
+        && !recoveryPointArns.has(job.destination_recovery_point_arn)) {
+        copyRecoveryPointCatalogGaps.add(job.destination_recovery_point_arn);
+      }
+    }
+    if (sourceVault && destinationVault) {
+      if (sourceVault.account !== destinationVault.account) crossAccountCopyJobCount += 1;
+      if (sourceVault.region !== destinationVault.region) crossRegionCopyJobCount += 1;
+    }
+  }
+
+  for (const arn of copySourceScopeGaps) {
+    blockers.push('copy-job source ARN is outside the explicitly supplied account/region scopes: ' + arn);
+  }
+  for (const arn of copyDestinationScopeGaps) {
+    blockers.push('copy-job destination ARN is outside the explicitly supplied account/region scopes: ' + arn);
+  }
+  for (const arn of copyVaultCatalogGaps) {
+    blockers.push('copy job references a vault absent from the enumerated vault catalog: ' + arn);
+  }
+  for (const arn of copyRecoveryPointCatalogGaps) {
+    blockers.push('copy job references a recovery point absent from the enumerated recovery-point catalog: ' + arn);
+  }
+  const copyJobDestinationReconciliationComplete = copyJobComplete
+    && copySourceScopeGaps.size === 0 && copyDestinationScopeGaps.size === 0
+    && copyVaultCatalogGaps.size === 0 && copyRecoveryPointCatalogGaps.size === 0;
+
   const observedTypes = [...new Set(vaults.map((vault) => vault.vault_type).filter(
     (value): value is AwsBackupVaultType => value !== null,
   ))].sort();
@@ -984,7 +1293,8 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     return fail('inventory clock is invalid at completion');
   }
   const complete = blockers.length === 0 && verifiedScopeCount === scopes.length
-    && vaultComplete && recoveryComplete && legalHoldComplete && restoreAccessComplete;
+    && vaultComplete && recoveryComplete && legalHoldComplete && restoreAccessComplete
+    && copyJobComplete && copyJobDestinationReconciliationComplete;
   return {
     schema: 'factoryos.aws-backup-vault-recovery-point-inventory/v1',
     status: complete ? 'COMPLETE' : 'PARTIAL',
@@ -996,6 +1306,15 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     legal_holds: legalHolds,
     legal_hold_recovery_point_relationships: legalHoldRelationships,
     restore_access_vault_relationships: restoreAccessRelationships,
+    copy_jobs: copyJobs,
+    copy_job_catalog_complete: copyJobComplete && verifiedScopeCount === scopes.length,
+    copy_job_destination_reconciliation_complete: copyJobDestinationReconciliationComplete,
+    copy_job_source_scope_gaps: [...copySourceScopeGaps].sort(),
+    copy_job_destination_scope_gaps: [...copyDestinationScopeGaps].sort(),
+    copy_job_vault_catalog_gaps: [...copyVaultCatalogGaps].sort(),
+    copy_job_recovery_point_catalog_gaps: [...copyRecoveryPointCatalogGaps].sort(),
+    cross_account_copy_job_count: crossAccountCopyJobCount,
+    cross_region_copy_job_count: crossRegionCopyJobCount,
     vault_types_supported: [...VAULT_TYPES],
     observed_vault_types: observedTypes,
     vault_catalog_complete: vaultComplete && verifiedScopeCount === scopes.length,
@@ -1008,7 +1327,7 @@ export async function captureAwsBackupVaultRecoveryPointInventory(
     items_observed: context.budget.items,
     query_receipt_references: context.receipts,
     blockers: [...new Set(blockers)],
-    aws_backup_copy_job_catalog_enumerated: false,
+    aws_backup_copy_job_catalog_enumerated: copyJobComplete && verifiedScopeCount === scopes.length,
     non_aws_backup_external_copy_surfaces_enumerated: false,
     whole_backup_coverage_complete: false,
     provider_mutation_performed: false,
