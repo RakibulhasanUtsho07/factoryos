@@ -60,12 +60,13 @@ function inventoryGateway(
     nonReadOnly?: boolean;
     outsideScope?: boolean;
     sensitiveValue?: boolean;
+    oversizedPage?: boolean;
   } = {},
 ): PostgresqlWalPitrProviderInventoryGateway {
   const calls = new Map<string, number>();
   return {
     discoverScopes: async () => discovery(options.discovery),
-    listSourcePage: async ({ source_kind, scope, page_token }) => {
+    listSourcePage: async ({ source_kind, scope, page_token, page_size }) => {
       const key = source_kind + ':' + scope.account_reference;
       const count = (calls.get(key) ?? 0) + 1;
       calls.set(key, count);
@@ -83,7 +84,7 @@ function inventoryGateway(
         return {
           scope, principal_reference: principal, read_only_access_verified: true,
           audit_reference: 'audit.provider.page.' + count,
-          items: [{ reference: reference + '.page2', value }],
+          items: options.oversizedPage ? Array.from({ length: page_size + 1 }, (_, index) => ({ reference: reference + '.page2.' + index, value })) : [{ reference: reference + '.page2', value }],
           next_page_token: null,
         };
       }
@@ -92,7 +93,7 @@ function inventoryGateway(
         principal_reference: principal,
         read_only_access_verified: !options.nonReadOnly,
         audit_reference: 'audit.provider.page.' + count,
-        items: [{ reference, value }],
+        items: options.oversizedPage ? Array.from({ length: page_size + 1 }, (_, index) => ({ reference: reference + '.oversized.' + index, value })) : [{ reference, value }],
         next_page_token: next,
       };
     },
@@ -127,6 +128,7 @@ function residualGateway(options: {
   nonReadOnly?: boolean;
   duplicateItems?: boolean;
   outsideScope?: boolean;
+  oversizedPage?: boolean;
 } = {}): PostgresqlWalPitrIndependentResidualGateway {
   const calls = new Map<string, number>();
   return {
@@ -134,7 +136,7 @@ function residualGateway(options: {
       ...options.discovery,
       principal_reference: options.principal ?? 'principal.independent.residual-reader',
     }),
-    listResidualPage: async ({ scope, page_token }) => {
+    listResidualPage: async ({ scope, page_token, page_size }) => {
       const key = scope.account_reference;
       const count = (calls.get(key) ?? 0) + 1;
       calls.set(key, count);
@@ -146,7 +148,7 @@ function residualGateway(options: {
         principal_reference: options.principal ?? 'principal.independent.residual-reader',
         read_only_access_verified: !options.nonReadOnly,
         audit_reference: 'audit.provider.independent-residual.' + count,
-        items: options.nextToken && page_token === null ? [] : returnedItems,
+        items: options.oversizedPage ? Array.from({ length: page_size + 1 }, (_, index) => ({ ...candidate, generation_reference: 'generation.oversized.' + index })) : options.nextToken && page_token === null ? [] : returnedItems,
         next_page_token: options.repeatToken ? 'cursor.loop'
           : options.nextToken && page_token === null ? options.nextToken : null,
       };
@@ -235,6 +237,20 @@ describe('PostgreSQL WAL/PITR provider inventory capture contract', () => {
     )).rejects.toThrow(/sensitive field name/);
   });
 
+  it('rejects a provider page larger than the requested page size', async () => {
+    await expect(capturePostgresqlWalPitrProviderInventory(
+      inventoryGateway({ oversizedPage: true }),
+      { ...captureInput(), page_size: 1 },
+    )).rejects.toThrow(/page exceeded the requested page size/);
+  });
+
+  it('enforces a global page budget across source catalogs and provider scopes', async () => {
+    await expect(capturePostgresqlWalPitrProviderInventory(
+      inventoryGateway({ nextToken: 'cursor.page.2' }),
+      { ...captureInput(), max_total_pages: 1 },
+    )).rejects.toThrow(/exceeded its total page budget/);
+  });
+
   it('rejects malformed tenant/inventory identities and unbounded scan parameters', async () => {
     await expect(capturePostgresqlWalPitrProviderInventory(
       inventoryGateway(), { ...captureInput(), tenant_id: 'not-a-uuid' },
@@ -317,6 +333,20 @@ describe('PostgreSQL WAL/PITR independent residual verification contract', () =>
     await expect(scanPostgresqlWalPitrResidualsIndependently(
       residualGateway(), { ...residualInput(), candidate_identities: [{ ...candidate, generation_reference: '' }] },
     )).rejects.toThrow(/generation reference must be a non-secret opaque reference/);
+  });
+
+  it('rejects an independent residual page larger than the requested page size', async () => {
+    await expect(scanPostgresqlWalPitrResidualsIndependently(
+      residualGateway({ oversizedPage: true }),
+      { ...residualInput(), page_size: 1 },
+    )).rejects.toThrow(/page exceeded the requested page size/);
+  });
+
+  it('enforces a global page budget across independent residual scopes', async () => {
+    await expect(scanPostgresqlWalPitrResidualsIndependently(
+      residualGateway(),
+      { ...residualInput(), max_total_pages: 1 },
+    )).rejects.toThrow(/exceeded its total page budget/);
   });
 
   it('rejects a scope digest that does not bind the expected provider scopes', async () => {
