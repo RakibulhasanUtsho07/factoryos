@@ -53,6 +53,10 @@ export interface AwsBackupRecoveryPointRecord {
   encryption_key_arn: string | null;
   backup_size_bytes: number | null;
   source_backup_vault_arn: string | null;
+  backup_vault_locked: boolean | null;
+  backup_vault_lock_date: string | null;
+  backup_vault_min_retention_days: number | null;
+  backup_vault_max_retention_days: number | null;
 }
 
 function fail(message: string): never {
@@ -284,8 +288,9 @@ export class AwsBackupInventoryApi {
     scope: AwsBackupInventoryScope,
     credentials: AwsBackupInventoryCredentials,
     vault: AwsBackupVaultRecord,
-  ): Promise<{ points: AwsBackupRecoveryPointRecord[]; pages: number; receipts: string[] }> {
+  ): Promise<{ points: AwsBackupRecoveryPointRecord[]; pages: number; total_items_seen: number; receipts: string[] }> {
     const points: AwsBackupRecoveryPointRecord[] = [];
+    let totalItemsSeen = 0;
     const receipts: string[] = [];
     const seenTokens = new Set<string>();
     let nextToken: string | null = null;
@@ -296,9 +301,10 @@ export class AwsBackupInventoryApi {
       const path = '/backup-vaults/' + encode(vault.backup_vault_name) + '/recovery-points/';
       const response = await this.getJson(scope, credentials, path, parameters);
       const page = response.RecoveryPoints;
-      if (!Array.isArray(page) || page.length > 1000 || points.length + page.length > this.maxItems) {
+      if (!Array.isArray(page) || page.length > 1000 || totalItemsSeen + page.length > this.maxItems) {
         return fail('AWS Backup ListRecoveryPointsByBackupVault exceeded its per-page or total item budget');
       }
+      totalItemsSeen += page.length;
       for (const item of page) {
         if (!isRecord(item)) return fail('AWS Backup returned a malformed recovery-point entry');
         if (item.ResourceType !== 'RDS' && item.ResourceType !== 'Aurora') continue;
@@ -333,6 +339,10 @@ export class AwsBackupInventoryApi {
           encryption_key_arn: typeof item.EncryptionKeyArn === 'string' ? item.EncryptionKeyArn : null,
           backup_size_bytes: safeNumber(item.BackupSizeInBytes),
           source_backup_vault_arn: typeof item.SourceBackupVaultArn === 'string' ? item.SourceBackupVaultArn : null,
+          backup_vault_locked: vault.locked,
+          backup_vault_lock_date: vault.lock_date,
+          backup_vault_min_retention_days: vault.min_retention_days,
+          backup_vault_max_retention_days: vault.max_retention_days,
         });
       }
       pages += 1;
@@ -350,6 +360,6 @@ export class AwsBackupInventoryApi {
     if (new Set(points.map((point) => point.recovery_point_arn)).size !== points.length) {
       return fail('AWS Backup ListRecoveryPointsByBackupVault returned a duplicate recovery-point ARN');
     }
-    return { points, pages, receipts };
+    return { points, pages, total_items_seen: totalItemsSeen, receipts };
   }
 }
