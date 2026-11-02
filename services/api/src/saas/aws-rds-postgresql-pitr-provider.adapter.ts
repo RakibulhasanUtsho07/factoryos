@@ -372,9 +372,9 @@ function validateCredentials(value: AwsRdsPitrCredentials): AwsRdsPitrCredential
   if (!isRecord(value) || typeof value.access_key_id !== 'string'
     || !/^[A-Z0-9]{16,128}$/.test(value.access_key_id)
     || typeof value.secret_access_key !== 'string' || value.secret_access_key.length < 20
-    || /[\\r\\n]/.test(value.secret_access_key)
+    || /[\r\n]/.test(value.secret_access_key)
     || (value.session_token !== undefined
-      && (typeof value.session_token !== 'string' || value.session_token.length < 16 || /[\\r\\n]/.test(value.session_token)))) {
+      && (typeof value.session_token !== 'string' || value.session_token.length < 16 || /[\r\n]/.test(value.session_token)))) {
     return fail('source credential provider returned incomplete or malformed credentials');
   }
   return value;
@@ -708,9 +708,9 @@ function resourceFromBlock(
   const replicationDestinationArns = resourceType === 'RDS_AUTOMATED_BACKUP'
     ? xmlBlocks(block, 'DBInstanceAutomatedBackupsReplication').map((entry) => xmlText(entry, 'DBInstanceAutomatedBackupsArn'))
       .filter((entry): entry is string => entry !== null).map((entry) => {
-        const match = /^arn:(aws|aws-us-gov|aws-cn):rds:([a-z0-9-]+):(\\d{12}):auto-backup:[A-Za-z0-9_-]+$/.exec(entry);
+        const match = /^arn:(aws|aws-us-gov|aws-cn):rds:([a-z0-9-]+):(\d{12}):auto-backup:[A-Za-z0-9_-]+$/.exec(entry);
         if (!match || match[1] !== partitionForRegion(scope.region_reference)
-          || match[3] !== scope.account_reference || !/^[a-z]{2}(?:-[a-z0-9]+)+-\\d$/.test(match[2]!)) {
+          || match[3] !== scope.account_reference || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(match[2]!)) {
           return fail('RDS automated-backup replication returned an invalid cross-region backup ARN');
         }
         return entry;
