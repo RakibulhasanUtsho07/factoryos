@@ -1053,10 +1053,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
     const databasePrincipalCatalogs: AwsRdsPitrDatabasePrincipalCatalog[] = [];
     const databaseRoleCache = new Map<string, Promise<{ credentials: AwsRdsPitrCredentials; arn: string; principal: string }>>();
     let databaseTargetsDiscovered = 0;
-    let remainingDatabasePrincipalRows = Math.min(
-      this.config.database_principal_inventory?.max_total_rows ?? 10000,
-      Math.max(0, this.config.max_total_items - this.totalItems),
-    );
+    let remainingDatabasePrincipalRows = this.config.database_principal_inventory?.max_total_rows ?? 10000;
     const append = (kind: AwsRdsPitrSourceKind, resources: AwsRdsPitrResource[], pages: number, receipts: string[]) => {
       const current = sourceItems.get(kind) ?? [];
       current.push(...resources);
@@ -1135,7 +1132,11 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
             const endpointHost = resource.attributes.DatabaseEndpointAddress;
             const endpointPort = Number(resource.attributes.DatabaseEndpointPort ?? 0);
-            if (remainingDatabasePrincipalRows < 1) {
+            const targetRowBudget = Math.min(
+              remainingDatabasePrincipalRows,
+              Math.max(0, this.config.max_total_items - this.totalItems),
+            );
+            if (targetRowBudget < 1) {
               unavailableReason = 'DATABASE_PRINCIPAL_GLOBAL_ITEM_BUDGET_EXHAUSTED';
               throw new Error('database principal global item budget exhausted');
             }
@@ -1171,7 +1172,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
               role_arn: dbRole.arn,
               principal_reference: dbRole.principal,
               credentials: dbRole.credentials,
-            }, remainingDatabasePrincipalRows);
+            }, targetRowBudget);
             databasePrincipalCatalogs.push(...catalogs);
             const targetRows = catalogs.reduce((sum, catalog) => sum + catalog.rows_observed, 0);
             const targetQueries = catalogs.reduce((sum, catalog) => sum + catalog.queries_executed, 0);
