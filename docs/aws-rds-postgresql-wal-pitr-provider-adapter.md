@@ -58,8 +58,12 @@ The checked-in inventory role policy explicitly denies all actions except this r
 - Each response body is capped at 4 MiB; each request has a bounded timeout.
 - Empty continuation pages still consume the global request/page budget.
 - AWS Backup vault, recovery-point, legal-hold and held-recovery-point endpoints use the AWS Backup REST/JSON API and their own NextToken pagination. AWS Backup response objects and recovery-point lists are byte-, page-, item- and request-bounded.
+- AWS Backup `Lifecycle.DeleteAfterDays` and `Lifecycle.MoveToColdStorageAfterDays` are preserved separately from the provider-computed `CalculatedLifecycle.DeleteAt` and `CalculatedLifecycle.MoveToColdStorageAt`; a configured delete-after period with no calculated deletion time blocks retention review.
+- Vault `MinRetentionDays` and `MaxRetentionDays` are checked against the recovery-point creation date and proposed expiry; missing creation time blocks when a vault bound applies.
+- Every AWS Backup page has a local opaque receipt digest, which is attached to the PITR catalog. These are not CloudTrail event IDs or provider-signed audit records.
 - Legal holds in CREATING, CANCELING or CANCELLING state mark the current account/region scope as uncertain; exact held recovery-point ARNs are recorded for ACTIVE holds.
 - A vault's Locked state, lock date and minimum/maximum retention are preserved. A dry-run candidate from AWS Backup is blocked when vault lock is true or unknown.
+- RDS automated-backup cross-region destination ARNs are reconciled against the discovered automated-backup catalog; destinations not found in the enumerated account/region scopes are recorded in `unresolved_replication_destination_arns` and block a retention plan for the source backup.
 - AWS API query receipts in this output are local opaque request/response digests, **not CloudTrail event IDs or provider-signed audit evidence**.
 
 ## Catalog disposition
@@ -89,13 +93,13 @@ createAwsRdsPitrRetentionDryRunPlan requires:
 
 Even with those inputs, the plan remains blocked while provider-managed WAL segments or database writer principals are unresolved. AWS Backup candidates additionally require COMPLETED recovery-point state, an unlocked vault, complete legal-hold inventory and no matching ACTIVE legal hold. Standard retained RDS automated backups bind to DbiResourceId; replicated RDS backup copies bind to DBInstanceAutomatedBackupsArn; RDS DB/cluster snapshots are bound by immutable snapshot ARN but their provider delete selector is DBSnapshotIdentifier or DBClusterSnapshotIdentifier; AWS Backup copies bind to RecoveryPointArn. The plan also honours the provider-reported lifecycle DeleteAt and vault minimum retention horizon. The result is always DRY_RUN_ONLY. There is no Delete API method in this adapter. Do not add destructive calls here.
 
-A future deletion implementation must be a separate adapter and release gate. It must bind a reviewed exact ARN and current inventory digest, recheck preservation/legal hold and recovery dependencies immediately before mutation, use a distinct deletion principal, reconcile crashes/idempotent retries, and use an independently assumed read-only verifier to re-list the exact identity. A provider scan or dry-run result is never deletion authorization.
+A future deletion implementation must be a separate adapter and release gate. It must bind a reviewed exact ARN and current inventory digest, recheck preservation/legal hold and recovery dependencies immediately before mutation, use a distinct deletion principal, reconcile crashes/idempotent retries, and use an independently assumed read-only verifier to re-list the exact identity. A provider scan or dry-run result is never deletion authorization. For RDS snapshots, the immutable ARN binds the resource while the separate delete selector is the AWS API identifier (`DBSnapshotIdentifier` or `DBClusterSnapshotIdentifier`), not the ARN.
 
 ## Tests
 
 Focused regression suite: **services/api/src/saas/aws-rds-postgresql-pitr-provider.adapter.spec.ts**
 
-It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, missing linked-recovery-point blocking and locked-vault retention blocking.
+It covers an empty Organizations continuation page, exhausted JSON token pagination, enabled/opted-out regions, SigV4 authorization presence, mandatory ExternalId validation, exact account/role identity checks, repeated token rejection, access-denied failure, global request-budget exhaustion, OIDC token exchange, response streaming caps, cross-account ARN rejection, RDS backup DbiResourceId/replicated ARN identity, snapshot ARN-to-identifier binding, AWS Backup vault/recovery-point/legal-hold cataloging, page receipts, calculated lifecycle timestamps, minimum/maximum vault-retention bounds, missing linked-recovery-point blocking, locked-vault retention blocking and unresolved replication-destination reporting.
 
 The tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and AWS Backup REST/JSON responses only. They do not connect to AWS or validate live IAM/SCP policy behavior.
 
