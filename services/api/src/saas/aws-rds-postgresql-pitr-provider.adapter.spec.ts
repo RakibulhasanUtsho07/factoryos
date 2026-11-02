@@ -994,6 +994,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
     expect(dryRun.blockers).not.toContain('Database-native writer-principal coverage is incomplete or not enumerated.');
     expect(dryRun.blockers).toContain('Provider-managed RDS WAL segments remain opaque and have no individual inventory identities.');
     expect(dryRun.blockers).toContain('AWS-side and external replication-path actors remain partially enumerated.');
+    expect(dryRun.blockers).toContain('RDS/AWS Backup inventory-role effective permissions have not been independently verified.');
+    expect(dryRun.blockers).toContain('Database-principal reader-role effective permissions have not been independently verified.');
     expect(dryRun.blockers).toContain('Automated backup is not in retained state.');
     expect(inventory.source_receipts_signable).toBe(false);
     expect(inventory.manifest_eligible).toBe(false);
