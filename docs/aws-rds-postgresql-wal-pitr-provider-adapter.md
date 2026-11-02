@@ -144,3 +144,35 @@ The adapter tests use mocked AWS Organizations JSON, STS/RDS/EC2 Query/XML and A
 7. Keep deletion disabled until the provider owners approve retention/legal-hold policy, dependencies, exact-resource plan and independent residual-read acceptance. The adapter intentionally exposes no Delete API call.
 
 AS-137 / NFR-PROD-14 remain **PARTIAL**. This implementation is repository code and mocked contract coverage only; it is not production provider acceptance.
+
+
+## External AWS IAM `rds-db:connect` identity-policy inventory
+
+Implementation: **services/api/src/saas/aws-rds-postgresql-external-iam-principal-inventory.ts**
+
+This optional, account-scoped read-only pass assumes a third, separate IAM reader role (`FactoryOSIamPrincipalReader`) in every active Organizations account. The source identity can assume only the explicit RDS inventory reader, database-principal reader and IAM identity reader role names. The IAM reader uses the global IAM endpoint for its AWS partition, signs the request with SigV4, and calls only `iam:GetAccountAuthorizationDetails`. Its permissions policy explicitly denies every other IAM/API action. The API response and policy documents are byte-, page-, item-, statement- and timeout-bounded; IAM `Marker` pagination must be exhausted and repeated/missing markers fail closed.
+
+The reader gathers each IAM role and user identity-policy attachments, role/user inline policies, IAM group inline/attached policies inherited by each user, current default managed-policy documents, role trust-policy digests, and permissions-boundary policy document digests/statements when returned. It preserves only statements whose `Action` potentially matches `rds-db:connect`, or whose `NotAction` does not exclude that action. It records `Effect`, action/resource patterns, `NotResource`, whether a condition exists, statement references, policy-document digests and principal identity. It does not claim that a statement grants effective access: conditions and resource matching are not evaluated, and explicit denies, permissions boundaries, SCPs, session policies, resource policies, trust/role chains and principal tags can change the decision. Missing attached-policy or boundary documents block the catalog rather than being represented as empty.
+
+The inventory result is a **potential identity-policy principal catalog**, not a connection log. Its `COMPLETE` status means the IAM authorization-document pagination and the available role/user/group/managed-policy document collection completed for that account without missing-document blockers. Every result permanently carries `effective_authorization_verified = false` and `actual_database_connections_enumerated = false`. The adapter also preserves these two false claims at the top-level inventory. It does not inspect account-level SCPs, organization policies, permission-set session policies, every cross-account trust chain, RDS resource-policy semantics, or custom identities that use database passwords/certificates instead of IAM DB authentication. A policy principal is therefore a potential candidate only.
+
+AWS documents that CloudTrail does not log RDS IAM DB-auth token-generation/authentication calls. RDS now exposes aggregate IAM DB-auth CloudWatch metrics, and failure details can be exported through the `iam-db-auth-error` log type; those signals are useful operational corroboration but do not provide a complete, durable per-principal successful-connection ledger. Database session snapshots remain point-in-time, while PostgreSQL audit logs must be configured and independently retained if a complete connection/activity trail is required. The catalog deliberately does not infer a per-user successful connection from IAM policy statements or aggregate CloudWatch counters.
+
+Deployment artifacts:
+- `deploy/aws/rds-postgresql-iam-principal-reader-role-policy.template.json` grants only `iam:GetAccountAuthorizationDetails` and denies all other actions.
+- `deploy/aws/rds-postgresql-iam-principal-reader-role-trust.template.json` trusts only the approved source role with a unique ExternalId.
+- `deploy/aws/rds-postgresql-pitr-source-role-policy.json` permits assumption of this reader role by its explicit name.
+
+The IAM role policy and trust must be provisioned through the cloud-owner process. Review the actual role trust, role policy, permissions boundary, account SCPs, organization controls and caller session policy independently. A configured policy digest/review reference is an unverified input claim; the inventory always reports `external_iam_principal_reader_policy_independently_verified = false`. This role is distinct from the RDS inventory reader, database-native PostgreSQL reader, application role and deletion role.
+
+### IAM policy-catalog dispositions
+
+| Evidence | Disposition | Meaning |
+|---|---|---|
+| Role/user/group identity policies and default managed-policy documents | COMPLETE or PARTIAL per account | Potential `rds-db:connect` identity-policy candidates; pagination and document availability only |
+| Role trust and permissions-boundary source documents | Digest captured when returned; missing boundary document blocks | Not proof of assume-role reachability or effective authorization |
+| Effective `rds-db:connect` access after all policy layers | NOT VERIFIED | Requires independent policy simulation/review and actual resource/condition evaluation |
+| Successful/failed IAM DB-auth connection history | NOT ENUMERATED by this adapter | CloudTrail does not log IAM DB-auth calls; CloudWatch provides aggregate metrics and error logs, not full successful per-principal history |
+| Non-IAM database logins and custom archive/queue writers | OUT OF SCOPE | Separate DB audit and producer-specific inventory required |
+
+The IAM reader call is included in the shared AWS request and item budgets. A failed AssumeRole, wrong assumed-role identity, denied API, truncated response, missing document, repeated marker or budget exhaustion produces a per-account blocker. No credentials, policy bodies, session tokens or raw CloudTrail events are persisted. Policy statements are represented as constrained metadata and digests only.
