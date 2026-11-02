@@ -1030,6 +1030,8 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
       backupPages += legalHoldResult.pages;
       this.totalPaginationPages += legalHoldResult.pages;
       this.addItems(legalHoldResult.total_items_seen);
+      const postgresEngine = (engine: string | null) =>
+        engine?.toLowerCase() === 'postgres' || engine?.toLowerCase() === 'aurora-postgresql';
       const clusterResources = [
         ...instances.blocks.map((block) => resourceFromBlock(block, 'DBInstance', scope, 'RDS_DB_INSTANCE', 'DBInstanceArn',
           'DbiResourceId', ['DBInstanceIdentifier', 'DbiResourceId', 'DBInstanceStatus', 'BackupRetentionPeriod',
@@ -1039,7 +1041,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
             'ReplicationSourceIdentifier', 'BackupRetentionPeriod', 'StorageEncrypted'])),
         ...globals.blocks.map((block) => resourceFromBlock(block, 'GlobalCluster', scope, 'RDS_GLOBAL_CLUSTER', 'GlobalClusterArn',
           'GlobalClusterIdentifier', ['GlobalClusterIdentifier', 'Engine', 'Status', 'EngineVersion'])),
-      ];
+      ].filter((resource) => postgresEngine(resource.engine));
       append('POSTGRESQL_CLUSTER_CATALOG', clusterResources,
         instances.pages + clusters.pages + globals.pages,
         [...instances.receipts, ...clusters.receipts, ...globals.receipts]);
@@ -1052,7 +1054,7 @@ if (scopes.length < 1 || scopes.length > MAX_SCOPES)
           'DBInstanceIdentifier', ['DBSnapshotIdentifier', 'DBInstanceIdentifier', 'SnapshotType', 'Status', 'Encrypted', 'KmsKeyId'])),
         ...clusterSnapshots.blocks.map((block) => resourceFromBlock(block, 'DBClusterSnapshot', scope, 'RDS_DB_CLUSTER_SNAPSHOT', 'DBClusterSnapshotArn',
           'DBClusterIdentifier', ['DBClusterSnapshotIdentifier', 'DBClusterIdentifier', 'SnapshotType', 'Status', 'Encrypted', 'KmsKeyId'])),
-      ];
+      ].filter((resource) => postgresEngine(resource.engine));
       append('WAL_ARCHIVE_DESTINATION_CATALOG', archiveResources,
         automated.pages + snapshots.pages + clusterSnapshots.pages,
         [...automated.receipts, ...snapshots.receipts, ...clusterSnapshots.receipts]);
@@ -1234,6 +1236,13 @@ export function createAwsRdsPitrRetentionDryRunPlan(
         blockers.push('Automated backup lacks an exact AWS-supported retention identity.');
       }
     } else if (resource.resource_type === 'AWS_BACKUP_RECOVERY_POINT') {
+      const postgresSource = inventoryItems.find((item) =>
+        item.resource_arn === resource.attributes.ResourceArn
+        && ['RDS_DB_INSTANCE', 'RDS_DB_CLUSTER'].includes(item.resource_type)
+        && (item.engine?.toLowerCase() === 'postgres' || item.engine?.toLowerCase() === 'aurora-postgresql'));
+      if (!postgresSource) {
+        blockers.push('AWS Backup recovery point does not map to an inventoried PostgreSQL/Aurora PostgreSQL resource.');
+      }
       if (resource.status?.toUpperCase() !== 'COMPLETED') {
         blockers.push('AWS Backup recovery point is not in COMPLETED state.');
       }
