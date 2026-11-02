@@ -54,6 +54,7 @@ function makeFetch(options: {
   backupRecoveryPointPages?: string[];
   legalHoldPages?: string[];
   legalHoldRecoveryPointPages?: Record<string, string[]>;
+  externalIamPageXml?: string;
   failAction?: string;
 } = {}) {
   const requests: Array<{
@@ -98,10 +99,13 @@ function makeFetch(options: {
     }
     if (action === 'GetCallerIdentity') {
       const temporaryReader = authorization.includes('ASIAREADERSCAN1234567');
-      const temporary = temporaryReader || authorization.includes('ASIAABCDEFGHIJKLMNOP');
+      const temporaryExternalIamReader = authorization.includes('ASIAEXTERNALIAM123456');
+      const temporary = temporaryReader || temporaryExternalIamReader || authorization.includes('ASIAABCDEFGHIJKLMNOP');
       const account = temporary ? (options.roleAccount ?? organizationAccount) : organizationAccount;
-      const assumedRole = temporaryReader ? 'FactoryOSRdsDbPrincipalReader' : roleName;
-      const sessionName = temporaryReader ? 'FactoryOSDbPrincipalScan' : 'FactoryOSPitrInventory';
+      const assumedRole = temporaryReader ? 'FactoryOSRdsDbPrincipalReader'
+        : temporaryExternalIamReader ? 'FactoryOSIamPrincipalReader' : roleName;
+      const sessionName = temporaryReader ? 'FactoryOSDbPrincipalScan'
+        : temporaryExternalIamReader ? 'FactoryOSIamPrincipalScan' : 'FactoryOSPitrInventory';
       const arn = temporary
         ? 'arn:aws:sts::' + account + ':assumed-role/' + assumedRole + '/' + sessionName
         : 'arn:aws:sts::' + organizationAccount + ':assumed-role/OrganizationReadOnly/source-session';
@@ -111,15 +115,16 @@ function makeFetch(options: {
     if (action === 'AssumeRole') {
       const queryBody = body as URLSearchParams;
       const requestedRole = queryBody.get('RoleArn')?.split('/').pop() ?? '';
-      if (!['FactoryOSRdsPitrReadOnly', 'FactoryOSRdsDbPrincipalReader'].includes(requestedRole)
+      if (!['FactoryOSRdsPitrReadOnly', 'FactoryOSRdsDbPrincipalReader', 'FactoryOSIamPrincipalReader'].includes(requestedRole)
         || queryBody.get('ExternalId') !== 'factoryos-wp10-aws-pitr-test-external-id') {
         return xml('<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>');
       }
       const readerRole = requestedRole === 'FactoryOSRdsDbPrincipalReader';
+      const externalIamReader = requestedRole === 'FactoryOSIamPrincipalReader';
       return xml('<AssumeRoleResponse><AssumeRoleResult><Credentials>'
-        + '<AccessKeyId>' + (readerRole ? 'ASIAREADERSCAN1234567' : 'ASIAABCDEFGHIJKLMNOP') + '</AccessKeyId>'
-        + '<SecretAccessKey>' + (readerRole ? 'reader-secret-key-material-012345678901' : 'temporary-secret-key-material-0123456789') + '</SecretAccessKey>'
-        + '<SessionToken>' + (readerRole ? 'reader-session-token-material-0123456789' : 'temporary-session-token-material-0123456789') + '</SessionToken>'
+        + '<AccessKeyId>' + (readerRole ? 'ASIAREADERSCAN1234567' : externalIamReader ? 'ASIAEXTERNALIAM123456' : 'ASIAABCDEFGHIJKLMNOP') + '</AccessKeyId>'
+        + '<SecretAccessKey>' + (readerRole ? 'reader-secret-key-material-012345678901' : externalIamReader ? 'external-iam-reader-secret-material-0123456789' : 'temporary-secret-key-material-0123456789') + '</SecretAccessKey>'
+        + '<SessionToken>' + (readerRole ? 'reader-session-token-material-0123456789' : externalIamReader ? 'external-iam-reader-session-token-0123456789' : 'temporary-session-token-material-0123456789') + '</SessionToken>'
         + '</Credentials></AssumeRoleResult></AssumeRoleResponse>');
     }
     if (action === 'ListBackupVaults') {
@@ -187,6 +192,16 @@ function makeFetch(options: {
         status: 200,
         headers: { 'content-type': 'application/x-amz-json-1.1' },
       });
+    }
+    if (action === 'GetAccountAuthorizationDetails') {
+      if (!url.host.startsWith('iam.')) return xml('<ErrorResponse><Error><Code>WrongServiceEndpoint</Code></Error></ErrorResponse>', 403);
+      if (!authorization.includes('ASIAEXTERNALIAM123456')) {
+        return xml('<ErrorResponse><Error><Code>WrongIamReaderIdentity</Code></Error></ErrorResponse>', 403);
+      }
+      return xml(options.externalIamPageXml ?? '<GetAccountAuthorizationDetailsResponse>'
+        + '<GetAccountAuthorizationDetailsResult><RoleDetailList/><UserDetailList/>'
+        + '<GroupDetailList/><Policies/><IsTruncated>false</IsTruncated>'
+        + '</GetAccountAuthorizationDetailsResult></GetAccountAuthorizationDetailsResponse>');
     }
     if (action === 'DescribeRegions') {
       return xml(options.regionXml ?? '<DescribeRegionsResponse><DescribeRegionsResult><regionInfo>'
@@ -293,6 +308,48 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       .toEqual(expect.arrayContaining(result.aws_backup_receipt_references));
     expect(result.aws_backup_recovery_points[0]?.recovery_point_arn)
       .toBe('arn:aws:backup:ap-southeast-1:111111111111:recovery-point:12345678-1234-1234-1234-123456789012');
+  });
+
+  it('assumes a separate IAM reader and records potential rds-db:connect identities without claiming effective access', async () => {
+    const policyDocument = encodeURIComponent(JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{
+        Sid: 'RdsConnectCandidate',
+        Effect: 'Allow',
+        Action: 'rds-db:connect',
+        Resource: 'arn:aws:rds-db:ap-southeast-1:111111111111:dbuser:db-ABCDEFGHIJKLMNOP/factoryos_writer',
+      }],
+    }));
+    const externalIamPageXml = '<GetAccountAuthorizationDetailsResponse><GetAccountAuthorizationDetailsResult>'
+      + '<RoleDetailList><member><RoleName>backup-writer</RoleName>'
+      + '<Arn>arn:aws:iam::111111111111:role/backup-writer</Arn>'
+      + '<AssumeRolePolicyDocument>%7B%22Version%22%3A%222012-10-17%22%2C%22Statement%22%3A%5B%5D%7D</AssumeRolePolicyDocument>'
+      + '<RolePolicyList><member><PolicyName>rds-connect</PolicyName>'
+      + '<PolicyDocument>' + policyDocument + '</PolicyDocument>'
+      + '</member></RolePolicyList></member></RoleDetailList>'
+      + '<UserDetailList/><GroupDetailList/><Policies/><IsTruncated>false</IsTruncated>'
+      + '</GetAccountAuthorizationDetailsResult></GetAccountAuthorizationDetailsResponse>';
+    const mock = makeFetch({ externalIamPageXml });
+    const result = await createAdapter(mock.fetcher, {
+      external_iam_principal_reader: {
+        role_name: 'FactoryOSIamPrincipalReader',
+        policy_sha256: 'b'.repeat(64),
+        policy_review_reference: 'review.iam.reader.v1',
+      },
+    }).captureInventory();
+
+    expect(result.external_iam_principal_catalog_status).toBe('COMPLETE');
+    expect(result.external_iam_principal_catalogs).toHaveLength(1);
+    expect(result.external_iam_principals_potentially_allowed_rds_db_connect).toBe(1);
+    expect(result.external_iam_principal_catalogs[0]?.principals[0]?.principal_arn)
+      .toBe('arn:aws:iam::111111111111:role/backup-writer');
+    expect(result.external_iam_effective_authorization_verified).toBe(false);
+    expect(result.external_iam_actual_database_connections_enumerated).toBe(false);
+    expect(result.external_iam_principal_reader_policy_independently_verified).toBe(false);
+    expect(mock.requests.filter((request) => request.action === 'AssumeRole')
+      .some((request) => (request.body as URLSearchParams).get('RoleArn')
+        === 'arn:aws:iam::111111111111:role/FactoryOSIamPrincipalReader')).toBe(true);
+    expect(mock.requests.some((request) => request.action === 'GetAccountAuthorizationDetails')).toBe(true);
   });
 
   it('marks non-active organization accounts as excluded and never claims complete account coverage', async () => {
