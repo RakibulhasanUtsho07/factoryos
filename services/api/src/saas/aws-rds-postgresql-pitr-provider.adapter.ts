@@ -121,6 +121,8 @@ export interface AwsRdsPostgresqlPitrInventory {
   scopes_discovered: number;
   total_pages_fetched: number;
   total_provider_requests: number;
+  total_database_queries: number;
+  total_database_principal_rows: number;
   total_items_observed: number;
   scopes: Array<{
     scope: AwsRdsPitrProviderScope;
@@ -761,6 +763,56 @@ function sourceFromItems(
     query_receipt_references: [...new Set(receipts)].sort(),
     items: sorted,
   };
+}
+
+function unavailableDatabasePrincipalCatalog(
+  resource: AwsRdsPitrResource,
+  options: AwsRdsPitrDatabasePrincipalInventoryOptions,
+  blocker: string,
+): AwsRdsPitrDatabasePrincipalCatalog {
+  const account = resource.account_id;
+  const region = resource.region;
+  const resourceId = resource.resource_type === 'RDS_DB_INSTANCE'
+    ? resource.attributes.DbiResourceId : resource.attributes.DBClusterResourceId;
+  const endpoint = resource.attributes.DatabaseEndpointAddress;
+  const endpointReference = 'aws-rds-endpoint.' + sha256(endpoint ?? resource.provider_identity_reference).slice(0, 32);
+  const roleArn = 'arn:' + partitionForRegion(region) + ':iam::' + account
+    + ':role/' + options.database_role_name;
+  const result: AwsRdsPitrDatabasePrincipalCatalog = {
+    schema: 'factoryos.aws-rds-postgresql-database-principals/v1',
+    account_id: account,
+    region,
+    database_resource_arn: resource.resource_arn ?? '',
+    database_resource_id: resourceId ?? '',
+    source_database_reference: resource.source_database_reference ?? '',
+    endpoint_reference: endpointReference,
+    database_name: options.database_name,
+    database_username: options.database_username,
+    database_access_role_arn: roleArn,
+    database_access_principal_reference: 'aws-sts-principal.unverified',
+    status: 'UNAVAILABLE',
+    observed_at: new Date().toISOString(),
+    identity: null,
+    database_roles: [],
+    role_memberships: [],
+    database_access: [],
+    schema_privileges: [],
+    object_privileges: [],
+    function_privileges: [],
+    active_sessions: [],
+    replication_senders: [],
+    replication_slots: [],
+    wal_receivers: [],
+    logical_subscriptions: [],
+    publications: [],
+    catalog_status: [{ catalog: 'connection', status: 'FAILED', rows_observed: 0, error_code: 'NOT_CAPTURED' }],
+    rows_observed: 0,
+    queries_executed: 0,
+    snapshot_sha256: '',
+    blockers: [blocker],
+  };
+  result.snapshot_sha256 = sha256(JSON.stringify(result));
+  return result;
 }
 
 function validateTimestamp(value: string, field: string): number {
