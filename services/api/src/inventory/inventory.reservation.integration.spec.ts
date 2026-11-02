@@ -241,7 +241,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'SELECT CURRENT_DATE::text AS current_date',
     );
     const databaseCurrentDate = databaseDateResult.rows[0]?.current_date;
-    if (!databaseCurrentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(databaseCurrentDate)) {
+    if (!databaseCurrentDate || !/^\d{4}-\d{2}-\d{2}$/.test(databaseCurrentDate)) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO expiry fixtures');
     }
     const expiryFromDatabaseDate = (offsetDays: number): string => {
