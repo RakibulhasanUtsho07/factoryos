@@ -55,6 +55,8 @@ function makePoolFactory(settings: {
   privilegedMemberships?: string[];
   roleMemberships?: Array<{ granted_role: string; member_role: string; granted_by: string; admin_option: boolean }>;
   databasePrivilegeRows?: unknown[];
+  largeObjectPrivilegeRows?: unknown[];
+  defaultPrivilegeRows?: unknown[];
 } = {}) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   const poolConfig: Array<Record<string, unknown>> = [];
@@ -111,6 +113,12 @@ function makePoolFactory(settings: {
           }
           if (sql.includes('factoryos:pitr:schema_privileges')) {
             return { rows: [{ grantee: 'app_writer', schema_name: 'public', privilege_type: 'CREATE', is_grantable: false }] };
+          }
+          if (sql.includes('factoryos:pitr:large_object_privileges')) {
+            return { rows: settings.largeObjectPrivilegeRows ?? [] };
+          }
+          if (sql.includes('factoryos:pitr:default_privileges')) {
+            return { rows: settings.defaultPrivilegeRows ?? [] };
           }
           if (sql.includes('factoryos:pitr:object_privileges')) {
             return { rows: [{ grantee: 'app_writer', schema_name: 'public', object_name: 'orders',
@@ -190,7 +198,7 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(catalog.wal_receivers[0]?.status).toBe('streaming');
     expect(catalog.logical_subscriptions[0]?.subscription_name).toBe('orders_subscription');
     expect(catalog.logical_subscriptions[0]).not.toHaveProperty('subconninfo');
-    expect(catalog.catalog_status).toHaveLength(13);
+    expect(catalog.catalog_status).toHaveLength(15);
     expect(catalog.rows_observed).toBeGreaterThan(0);
     expect(catalog.snapshot_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(mock.poolConfig[0]?.ssl).toEqual({ ca: caPem, rejectUnauthorized: true });
@@ -278,6 +286,28 @@ describe('AwsRdsPitrDatabasePrincipalInventoryReader', () => {
     expect(mock.poolConfig.map((item) => item.database)).toEqual(['postgres']);
   });
 
+
+
+  it('blocks inherited large-object access and default grants that can create future application writers', async () => {
+    const largeObjectMock = makePoolFactory({
+      roleMemberships: [{ granted_role: 'large_object_reader', member_role: username, granted_by: 'rds_superuser', admin_option: false }],
+      largeObjectPrivilegeRows: [{ grantee: 'large_object_reader', large_object_id: '9001',
+        owner: 'app_writer', privilege_type: 'SELECT', is_grantable: false }],
+    });
+    const largeObjectCatalog = await new AwsRdsPitrDatabasePrincipalInventoryReader(options, largeObjectMock.poolFactory)
+      .capture(target, role);
+    expect(largeObjectCatalog.status).toBe('PARTIAL');
+    expect(largeObjectCatalog.blockers).toContain('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
+
+    const defaultsMock = makePoolFactory({
+      defaultPrivilegeRows: [{ owner_role: 'app_writer', schema_name: 'public', object_type: 'r',
+        grantee: 'PUBLIC', privilege_type: 'INSERT', is_grantable: false }],
+    });
+    const defaultsCatalog = await new AwsRdsPitrDatabasePrincipalInventoryReader(options, defaultsMock.poolFactory)
+      .capture(target, role);
+    expect(defaultsCatalog.status).toBe('PARTIAL');
+    expect(defaultsCatalog.blockers).toContain('DATABASE_INVENTORY_LOGIN_ROLE_HAS_EFFECTIVE_WRITE_PRIVILEGES');
+  });
 
   it('rejects the reader login when an inherited role grants database CREATE', async () => {
     const mock = makePoolFactory({
