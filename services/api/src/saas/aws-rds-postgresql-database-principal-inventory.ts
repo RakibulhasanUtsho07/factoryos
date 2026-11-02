@@ -58,6 +58,7 @@ export interface AwsRdsPitrDatabasePrincipalCatalog {
     in_recovery: boolean;
     has_pg_read_all_stats: boolean;
     has_rds_iam: boolean;
+    privileged_memberships: string[];
     server_version_num: string;
   } | null;
   database_roles: Array<{
@@ -536,7 +537,7 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         blockers.push('DATABASE_IAM_CONNECTION_FAILED');
         return this.emptyResult(target, endpointReference, accessRole, observedAt, blockers, catalogStatus, queriesExecuted);
       }
-      await client.query('BEGIN READ ONLY');
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       inTransaction = true;
       await client.query('SET LOCAL statement_timeout = ' + this.options.statement_timeout_ms);
       await client.query('SET LOCAL lock_timeout = 1000');
@@ -547,6 +548,10 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         + 'pg_catalog.pg_is_in_recovery() AS in_recovery, '
         + 'pg_catalog.pg_has_role(current_user, \'pg_read_all_stats\', \'member\') AS has_pg_read_all_stats, '
         + 'pg_catalog.pg_has_role(current_user, \'rds_iam\', \'member\') AS has_rds_iam, '
+        + 'ARRAY(SELECT role.rolname FROM pg_catalog.pg_roles AS role '
+        + 'WHERE role.rolname IN (\'rds_superuser\', \'rds_replication\', \'pg_read_all_data\', \'pg_write_all_data\', '
+        + '\'pg_execute_server_program\', \'pg_read_server_files\', \'pg_write_server_files\') '
+        + 'AND pg_catalog.pg_has_role(current_user, role.oid, \'MEMBER\') ORDER BY role.rolname) AS privileged_memberships, '
         + 'current_setting(\'server_version_num\') AS server_version_num',
       );
       queriesExecuted += 1;
@@ -568,6 +573,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         in_recovery: asBoolean(row.in_recovery, 'in_recovery'),
         has_pg_read_all_stats: asBoolean(row.has_pg_read_all_stats, 'has_pg_read_all_stats'),
         has_rds_iam: asBoolean(row.has_rds_iam, 'has_rds_iam'),
+        privileged_memberships: Array.isArray(row.privileged_memberships)
+          ? row.privileged_memberships.map((item) => requiredString(item, 'privileged_membership')) : [],
         server_version_num: requiredString(row.server_version_num, 'server_version_num'),
       };
 
@@ -583,9 +590,9 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
         let errorCode: string | null = null;
         const limit = Math.min(this.options.max_rows_per_catalog, rowBudget);
         try {
+          queriesExecuted += 1;
           const result = await client.query(catalog.sql, [limit + 1]);
           resultRows = result.rows;
-          queriesExecuted += 1;
           if (resultRows.length > limit) {
             state = 'TRUNCATED';
             resultRows = resultRows.slice(0, limit);
@@ -613,7 +620,8 @@ export class AwsRdsPitrDatabasePrincipalInventoryReader {
       if (!readerRole || readerRole.rolsuper !== false || readerRole.rolcreaterole !== false
         || readerRole.rolcreatedb !== false || readerRole.rolreplication !== false
         || readerRole.rolbypassrls !== false || readerRole.rolcanlogin !== true
-        || readerRole.rolinherit !== true || identity.has_pg_read_all_stats !== true || identity.has_rds_iam !== true) {
+        || readerRole.rolinherit !== true || identity.has_pg_read_all_stats !== true || identity.has_rds_iam !== true
+        || identity.privileged_memberships.length > 0) {
         blockers.push('DATABASE_INVENTORY_LOGIN_ROLE_IS_MISSING_OR_OVERPRIVILEGED');
       }
       await client.query('COMMIT');
