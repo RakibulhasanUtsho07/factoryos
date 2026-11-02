@@ -214,7 +214,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'SELECT to_char(CURRENT_DATE, \'YYYY-MM-DD\') AS current_date',
     );
     const databaseDate = databaseDateResult.rows[0]?.current_date;
-    if (!databaseDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(databaseDate)) {
+    if (!databaseDate || !/^\d{4}-\d{2}-\d{2}$/.test(databaseDate)) {
       throw new Error('PostgreSQL CURRENT_DATE fixture value is invalid');
     }
     const expiryFromDatabaseDate = (offsetDays: number): string => {
