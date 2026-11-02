@@ -523,6 +523,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       backupVaultPages: [JSON.stringify({ BackupVaultList: [{
         BackupVaultName: 'default',
         BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        VaultType: 'BACKUP_VAULT',
+        VaultState: 'AVAILABLE',
         Locked: false,
         NumberOfRecoveryPoints: 1,
       }] })],
@@ -628,6 +630,8 @@ describe('AwsRdsPostgresqlPitrProviderAdapter', () => {
       backupVaultPages: [JSON.stringify({ BackupVaultList: [{
         BackupVaultName: 'default',
         BackupVaultArn: 'arn:aws:backup:ap-southeast-1:111111111111:backup-vault:default',
+        VaultType: 'BACKUP_VAULT',
+        VaultState: 'AVAILABLE',
         Locked: true,
         LockDate: '2026-10-30T00:00:00.000Z',
         MinRetentionDays: 30,
