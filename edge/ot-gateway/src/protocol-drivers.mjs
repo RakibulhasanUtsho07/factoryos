@@ -207,6 +207,7 @@ export class OpcUaSessionDriver extends EventEmitter {
     this.subscription = null;
     this.connected = false;
     this.lastError = null;
+    this.persistedStreamKeys = new Set();
   }
 
   async start() {
@@ -233,7 +234,14 @@ export class OpcUaSessionDriver extends EventEmitter {
   }
 
   health() {
-    return { connected: this.connected, ready: this.connected && !this.lastError, errorCode: this.lastError };
+    const synchronized = this.device.nodes.every((node) => this.persistedStreamKeys.has(node.stream_key));
+    return {
+      connected: this.connected,
+      ready: this.connected && !this.lastError && synchronized,
+      errorCode: this.lastError,
+      synchronized_streams: this.persistedStreamKeys.size,
+      configured_streams: this.device.nodes.length,
+    };
   }
 
   async #run(signal) {
@@ -268,6 +276,9 @@ export class OpcUaSessionDriver extends EventEmitter {
         await client.connect(this.device.endpointUrl);
         const session = await client.createSession();
         this.session = session;
+        // A new session must prove that every configured mapping produces a
+        // durable value before this driver can report ready again.
+        this.persistedStreamKeys.clear();
         this.connected = true;
         this.lastError = null;
         backoff = 1000;
@@ -371,6 +382,9 @@ export class OpcUaSessionDriver extends EventEmitter {
       observed_at: observedAt,
       payload: { value, status_code: dataValue?.statusCode?.name ?? 'Unknown', protocol: 'OPC_UA' },
     });
+    this.persistedStreamKeys.add(node.stream_key);
+    if (this.persistedStreamKeys.size === this.device.nodes.length
+        && this.lastError === 'OPCUA_DURABLE_SPOOL_REJECTED') this.lastError = null;
   }
 }
 
@@ -384,6 +398,7 @@ export class ModbusTcpReadDriver extends EventEmitter {
     this.connected = false;
     this.lastError = null;
     this.running = false;
+    this.lastSuccessfulPollAt = null;
   }
 
   async read(registers) {
@@ -459,6 +474,8 @@ export class ModbusTcpReadDriver extends EventEmitter {
   async start() {
     if (this.loopPromise) return;
     this.running = true;
+    this.lastSuccessfulPollAt = null;
+    this.lastError = null;
     this.abortController = new AbortController();
     this.loopPromise = this.#poll(this.abortController.signal).finally(() => { this.loopPromise = null; });
   }
@@ -470,7 +487,12 @@ export class ModbusTcpReadDriver extends EventEmitter {
   }
 
   health() {
-    return { connected: this.connected, ready: this.running && !this.lastError, errorCode: this.lastError };
+    return {
+      connected: this.connected,
+      ready: this.running && this.lastSuccessfulPollAt !== null && !this.lastError,
+      errorCode: this.lastError,
+      last_successful_poll_at: this.lastSuccessfulPollAt,
+    };
   }
 
   async #poll(signal) {
@@ -499,6 +521,10 @@ export class ModbusTcpReadDriver extends EventEmitter {
             },
           });
         }
+        // Mark readiness only after the entire registered map has been read
+        // and every sample has been committed to the encrypted durable spool.
+        this.lastSuccessfulPollAt = new Date().toISOString();
+        this.lastError = null;
         backoff = this.device.pollIntervalMs;
       } catch {
         this.lastError = 'MODBUS_POLL_OR_SPOOL_FAILURE';

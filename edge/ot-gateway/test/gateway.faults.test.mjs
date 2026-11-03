@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OtEdgeDurableSpool } from '../src/spool.mjs';
-import { handleMqttDelivery } from '../src/protocol-drivers.mjs';
+import { handleMqttDelivery, OpcUaSessionDriver } from '../src/protocol-drivers.mjs';
 import { ProtocolSupervisor, replayOnce } from '../src/index.mjs';
 import { resolveSecretFilePath, secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
 import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
@@ -77,6 +77,74 @@ test('broker acknowledgement loss and redelivery produce one durable event with 
   const batch = await spool.readBatch();
   assert.equal(batch.items[0].event.source_event_id, 'mqtt-redelivery-1');
   assert.equal(batch.items[0].event.source_sequence, 40);
+});
+
+
+test('MQTT QoS 1 delivery withholds PUBACK when the durable spool is full', async (t) => {
+  const { file, key, spool } = await fixture(t);
+  await spool.enqueue(scope, {
+    source_event_id: 'capacity-occupier',
+    source_sequence: 1,
+    event_type: 'TELEMETRY',
+    stream_key: 'TEMPERATURE',
+    observed_at: '2026-10-23T04:00:00.000Z',
+    payload: { value: 20 },
+  });
+  const boundedSpool = new OtEdgeDurableSpool(file, key, { now: () => 2000, maxEntries: 1 });
+  let callbackCount = 0;
+  let acknowledgementError;
+  await handleMqttDelivery(
+    boundedSpool,
+    [mqttDevice],
+    message('capacity-rejected-event', 2),
+    (error) => { callbackCount += 1; acknowledgementError = error; },
+  );
+  assert.equal(callbackCount, 1);
+  assert.ok(acknowledgementError instanceof Error);
+  assert.match(acknowledgementError.message, /durable spool rejected/);
+  assert.equal(await boundedSpool.pendingCount(), 1);
+});
+
+test('MQTT QoS 1 delivery withholds PUBACK when filesystem persistence fails', async (t) => {
+  const { dir, key } = await fixture(t);
+  const blocker = join(dir, 'not-a-directory');
+  await writeFile(blocker, 'regular file prevents spool directory creation');
+  const brokenSpool = new OtEdgeDurableSpool(join(blocker, 'spool.enc'), key);
+  let callbackCount = 0;
+  let acknowledgementError;
+  await handleMqttDelivery(
+    brokenSpool,
+    [mqttDevice],
+    message('filesystem-failure-event', 3),
+    (error) => { callbackCount += 1; acknowledgementError = error; },
+  );
+  assert.equal(callbackCount, 1);
+  assert.ok(acknowledgementError instanceof Error);
+  assert.match(acknowledgementError.message, /durable spool rejected/);
+});
+
+test('OPC UA driver stays unready until every configured stream is durably synchronized', () => {
+  const device = {
+    ...scope,
+    device_key: 'LINE-1-PLC',
+    connection_reference: 'PLC-LINE-1',
+    mode: 'subscription',
+    pollIntervalMs: 1000,
+    nodes: [
+      { nodeId: 'ns=2;s=Line1.Temperature', stream_key: 'TEMPERATURE', samplingIntervalMs: 500 },
+      { nodeId: 'ns=2;s=Line1.Pressure', stream_key: 'PRESSURE', samplingIntervalMs: 500 },
+    ],
+  };
+  const driver = new OpcUaSessionDriver(device, { enqueueSample: async () => ({}) }, async () => Buffer.from('unused'));
+  assert.equal(driver.health().ready, false);
+  driver.connected = true;
+  assert.equal(driver.health().ready, false, 'session connection alone is not initial synchronization');
+  driver.persistedStreamKeys.add('TEMPERATURE');
+  assert.equal(driver.health().ready, false, 'partial controller mapping must remain unready');
+  driver.persistedStreamKeys.add('PRESSURE');
+  assert.equal(driver.health().ready, true, 'all registered streams have produced a durable sample');
+  assert.equal(driver.health().synchronized_streams, 2);
+  assert.equal(driver.health().configured_streams, 2);
 });
 
 test('sequence gaps from a source are preserved instead of renumbered during offline replay', async (t) => {
@@ -281,6 +349,39 @@ test('Modbus TCP driver reads registered holding/input registers from a real sim
   assert.deepEqual(results.map((row) => row.registers), [[0x4228, 0x0000], [0x0000, 0x0064]]);
   assert.equal(simulator.metrics.reads, 2);
   assert.equal(simulator.metrics.writeAttempts, 0);
+});
+
+
+test('Modbus driver remains unready until a complete mapped poll is durably persisted', async (t) => {
+  const simulator = await startModbusTcpSimulator({
+    unitId: 7,
+    registers: new Map([['4:10', [0x4228, 0x0000]]]),
+  });
+  t.after(() => simulator.close());
+  const { spool } = await fixture(t);
+  const device = {
+    ...scope,
+    device_key: 'ENERGY-METER-01',
+    connection_reference: 'ENERGY-METER-01-TRUSTED',
+    host: simulator.host,
+    port: simulator.port,
+    unit_id: 7,
+    pollIntervalMs: 500,
+    timeoutMs: 500,
+    register_map: [{ stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 }],
+  };
+  const driver = new ModbusTcpReadDriver(device, spool);
+  assert.equal(driver.health().ready, false, 'running has not yet demonstrated a live device read');
+  await driver.start();
+  const deadline = Date.now() + 3000;
+  while (!driver.health().ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(driver.health().ready, true);
+  assert.ok(driver.health().last_successful_poll_at);
+  assert.equal(await spool.pendingCount(), 1, 'the readiness sample must already be durably queued');
+  await driver.stop();
+  assert.equal(driver.health().ready, false, 'a stopped driver is never ready');
 });
 
 test('Modbus response loss and wrong unit ID fail closed without attempting a write', async (t) => {

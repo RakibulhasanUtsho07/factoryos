@@ -32,7 +32,7 @@ Mount the files read-only under /run/secrets. The gateway checks certificate/pri
 The gateway expects a trusted HTTPS origin in api.baseUrl and exposes:
 
 - GET /healthz: process/liveness summary (HTTP 200 while the process can serve health)
-- GET /readyz: HTTP 200 only when configured drivers are ready, spool state is readable, no entry is blocked for operator review, and the durable queue has free capacity; otherwise 503. `/healthz` remains a process-liveness check and still returns HTTP 200 while the process can serve health, even if readiness is false.
+- GET /readyz: HTTP 200 only when configured drivers are ready, spool state is readable, no entry is blocked for operator review, and the durable queue has free capacity; otherwise 503. OPC UA readiness now requires a first successfully spooled value for every configured stream after each session reconnect. Modbus readiness requires a complete registered-map poll whose samples have all been durably spooled; starting the polling loop alone is not enough. MQTT readiness requires the broker connection and every exact QoS 1 subscription to be accepted. `/healthz` remains a process-liveness check and still returns HTTP 200 while the process can serve health, even if readiness is false.
 - POST /api/v1/modbus/read: bearer-authenticated, scope-bound, read-only gateway API; optional mTLS client verification is enabled when security.clientCaFile is configured
 
 The existing FactoryOS API client must point FACTORYOS_OT_PROTOCOL_GATEWAY_URL at the fixed HTTPS /api/v1/modbus/read endpoint and set FACTORYOS_OT_PROTOCOL_GATEWAY_TOKEN to the corresponding service credential. In production, use the mTLS ingress/service-mesh policy used by the API deployment and restrict network policy ingress to the API workload. Do not expose this service directly to the public internet.
@@ -52,7 +52,7 @@ At startup, the gateway fingerprints the complete mounted secret-file inventory 
     npm run check
     npm test
 
-The automated fault suite exercises encrypted spool restart, wrong-key rejection, source sequence-gap preservation, MQTT durable-ack ordering and duplicate delivery after simulated PUBACK loss, API commit/acknowledgement loss, blocked-record review/requeue, secret fingerprint changes, actual Modbus TCP reads against a local socket simulator, dropped responses, wrong unit IDs and refusal of write functions.
+The automated fault suite exercises encrypted spool restart, wrong-key rejection, source sequence-gap preservation, MQTT durable-ack ordering, duplicate delivery after simulated PUBACK loss, and PUBACK withholding on both queue-capacity and filesystem persistence failures. It also covers API commit/acknowledgement loss, blocked-record review/requeue, secret fingerprint changes, OPC UA per-stream initial synchronization readiness, and actual Modbus TCP reads against a local socket simulator, including the requirement for a complete durably persisted poll before readiness, dropped responses, wrong unit IDs and refusal of write functions.
 
 The CI job also builds the container. It is suitable for simulator/fault-injection acceptance, but is not evidence of a commissioned PLC site by itself.
 
