@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -715,7 +715,7 @@ function createApprovedBackupFixture(directory) {
   const recipientFingerprint = 'B'.repeat(40);
   const sourceDatabaseIdentity = 'factoryos_source|10.0.0.10|5432';
   const incidentCutoffUtc = '2026-10-20T10:00:00Z';
-  require('node:fs').mkdirSync(home, { mode: 0o700 });
+  mkdirSync(home, { mode: 0o700 });
   chmodSync(home, 0o700);
   const gnupgEnv = { ...process.env, GNUPGHOME: home };
   execFileSync('gpg', [
@@ -760,12 +760,11 @@ function runApprovedBackupVerifier(fixture, overrides = {}) {
     '--artifact', fixture.artifact,
     '--manifest', fixture.manifestPath,
     '--signature', fixture.signaturePath,
-    '--signer-fingerprint', fixture.signerFingerprint,
-    '--recipient-fingerprint', fixture.recipientFingerprint,
-    '--source-database-identity', fixture.sourceDatabaseIdentity,
+    '--signer-fingerprint', overrides.signerFingerprint ?? fixture.signerFingerprint,
+    '--recipient-fingerprint', overrides.recipientFingerprint ?? fixture.recipientFingerprint,
+    '--source-database-identity', overrides.sourceDatabaseIdentity ?? fixture.sourceDatabaseIdentity,
     '--incident-cutoff-utc', fixture.incidentCutoffUtc,
     '--output', fixture.output,
-    ...(overrides.args ?? []),
   ];
   return run(process.execPath, args, { GNUPGHOME: fixture.home, ...overrides.env });
 }
@@ -795,7 +794,7 @@ test('approved PostgreSQL backup verifier rejects a different pinned signing key
   const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-signer-'));
   try {
     const fixture = createApprovedBackupFixture(directory);
-    const result = runApprovedBackupVerifier(fixture, { args: ['--signer-fingerprint', 'C'.repeat(40)] });
+    const result = runApprovedBackupVerifier(fixture, { signerFingerprint: 'C'.repeat(40) });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /signature verification failed|pinned independent backup-controller fingerprint/);
   } finally {
@@ -821,12 +820,12 @@ test('approved PostgreSQL backup verifier rejects a different source database id
   try {
     const fixture = createApprovedBackupFixture(directory);
     const wrongSource = runApprovedBackupVerifier(fixture, {
-      args: ['--source-database-identity', 'unrelated-db|10.0.0.11|5432'],
+      sourceDatabaseIdentity: 'unrelated-db|10.0.0.11|5432',
     });
     assert.notEqual(wrongSource.status, 0);
     assert.match(wrongSource.stderr, /source database identity does not match/);
     const wrongRecipient = runApprovedBackupVerifier(fixture, {
-      args: ['--recipient-fingerprint', 'D'.repeat(40)],
+      recipientFingerprint: 'D'.repeat(40),
     });
     assert.notEqual(wrongRecipient.status, 0);
     assert.match(wrongRecipient.stderr, /recipient does not match/);
