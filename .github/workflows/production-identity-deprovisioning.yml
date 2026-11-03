@@ -36,8 +36,7 @@ on:
         type: string
       max_propagation_seconds:
         description: Owner-approved maximum time for target-tenant revocation
-        required: false
-        default: '300'
+        required: true
         type: string
 
 permissions:
@@ -70,6 +69,7 @@ jobs:
       OIDC_MFA_AMR_VALUES_INPUT: ${{ vars.AS133_OIDC_MFA_AMR_VALUES }}
       OIDC_MFA_ACR_VALUES_INPUT: ${{ vars.AS133_OIDC_MFA_ACR_VALUES }}
       STAGING_API_ORIGIN_INPUT: ${{ vars.AS133_STAGING_API_ORIGIN }}
+      STAGING_DEPLOYED_SHA_INPUT: ${{ vars.AS133_STAGING_DEPLOYED_SHA }}
 
     steps:
       - name: Checkout exact deployed candidate
@@ -92,6 +92,7 @@ jobs:
           [[ "$PHASE_INPUT" == "before" || "$PHASE_INPUT" == "after" ]] || { echo "::error::phase must be before or after"; exit 1; }
           [[ "$CANDIDATE_SHA_INPUT" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::candidate_sha must be a full commit SHA"; exit 1; }
           [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA_INPUT" ]] || { echo "::error::checkout does not match candidate_sha"; exit 1; }
+          [[ "$STAGING_DEPLOYED_SHA_INPUT" == "$CANDIDATE_SHA_INPUT" ]] || { echo "::error::environment AS133_STAGING_DEPLOYED_SHA must identify the exact candidate deployed to staging"; exit 1; }
           [[ "$TARGET_TENANT_ID_INPUT" =~ ^[0-9a-fA-F-]{36}$ && "$SIBLING_TENANT_ID_INPUT" =~ ^[0-9a-fA-F-]{36}$ && "$TARGET_TENANT_ID_INPUT" != "$SIBLING_TENANT_ID_INPUT" ]] || { echo "::error::two distinct staging tenant UUIDs are required"; exit 1; }
           [[ -n "$OIDC_STAGING_BEARER_TOKEN" && -n "$OIDC_ISSUER_INPUT" && -n "$OIDC_AUDIENCE_INPUT" && -n "$OIDC_JWKS_URI_INPUT" && -n "$STAGING_API_ORIGIN_INPUT" ]] || { echo "::error::configure the protected AS133 staging IdP/API environment values and bearer-token secret"; exit 1; }
           [[ "$OIDC_ISSUER_INPUT" == https://* && "$OIDC_JWKS_URI_INPUT" == https://* && "$STAGING_API_ORIGIN_INPUT" == https://* ]] || { echo "::error::IdP issuer, JWKS and staging API must use HTTPS"; exit 1; }
@@ -121,11 +122,10 @@ jobs:
             .conclusion == "success" and
             .path == ".github/workflows/production-identity-deprovisioning.yml"
           ' <<< "$run_json" >/dev/null || { echo "::error::baseline run must be a successful before-phase run of this workflow on the exact same candidate SHA"; exit 1; }
-          actions/download-artifact@v4
-          curl --fail --silent --show-error -L \
+          curl --fail --silent --show-error \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID_INPUT/artifacts" \
+            "$api/artifacts" \
             -o "$RUNNER_TEMP/as133-evidence/artifacts.json"
           jq -e '.artifacts | any(.name == "as133-oidc-deprovision-before" and .expired == false)' \
             "$RUNNER_TEMP/as133-evidence/artifacts.json" >/dev/null || { echo "::error::baseline evidence artifact is missing or expired"; exit 1; }
