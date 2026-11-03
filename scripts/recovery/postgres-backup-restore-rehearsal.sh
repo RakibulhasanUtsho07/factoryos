@@ -81,6 +81,7 @@ rpo_target_seconds="${FACTORYOS_RECOVERY_RPO_TARGET_SECONDS:-}"
 rto_target_seconds="${FACTORYOS_RECOVERY_RTO_TARGET_SECONDS:-}"
 targets_approved=false
 tmpdir=""
+secure_tmpdir="${FACTORYOS_DR_SECURE_TMPDIR:-}"
 partial_file=""
 
 emit_evidence() {
@@ -182,7 +183,7 @@ need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 [[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "confirm the restore target is disposable and isolated before continuing"
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  for tool in date stat readlink grep sed awk sha256sum git; do need_command "$tool"; done
+  for tool in date stat readlink grep sed awk sha256sum git findmnt id; do need_command "$tool"; done
   need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
   need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
   [[ "$manifest_mode" == "PENDING" || "$manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "FACTORYOS_MIGRATION_MANIFEST_MODE must be PENDING or IDEMPOTENT_REPLAY"
@@ -236,6 +237,19 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   fi
   need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "$app_database_url"
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
+
+  need_value FACTORYOS_DR_SECURE_TMPDIR "$secure_tmpdir"
+  [[ -d "$secure_tmpdir" && ! -L "$secure_tmpdir" ]] || die "release-gate plaintext scratch must be an existing non-symlink private tmpfs directory"
+  secure_tmpdir="$(readlink -f -- "$secure_tmpdir")"
+  [[ -n "$secure_tmpdir" && "$secure_tmpdir" != "/" ]] || die "secure scratch path did not resolve to a private directory"
+  secure_tmpfs_type="$(findmnt -n -o FSTYPE --target "$secure_tmpdir" 2>/dev/null)" || die "could not identify the filesystem backing secure scratch"
+  [[ "$secure_tmpfs_type" == "tmpfs" ]] || die "release-gate plaintext backup scratch must reside on tmpfs, not persistent disk"
+  secure_tmp_owner="$(stat -c '%u' -- "$secure_tmpdir")" || die "could not verify secure scratch ownership"
+  [[ "$secure_tmp_owner" == "$(id -u)" ]] || die "secure scratch must be owned by the recovery runner identity"
+  secure_tmp_mode="$(stat -c '%a' -- "$secure_tmpdir")" || die "could not verify secure scratch permissions"
+  [[ "$secure_tmp_mode" =~ ^[0-7]{3,4}$ ]] || die "secure scratch permissions are invalid"
+  (( (8#$secure_tmp_mode & 0077) == 0 && (8#$secure_tmp_mode & 0300) == 0300 )) || die "secure scratch must be owner-accessible and inaccessible to group/other users"
+  export TMPDIR="$secure_tmpdir"
 fi
 
 for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
