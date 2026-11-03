@@ -93,28 +93,31 @@ describe('SaasTenantPropagationService', () => {
     expect(audit.recordWithClient).not.toHaveBeenCalled();
   });
 
-  it('refuses to activate a CACHE target while no matching provider adapter is registered', async () => {
-    database.query.mockResolvedValue({
-      rows: [{
-        id: '16050000-0000-4000-8000-000000000001',
-        tenant_id: tenant,
-        target_id: 'cache-main',
-        store_kind: 'CACHE',
-        adapter_key: 'cache.redis.v1',
-        config_reference: 'factoryos-cache-prod-v1',
-        categories: ['BUSINESS_DATA'],
-        required: true,
-        status: 'PENDING',
-        registered_by_user_id: requester,
-      }],
-    } as never);
+  it('refuses to activate search, vector, learning-artifact, external-provider and replica targets without selected provider adapters', async () => {
+    const unsupportedKinds = ['SEARCH_INDEX', 'VECTOR_STORE', 'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA'] as const;
+    for (const [index, storeKind] of unsupportedKinds.entries()) {
+      const targetId = 'unconfigured-' + storeKind.toLowerCase();
+      database.query.mockResolvedValue({
+        rows: [{
+          id: '16050000-0000-4000-8000-' + String(index + 10).padStart(12, '0'),
+          tenant_id: tenant,
+          target_id: targetId,
+          store_kind: storeKind,
+          adapter_key: 'unselected.' + storeKind.toLowerCase() + '.v1',
+          config_reference: 'provider-scope.' + storeKind.toLowerCase(),
+          categories: ['BUSINESS_DATA'],
+          required: true,
+          status: 'PENDING',
+          registered_by_user_id: requester,
+        }],
+      } as never);
 
-    await expect(service.reviewTarget(tenant, reviewer, 'cache-main', {
-      decision: 'APPROVE',
-      expected_status: 'PENDING',
-      reason: 'Provider integration is not installed',
-    })).rejects.toThrow('No provider adapter registered for target cache-main');
-
+      await expect(service.reviewTarget(tenant, reviewer, targetId, {
+        decision: 'APPROVE',
+        expected_status: 'PENDING',
+        reason: 'Provider and tenant data ownership have not been selected and reviewed',
+      })).rejects.toThrow('No provider adapter registered for target ' + targetId);
+    }
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
