@@ -624,6 +624,8 @@ test('finance retention is backed by a registered, bounded, read-only ledger inv
   assert.match(adapter, /POSTGRES_FINANCE_RETENTION_MAX_ROWS = 100000/);
   assert.match(adapter, /relforcerowsecurity AS rls_forced/);
   assert.match(adapter, /pg_get_triggerdef/);
+  assert.match(adapter, /p\\.prosrc ILIKE '%RAISE EXCEPTION%'/);
+  assert.match(adapter, /isolationLevel: 'REPEATABLE READ', readOnly: true/);
   assert.match(adapter, /destructiveDeletePermitted: false/);
   assert.match(adapter, /BLOCKED_IMMUTABLE_FINANCE_LEDGER/);
   assert.ok(!adapter.includes('DELETE FROM'));
@@ -637,5 +639,6 @@ test('finance retention is backed by a registered, bounded, read-only ledger inv
   assert.match(module, /useExisting: PostgresFinanceRetentionInventoryAdapter/);
   assert.doesNotMatch(module, /SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null/);
   assert.match(contract, /immutable DELETE guard is missing for finance ledger relation/);
+  assert.match(contract, /p\\.prosrc ILIKE '%RAISE EXCEPTION%'/);
   assert.match(env, /FACTORYOS_FINANCE_RETENTION_MODE=INVENTORY_ONLY/);
 });
