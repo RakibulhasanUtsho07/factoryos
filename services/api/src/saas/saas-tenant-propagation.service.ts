@@ -470,11 +470,18 @@ export class SaasTenantPropagationService {
       };
     }
 
+    // The replay branch above returns before execution; non-replayed preparations
+    // always carry these snapshots, while the inferred transaction union keeps them
+    // optional because the replay shape intentionally omits execution-only fields.
+    const retentionPolicyVersions = prepared.retentionPolicyVersions ?? {};
+    const activeLegalHoldCategories = prepared.activeLegalHoldCategories ?? [];
+    const policyBlockedCategories = prepared.policyBlockedCategories ?? [];
+
     let currentManifest = this.jsonObject(prepared.run.external_manifest);
-    currentManifest.activeLegalHoldCategories = prepared.activeLegalHoldCategories;
-    currentManifest.policyBlockedCategories = prepared.policyBlockedCategories;
-    currentManifest.policyVersions = prepared.retentionPolicyVersions;
-    currentManifest.retentionPolicyVersions = prepared.retentionPolicyVersions;
+    currentManifest.activeLegalHoldCategories = activeLegalHoldCategories;
+    currentManifest.policyBlockedCategories = policyBlockedCategories;
+    currentManifest.policyVersions = retentionPolicyVersions;
+    currentManifest.retentionPolicyVersions = retentionPolicyVersions;
     const latestReceiptByTarget = new Map(prepared.latestReceipts.map((receipt) => [receipt.target_id, receipt]));
     const preflightRecoveredTargetIds = new Set<string>();
     const preflightFailureCodes: Record<string, string> = {};
@@ -534,14 +541,14 @@ export class SaasTenantPropagationService {
           'A required backup writer fence failed installation/read-back; the global provider preparation barrier remained closed.');
         continue;
       }
-      if (prepared.activeLegalHoldCategories.length > 0) {
+      if (activeLegalHoldCategories.length > 0) {
         preflightFailureCodes[target.targetId] = 'ACTIVE_LEGAL_HOLD';
         preflightFailureOutcomes.set(target.targetId, 'RETAINED');
         preflightFailureReasons.set(target.targetId,
           'An active legal hold retains the requested tenant/category scope; no provider deletion was attempted.');
         continue;
       }
-      if (prepared.policyBlockedCategories.length > 0) {
+      if (policyBlockedCategories.length > 0) {
         preflightFailureCodes[target.targetId] = 'RETENTION_POLICY_BLOCKED';
         preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
         preflightFailureReasons.set(target.targetId,
@@ -666,7 +673,7 @@ export class SaasTenantPropagationService {
         adapterVersion: this.adapters.find((candidate) =>
           candidate.storeKind === blockedTarget.storeKind && candidate.adapterKey === blockedTarget.adapterKey)?.adapterVersion ?? null,
         maxPageSize: null, maxBatchSize: null,
-        retentionPolicyVersions: prepared.retentionPolicyVersions,
+        retentionPolicyVersions: retentionPolicyVersions,
         residualReason: preflightFailureReasons.get(blockedTargetId)
           ?? 'Global provider preparation was blocked before destructive execution.',
       });
@@ -904,7 +911,7 @@ export class SaasTenantPropagationService {
         plannedCopies, deletedCopies, residualCopies, manifestDigest: planDigest,
         verifiedManifestDigest: verifiedDigest, verificationReference, providerReceiptReference,
         residualManifest, status: receiptStatus, failureCode,
-        plan, retentionPolicyVersions: prepared.retentionPolicyVersions,
+        plan, retentionPolicyVersions: retentionPolicyVersions,
       });
       latestReceiptByTarget.set(target.targetId, {
         target_id: target.targetId, store_kind: target.storeKind, status: receiptStatus,
@@ -995,7 +1002,7 @@ export class SaasTenantPropagationService {
       let coverageSnapshotValid = finalTargetsActive;
       try {
         const finalRetentionPolicyVersions = await this.readRetentionPolicyVersions(client, tenantId, finalCategories);
-        if (JSON.stringify(finalRetentionPolicyVersions) !== JSON.stringify(prepared.retentionPolicyVersions)) {
+        if (JSON.stringify(finalRetentionPolicyVersions) !== JSON.stringify(retentionPolicyVersions)) {
           coverageSnapshotValid = false;
         }
         const finalLegalHolds = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
