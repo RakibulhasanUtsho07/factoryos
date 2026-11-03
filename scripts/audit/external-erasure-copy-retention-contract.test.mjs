@@ -606,3 +606,35 @@ test('PostgreSQL WAL/PITR provider capture and independent residual scan fail cl
 assert.match(runbook, /provider gateway enumeration contract/i);
 assert.match(runbook, /independent residual gateway/i);
 });
+
+
+test('finance retention is backed by a registered, bounded, read-only ledger inventory adapter', async () => {
+  const adapter = await readRepoFile('services/api/src/saas/postgres-finance-retention-inventory.adapter.ts');
+  const adapterTests = await readRepoFile('services/api/src/saas/postgres-finance-retention-inventory.adapter.spec.ts');
+  const service = await readRepoFile('services/api/src/saas/saas-tenant-finance-retention.service.ts');
+  const serviceTests = await readRepoFile('services/api/src/saas/saas-tenant-finance-retention.service.spec.ts');
+  const module = await readRepoFile('services/api/src/saas/saas.module.ts');
+  const contract = await readRepoFile('services/api/test/saas-data-retention-contract.sql');
+  const env = await readRepoFile('services/api/.env.example');
+
+  assert.match(adapter, /POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY/);
+  assert.match(adapter, /saas_usage_events/);
+  assert.match(adapter, /saas_provider_cost_events/);
+  assert.match(adapter, /saas_billing_provider_webhook_events/);
+  assert.match(adapter, /POSTGRES_FINANCE_RETENTION_MAX_ROWS = 100000/);
+  assert.match(adapter, /relforcerowsecurity AS rls_forced/);
+  assert.match(adapter, /pg_get_triggerdef/);
+  assert.match(adapter, /destructiveDeletePermitted: false/);
+  assert.match(adapter, /BLOCKED_IMMUTABLE_FINANCE_LEDGER/);
+  assert.doesNotMatch(adapter, /\\bDELETE\\s+FROM\\b/i);
+  assert.match(adapterTests, /independently verifies its digest without deletion/);
+  assert.match(adapterTests, /retained residuals when immutable finance rows exist/);
+  assert.match(adapterTests, /does not claim a complete inventory when the global row bound is exceeded/);
+  assert.match(service, /mode, policyVersion/);
+  assert.match(service, /if \\(result\\.failureCode\\)/);
+  assert.match(serviceTests, /explicit retained residuals as BLOCKED/);
+  assert.match(module, /useExisting: PostgresFinanceRetentionInventoryAdapter/);
+  assert.doesNotMatch(module, /SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null/);
+  assert.match(contract, /immutable DELETE guard is missing for finance ledger relation/);
+  assert.match(env, /FACTORYOS_FINANCE_RETENTION_MODE=INVENTORY_ONLY/);
+});
