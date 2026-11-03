@@ -299,7 +299,7 @@ fi
 for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
 if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then need_command node; fi
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
-if [[ "$backup_source_mode" == "LIVE_SOURCE_DUMP" ]]; then partial_file="${backup_file}.partial.$"; else partial_file=""; fi
+if [[ "$backup_source_mode" == "LIVE_SOURCE_DUMP" ]]; then partial_file="${backup_file}.partial.${BASHPID}"; else partial_file=""; fi
 pg_dump_version="$(pg_dump --version | head -n 1)"
 pg_restore_version="$(pg_restore --version | head -n 1)"
 gpg_version="$(gpg --version | head -n 1)"
@@ -357,14 +357,14 @@ backup_started_epoch="$(epoch_now)"
 if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then
   current_stage="approved_backup_signature_verification"
   approved_backup_verification="$tmpdir/approved-backup-verification.json"
-  node "$repo_root/scripts/recovery/verify-approved-postgres-backup.mjs" \\
-    --artifact "$backup_file" \\
-    --manifest "$approved_backup_manifest" \\
-    --signature "$approved_backup_signature" \\
-    --signer-fingerprint "$approved_backup_signer_fingerprint" \\
-    --recipient-fingerprint "$recipient" \\
-    --source-database-identity "$source_identity" \\
-    --incident-cutoff-utc "$event_time_utc" \\
+  node "$repo_root/scripts/recovery/verify-approved-postgres-backup.mjs" \
+    --artifact "$backup_file" \
+    --manifest "$approved_backup_manifest" \
+    --signature "$approved_backup_signature" \
+    --signer-fingerprint "$approved_backup_signer_fingerprint" \
+    --recipient-fingerprint "$recipient" \
+    --source-database-identity "$source_identity" \
+    --incident-cutoff-utc "$event_time_utc" \
     --output "$approved_backup_verification"
   [[ -s "$approved_backup_verification" ]] || die "approved backup verification receipt is missing"
   checksum_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.artifactSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup verification receipt"
@@ -382,11 +382,11 @@ if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFAC
   backup_signature_status="VALID_PINNED_SIGNER"
   pg_dump_version="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.pgDumpVersion)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved pg_dump version"
   server_version="$approved_backup_source_server_version"
-  printf 'Verified signed approved backup artifact SHA-256: %s\\n' "$checksum_sha256"
+  printf 'Verified signed approved backup artifact SHA-256: %s\n' "$checksum_sha256"
 else
   current_stage="encrypted_backup"
-  printf 'Creating encrypted PostgreSQL custom-format backup from the disposable CI source fixture...\\n'
-  pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \\
+  printf 'Creating encrypted PostgreSQL custom-format backup from the disposable CI source fixture...\n'
+  pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
     | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
   [[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
   mv -- "$partial_file" "$backup_file"
