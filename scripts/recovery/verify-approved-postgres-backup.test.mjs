@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -19,10 +19,10 @@ function fixture(overrides = {}) {
   writeFileSync(gpg, [
     '#!/bin/sh',
     'if [ "$FAKE_GPG_FAILURE" = "1" ]; then echo "bad signature" >&2; exit 1; fi',
-    'printf "[GNUPG:] VALIDSIG %s 20261103 1793683200 0 4 0 1 8 00 %s\\n" "$FAKE_GPG_SIGNER" "$FAKE_GPG_PRIMARY"',
+    'printf "[GNUPG:] VALIDSIG %s 20261103 1793683200 0 4 0 1 8 00 %s\n" "$FAKE_GPG_SIGNER" "$FAKE_GPG_PRIMARY"',
     'exit 0',
     '',
-  ].join('\\n'), { mode: 0o700 });
+  ].join('\n'), { mode: 0o700 });
   chmodSync(gpg, 0o700);
 
   const artifact = join(directory, 'approved.dump.gpg');
@@ -44,7 +44,7 @@ function fixture(overrides = {}) {
     recipientFingerprint: 'B'.repeat(40),
     ...overrides.manifest,
   };
-  writeFileSync(manifest, JSON.stringify(body, null, 2) + '\\n', { mode: 0o600 });
+  writeFileSync(manifest, JSON.stringify(body, null, 2) + '\n', { mode: 0o600 });
   writeFileSync(signature, 'detached-signature-fixture', { mode: 0o600 });
 
   const expectedSigner = overrides.expectedSigner ?? signer;
@@ -91,7 +91,7 @@ test('approved backup verification accepts only signed artifact metadata matchin
     assert.equal(receipt.sourceDatabaseIdentity, sourceIdentity);
     assert.equal(receipt.backupCreatedAtUtc, value.body.backupCreatedAtUtc);
     assert.equal(receipt.signatureStatus, 'VALID_PINNED_SIGNER');
-    const mode = (await import('node:fs')).statSync(value.output).mode & 0o777;
+    const mode = statSync(value.output).mode & 0o777;
     assert.equal(mode, 0o600);
   } finally {
     rmSync(value.directory, { recursive: true, force: true });
