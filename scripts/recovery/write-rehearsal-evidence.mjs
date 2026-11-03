@@ -56,7 +56,7 @@ const receipt = {
   },
   backup: {
     encryptedArtifactPath: artifactPath,
-    checksumPath: required('FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_PATH') ?? checksumPath,
+    checksumPath: required('FACTORYOS_DR_BACKUP_SOURCE_MODE') === 'APPROVED_ARTIFACT' ? null : checksumPath,
     sourceMode: required('FACTORYOS_DR_BACKUP_SOURCE_MODE') ?? 'LIVE_SOURCE_DUMP',
     approvedManifestPath: required('FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_PATH'),
     approvedManifestSha256: required('FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_SHA256'),
@@ -99,6 +99,7 @@ const receipt = {
   },
   measured: {
     backupDurationSeconds: numberOrNull('FACTORYOS_DR_BACKUP_DURATION_SECONDS'),
+    backupArtifactVerificationDurationSeconds: numberOrNull('FACTORYOS_DR_BACKUP_VERIFICATION_DURATION_SECONDS'),
     restoreAndVerificationDurationSeconds: numberOrNull('FACTORYOS_DR_RESTORE_DURATION_SECONDS'),
     observedRpoSeconds: numberOrNull('FACTORYOS_DR_OBSERVED_RPO_SECONDS'),
     observedRtoSeconds: numberOrNull('FACTORYOS_DR_OBSERVED_RTO_SECONDS'),
