@@ -78,10 +78,17 @@ export function resolveSaasTenantImportOrder(
       foreignKey.parent_table === 'business_evidence' &&
       exactColumns(foreignKey.child_columns, ['supersedes_evidence_id', 'tenant_id', 'factory_id']) &&
       exactColumns(foreignKey.parent_columns, ['id', 'tenant_id', 'factory_id']);
+    const reviewedInventoryLocationParentHierarchy =
+      foreignKey.constraint_name === 'fk_inventory_location_parent_scope' &&
+      foreignKey.child_table === 'inventory_locations' &&
+      foreignKey.parent_table === 'inventory_locations' &&
+      exactColumns(foreignKey.child_columns, ['parent_location_id', 'tenant_id', 'factory_id']) &&
+      exactColumns(foreignKey.parent_columns, ['id', 'tenant_id', 'factory_id']);
 
     // These exact edges have importer-side preservation logic; do not make
     // unrelated cycles disappear merely because their table names are similar.
-    if (reviewedBlueprintPointer || reviewedResearchEvaluationPointer || reviewedEvidencePredecessor) continue;
+    if (reviewedBlueprintPointer || reviewedResearchEvaluationPointer
+      || reviewedEvidencePredecessor || reviewedInventoryLocationParentHierarchy) continue;
 
     // An edge parent -> child means the referenced row must exist first.
     const dependents = children.get(foreignKey.parent_table);

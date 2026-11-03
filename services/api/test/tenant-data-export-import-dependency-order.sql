@@ -6,6 +6,7 @@ DECLARE
   blueprint_pointer_count integer;
   research_evaluation_pointer_count integer;
   evidence_predecessor_count integer;
+  inventory_location_parent_count integer;
 BEGIN
   IF to_regclass('factoryos_governance.tenant_relation_inventory') IS NULL THEN
     RAISE EXCEPTION 'Tenant export dependency contract requires the migration 156 relation inventory';
@@ -98,6 +99,32 @@ BEGIN
     RAISE EXCEPTION 'Expected exactly one immediate business-evidence predecessor self-FK';
   END IF;
 
+  SELECT count(*) INTO inventory_location_parent_count
+  FROM pg_constraint con
+  JOIN pg_class child ON child.oid = con.conrelid
+  JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+  JOIN pg_class parent ON parent.oid = con.confrelid
+  JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+  WHERE con.contype = 'f' AND con.conname = 'fk_inventory_location_parent_scope'
+    AND child_namespace.nspname = 'public' AND parent_namespace.nspname = 'public'
+    AND child.relname = 'inventory_locations' AND parent.relname = 'inventory_locations'
+    AND NOT con.condeferrable
+    AND (
+      SELECT array_agg(child_attribute.attname::text ORDER BY child_key_check.ordinality)
+      FROM unnest(con.conkey) WITH ORDINALITY AS child_key_check(attnum, ordinality)
+      JOIN pg_attribute child_attribute ON child_attribute.attrelid = con.conrelid
+        AND child_attribute.attnum = child_key_check.attnum AND NOT child_attribute.attisdropped
+    ) = ARRAY['parent_location_id', 'tenant_id', 'factory_id']::text[]
+    AND (
+      SELECT array_agg(parent_attribute.attname::text ORDER BY parent_key_check.ordinality)
+      FROM unnest(con.confkey) WITH ORDINALITY AS parent_key_check(attnum, ordinality)
+      JOIN pg_attribute parent_attribute ON parent_attribute.attrelid = con.confrelid
+        AND parent_attribute.attnum = parent_key_check.attnum AND NOT parent_attribute.attisdropped
+    ) = ARRAY['id', 'tenant_id', 'factory_id']::text[];
+  IF inventory_location_parent_count <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one immediate inventory-location parent hierarchy self-FK';
+  END IF;
+
   WITH RECURSIVE adapter_tables AS (
     SELECT relation_name
     FROM factoryos_governance.tenant_relation_inventory
@@ -157,6 +184,13 @@ BEGIN
         AND child_columns = ARRAY['supersedes_evidence_id', 'tenant_id', 'factory_id']::text[]
         AND parent_columns = ARRAY['id', 'tenant_id', 'factory_id']::text[]
       )
+      AND NOT (
+        constraint_name = 'fk_inventory_location_parent_scope'
+        AND child_table = 'inventory_locations'
+        AND parent_table = 'inventory_locations'
+        AND child_columns = ARRAY['parent_location_id', 'tenant_id', 'factory_id']::text[]
+        AND parent_columns = ARRAY['id', 'tenant_id', 'factory_id']::text[]
+      )
   ),
   walk(start_table, current_table, path, has_cycle) AS (
     SELECT parent_table, child_table, ARRAY[parent_table, child_table]::text[], parent_table = child_table
@@ -174,7 +208,7 @@ BEGIN
   WHERE has_cycle;
 
   IF cycle_path IS NOT NULL THEN
-    RAISE EXCEPTION 'Unreviewed non-deferrable FK cycles remain after the three reviewed importer strategies:%s%s', E'\\n', cycle_path;
+    RAISE EXCEPTION 'Unreviewed non-deferrable FK cycles remain after the four reviewed importer strategies:%s%s', E'\\n', cycle_path;
   END IF;
 END
 $$;

@@ -43,10 +43,11 @@ describe('resolveSaasTenantImportOrder', () => {
     expect(ordered).toEqual(['independent', 'parent', 'child']);
   });
 
-  it('handles only the reviewed blueprint, release-evaluation and evidence-revision cycles', () => {
+  it('handles only the reviewed blueprint, release-evaluation, evidence-revision and inventory-location cycles', () => {
     const ordered = resolveSaasTenantImportOrder(
       [
         'research_release_evaluations',
+        'inventory_locations',
         'business_blueprints',
         'business_evidence',
         'business_blueprint_versions',
@@ -77,12 +78,18 @@ describe('resolveSaasTenantImportOrder', () => {
           child_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
           parent_columns: ['id', 'tenant_id', 'factory_id'],
         }),
+        fk('inventory_locations', 'inventory_locations', {
+          constraint_name: 'fk_inventory_location_parent_scope',
+          child_columns: ['parent_location_id', 'tenant_id', 'factory_id'],
+          parent_columns: ['id', 'tenant_id', 'factory_id'],
+        }),
       ],
     );
     expect(ordered.indexOf('business_blueprints')).toBeLessThan(ordered.indexOf('business_blueprint_versions'));
     expect(ordered.indexOf('research_knowledge_releases')).toBeLessThan(ordered.indexOf('research_release_evaluations'));
     expect(ordered).toContain('business_evidence');
-    expect(ordered).toHaveLength(5);
+    expect(ordered).toContain('inventory_locations');
+    expect(ordered).toHaveLength(6);
   });
 
   it('does not suppress reviewed constraint names when either ordered composite FK side drifts', () => {
@@ -122,6 +129,14 @@ describe('resolveSaasTenantImportOrder', () => {
         constraint_name: 'fk_business_evidence_supersedes_scope',
         child_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
         parent_columns: ['supersedes_evidence_id', 'tenant_id', 'factory_id'],
+      }),
+    ])).toThrow(/unhandled non-deferrable FK cycle/i);
+
+    expect(() => resolveSaasTenantImportOrder(['inventory_locations'], [
+      fk('inventory_locations', 'inventory_locations', {
+        constraint_name: 'fk_inventory_location_parent_scope',
+        child_columns: ['parent_location_id', 'tenant_id', 'factory_id'],
+        parent_columns: ['parent_location_id', 'tenant_id', 'factory_id'],
       }),
     ])).toThrow(/unhandled non-deferrable FK cycle/i);
   });
