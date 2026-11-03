@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import {
+  BoundedRetryFinanceJsonHttpClient,
   FINANCE_BUSINESS_CENTRAL_HTTP_CLIENT,
   PinnedFinanceJsonHttpClient,
   type FinanceJsonHttpClient,
@@ -103,10 +104,10 @@ export class VaultFinanceSecretManager implements FinanceSecretManager {
 
     const path = secretPath.split('/').map(encodeURIComponent).join('/');
     const url = new URL('/v1/' + mount + '/data/' + path, address.origin).toString();
-    const client = this.http ?? new PinnedFinanceJsonHttpClient(
+    const client = new BoundedRetryFinanceJsonHttpClient(this.http ?? new PinnedFinanceJsonHttpClient(
       commaSeparatedSet(process.env.FINANCE_VAULT_ALLOWED_HOSTS),
       commaSeparatedSet(process.env.FINANCE_VAULT_ALLOWED_IPS),
-    );
+    ));
     const response = await client.request<{
       data?: { data?: Record<string, unknown> };
     }>({

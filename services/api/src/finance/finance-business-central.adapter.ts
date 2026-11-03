@@ -48,6 +48,53 @@ export interface FinanceJsonHttpClient {
 export type FinanceResolvedAddress = { address: string; family: number };
 export type FinanceDnsLookup = (hostname: string) => Promise<FinanceResolvedAddress[]>;
 
+const FINANCE_HTTP_RETRY_DELAYS_MS = [100, 250] as const;
+
+function isRetryableFinanceHttpFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  if (/^FINANCE_ERP_PROVIDER_HTTP_(?:408|425|429|500|502|503|504)$/.test(message)
+      || message === 'FINANCE_ERP_REQUEST_TIMEOUT') {
+    return true;
+  }
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  return [
+    'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH',
+    'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE',
+  ].includes(code);
+}
+
+/**
+ * Bounded retry decorator for idempotent provider operations only. GET is
+ * replay-safe; POST is retried only with a deterministic provider idempotency
+ * key. Configuration, validation, redirect and permanent 4xx errors are never
+ * retried. Exhaustion propagates the final sanitized transport error.
+ */
+export class BoundedRetryFinanceJsonHttpClient implements FinanceJsonHttpClient {
+  constructor(
+    private readonly delegate: FinanceJsonHttpClient,
+    private readonly wait: (milliseconds: number) => Promise<void> =
+      (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  ) {}
+
+  async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+    const replaySafe = input.method === 'GET' || Boolean(input.idempotencyKey?.trim());
+    for (let attempt = 0; attempt <= FINANCE_HTTP_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return await this.delegate.request<T>(input);
+      } catch (error) {
+        const delay = FINANCE_HTTP_RETRY_DELAYS_MS[attempt];
+        if (!replaySafe || delay === undefined || !isRetryableFinanceHttpFailure(error)) {
+          throw error;
+        }
+        await this.wait(delay);
+      }
+    }
+    throw new Error('FINANCE_ERP_RETRY_EXHAUSTED');
+  }
+}
+
 function csvSet(value: string | undefined): Set<string> {
   return new Set((value ?? '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean));
 }
@@ -221,7 +268,7 @@ type BusinessCentralBatch = {
   contentBase64: unknown;
   sourceOccurredAt?: unknown;
 };
-type BusinessCentralResponse = { value?: unknown; id?: unknown; payloadSha256?: unknown; bytesWritten?: unknown };
+type BusinessCentralResponse = { value?: unknown; id?: unknown; payloadSha256?: unknown; bytesWritten?: unknown; accepted?: unknown };
 
 const BUSINESS_CENTRAL_PROVIDER = 'MICROSOFT_DYNAMICS_365_BUSINESS_CENTRAL_FINANCE_EXCHANGE_V1';
 
@@ -311,7 +358,7 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
   }
 
   private client(): FinanceJsonHttpClient {
-    return this.http ?? new PinnedFinanceJsonHttpClient();
+    return new BoundedRetryFinanceJsonHttpClient(this.http ?? new PinnedFinanceJsonHttpClient());
   }
 
   async downloadNext(input: Parameters<FinanceErpTransferAdapter['downloadNext']>[0]): Promise<FinanceErpFileDownload | null> {
@@ -373,7 +420,7 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
     });
     const path = '/api/factoryos/finance/v1.0/companies(' + companyId + ')/financeBatches(' +
       encodeURIComponent(providerReference) + ')/acknowledge';
-    await this.client().request<unknown>({
+    const acknowledgement = await this.client().request<BusinessCentralResponse>({
       url: joinProviderPath(base, path), method: 'POST', bearerToken: token, idempotencyKey,
       body: {
         externalBatchRef: sourceBatchRef,
@@ -382,6 +429,9 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
         idempotencyKey,
       },
     });
+    if (!acknowledgement || acknowledgement.accepted !== true) {
+      throw new Error('FINANCE_BUSINESS_CENTRAL_ACKNOWLEDGEMENT_NOT_CONFIRMED');
+    }
   }
 
   async upload(input: Parameters<FinanceErpTransferAdapter['upload']>[0]): Promise<FinanceErpUploadResult> {
