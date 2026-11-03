@@ -146,3 +146,22 @@ test('OIDC deprovision verifier checks RS256, HTTPS JWKS, MFA and avoids bearer 
   assert.match(verifier, /rawBearerTokenStored: false/);
   assert.match(tests, /before\/after rehearsal proves tenant-scoped revocation/);
 });
+
+
+test('AS-133 protected staging workflow binds exact deployed SHA, real IdP token and signed before/after evidence', async () => {
+  const workflow = await read('.github/workflows/production-identity-deprovisioning.yml');
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /environment:\s*\n\s*name: production-security-staging/);
+  assert.match(workflow, /actions: read/);
+  assert.match(workflow, /AS133_STAGING_DEPLOYED_SHA/);
+  assert.match(workflow, /AS133_STAGING_BEARER_TOKEN/);
+  assert.match(workflow, /verify-oidc-deprovisioning\.mjs/);
+  assert.match(workflow, /as133-oidc-deprovision-before/);
+  assert.match(workflow, /as133-oidc-deprovision-\$\{\{ inputs\.phase \}\}/);
+  assert.match(workflow, /SCIM_DEPROVISION_EVENT_REFERENCE/);
+  assert.match(workflow, /SCIM_DEPROVISIONED_AT_UTC/);
+  assert.match(workflow, /SCIM_MAX_PROPAGATION_SECONDS/);
+  assert.match(workflow, /It does not prove global IdP logout/);
+  assert.match(workflow, /Never mark AS-133 accepted from this workflow alone/);
+  assert.doesNotMatch(workflow, /environment:\s*\n\s*name: production\s*$/m);
+});
