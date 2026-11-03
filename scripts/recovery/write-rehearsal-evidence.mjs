@@ -23,6 +23,13 @@ const checksumPath = artifactPath ? artifactPath + '.sha256' : null;
 const receipt = {
   schema: 'factoryos.disaster-recovery-rehearsal/v1',
   runId: randomUUID(),
+  workflow: {
+    repository: required('GITHUB_REPOSITORY'),
+    runId: numberOrNull('GITHUB_RUN_ID'),
+    runAttempt: numberOrNull('GITHUB_RUN_ATTEMPT'),
+    actor: required('GITHUB_ACTOR'),
+    environment: required('FACTORYOS_DR_ENVIRONMENT'),
+  },
   candidate: {
     commitSha: required('FACTORYOS_CANDIDATE_SHA') ?? required('GITHUB_SHA'),
     migrationManifestPath: candidateManifestPath,
