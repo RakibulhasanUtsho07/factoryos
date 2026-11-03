@@ -93,6 +93,29 @@ export function validateTemplate(document) {
     'service_identities.monitoring_role.evidence_reference',
     'secrets.manager_provider_and_scope',
     'network.evidence_reference',
+    'backup_copy_evidence.deployment_platform',
+    'backup_copy_evidence.evidence_root_path',
+    'backup_copy_evidence.evidence_volume_reference',
+    'backup_copy_evidence.deployment_enforcement_reference',
+    'backup_copy_evidence.deployment_provisioning.candidate_sha',
+    'backup_copy_evidence.deployment_provisioning.evidence_reference',
+    'backup_copy_evidence.deployment_provisioning.tested_environment',
+    'backup_copy_evidence.deployment_provisioning.executed_at_utc',
+    'backup_copy_evidence.deployment_provisioning.operator_identity',
+    'backup_copy_evidence.deployment_provisioning.cluster_context',
+    'backup_copy_evidence.deployment_provisioning.namespace',
+    'backup_copy_evidence.deployment_provisioning.deployment',
+    'backup_copy_evidence.deployment_provisioning.api_service_account',
+    'backup_copy_evidence.deployment_provisioning.api_image_reference',
+    'backup_copy_evidence.deployment_provisioning.independent_review.reviewer_identity',
+    'backup_copy_evidence.deployment_provisioning.independent_review.reviewer_organization',
+    'backup_copy_evidence.deployment_provisioning.independent_review.evidence_reference',
+    'backup_copy_evidence.deployment_provisioning.independent_review.executed_at_utc',
+    'backup_copy_evidence.mount_verification.candidate_sha',
+    'backup_copy_evidence.mount_verification.workflow_url',
+    'backup_copy_evidence.mount_verification.evidence_reference',
+    'backup_copy_evidence.mount_verification.tested_environment',
+    'backup_copy_evidence.mount_verification.executed_at_utc',
     'security_validation.dependency_audit.workflow_url',
     'security_validation.dependency_audit.candidate_sha',
     'identity.oidc.issuer',
@@ -133,6 +156,25 @@ export function validateTemplate(document) {
     'network.metrics_and_otlp_private_only',
     'network.production_egress_allowlist_reviewed',
     'network.no_public_route_to_ot_networks',
+    'backup_copy_evidence.volume_mount_read_only',
+    'backup_copy_evidence.api_identity_write_denied',
+    'backup_copy_evidence.api_identity_remount_denied',
+    'backup_copy_evidence.publisher_identity_separate',
+    'backup_copy_evidence.deployment_provisioning.api_image_digest_verified',
+    'backup_copy_evidence.deployment_provisioning.policy_accepted',
+    'backup_copy_evidence.deployment_provisioning.bindings_active',
+    'backup_copy_evidence.deployment_provisioning.namespace_enrolled',
+    'backup_copy_evidence.deployment_provisioning.deployment_ready',
+    'backup_copy_evidence.deployment_provisioning.pvc_bound_and_read_only',
+    'backup_copy_evidence.deployment_provisioning.all_container_security_contexts_verified',
+    'backup_copy_evidence.deployment_provisioning.tokenless_service_account',
+    'backup_copy_evidence.deployment_provisioning.api_identity_rbac_absent',
+    'backup_copy_evidence.deployment_provisioning.runtime_write_probe_denied',
+    'backup_copy_evidence.deployment_provisioning.cap_sys_admin_absent',
+    'backup_copy_evidence.deployment_provisioning.no_new_privileges',
+    'backup_copy_evidence.deployment_provisioning.service_account_token_absent',
+    'backup_copy_evidence.deployment_provisioning.negative_admission_probes_passed',
+    'backup_copy_evidence.deployment_provisioning.independent_review.scope_includes_mount_and_identity_boundary',
     'identity.scim.group_role_mapping_reviewed',
     'identity.scim.identity_provider_scim_enabled',
     'secrets.database_credential_rotation.tested_application_reconnect',
@@ -141,6 +183,8 @@ export function validateTemplate(document) {
     'release.release_approved',
   ]) expectFalse(path);
 
+  expect('backup_copy_evidence.mount_verification.result', 'NOT_RUN');
+  expect('backup_copy_evidence.deployment_provisioning.result', 'NOT_RUN');
   expect('security_validation.dependency_audit.result', 'NOT_RUN');
   const templateNegativeTests = getAt(document, 'security_validation.tenant_negative_tests') ?? {};
   for (const key of [
@@ -327,6 +371,82 @@ export function validateSecurityAttestation(document, expectedSha, now = Date.no
     'network.no_public_route_to_ot_networks',
   ]) bool(path);
   reference('network.evidence_reference');
+
+  string('backup_copy_evidence.deployment_platform');
+  const evidenceRootPath = string('backup_copy_evidence.evidence_root_path');
+  if (typeof evidenceRootPath === 'string' &&
+      (!evidenceRootPath.startsWith('/') || evidenceRootPath === '/' || evidenceRootPath.includes('\\0') ||
+       evidenceRootPath.includes('\\n') || evidenceRootPath.includes('\\r'))) {
+    errors.push('backup_copy_evidence.evidence_root_path must be a non-root absolute POSIX path');
+  }
+  reference('backup_copy_evidence.evidence_volume_reference');
+  reference('backup_copy_evidence.deployment_enforcement_reference');
+  bool('backup_copy_evidence.volume_mount_read_only');
+  bool('backup_copy_evidence.api_identity_write_denied');
+  bool('backup_copy_evidence.api_identity_remount_denied');
+  bool('backup_copy_evidence.publisher_identity_separate');
+  equals('backup_copy_evidence.mount_verification.result', 'PASS');
+  const mountVerificationSha = string('backup_copy_evidence.mount_verification.candidate_sha');
+  if (typeof mountVerificationSha === 'string' && !SHA_PATTERN.test(mountVerificationSha)) {
+    errors.push('backup_copy_evidence.mount_verification.candidate_sha must be a full 40-character lowercase Git SHA');
+  }
+  if (typeof mountVerificationSha === 'string' && SHA_PATTERN.test(expectedSha ?? '') && mountVerificationSha !== expectedSha) {
+    errors.push('backup_copy_evidence.mount_verification.candidate_sha must match the expected immutable candidate SHA');
+  }
+  const mountWorkflowUrl = string('backup_copy_evidence.mount_verification.workflow_url');
+  if (typeof mountWorkflowUrl === 'string' && !isGitHubActionsRunUrl(mountWorkflowUrl)) {
+    errors.push('backup_copy_evidence.mount_verification.workflow_url must identify this repository GitHub Actions run');
+  }
+  const mountEvidenceReference = string('backup_copy_evidence.mount_verification.evidence_reference');
+  if (typeof mountEvidenceReference === 'string' && !safeEvidenceReference(mountEvidenceReference)) {
+    errors.push('backup_copy_evidence.mount_verification.evidence_reference must be an opaque reference without embedded credentials');
+  }
+  string('backup_copy_evidence.mount_verification.tested_environment');
+  utc('backup_copy_evidence.mount_verification.executed_at_utc');
+
+  const provisioningPath = 'backup_copy_evidence.deployment_provisioning';
+  equals(provisioningPath + '.result', 'PASS');
+  const provisioningSha = string(provisioningPath + '.candidate_sha');
+  if (typeof provisioningSha === 'string' && !SHA_PATTERN.test(provisioningSha)) {
+    errors.push(provisioningPath + '.candidate_sha must be a full 40-character lowercase Git SHA');
+  }
+  if (typeof provisioningSha === 'string' && SHA_PATTERN.test(expectedSha ?? '') && provisioningSha !== expectedSha) {
+    errors.push(provisioningPath + '.candidate_sha must match the expected immutable candidate SHA');
+  }
+  for (const suffix of ['.tested_environment', '.operator_identity', '.cluster_context', '.namespace', '.deployment']) {
+    string(provisioningPath + suffix);
+  }
+  const provisioningEvidence = string(provisioningPath + '.evidence_reference');
+  if (typeof provisioningEvidence === 'string' && !safeEvidenceReference(provisioningEvidence)) {
+    errors.push(provisioningPath + '.evidence_reference must be an opaque reference without embedded credentials');
+  }
+  utc(provisioningPath + '.executed_at_utc');
+  equals(provisioningPath + '.api_service_account', 'factoryos-backup-evidence-api');
+  const apiImageReference = string(provisioningPath + '.api_image_reference');
+  if (typeof apiImageReference === 'string' && !/^\S+@sha256:[a-f0-9]{64}$/.test(apiImageReference)) {
+    errors.push(provisioningPath + '.api_image_reference must be pinned to an immutable sha256 digest');
+  }
+  for (const suffix of [
+    '.api_image_digest_verified', '.policy_accepted', '.bindings_active', '.namespace_enrolled', '.deployment_ready',
+    '.pvc_bound_and_read_only', '.all_container_security_contexts_verified',
+    '.tokenless_service_account', '.api_identity_rbac_absent',
+    '.runtime_write_probe_denied', '.api_identity_write_denied', '.api_identity_remount_denied',
+    '.cap_sys_admin_absent', '.no_new_privileges',
+    '.service_account_token_absent', '.negative_admission_probes_passed',
+  ]) bool(provisioningPath + suffix);
+  const reviewerPath = provisioningPath + '.independent_review';
+  const reviewer = string(reviewerPath + '.reviewer_identity');
+  const operator = getAt(document, provisioningPath + '.operator_identity');
+  string(reviewerPath + '.reviewer_organization');
+  if (typeof reviewer === 'string' && reviewer === operator) {
+    errors.push(reviewerPath + '.reviewer_identity must differ from the provisioning operator');
+  }
+  bool(reviewerPath + '.scope_includes_mount_and_identity_boundary');
+  const reviewerEvidence = string(reviewerPath + '.evidence_reference');
+  if (typeof reviewerEvidence === 'string' && !safeEvidenceReference(reviewerEvidence)) {
+    errors.push(reviewerPath + '.evidence_reference must be an opaque reference without embedded credentials');
+  }
+  utc(reviewerPath + '.executed_at_utc');
 
   https('security_validation.dependency_audit.workflow_url');
   equals('security_validation.dependency_audit.candidate_sha', expectedSha);

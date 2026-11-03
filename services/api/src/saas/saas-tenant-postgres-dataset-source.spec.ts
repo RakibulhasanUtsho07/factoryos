@@ -17,11 +17,23 @@ describe('SaasTenantPostgresDatasetSource', () => {
       user_role_count: '0',
       role_permission_count: '0',
     },
+    columnContractMatches = true,
   ) {
     const calls: Array<{ sql: string; values?: unknown[] }> = [];
     const client = {
       query: jest.fn(async (sql: string, values?: unknown[]) => {
         calls.push({ sql, values });
+        if (sql.includes('tenant_export_column_contracts')) {
+          const requestedTables = Array.isArray(values?.[0]) ? values[0] as string[] : [];
+          return {
+            rows: requestedTables.map((table_name) => ({
+              table_name,
+              contract_version: 1,
+              matches: columnContractMatches,
+            })),
+            rowCount: requestedTables.length,
+          };
+        }
         if (sql.includes('AS membership_count')) {
           return { rows: [iamCounts], rowCount: 1 };
         }
@@ -97,7 +109,17 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(calls[0]?.sql).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(calls[1]?.sql).toContain("set_config('app.tenant_id', $1, true)");
     expect(calls[1]?.values).toEqual([tenantId, '']);
-    const query = calls.find((item) => item.sql.includes('FROM public.orders AS dataset_row'));
+    const contractIndex = calls.findIndex((item) => item.sql.includes('tenant_export_column_contracts'));
+    const sourceIndex = calls.findIndex((item) => item.sql.includes('FROM public.orders AS dataset_row'));
+    const contractQuery = calls[contractIndex];
+    const query = calls[sourceIndex];
+    expect(contractIndex).toBeGreaterThan(0);
+    expect(sourceIndex).toBeGreaterThan(contractIndex);
+    expect(contractQuery?.values).toEqual([
+      SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.BUSINESS_DATA],
+      SaasTransferDatasetCategory.BUSINESS_DATA,
+    ]);
+    expect(contractQuery?.sql).toContain('pg_catalog.pg_attribute');
     expect(query?.sql).toContain('dataset_row.tenant_id = $1::uuid');
     expect(query?.sql).toContain('dataset_row.id > $2::uuid');
     expect(query?.values).toEqual([tenantId, null, 500]);
@@ -126,12 +148,32 @@ describe('SaasTenantPostgresDatasetSource', () => {
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {
     const { source, database } = createSource();
+    for (const category of [
+      SaasTransferDatasetCategory.INTEGRATION_METADATA,
+      SaasTransferDatasetCategory.FILE_REFERENCES,
+    ]) {
+      await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+        for await (const row of snapshot.readDataset(category)) {
+          throw new Error('Unsupported category unexpectedly emitted a row: ' + JSON.stringify(row));
+        }
+      })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    }
+    expect(database.getClient).toHaveBeenCalledTimes(2);
+  });
+
+
+  it('blocks the entire generic category before reading rows when any column contract is missing or stale', async () => {
+    const { source, client, calls } = createSource(tenantId, undefined, false);
     await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
-      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.FILE_REFERENCES)) {
-        // The unsupported category must fail before producing records.
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        // A stale catalog contract must stop before the first row is emitted.
       }
     })).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(database.getClient).toHaveBeenCalledTimes(1);
+
+    expect(calls.some((item) => item.sql.includes('tenant_export_column_contracts'))).toBe(true);
+    expect(calls.some((item) => item.sql.includes('FROM public.orders AS dataset_row'))).toBe(false);
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a row whose tenant scope violates the explicit query scope', async () => {
