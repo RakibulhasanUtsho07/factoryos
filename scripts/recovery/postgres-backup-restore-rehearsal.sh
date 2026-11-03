@@ -362,6 +362,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFAC
     --manifest "$approved_backup_manifest" \\
     --signature "$approved_backup_signature" \\
     --signer-fingerprint "$approved_backup_signer_fingerprint" \\
+    --recipient-fingerprint "$recipient" \\
     --source-database-identity "$source_identity" \\
     --incident-cutoff-utc "$event_time_utc" \\
     --output "$approved_backup_verification"
