@@ -54,13 +54,6 @@ test('release validation refuses to treat proposal values as approved targets', 
 test('a complete owner-approved policy is accepted only when alert thresholds and labels match', () => {
   const policy = approvedPolicy();
   const approvedRules = currentAlertRulesText.replaceAll('policy_status: proposed', 'policy_status: approved');
-  const result = validateObservabilitySloPolicy(
-    JSON.stringify(policy),
-    approvedRules,
-    { requireApproved: true, candidateSha: 'a'.repeat(40) },
-  );
-  // The validator consumes the committed YAML mapping, not JSON. Serialize the known scalar/map subset.
-  assert.ok(result.errors.length > 0);
   const yaml = [
     'status: APPROVED',
     'service_owner: "FactoryOS Service Owner"',
@@ -86,7 +79,7 @@ test('a complete owner-approved policy is accepted only when alert thresholds an
     '  latency_p99_ms_max: 1500',
     '  queue_freshness_seconds_max: 300',
     '  saturation_recovery_seconds_max: 30',
-  ].join('\\n');
+  ].join('\n');
   const valid = validateObservabilitySloPolicy(yaml, approvedRules, {
     requireApproved: true,
     candidateSha: 'a'.repeat(40),
@@ -116,7 +109,7 @@ test('unapproved register rejects partially populated numeric targets', () => {
 });
 
 test('policy parser fails closed on duplicate keys and unsupported YAML constructs', () => {
-  assert.throws(() => parseSloPolicyYaml('status: NOT_OWNER_APPROVED\\nstatus: APPROVED'));
+  assert.throws(() => parseSloPolicyYaml('status: NOT_OWNER_APPROVED\nstatus: APPROVED'));
   assert.throws(() => parseSloPolicyYaml('status: !!js/function alert(1)'));
 });
 
@@ -146,7 +139,7 @@ test('approved policy cannot be used for a different release candidate SHA', () 
     '  latency_p99_ms_max: 1500',
     '  queue_freshness_seconds_max: 300',
     '  saturation_recovery_seconds_max: 30',
-  ].join('\\n');
+  ].join('\n');
   const rules = currentAlertRulesText.replaceAll('policy_status: proposed', 'policy_status: approved');
   const result = validateObservabilitySloPolicy(yaml, rules, {
     requireApproved: true,

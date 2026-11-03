@@ -31,7 +31,7 @@ function isRecord(value) {
 
 function isPlaceholder(value) {
   return typeof value !== 'string' || value.trim() === ''
-    || /\\b(?:todo|tbd|placeholder|replace[-_ ]?me|example\\.invalid)\\b|\\[[^\\]]*\\]|<[^>]*>/i.test(value);
+    || /\b(?:todo|tbd|placeholder|replace[-_ ]?me|example\.invalid)\b|\[[^\]]*\]|<[^>]*>/i.test(value);
 }
 
 function parseScalar(value, lineNumber) {
@@ -39,7 +39,7 @@ function parseScalar(value, lineNumber) {
   if (raw === 'null' || raw === '~') return null;
   if (raw === 'true') return true;
   if (raw === 'false') return false;
-  if (/^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$/.test(raw)) return Number(raw);
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) return Number(raw);
   if (raw.startsWith('"')) {
     try {
       const parsed = JSON.parse(raw);
@@ -64,12 +64,12 @@ export function parseSloPolicyYaml(source) {
   }
   const root = Object.create(null);
   const stack = [{ indent: -2, value: root }];
-  const lines = source.split(/\\r?\\n/);
+  const lines = source.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
-    if (line.includes('\\t')) throw new Error('Tabs are not allowed in SLO policy YAML at line ' + (index + 1));
-    const match = /^( *)([A-Za-z][A-Za-z0-9_-]*):(?:\\s*(.*))?$/.exec(line);
+    if (line.includes('\t')) throw new Error('Tabs are not allowed in SLO policy YAML at line ' + (index + 1));
+    const match = /^( *)([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/.exec(line);
     if (!match) throw new Error('Unsupported SLO policy YAML syntax at line ' + (index + 1));
     const indent = match[1].length;
     if (indent % 2 !== 0) throw new Error('SLO policy indentation must use two-space levels at line ' + (index + 1));
@@ -96,7 +96,7 @@ export function parseSloPolicyYaml(source) {
 
 function parseUtcTimestamp(value) {
   return typeof value === 'string'
-    && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$/.test(value)
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)
     && Number.isFinite(Date.parse(value));
 }
 
@@ -110,7 +110,7 @@ export function validateSloPolicy(policy) {
   if (!['NOT_OWNER_APPROVED', 'APPROVED'].includes(policy.status)) {
     errors.push('status must be NOT_OWNER_APPROVED or APPROVED');
   }
-  if (!/^\\d+[mhdw]$/.test(policy.measurement_window ?? '')) {
+  if (!/^\d+[mhdw]$/.test(policy.measurement_window ?? '')) {
     errors.push('measurement_window must be a positive duration such as 30d');
   }
   if (!isRecord(policy.traffic_contract)) {
@@ -187,9 +187,11 @@ export function validateSloPolicy(policy) {
     }
     if (isRecord(policy.targets)) {
       for (const field of TARGET_FIELDS) {
-        if (!positiveNumber(policy.targets[field])) {
-          errors.push('APPROVED requires a positive numeric targets.' + field);
-        }
+        const value = policy.targets[field];
+        const valid = field === 'error_rate_percent_max'
+          ? typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+          : positiveNumber(value);
+        if (!valid) errors.push('APPROVED requires a valid numeric targets.' + field);
       }
       const availability = policy.targets.availability_percent;
       const errorRate = policy.targets.error_rate_percent_max;
@@ -210,7 +212,7 @@ export function validateSloPolicy(policy) {
 }
 
 function alertBlocks(rulesText) {
-  const matches = [...rulesText.matchAll(/^\\s{6}- alert: ([A-Za-z0-9_]+)\\s*$/gm)];
+  const matches = [...rulesText.matchAll(/^\s{6}- alert: ([A-Za-z0-9_]+)\s*$/gm)];
   return matches.map((match, index) => ({
     name: match[1],
     text: rulesText.slice(match.index, matches[index + 1]?.index ?? rulesText.length),
@@ -218,17 +220,17 @@ function alertBlocks(rulesText) {
 }
 
 function expressionFor(block) {
-  const match = /^\\s{8}expr:\\s*(.*)$/m.exec(block.text);
+  const match = /^\s{8}expr:\s*(.*)$/m.exec(block.text);
   if (!match) return '';
   if (match[1].trim() !== '|') return match[1].trim();
   const start = match.index + match[0].length;
   const tail = block.text.slice(start);
-  const end = /^\\s{8}(?:for|labels|annotations):/m.exec(tail)?.index ?? tail.length;
+  const end = /^\s{8}(?:for|labels|annotations):/m.exec(tail)?.index ?? tail.length;
   return tail.slice(0, end);
 }
 
 function containsNumericThreshold(expression, expected) {
-  const values = [...expression.matchAll(/>\\s*([0-9]+(?:\\.[0-9]+)?)/g)].map((match) => Number(match[1]));
+  const values = [...expression.matchAll(/>\s*([0-9]+(?:\.[0-9]+)?)/g)].map((match) => Number(match[1]));
   return values.some((value) => Math.abs(value - expected) < 1e-9);
 }
 
@@ -240,7 +242,7 @@ export function validateAlertRules(policy, rulesText) {
 
   const expectedLabel = policy.status === 'APPROVED' ? 'approved' : 'proposed';
   for (const block of blocks) {
-    if (!new RegExp('policy_status:\\s*' + expectedLabel + '\\b').test(block.text)) {
+    if (!new RegExp('policy_status:\s*' + expectedLabel + '\b').test(block.text)) {
       errors.push('alert ' + block.name + ' must use policy_status: ' + expectedLabel);
     }
   }
@@ -317,22 +319,22 @@ async function main(argv = process.argv.slice(2)) {
     readFile(options.alertRulesPath, 'utf8'),
   ]);
   const result = validateObservabilitySloPolicy(policyText, rulesText, options);
-  for (const error of result.errors) process.stderr.write('ERROR: ' + error + '\\n');
+  for (const error of result.errors) process.stderr.write('ERROR: ' + error + '\n');
   if (result.errors.length > 0) {
     process.exitCode = 1;
     return;
   }
-  process.stdout.write('OBSERVABILITY_SLO_POLICY=' + result.policy.status + '\\n');
+  process.stdout.write('OBSERVABILITY_SLO_POLICY=' + result.policy.status + '\n');
   if (result.policy.status === 'NOT_OWNER_APPROVED') {
-    process.stdout.write('Production numeric SLO acceptance remains BLOCKED pending accountable service-owner approval.\\n');
+    process.stdout.write('Production numeric SLO acceptance remains BLOCKED pending accountable service-owner approval.\n');
   } else {
-    process.stdout.write('Approved SLO metadata and alert-rule thresholds are internally consistent.\\n');
+    process.stdout.write('Approved SLO metadata and alert-rule thresholds are internally consistent.\n');
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    process.stderr.write('SLO policy validation failed: ' + (error instanceof Error ? error.message : 'unknown error') + '\\n');
+    process.stderr.write('SLO policy validation failed: ' + (error instanceof Error ? error.message : 'unknown error') + '\n');
     process.exitCode = 1;
   });
 }
