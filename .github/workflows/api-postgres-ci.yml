@@ -910,13 +910,15 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
+          node --check scripts/recovery/verify-approved-postgres-backup.mjs
+          node --check scripts/recovery/verify-approved-postgres-backup.test.mjs
+          node --check scripts/recovery/verify-dr-environment-approval.mjs
           node --check scripts/recovery/application-restore-smoke.mjs
           node --check scripts/recovery/write-rehearsal-evidence.mjs
           node --check scripts/recovery/record-dr-operator-signoff.mjs
           node --check scripts/recovery/rehearsal-evidence.test.mjs
       - name: Run recovery contract tests
-        run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
-
+        run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/verify-approved-postgres-backup.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
       - name: Validate production security configuration and harness syntax
         run: |
           node --check scripts/security/production-security-config.test.mjs
