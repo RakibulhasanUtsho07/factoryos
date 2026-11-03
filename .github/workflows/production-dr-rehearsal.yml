@@ -37,7 +37,7 @@ on:
         required: true
         type: string
       gpg_recipient:
-        description: Approved GPG recipient fingerprint or UID already provisioned on the recovery runner
+        description: Exact 40- or 64-character GPG encryption recipient key fingerprint already provisioned on the recovery runner
         required: true
         type: string
       candidate_migration_manifest:
@@ -171,6 +171,7 @@ jobs:
             (( (8#$file_mode & 0022) == 0 )) || { echo "::error::approved backup, manifest and signature must not be group/world writable"; exit 1; }
           done
           [[ "$BACKUP_SIGNER_FINGERPRINT" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ ]] || { echo "::error::configure the pinned FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT"; exit 1; }
+          [[ "$GPG_RECIPIENT_INPUT" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ ]] || { echo "::error::gpg_recipient must be the exact encryption key fingerprint"; exit 1; }
           [[ -d "$(dirname "$EVIDENCE_OUTPUT_INPUT")" && -w "$(dirname "$EVIDENCE_OUTPUT_INPUT")" ]] || { echo "::error::evidence directory must exist on approved protected storage"; exit 1; }
           [[ ! -e "$EVIDENCE_OUTPUT_INPUT" && ! -L "$EVIDENCE_OUTPUT_INPUT" ]] || { echo "::error::evidence output already exists"; exit 1; }
           [[ ! -e "$APPROVAL_EVIDENCE_INPUT" && ! -L "$APPROVAL_EVIDENCE_INPUT" ]] || { echo "::error::approval evidence output already exists"; exit 1; }
