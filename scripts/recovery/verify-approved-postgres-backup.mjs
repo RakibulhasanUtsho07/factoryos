@@ -48,7 +48,7 @@ async function assertProtectedRegularFile(path, label) {
 }
 
 function utcEpochSeconds(value) {
-  if (typeof value !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$/.test(value)) return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\\.\d+)?Z$/.test(value)) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 }
@@ -107,10 +107,10 @@ const verification = spawnSync('gpg', [
   maxBuffer: 1024 * 1024,
 });
 if (verification.error || verification.status !== 0) fail('detached OpenPGP signature verification failed');
-const validSignatures = (verification.stdout ?? '').split(/\\r?\\n/)
+const validSignatures = (verification.stdout ?? '').split(/\r?\n/)
   .filter((line) => line.startsWith('[GNUPG:] VALIDSIG '));
 if (validSignatures.length !== 1) fail('GPG must report exactly one VALIDSIG record for the backup manifest');
-const signatureFields = validSignatures[0].trim().split(/\\s+/);
+const signatureFields = validSignatures[0].trim().split(/\s+/);
 const signerFingerprints = [signatureFields[2], signatureFields.at(-1)]
   .filter((value) => typeof value === 'string' && /^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$/.test(value))
   .map((value) => value.toUpperCase());
@@ -138,7 +138,7 @@ const approval = {
   signatureStatus: 'VALID_PINNED_SIGNER',
 };
 
-await writeFile(outputPath, JSON.stringify(approval, null, 2) + '\\n', { flag: 'wx', mode: 0o600 })
+await writeFile(outputPath, JSON.stringify(approval, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
   .catch((error) => fail(error.code === 'EEXIST' ? 'backup verification receipt already exists; refusing to overwrite it' : 'could not write protected backup verification receipt'));
 console.log('approved_backup_artifact_sha256=' + artifactSha256);
 console.log('approved_backup_manifest_sha256=' + approval.manifestSha256);
