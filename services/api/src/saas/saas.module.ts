@@ -20,6 +20,7 @@ import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-e
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS, SAAS_TENANT_FINANCE_RETENTION_ADAPTER } from './saas-tenant-propagation.adapters';
 import { SaasTenantFinanceRetentionService } from './saas-tenant-finance-retention.service';
+import { PostgresFinanceRetentionInventoryAdapter } from './postgres-finance-retention-inventory.adapter';
 import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, SAAS_TENANT_TRANSFER_DATASET_SOURCE } from './saas-tenant-data-transfer.adapters';
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
@@ -88,6 +89,8 @@ import { TenantCacheModule } from './tenant-cache.module';
     SaasTenantGovernanceExecutionService,
     SaasTenantPropagationService,
     SaasTenantFinanceRetentionService,
+    PostgresFinanceRetentionInventoryAdapter,
+    { provide: SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useExisting: PostgresFinanceRetentionInventoryAdapter },
     WmsPodS3ErasureAdapter,
     S3TenantBackupErasureAdapter,
     SaasTenantBackupWriterFenceService,
@@ -108,7 +111,7 @@ import { TenantCacheModule } from './tenant-cache.module';
       ],
       inject: [WmsPodS3ErasureAdapter, RedisCacheErasureAdapter, S3TenantBackupErasureAdapter],
     },
-    { provide: SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null },
+
     SaasTenantPostgresDatasetSource,
     { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
     SaasTenantPostgresMigrationTargetAdapter,
