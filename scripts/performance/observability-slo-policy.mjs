@@ -212,7 +212,7 @@ export function validateSloPolicy(policy) {
 }
 
 function alertBlocks(rulesText) {
-  const matches = [...rulesText.matchAll(/^\s{6}- alert: ([A-Za-z0-9_]+)\s*$/gm)];
+  const matches = [...rulesText.matchAll(/^      - alert: ([A-Za-z0-9_]+)[ \\t]*$/gm)];
   return matches.map((match, index) => ({
     name: match[1],
     text: rulesText.slice(match.index, matches[index + 1]?.index ?? rulesText.length),
@@ -220,13 +220,18 @@ function alertBlocks(rulesText) {
 }
 
 function expressionFor(block) {
-  const match = /^\s{8}expr:\s*(.*)$/m.exec(block.text);
-  if (!match) return '';
-  if (match[1].trim() !== '|') return match[1].trim();
-  const start = match.index + match[0].length;
-  const tail = block.text.slice(start);
-  const end = /^\s{8}(?:for|labels|annotations):/m.exec(tail)?.index ?? tail.length;
-  return tail.slice(0, end);
+  const lines = block.text.split(/\\r?\\n/);
+  const start = lines.findIndex((line) => line.startsWith('        expr:'));
+  if (start < 0) return '';
+  const first = lines[start].slice('        expr:'.length).trim();
+  if (first !== '|') return first;
+  const expression = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^        (?:for|labels|annotations):/.test(line)) break;
+    expression.push(line);
+  }
+  return expression.join('\\n');
 }
 
 function containsNumericThreshold(expression, expected) {
