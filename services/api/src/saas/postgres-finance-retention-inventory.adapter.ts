@@ -269,7 +269,7 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
         destructiveDeletePermitted: false,
         relations,
       };
-    }, { tenantId, isolationLevel: 'REPEATABLE READ' });
+    }, { tenantId, isolationLevel: 'REPEATABLE READ', readOnly: true });
   }
 
   private receipt(kind: 'preview' | 'execute' | 'verify', manifestDigest: string): string {
