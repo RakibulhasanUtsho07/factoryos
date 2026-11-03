@@ -9,9 +9,42 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const writer = fileURLToPath(new URL('./write-rehearsal-evidence.mjs', import.meta.url));
 const signoff = fileURLToPath(new URL('./record-dr-operator-signoff.mjs', import.meta.url));
+const approvalVerifier = fileURLToPath(new URL('./verify-dr-environment-approval.mjs', import.meta.url));
+const productionWorkflow = fileURLToPath(new URL('../../.github/workflows/production-dr-rehearsal.yml', import.meta.url));
+const rehearsalScript = fileURLToPath(new URL('./postgres-backup-restore-rehearsal.sh', import.meta.url));
 
 function run(command, args, env = {}) {
-  return spawnSync(command, args, {
+  const invocation = [...args];
+  if (command === process.execPath && invocation[0] === signoff
+    && invocation[invocation.indexOf('--decision') + 1] === 'PASS'
+    && !invocation.includes('--approval-evidence')) {
+    const evidencePath = invocation[invocation.indexOf('--evidence') + 1];
+    const evidence = JSON.parse(readFileSync(evidencePath, 'utf8'));
+    const operator = invocation[invocation.indexOf('--operator') + 1];
+    const approver = invocation[invocation.indexOf('--approver') + 1];
+    const approvalPath = evidencePath + '.approval-fixture.json';
+    const workflowRunId = evidence.workflow.runId;
+    writeFileSync(approvalPath, JSON.stringify({
+      schema: 'factoryos.dr-environment-approval/v1',
+      source: 'GITHUB_ACTIONS_WORKFLOW_RUN_APPROVALS_API',
+      repository: evidence.workflow.repository,
+      workflowRunId,
+      candidateSha: evidence.candidate.commitSha,
+      environment: 'production-dr-rehearsal',
+      operator,
+      approvedBy: approver,
+      approvedById: 99,
+      approvedAtDecision: 'approved',
+      approvalHistoryUrl: `https://api.github.com/repos/${evidence.workflow.repository}/actions/runs/${workflowRunId}/approvals`,
+      approvalHistorySha256: '1'.repeat(64),
+      targetApproval: evidence.measured.approvedTargets
+        ? { approved: true, rpoSeconds: evidence.measured.approvedRpoTargetSeconds, rtoSeconds: evidence.measured.approvedRtoTargetSeconds }
+        : { approved: false, rpoSeconds: null, rtoSeconds: null },
+      retrievedAtUtc: '2026-10-20T10:00:00Z',
+    }, null, 2), { mode: 0o600 });
+    invocation.push('--approval-evidence', approvalPath);
+  }
+  return spawnSync(command, invocation, {
     cwd: root,
     encoding: 'utf8',
     timeout: 10_000,
@@ -23,6 +56,18 @@ function sampleEvidence() {
   return {
     schema: 'factoryos.disaster-recovery-rehearsal/v1',
     runId: 'run-fixture-1',
+    workflow: {
+      repository: 'RakibulhasanUtsho07/factoryos',
+      runId: 123456,
+      runAttempt: 1,
+      actor: 'DB Operator',
+      environment: 'production-dr-rehearsal',
+    },
+    operatorSignoff: {
+      status: 'PENDING_POST_RUN_REVIEW',
+      operator: 'DB Operator',
+      approver: 'Release Approver',
+    },
     status: 'TECHNICAL_PASS',
     timestamps: {
       startedAtUtc: '2026-10-20T09:58:00Z',
@@ -134,6 +179,11 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_TARGET_ASSESSMENT: 'NOT_APPROVED_NOT_CONTRACTUAL',
       FACTORYOS_DR_OPERATOR: 'CI Operator',
       FACTORYOS_DR_APPROVER: 'CI Approver',
+      FACTORYOS_DR_ENVIRONMENT: 'production-dr-rehearsal',
+      GITHUB_REPOSITORY: 'RakibulhasanUtsho07/factoryos',
+      GITHUB_RUN_ID: '888001',
+      GITHUB_RUN_ATTEMPT: '2',
+      GITHUB_ACTOR: 'dr-ci-operator',
     });
     assert.equal(result.status, 0, result.stderr);
     const receipt = JSON.parse(readFileSync(output, 'utf8'));
@@ -156,6 +206,13 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.candidate.failedTransactionRecoveryStatus, 'PASS');
     assert.equal(receipt.verification.migrationRecoveryStatus, 'PASS');
     assert.equal(receipt.databases.distinctIdentityVerified, true);
+    assert.deepEqual(receipt.workflow, {
+      repository: 'RakibulhasanUtsho07/factoryos',
+      runId: 888001,
+      runAttempt: 2,
+      actor: 'dr-ci-operator',
+      environment: 'production-dr-rehearsal',
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -396,4 +453,185 @@ test('PASS sign-off enforces approved RPO/RTO thresholds from the measured value
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+function writeApprovalHistory(directory, entries) {
+  const approvalPath = join(directory, 'workflow-approvals.json');
+  writeFileSync(approvalPath, JSON.stringify(entries, null, 2), { mode: 0o600 });
+  return approvalPath;
+}
+
+function runApprovalVerifier(directory, entries, overrides = {}) {
+  const approvalPath = writeApprovalHistory(directory, entries);
+  const output = join(directory, 'github-environment-approval.json');
+  const result = run(process.execPath, [approvalVerifier,
+    '--approvals-json', approvalPath,
+    '--output', output,
+    '--environment', 'production-dr-rehearsal',
+    '--approver', 'release-approver',
+    '--operator', 'workflow-operator',
+    '--candidate-sha', 'a'.repeat(40),
+    '--run-id', '9001',
+    '--repository', 'RakibulhasanUtsho07/factoryos',
+    '--targets-approved', 'false',
+    '--rpo-target-seconds', '',
+    '--rto-target-seconds', '',
+    ...overrides.args ?? [],
+  ]);
+  return { result, output };
+}
+
+test('environment approval verifier binds the actual GitHub reviewer to the exact run and candidate', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-approval-'));
+  try {
+    const { result, output } = runApprovalVerifier(directory, [{
+      state: 'approved',
+      comment: 'DR rehearsal environment approved.',
+      environments: [{ name: 'production-dr-rehearsal' }],
+      user: { login: 'release-approver', id: 42 },
+    }]);
+    assert.equal(result.status, 0, result.stderr);
+    const attestation = JSON.parse(readFileSync(output, 'utf8'));
+    assert.equal(attestation.schema, 'factoryos.dr-environment-approval/v1');
+    assert.equal(attestation.approvedBy, 'release-approver');
+    assert.equal(attestation.operator, 'workflow-operator');
+    assert.equal(attestation.workflowRunId, 9001);
+    assert.equal(attestation.candidateSha, 'a'.repeat(40));
+    assert.equal(attestation.environment, 'production-dr-rehearsal');
+    assert.equal(attestation.approvalHistorySha256.length, 64);
+    assert.equal(attestation.approvalHistoryUrl, 'https://api.github.com/repos/RakibulhasanUtsho07/factoryos/actions/runs/9001/approvals');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('environment approval verifier rejects a different reviewer, wrong environment and rejected review', () => {
+  const cases = [
+    [{ state: 'approved', environments: [{ name: 'production-dr-rehearsal' }], user: { login: 'someone-else' } }, /no approved decision/],
+    [{ state: 'approved', environments: [{ name: 'staging' }], user: { login: 'release-approver' } }, /no approved decision/],
+    [{ state: 'rejected', environments: [{ name: 'production-dr-rehearsal' }], user: { login: 'release-approver' } }, /no approved decision/],
+  ];
+  for (const [entry, expected] of cases) {
+    const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-approval-reject-'));
+    try {
+      const { result } = runApprovalVerifier(directory, [entry]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('environment approval verifier rejects self-approval by the workflow operator', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-approval-self-'));
+  try {
+    const approvalPath = writeApprovalHistory(directory, [{
+      state: 'approved',
+      environments: [{ name: 'production-dr-rehearsal' }],
+      user: { login: 'workflow-operator' },
+    }]);
+    const result = run(process.execPath, [approvalVerifier,
+      '--approvals-json', approvalPath,
+      '--output', join(directory, 'approval.json'),
+      '--environment', 'production-dr-rehearsal',
+      '--approver', 'workflow-operator',
+      '--operator', 'workflow-operator',
+      '--candidate-sha', 'a'.repeat(40),
+      '--run-id', '9001',
+      '--repository', 'RakibulhasanUtsho07/factoryos',
+      '--targets-approved', 'false',
+      '--rpo-target-seconds', '',
+      '--rto-target-seconds', '',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must be independent/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('environment approval requires an exact reviewer comment to approve non-contractual RPO/RTO targets', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-target-approval-'));
+  try {
+    const entry = {
+      state: 'approved',
+      comment: 'Approved the DR rehearsal.',
+      environments: [{ name: 'production-dr-rehearsal' }],
+      user: { login: 'release-approver', id: 42 },
+    };
+    const missingMarker = runApprovalVerifier(directory, [entry], {
+      args: ['--targets-approved', 'true', '--rpo-target-seconds', '300', '--rto-target-seconds', '3600'],
+    });
+    assert.notEqual(missingMarker.result.status, 0);
+    assert.match(missingMarker.result.stderr, /exact owner target marker/);
+    const validDirectory = mkdtempSync(join(tmpdir(), 'factoryos-dr-target-approval-valid-'));
+    try {
+      const approved = runApprovalVerifier(validDirectory, [{
+        ...entry,
+        comment: 'Reviewed workload target: FACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600',
+      }], {
+        args: ['--targets-approved', 'true', '--rpo-target-seconds', '300', '--rto-target-seconds', '3600'],
+      });
+      assert.equal(approved.result.status, 0, approved.result.stderr);
+      const attestation = JSON.parse(readFileSync(approved.output, 'utf8'));
+      assert.deepEqual(attestation.targetApproval, {
+        approved: true,
+        rpoSeconds: 300,
+        rtoSeconds: 3600,
+        exactCommentMarker: 'FACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600',
+      });
+    } finally {
+      rmSync(validDirectory, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('PASS sign-off rejects approval evidence whose GitHub reviewer does not match the named approver', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-approval-mismatch-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const approvalPath = join(directory, 'approval.json');
+    writeFileSync(evidencePath, JSON.stringify(sampleEvidence(), null, 2), { mode: 0o600 });
+    writeFileSync(approvalPath, JSON.stringify({
+      schema: 'factoryos.dr-environment-approval/v1',
+      source: 'GITHUB_ACTIONS_WORKFLOW_RUN_APPROVALS_API',
+      repository: 'RakibulhasanUtsho07/factoryos',
+      workflowRunId: 123456,
+      candidateSha: 'a'.repeat(40),
+      environment: 'production-dr-rehearsal',
+      operator: 'DB Operator',
+      approvedBy: 'not-the-approver',
+      approvalHistoryUrl: 'https://api.github.com/repos/RakibulhasanUtsho07/factoryos/actions/runs/123456/approvals',
+      approvalHistorySha256: '1'.repeat(64),
+      targetApproval: { approved: false, rpoSeconds: null, rtoSeconds: null },
+    }), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--approval-evidence', approvalPath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Reviewer identity mismatch must fail.',
+      '--reference', 'CHG-DR-APPROVAL-101',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /actual GitHub reviewer matches the named approver/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('DR release-gate workflow verifies actual Environment approvals and restricts plaintext scratch to private tmpfs', () => {
+  const workflow = readFileSync(productionWorkflow, 'utf8');
+  const script = readFileSync(rehearsalScript, 'utf8');
+  assert.match(workflow, /permissions:[\s\S]*actions: read/);
+  assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/approvals/);
+  assert.match(workflow, /verify-dr-environment-approval\.mjs/);
+  assert.match(workflow, /FACTORYOS_DR_SECURE_TMPDIR/);
+  assert.match(script, /findmnt[\s\S]*tmpfs/);
+  assert.match(script, /secure_tmp_owner/);
 });
