@@ -9,6 +9,8 @@ BEGIN
     'saas_tenant_data_export_preservation_attestations',
     'saas_tenant_data_retention_runs',
     'saas_tenant_data_erasure_runs',
+    'saas_tenant_finance_retention_policies',
+    'saas_tenant_finance_retention_runs',
     'saas_usage_rate_cards',
     'saas_usage_events',
     'saas_usage_adjustments',
