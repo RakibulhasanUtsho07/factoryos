@@ -2293,7 +2293,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       goods_receipt_id: receipt.id,
       goods_receipt_line_id: receipt.lines[0].id,
       receipt_status: 'POSTED',
-      accepted_quantity: '3.0000',
+      accepted_quantity: '3000.0000',
     }]);
 
     // Preserve PR #244's distinct incoming-quality gate inside this same
@@ -2360,6 +2360,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(bom.lines[0]).toMatchObject({
       unit: 'KG', inventory_base_unit: 'G', base_quantity_per: '1000.0000',
       uom_conversion_rule_id: approvedUomRule.id,
+      uom_conversion_rule_version: approvedUomRule.version,
       uom_factor_numerator: '1000', uom_factor_denominator: '1', uom_rounding_mode: 'REJECT',
     });
     const route = await productDefinitionsService.replaceRouting(
