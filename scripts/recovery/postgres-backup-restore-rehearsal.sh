@@ -18,6 +18,10 @@ source_service="${FACTORYOS_BACKUP_PGSERVICE:-}"
 target_service="${FACTORYOS_RESTORE_PGSERVICE:-}"
 backup_file="${FACTORYOS_BACKUP_OUTPUT:-}"
 recipient="${FACTORYOS_BACKUP_GPG_RECIPIENT:-}"
+backup_source_mode="${FACTORYOS_BACKUP_SOURCE_MODE:-LIVE_SOURCE_DUMP}"
+approved_backup_manifest="${FACTORYOS_APPROVED_BACKUP_MANIFEST:-}"
+approved_backup_signature="${FACTORYOS_APPROVED_BACKUP_SIGNATURE:-}"
+approved_backup_signer_fingerprint="${FACTORYOS_APPROVED_BACKUP_SIGNER_FINGERPRINT:-}"
 smoke_sql="${FACTORYOS_RESTORE_SMOKE_SQL:-}"
 dr_mode="${FACTORYOS_DR_MODE:-BASIC}"
 manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
@@ -67,6 +71,12 @@ erasure_verify_sql_sha256=""
 erasure_verify_method=""
 checksum_sha256=""
 checksum_verified=false
+approved_backup_manifest_sha256=""
+approved_backup_signature_sha256=""
+approved_backup_created_at_utc=""
+approved_backup_source_server_version=""
+approved_backup_recipient_fingerprint=""
+backup_signature_status="NOT_RUN"
 archive_status="NOT_RUN"
 encryption_status="NOT_RUN"
 restore_status="NOT_RUN"
@@ -99,6 +109,16 @@ emit_evidence() {
   export FACTORYOS_DR_TARGET_EMPTY="$target_empty"
   export FACTORYOS_DR_BACKUP_SHA256="$checksum_sha256"
   export FACTORYOS_DR_CHECKSUM_VERIFIED="$checksum_verified"
+  export FACTORYOS_DR_BACKUP_SOURCE_MODE="$backup_source_mode"
+  export FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_PATH="$approved_backup_manifest"
+  export FACTORYOS_DR_APPROVED_BACKUP_SIGNATURE_PATH="$approved_backup_signature"
+  export FACTORYOS_DR_APPROVED_BACKUP_SIGNER_FINGERPRINT="$approved_backup_signer_fingerprint"
+  export FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_SHA256="$approved_backup_manifest_sha256"
+  export FACTORYOS_DR_APPROVED_BACKUP_SIGNATURE_SHA256="$approved_backup_signature_sha256"
+  export FACTORYOS_DR_APPROVED_BACKUP_CREATED_AT_UTC="$approved_backup_created_at_utc"
+  export FACTORYOS_DR_APPROVED_BACKUP_SOURCE_SERVER_VERSION="$approved_backup_source_server_version"
+  export FACTORYOS_DR_APPROVED_BACKUP_RECIPIENT_FINGERPRINT="$approved_backup_recipient_fingerprint"
+  export FACTORYOS_DR_BACKUP_SIGNATURE_STATUS="$backup_signature_status"
   export FACTORYOS_DR_ENCRYPTION_STATUS="$encryption_status"
   export FACTORYOS_DR_ARCHIVE_STATUS="$archive_status"
   export FACTORYOS_DR_RESTORE_STATUS="$restore_status"
@@ -171,14 +191,34 @@ need_value FACTORYOS_BACKUP_GPG_RECIPIENT "$recipient"
 need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 
 [[ "$dr_mode" == "BASIC" || "$dr_mode" == "RELEASE_GATE" ]] || die "FACTORYOS_DR_MODE must be BASIC or RELEASE_GATE"
+[[ "$backup_source_mode" == "LIVE_SOURCE_DUMP" || "$backup_source_mode" == "APPROVED_ARTIFACT" ]] || die "FACTORYOS_BACKUP_SOURCE_MODE must be LIVE_SOURCE_DUMP or APPROVED_ARTIFACT"
+if [[ "$dr_mode" == "BASIC" && "$backup_source_mode" != "LIVE_SOURCE_DUMP" ]]; then
+  die "BASIC mode only supports the disposable live-source CI backup path"
+fi
 [[ "$source_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "backup service name contains unsupported characters"
 [[ "$target_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "restore service name contains unsupported characters"
 [[ "$source_service" != "$target_service" ]] || die "backup and restore service names must differ"
 [[ "$backup_file" == /* ]] || die "FACTORYOS_BACKUP_OUTPUT must be an absolute path"
-[[ "$backup_file" == *.dump.gpg ]] || die "backup output must end in .dump.gpg (encrypted custom-format archive)"
-[[ -d "$(dirname "$backup_file")" ]] || die "backup output directory must already exist on approved restricted storage"
-[[ ! -e "$backup_file" && ! -L "$backup_file" ]] || die "backup output already exists; refusing to overwrite evidence"
-[[ ! -e "${backup_file}.sha256" && ! -L "${backup_file}.sha256" ]] || die "checksum output already exists; refusing to overwrite evidence"
+[[ "$backup_file" == *.dump.gpg ]] || die "backup artifact must end in .dump.gpg (encrypted PostgreSQL custom-format archive)"
+if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then
+  need_value FACTORYOS_APPROVED_BACKUP_MANIFEST "$approved_backup_manifest"
+  need_value FACTORYOS_APPROVED_BACKUP_SIGNATURE "$approved_backup_signature"
+  need_value FACTORYOS_APPROVED_BACKUP_SIGNER_FINGERPRINT "$approved_backup_signer_fingerprint"
+  [[ -f "$backup_file" && ! -L "$backup_file" && -r "$backup_file" && -s "$backup_file" ]] || die "selected approved encrypted backup must be an existing readable non-symlink regular file"
+  [[ -f "$approved_backup_manifest" && ! -L "$approved_backup_manifest" && -r "$approved_backup_manifest" ]] || die "approved backup manifest must be an existing readable non-symlink regular file"
+  [[ -f "$approved_backup_signature" && ! -L "$approved_backup_signature" && -r "$approved_backup_signature" ]] || die "approved backup detached signature must be an existing readable non-symlink regular file"
+  [[ "$approved_backup_manifest" == /* && "$approved_backup_signature" == /* ]] || die "approved backup manifest and signature paths must be absolute"
+  [[ "$approved_backup_signer_fingerprint" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ ]] || die "approved backup signer must be pinned by a 40- or 64-character OpenPGP fingerprint"
+  for approved_file in "$backup_file" "$approved_backup_manifest" "$approved_backup_signature"; do
+    approved_mode="$(stat -c '%a' -- "$approved_file")" || die "could not inspect approved backup file permissions"
+    [[ "$approved_mode" =~ ^[0-7]{3,4}$ ]] || die "approved backup file permissions could not be verified"
+    (( (8#$approved_mode & 0022) == 0 )) || die "approved backup files must not be group/world writable"
+  done
+else
+  [[ -d "$(dirname "$backup_file")" ]] || die "backup output directory must already exist on approved restricted storage"
+  [[ ! -e "$backup_file" && ! -L "$backup_file" ]] || die "backup output already exists; refusing to overwrite evidence"
+  [[ ! -e "${backup_file}.sha256" && ! -L "${backup_file}.sha256" ]] || die "checksum output already exists; refusing to overwrite evidence"
+fi
 [[ -f "$smoke_sql" && -r "$smoke_sql" ]] || die "restore verification SQL must be a readable reviewed file"
 [[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "confirm the restore target is disposable and isolated before continuing"
 
@@ -253,6 +293,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
 fi
 
 for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
+if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then need_command node; fi
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
 partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
@@ -308,21 +349,49 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   fi
 fi
 
-current_stage="encrypted_backup"
 backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
+if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then
+  current_stage="approved_backup_signature_verification"
+  approved_backup_verification="$tmpdir/approved-backup-verification.json"
+  node "$repo_root/scripts/recovery/verify-approved-postgres-backup.mjs" \\
+    --artifact "$backup_file" \\
+    --manifest "$approved_backup_manifest" \\
+    --signature "$approved_backup_signature" \\
+    --signer-fingerprint "$approved_backup_signer_fingerprint" \\
+    --source-database-identity "$source_identity" \\
+    --incident-cutoff-utc "$event_time_utc" \\
+    --output "$approved_backup_verification"
+  [[ -s "$approved_backup_verification" ]] || die "approved backup verification receipt is missing"
+  checksum_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.artifactSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup verification receipt"
+  approved_backup_manifest_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.manifestSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup manifest digest"
+  approved_backup_signature_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.signatureSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup signature digest"
+  approved_backup_created_at_utc="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.backupCreatedAtUtc)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup creation time"
+  approved_backup_source_server_version="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.sourceServerVersion)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved source server version"
+  approved_backup_recipient_fingerprint="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.recipientFingerprint)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup recipient fingerprint"
+  verified_signer="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.signerFingerprint)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup signer fingerprint"
+  [[ "$verified_signer" == "${approved_backup_signer_fingerprint^^}" ]] || die "approved backup signer fingerprint changed after verification"
+  checksum_verified=true
+  encryption_status="ENCRYPTED_GPG"
+  backup_signature_status="VALID_PINNED_SIGNER"
+  pg_dump_version="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.pgDumpVersion)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved pg_dump version"
+  server_version="$approved_backup_source_server_version"
+  backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
+  printf 'Verified signed approved backup artifact SHA-256: %s\\n' "$checksum_sha256"
+else
+  current_stage="encrypted_backup"
+  printf 'Creating encrypted PostgreSQL custom-format backup from the disposable CI source fixture...\\n'
+  pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \\
+    | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
+  [[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
+  mv -- "$partial_file" "$backup_file"
+  partial_file=""
+  sha256sum -- "$backup_file" > "${backup_file}.sha256"
+  sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
+  checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
+  checksum_verified=true
+  encryption_status="ENCRYPTED_GPG"
+  backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
+fi
 current_stage="archive_readability"
 printf 'Decrypting to a private temporary directory and checking archive readability...\n'
 gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
