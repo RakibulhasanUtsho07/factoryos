@@ -1,0 +1,60 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowUnscopedCatalogDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "backup:ListBackupVaults",
+        "backup:ListLegalHolds"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowReadOnlyScopedBackupVaultResources",
+      "Effect": "Allow",
+      "Action": [
+        "backup:DescribeBackupVault",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListRestoreAccessBackupVaults"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:backup:<REGION>:<ACCOUNT_ID>:backup-vault:*"
+      ]
+    },
+    {
+      "Sid": "AllowReadOnlyScopedLegalHoldResources",
+      "Effect": "Allow",
+      "Action": [
+        "backup:GetLegalHold",
+        "backup:ListRecoveryPointsByLegalHold"
+      ],
+      "Resource": [
+        "arn:<PARTITION>:backup:<REGION>:<ACCOUNT_ID>:legal-hold:*"
+      ]
+    },
+    {
+      "Sid": "AllowCallerIdentityVerification",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEveryActionExceptReviewedAwsBackupInventoryRead",
+      "Effect": "Deny",
+      "NotAction": [
+        "backup:ListBackupVaults",
+        "backup:DescribeBackupVault",
+        "backup:ListRecoveryPointsByBackupVault",
+        "backup:ListLegalHolds",
+        "backup:GetLegalHold",
+        "backup:ListRecoveryPointsByLegalHold",
+        "backup:ListRestoreAccessBackupVaults",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
