@@ -187,89 +187,89 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
       throw new ConflictException('Finance retention context is invalid');
     }
 
-    let remaining = POSTGRES_FINANCE_RETENTION_MAX_ROWS;
-    let total = 0n;
-    let inventoryComplete = true;
-    const relations: FinanceRelationInventory[] = [];
+    return this.database.transaction(async (client) => {
+      let remaining = POSTGRES_FINANCE_RETENTION_MAX_ROWS;
+      let total = 0n;
+      let inventoryComplete = true;
+      const relations: FinanceRelationInventory[] = [];
 
-    for (const relation of POSTGRES_FINANCE_RETENTION_RELATIONS) {
-      if (remaining <= 0) {
-        inventoryComplete = false;
+      for (const relation of POSTGRES_FINANCE_RETENTION_RELATIONS) {
+        if (remaining <= 0) {
+          inventoryComplete = false;
+          relations.push({
+            table: relation.table,
+            cutoffColumn: relation.cutoffColumn,
+            purpose: relation.purpose,
+            candidateRows: null,
+            scanStatus: 'NOT_SCANNED_AFTER_BOUND',
+            disposition: 'RETAINED_IMMUTABLE',
+          });
+          continue;
+        }
+
+        const metadataSql = [
+          "SELECT c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,",
+          "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname = 'tenant_id' AND a.attnum>0 AND NOT a.attisdropped) AS has_tenant_id,",
+          "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped) AS has_cutoff_column,",
+          "EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=c.oid AND NOT t.tgisinternal AND t.tgenabled <> 'D' AND pg_catalog.pg_get_triggerdef(t.oid) ILIKE '%DELETE%' AND p.prosrc ILIKE '%RAISE EXCEPTION%') AS has_delete_guard",
+          "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace",
+          "WHERE n.nspname = 'public' AND c.relname=$1 AND c.relkind IN ('r','p')",
+        ].join(' ');
+        const metadata = await client.query<FinanceRelationMetadataRow>(
+          metadataSql,
+          [relation.table, relation.cutoffColumn],
+        );
+        const guard = metadata.rows[0];
+        if (!guard || guard.rls_enabled !== true || guard.rls_forced !== true
+          || guard.has_tenant_id !== true || guard.has_cutoff_column !== true || guard.has_delete_guard !== true) {
+          throw new ConflictException(
+            'Finance retention inventory requires an existing tenant column, forced RLS, cutoff column and immutable DELETE guard on ' + relation.table,
+          );
+        }
+
+        const pageLimit = remaining + 1;
+        const countSql = [
+          "SELECT COUNT(*)::text AS candidate_rows FROM (",
+          "SELECT 1 FROM public." + relation.table,
+          "WHERE tenant_id=$1 AND " + relation.cutoffColumn + " < $2::timestamptz",
+          "ORDER BY " + relation.cutoffColumn + ", id LIMIT $3",
+          ") AS bounded_finance_retention_inventory",
+        ].join(' ');
+        const countResult = await client.query<FinanceCountRow>(
+          countSql,
+          [tenantId, context.cutoffAt, pageLimit],
+        );
+        const observed = count(countResult.rows[0]?.candidate_rows ?? '0');
+        const exceededRemaining = observed > BigInt(remaining);
+        const observedBounded = exceededRemaining ? BigInt(remaining + 1) : observed;
+        total += observedBounded;
+        remaining = exceededRemaining ? 0 : remaining - Number(observedBounded);
+        if (exceededRemaining) inventoryComplete = false;
         relations.push({
           table: relation.table,
           cutoffColumn: relation.cutoffColumn,
           purpose: relation.purpose,
-          candidateRows: null,
-          scanStatus: 'NOT_SCANNED_AFTER_BOUND',
+          candidateRows: String(observedBounded),
+          scanStatus: exceededRemaining ? 'NOT_SCANNED_AFTER_BOUND' : 'COMPLETE',
           disposition: 'RETAINED_IMMUTABLE',
         });
-        continue;
       }
 
-      const metadataSql = [
-        "SELECT c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,",
-        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname = 'tenant_id' AND a.attnum>0 AND NOT a.attisdropped) AS has_tenant_id,",
-        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped) AS has_cutoff_column,",
-        "EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal AND t.tgenabled <> 'D' AND pg_catalog.pg_get_triggerdef(t.oid) ILIKE '%DELETE%') AS has_delete_guard",
-        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace",
-        "WHERE n.nspname = 'public' AND c.relname=$1 AND c.relkind IN ('r','p')",
-      ].join(' ');
-      const metadata = await this.database.query<FinanceRelationMetadataRow>(
-        metadataSql,
-        [relation.table, relation.cutoffColumn],
-        { tenantId },
-      );
-      const guard = metadata.rows[0];
-      if (!guard || guard.rls_enabled !== true || guard.rls_forced !== true
-        || guard.has_tenant_id !== true || guard.has_cutoff_column !== true || guard.has_delete_guard !== true) {
-        throw new ConflictException(
-          'Finance retention inventory requires an existing tenant column, forced RLS, cutoff column and immutable DELETE guard on ' + relation.table,
-        );
-      }
-
-      const pageLimit = remaining + 1;
-      const countSql = [
-        "SELECT COUNT(*)::text AS candidate_rows FROM (",
-        "SELECT 1 FROM public." + relation.table,
-        "WHERE tenant_id=$1 AND " + relation.cutoffColumn + " < $2::timestamptz",
-        "ORDER BY " + relation.cutoffColumn + ", id LIMIT $3",
-        ") AS bounded_finance_retention_inventory",
-      ].join(' ');
-      const countResult = await this.database.query<FinanceCountRow>(
-        countSql,
-        [tenantId, context.cutoffAt, pageLimit],
-        { tenantId },
-      );
-      const observed = count(countResult.rows[0]?.candidate_rows ?? '0');
-      const exceededRemaining = observed > BigInt(remaining);
-      const observedBounded = exceededRemaining ? BigInt(remaining + 1) : observed;
-      total += observedBounded;
-      remaining = exceededRemaining ? 0 : remaining - Number(observedBounded);
-      if (exceededRemaining) inventoryComplete = false;
-      relations.push({
-        table: relation.table,
-        cutoffColumn: relation.cutoffColumn,
-        purpose: relation.purpose,
-        candidateRows: String(observedBounded),
-        scanStatus: exceededRemaining ? 'NOT_SCANNED_AFTER_BOUND' : 'COMPLETE',
-        disposition: 'RETAINED_IMMUTABLE',
-      });
-    }
-
-    return {
-      schema: 'factoryos.postgres-finance-retention-inventory/v1',
-      adapterVersion: this.adapterVersion,
-      tenantId,
-      policyVersion: context.policyVersion,
-      retentionDays: context.retentionDays,
-      cutoffAt: new Date(cutoff).toISOString(),
-      legalBasisSha256: createHash('sha256').update(context.legalBasis, 'utf8').digest('hex'),
-      maxRows: POSTGRES_FINANCE_RETENTION_MAX_ROWS,
-      candidateRows: String(total),
-      inventoryComplete,
-      destructiveDeletePermitted: false,
-      relations,
-    };
+      return {
+        schema: 'factoryos.postgres-finance-retention-inventory/v1',
+        adapterVersion: this.adapterVersion,
+        tenantId,
+        policyVersion: context.policyVersion,
+        retentionDays: context.retentionDays,
+        cutoffAt: new Date(cutoff).toISOString(),
+        legalBasisSha256: createHash('sha256').update(context.legalBasis, 'utf8').digest('hex'),
+        maxRows: POSTGRES_FINANCE_RETENTION_MAX_ROWS,
+        candidateRows: String(total),
+        inventoryComplete,
+        destructiveDeletePermitted: false,
+        relations,
+      };
+    }, { tenantId, isolationLevel: 'REPEATABLE READ' });
   }
 
   private receipt(kind: 'preview' | 'execute' | 'verify', manifestDigest: string): string {
