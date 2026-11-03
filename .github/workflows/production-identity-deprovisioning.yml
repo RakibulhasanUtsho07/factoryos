@@ -1,0 +1,202 @@
+name: WP01 production identity deprovision acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Run the authenticated baseline before or verify after the real IdP SCIM deprovision event
+        required: true
+        type: choice
+        options:
+          - before
+          - after
+      candidate_sha:
+        description: Exact 40-character FactoryOS candidate SHA deployed to staging
+        required: true
+        type: string
+      target_tenant_id:
+        description: Synthetic staging tenant whose membership is being deprovisioned
+        required: true
+        type: string
+      sibling_tenant_id:
+        description: Separate synthetic staging tenant where the same user must remain active
+        required: true
+        type: string
+      baseline_run_id:
+        description: Successful before-phase workflow run ID (after phase only)
+        required: false
+        type: string
+      deprovision_event_reference:
+        description: Sanitized opaque IdP/SCIM audit event reference (after phase only)
+        required: false
+        type: string
+      deprovisioned_at_utc:
+        description: Exact IdP event timestamp in UTC ending in Z (after phase only)
+        required: false
+        type: string
+      max_propagation_seconds:
+        description: Owner-approved maximum time for target-tenant revocation
+        required: false
+        default: '300'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: as133-identity-deprovision-${{ inputs.target_tenant_id }}
+  cancel-in-progress: false
+
+jobs:
+  verify-staging-identity:
+    name: Verify signed IdP token and tenant-scoped deprovision
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production-security-staging
+    env:
+      PHASE_INPUT: ${{ inputs.phase }}
+      CANDIDATE_SHA_INPUT: ${{ inputs.candidate_sha }}
+      TARGET_TENANT_ID_INPUT: ${{ inputs.target_tenant_id }}
+      SIBLING_TENANT_ID_INPUT: ${{ inputs.sibling_tenant_id }}
+      BASELINE_RUN_ID_INPUT: ${{ inputs.baseline_run_id }}
+      EVENT_REFERENCE_INPUT: ${{ inputs.deprovision_event_reference }}
+      DEPROVISIONED_AT_INPUT: ${{ inputs.deprovisioned_at_utc }}
+      MAX_PROPAGATION_INPUT: ${{ inputs.max_propagation_seconds }}
+      OIDC_ISSUER_INPUT: ${{ vars.AS133_OIDC_ISSUER }}
+      OIDC_AUDIENCE_INPUT: ${{ vars.AS133_OIDC_AUDIENCE }}
+      OIDC_JWKS_URI_INPUT: ${{ vars.AS133_OIDC_JWKS_URI }}
+      OIDC_MFA_AMR_VALUES_INPUT: ${{ vars.AS133_OIDC_MFA_AMR_VALUES }}
+      OIDC_MFA_ACR_VALUES_INPUT: ${{ vars.AS133_OIDC_MFA_ACR_VALUES }}
+      STAGING_API_ORIGIN_INPUT: ${{ vars.AS133_STAGING_API_ORIGIN }}
+
+    steps:
+      - name: Checkout exact deployed candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Validate protected staging inputs and exact candidate
+        shell: bash
+        env:
+          OIDC_STAGING_BEARER_TOKEN: ${{ secrets.AS133_STAGING_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$PHASE_INPUT" == "before" || "$PHASE_INPUT" == "after" ]] || { echo "::error::phase must be before or after"; exit 1; }
+          [[ "$CANDIDATE_SHA_INPUT" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::candidate_sha must be a full commit SHA"; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA_INPUT" ]] || { echo "::error::checkout does not match candidate_sha"; exit 1; }
+          [[ "$TARGET_TENANT_ID_INPUT" =~ ^[0-9a-fA-F-]{36}$ && "$SIBLING_TENANT_ID_INPUT" =~ ^[0-9a-fA-F-]{36}$ && "$TARGET_TENANT_ID_INPUT" != "$SIBLING_TENANT_ID_INPUT" ]] || { echo "::error::two distinct staging tenant UUIDs are required"; exit 1; }
+          [[ -n "$OIDC_STAGING_BEARER_TOKEN" && -n "$OIDC_ISSUER_INPUT" && -n "$OIDC_AUDIENCE_INPUT" && -n "$OIDC_JWKS_URI_INPUT" && -n "$STAGING_API_ORIGIN_INPUT" ]] || { echo "::error::configure the protected AS133 staging IdP/API environment values and bearer-token secret"; exit 1; }
+          [[ "$OIDC_ISSUER_INPUT" == https://* && "$OIDC_JWKS_URI_INPUT" == https://* && "$STAGING_API_ORIGIN_INPUT" == https://* ]] || { echo "::error::IdP issuer, JWKS and staging API must use HTTPS"; exit 1; }
+          if [[ "$PHASE_INPUT" == "after" ]]; then
+            [[ "$BASELINE_RUN_ID_INPUT" =~ ^[1-9][0-9]{0,18}$ ]] || { echo "::error::after phase requires baseline_run_id"; exit 1; }
+            [[ "$BASELINE_RUN_ID_INPUT" != "$GITHUB_RUN_ID" ]] || { echo "::error::baseline run must be a different workflow run"; exit 1; }
+            [[ -n "$EVENT_REFERENCE_INPUT" && -n "$DEPROVISIONED_AT_INPUT" ]] || { echo "::error::after phase requires the real IdP event reference and UTC timestamp"; exit 1; }
+            [[ "$MAX_PROPAGATION_INPUT" =~ ^[0-9]+$ ]] || { echo "::error::max_propagation_seconds must be an integer"; exit 1; }
+          fi
+          mkdir -m 700 -p "$RUNNER_TEMP/as133-evidence"
+          echo "candidate_sha=$CANDIDATE_SHA_INPUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "phase=$PHASE_INPUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "The same protected bearer token is used in both phases; it is never written to the evidence artifact or workflow output." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the original baseline run and download its evidence
+        if: inputs.phase == 'after'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID_INPUT"
+          run_json="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api")"
+          jq -e --arg sha "$CANDIDATE_SHA_INPUT" '
+            .head_sha == $sha and
+            .event == "workflow_dispatch" and
+            .conclusion == "success" and
+            .path == ".github/workflows/production-identity-deprovisioning.yml"
+          ' <<< "$run_json" >/dev/null || { echo "::error::baseline run must be a successful before-phase run of this workflow on the exact same candidate SHA"; exit 1; }
+          actions/download-artifact@v4
+          curl --fail --silent --show-error -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID_INPUT/artifacts" \
+            -o "$RUNNER_TEMP/as133-evidence/artifacts.json"
+          jq -e '.artifacts | any(.name == "as133-oidc-deprovision-before" and .expired == false)' \
+            "$RUNNER_TEMP/as133-evidence/artifacts.json" >/dev/null || { echo "::error::baseline evidence artifact is missing or expired"; exit 1; }
+          curl --fail --silent --show-error -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID_INPUT/artifacts" >/dev/null
+          echo "Baseline workflow run provenance verified: $BASELINE_RUN_ID_INPUT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download baseline artifact from verified run
+        if: inputs.phase == 'after'
+        uses: actions/download-artifact@v4
+        with:
+          name: as133-oidc-deprovision-before
+          run-id: ${{ inputs.baseline_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/as133-evidence/baseline
+
+      - name: Verify real IdP signed token and tenant-scoped revocation
+        shell: bash
+        env:
+          OIDC_STAGING_BEARER_TOKEN: ${{ secrets.AS133_STAGING_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/as133-evidence/$PHASE_INPUT.json"
+          common_env=(
+            "OIDC_STAGING_BEARER_TOKEN=$OIDC_STAGING_BEARER_TOKEN"
+            "FACTORYOS_STAGING_API_ORIGIN=$STAGING_API_ORIGIN_INPUT"
+            "CANDIDATE_SHA=$CANDIDATE_SHA_INPUT"
+            "TARGET_TENANT_ID=$TARGET_TENANT_ID_INPUT"
+            "SIBLING_TENANT_ID=$SIBLING_TENANT_ID_INPUT"
+            "OIDC_ISSUER=$OIDC_ISSUER_INPUT"
+            "OIDC_AUDIENCE=$OIDC_AUDIENCE_INPUT"
+            "OIDC_JWKS_URI=$OIDC_JWKS_URI_INPUT"
+            "OIDC_MFA_AMR_VALUES=$OIDC_MFA_AMR_VALUES_INPUT"
+            "OIDC_MFA_ACR_VALUES=$OIDC_MFA_ACR_VALUES_INPUT"
+            "PHASE=$PHASE_INPUT"
+            "EVIDENCE_OUTPUT=$evidence"
+          )
+          if [[ "$PHASE_INPUT" == "before" ]]; then
+            env "${common_env[@]}" node scripts/security/verify-oidc-deprovisioning.mjs
+            echo "baseline_run_id=$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"
+          else
+            baseline="$RUNNER_TEMP/as133-evidence/baseline/before.json"
+            test -s "$baseline"
+            chmod 600 "$baseline"
+            chmod 700 "$(dirname "$baseline")"
+            env "${common_env[@]}" \
+              BASELINE_EVIDENCE_PATH="$baseline" \
+              SCIM_DEPROVISION_EVENT_REFERENCE="$EVENT_REFERENCE_INPUT" \
+              SCIM_DEPROVISIONED_AT_UTC="$DEPROVISIONED_AT_INPUT" \
+              SCIM_MAX_PROPAGATION_SECONDS="$MAX_PROPAGATION_INPUT" \
+              node scripts/security/verify-oidc-deprovisioning.mjs
+          fi
+          echo "evidence_sha256=$(sha256sum "$evidence" | awk '{print $1}')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload redacted candidate-bound identity evidence
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: as133-oidc-deprovision-${{ inputs.phase }}
+          path: ${{ runner.temp }}/as133-evidence/${{ inputs.phase }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record release boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "This workflow verifies IdP signature/MFA claims and tenant-scoped API authorization only."
+            echo "It does not prove global IdP logout, real production settings, database least privilege, secret-manager rotation, active egress enforcement, or independent penetration testing."
+            echo "Never mark AS-133 accepted from this workflow alone."
+          } >> "$GITHUB_STEP_SUMMARY"
