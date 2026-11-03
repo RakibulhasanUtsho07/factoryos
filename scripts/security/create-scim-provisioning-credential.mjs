@@ -90,8 +90,11 @@ async function main() {
   try {
     await client.connect();
     await client.query('BEGIN');
+    // Forced RLS applies to provisioners too; constrain every credential-table
+    // read/write to the requested tenant on this transaction's connection.
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
     const tenant = await client.query(
-      "SELECT id FROM public.tenants WHERE id = $1::uuid AND status = 'ACTIVE' FOR SHARE",
+      "SELECT id FROM public.tenants WHERE id = $1::uuid AND status = 'ACTIVE'",
       [tenantId],
     );
     if (tenant.rowCount !== 1) throw new Error('SCIM tenant is missing or inactive');
