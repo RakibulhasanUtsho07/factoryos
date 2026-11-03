@@ -474,10 +474,9 @@ function runApprovalVerifier(directory, entries, overrides = {}) {
     '--candidate-sha', 'a'.repeat(40),
     '--run-id', '9001',
     '--repository', 'RakibulhasanUtsho07/factoryos',
-    '--targets-approved', 'false',
-    '--rpo-target-seconds', '',
-    '--rto-target-seconds', '',
-    ...overrides.args ?? [],
+    '--targets-approved', overrides.targetsApproved ?? 'false',
+    '--rpo-target-seconds', overrides.rpoTargetSeconds ?? '',
+    '--rto-target-seconds', overrides.rtoTargetSeconds ?? '',
   ]);
   return { result, output };
 }
@@ -562,7 +561,7 @@ test('environment approval requires an exact reviewer comment to approve non-con
       user: { login: 'release-approver', id: 42 },
     };
     const missingMarker = runApprovalVerifier(directory, [entry], {
-      args: ['--targets-approved', 'true', '--rpo-target-seconds', '300', '--rto-target-seconds', '3600'],
+      targetsApproved: 'true', rpoTargetSeconds: '300', rtoTargetSeconds: '3600',
     });
     assert.notEqual(missingMarker.result.status, 0);
     assert.match(missingMarker.result.stderr, /exact owner target marker/);
