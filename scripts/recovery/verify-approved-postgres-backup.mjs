@@ -23,7 +23,7 @@ function parseArguments(argv) {
   }
   const allowed = new Set([
     'artifact', 'manifest', 'signature', 'signer-fingerprint',
-    'source-database-identity', 'incident-cutoff-utc', 'output',
+    'source-database-identity', 'recipient-fingerprint', 'incident-cutoff-utc', 'output',
   ]);
   for (const name of Object.keys(values)) {
     if (!allowed.has(name)) fail('unknown argument: --' + name);
@@ -63,6 +63,8 @@ if (!/^[A-F0-9]{40}([A-F0-9]{24})?$/.test(expectedSigner)) {
   fail('--signer-fingerprint must be a 40- or 64-character pinned OpenPGP fingerprint');
 }
 if (!args['source-database-identity'].trim()) fail('--source-database-identity cannot be empty');
+const expectedRecipient = args['recipient-fingerprint'].replaceAll(' ', '').toUpperCase();
+if (!/^[A-F0-9]{40}([A-F0-9]{24})?$/.test(expectedRecipient)) fail('--recipient-fingerprint must be a 40- or 64-character GPG key fingerprint');
 const incidentEpoch = utcEpochSeconds(args['incident-cutoff-utc']);
 if (incidentEpoch === null) fail('--incident-cutoff-utc must be a valid UTC RFC3339 timestamp ending in Z');
 
@@ -88,6 +90,7 @@ if (manifest.encryption !== 'GPG') fail('approved backup must declare GPG encryp
 if (typeof manifest.recipientFingerprint !== 'string' || !/^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$/.test(manifest.recipientFingerprint)) {
   fail('approved manifest is missing a valid OpenPGP encryption recipient fingerprint');
 }
+if (manifest.recipientFingerprint.toUpperCase() !== expectedRecipient) fail('approved backup encryption recipient does not match the recovery runner private key fingerprint');
 const backupCreatedEpoch = utcEpochSeconds(manifest.backupCreatedAtUtc);
 if (backupCreatedEpoch === null) fail('approved backup creation time must be UTC RFC3339');
 if (backupCreatedEpoch > incidentEpoch) fail('selected backup was created after the incident cutoff and cannot represent the recovery point');
