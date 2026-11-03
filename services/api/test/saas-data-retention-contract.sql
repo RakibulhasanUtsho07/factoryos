@@ -108,9 +108,11 @@ BEGIN
       FROM pg_trigger t
       JOIN pg_class c ON c.oid=t.tgrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid
       WHERE n.nspname='public' AND c.relname=table_name
         AND NOT t.tgisinternal AND t.tgenabled <> 'D'
         AND pg_get_triggerdef(t.oid) ILIKE '%DELETE%'
+        AND p.prosrc ILIKE '%RAISE EXCEPTION%'
     ) THEN
       RAISE EXCEPTION 'immutable DELETE guard is missing for finance ledger relation %', table_name;
     END IF;
