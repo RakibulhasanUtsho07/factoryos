@@ -363,13 +363,6 @@ export class SaasTenantPropagationService {
           backupCategoryOwners.set(category, target.targetId);
         }
       }
-      for (const target of targets) {
-        const adapter = this.adapterFor(target);
-        if (!(await adapter.isConfigured(target))) {
-          throw new ServiceUnavailableException('Required external propagation adapter is not configured for target ' + target.targetId);
-        }
-      }
-
       const sourceManifest = this.jsonObject(transfer.source_manifest);
       if (!run) {
         const runId = randomUUID();
@@ -387,14 +380,16 @@ export class SaasTenantPropagationService {
           backupCopyClassCoverage: backupCopyClassCoverageManifest,
           backupCopyClassCoverageDigest, plans: {},
         };
+        const initialRunStatus = activeLegalHoldCategories.length > 0 || policyBlockedCategories.length > 0
+          ? 'PARTIAL' : 'RUNNING';
         const inserted = await client.query<PropagationRunRow>(
           `INSERT INTO saas_tenant_external_propagation_runs
            (tenant_id,run_id,request_id,request_version,status,categories,source_export_digest,
             external_manifest,target_count,reason,idempotency_key,request_hash,executor_user_id)
-           VALUES ($1,$2,$3,$4,'RUNNING',$5::jsonb,$6,$7::jsonb,$8,$9,$10,$11,$12) RETURNING *`,
+           VALUES ($1,$2,$3,$4,$13,$5::jsonb,$6,$7::jsonb,$8,$9,$10,$11,$12) RETURNING *`,
           [tenantId, runId, requestId, Number(request.version), JSON.stringify(categories),
             request.export_bundle_digest, JSON.stringify(externalManifest), targets.length,
-            reason, idempotencyKey, requestHash, actorUserId],
+            reason, idempotencyKey, requestHash, actorUserId, initialRunStatus],
         );
         run = inserted.rows[0];
       } else if (run.status === 'PARTIAL' || run.status === 'FAILED') {
@@ -410,14 +405,19 @@ export class SaasTenantPropagationService {
         if (JSON.stringify(previousTargets) !== JSON.stringify(newTargets)) {
           throw new ConflictException('Reviewed external target inventory changed; start a separately reviewed propagation run');
         }
-        const restarted = await client.query<PropagationRunRow>(
-          `UPDATE saas_tenant_external_propagation_runs
-           SET status='RUNNING',failure_code=NULL,finished_at=NULL,manifest_digest=NULL,
-               verified_targets=0,planned_copies=0,deleted_copies=0,residual_copies=0
-           WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
-          [tenantId, requestId, run.run_id],
-        );
-        run = restarted.rows[0];
+        if (activeLegalHoldCategories.length > 0 || policyBlockedCategories.length > 0) {
+          // Keep this run non-RUNNING under migration 221's database fence. The
+          // global preflight below writes a durable RETAINED/BLOCKED receipt.
+        } else {
+          const restarted = await client.query<PropagationRunRow>(
+            `UPDATE saas_tenant_external_propagation_runs
+             SET status='RUNNING',failure_code=NULL,finished_at=NULL,manifest_digest=NULL,
+                 verified_targets=0,planned_copies=0,deleted_copies=0,residual_copies=0
+             WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
+            [tenantId, requestId, run.run_id],
+          );
+          run = restarted.rows[0];
+        }
       } else {
         const currentManifest = this.jsonObject(run.external_manifest);
         const previousTargets = Array.isArray(currentManifest.targetIds) ? currentManifest.targetIds.map(String).sort() : [];
