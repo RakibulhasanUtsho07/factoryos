@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeOnlyTheDedicatedElastiCacheBackupInventoryReader",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::*:role/FactoryOSElasticacheBackupReader",
+        "arn:aws-us-gov:iam::*:role/FactoryOSElasticacheBackupReader",
+        "arn:aws-cn:iam::*:role/FactoryOSElasticacheBackupReader"
+      ]
+    }
+  ]
+}

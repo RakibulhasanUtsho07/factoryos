@@ -101,3 +101,12 @@ This is **potential policy identity inventory**, not proof of effective access o
 The repository evidence remains non-production: the IAM/DB reader roles, trust and policies have not been provisioned or independently reviewed in a real account; no synthetic AWS RDS/Aurora inventory or controlled PITR restore has been performed; self-managed archive jobs, non-IAM DB logins, queues and other external producers remain out of scope. Retention remains dry-run only, with no delete API, no signable receipts and no deletion authorization.
 
 **Release disposition: AS-137 and NFR-PROD-14 remain PARTIAL/OPEN.** Do not infer tenant-wide deletion, all-writer completeness or provider acceptance from these mocked contracts or the policy-candidate inventory.
+
+
+## AWS ElastiCache node-based Redis OSS / Valkey backup inventory status
+
+A separate node-based ElastiCache reader is being added under Issue #298. It enumerates the ElastiCache Query API catalogs for cache clusters, replication groups, Global Datastores and Redis OSS/Valkey snapshots across explicitly supplied and identity-verified account/region scopes. It records replication member region/role and snapshot name/create-time correlation metadata, exhausts pagination, and fails closed on a missing scope, identity mismatch, denied catalog, repeated marker or budget exhaustion.
+
+This does not enumerate ElastiCache Serverless caches/snapshots, self-managed Redis AOF/RDB files or volume backups, exported snapshot destinations, cross-account object exports, filesystem/block-volume snapshots, or every external DR copy. A snapshot name plus creation time is a correlation identity, not an immutable provider version or delete authorization. The inventory has no provider mutation or Delete API.
+
+**Release disposition:** this is mocked repository-level code evidence only. AWS role provisioning, independent trust/effective-policy review, real account/region capture, representative snapshot restore, Global Datastore failover/replication acceptance, and serverless/self-managed/copy-destination coverage remain unaccepted. Issue #298 stays OPEN; AS-137 / NFR-PROD-14 stay PARTIAL. Do not infer a whole-cache or whole-tenant deletion proof from a node-based snapshot catalog.
