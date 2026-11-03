@@ -728,10 +728,14 @@ describe('SaasTenantPropagationService external saga', () => {
     });
 
     expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' },
-      run: { status: 'PARTIAL', residualCopies: '2' } });
+      run: { status: 'PARTIAL', residualCopies: '0' } });
     expect(adapterMocks[0]!.erase).not.toHaveBeenCalled();
     expect(adapterMocks[0]!.verify).not.toHaveBeenCalled();
     expect(storedResourceManifests.some((manifest) => manifest.target_id === 'target-OBJECT_STORAGE')).toBe(false);
+    expect(storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE')).toMatchObject({
+      status: 'FAILED', outcome_code: 'BLOCKED', manifest_kind: 'SCOPE_INTENT',
+      failure_code: 'VERIFICATION_MISMATCH', planned_copies: '0', deleted_copies: '0', residual_copies: '0',
+    });
   });
 
   it('persists BLOCKED outcomes and starts no inventory when backup writer-fence acquisition fails', async () => {

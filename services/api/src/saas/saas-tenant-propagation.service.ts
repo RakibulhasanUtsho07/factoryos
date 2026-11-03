@@ -488,6 +488,12 @@ export class SaasTenantPropagationService {
     const preflightFailureOutcomes = new Map<string, 'BLOCKED' | 'RETAINED'>();
     const preflightFailureReasons = new Map<string, string>();
     const preflightByTarget = new Map<string, SaasExternalPropagationPreflight>();
+    const preflightPlansByTarget = new Map<string, {
+      plan: SaasExternalPropagationPlan;
+      manifestId: string | null;
+      latestOutcome: string | null;
+      providerReceiptReference: string | null;
+    }>();
 
     // Install/read back every BACKUP writer fence before any provider inventory begins.
     // Fence failures become durable BLOCKED receipts and halt the complete preparation
@@ -595,29 +601,36 @@ export class SaasTenantPropagationService {
         );
         const planEntry = (this.jsonObject(currentManifest.plans ?? {}) as Record<string, unknown>)[target.targetId];
         let plan: SaasExternalPropagationPlan;
+        let manifestId: string | null = null;
+        let latestOutcome: string | null = null;
+        let providerReceiptReference: string | null = null;
         if (planEntry) {
           const loaded = await this.loadPlanFromManifest({
             tenantId, actorUserId, requestId, runId: prepared.run.run_id,
             sourceExportDigest: prepared.request.export_bundle_digest, target, adapter, planEntry,
           });
           plan = loaded.plan;
-          if (plan.resources.length > 0 && !loaded.latestOutcome) {
+          manifestId = loaded.manifestId;
+          latestOutcome = loaded.latestOutcome;
+          providerReceiptReference = loaded.providerReceiptReference;
+          if (plan.resources.length > 0 && !latestOutcome) {
             throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
           }
-          if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(loaded.latestOutcome ?? '')) {
+          if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(latestOutcome ?? '')) {
             throw new ConflictException('The per-resource manifest has a terminal outcome and cannot be silently re-executed');
           }
           if (plan.resources.length > 0
-            && !['PREPARED', 'DELETE_REQUESTED', 'DELETED', 'FAILED_RETRYABLE'].includes(loaded.latestOutcome ?? '')) {
+            && !['PREPARED', 'DELETE_REQUESTED', 'DELETED', 'FAILED_RETRYABLE'].includes(latestOutcome ?? '')) {
             throw new ConflictException('Per-resource recovery state is not resumable');
           }
-          if (loaded.latestOutcome === 'FAILED_RETRYABLE' && plan.resources.length > 0) {
+          if (latestOutcome === 'FAILED_RETRYABLE' && plan.resources.length > 0) {
             await this.appendResourceEvents({
-              tenantId, actorUserId, manifestId: loaded.manifestId,
+              tenantId, actorUserId, manifestId,
               expectedResourceCount: plan.resources.length, outcomeCode: 'PREPARED',
               providerReceiptReference: null, verificationReference: null,
               verifiedManifestDigest: null, residualCount: '0', failureCode: null, residualReason: null,
             });
+            latestOutcome = 'PREPARED';
           }
         } else {
           plan = await adapter.prepare(context);
@@ -628,7 +641,9 @@ export class SaasTenantPropagationService {
             sourceExportDigest: prepared.request.export_bundle_digest,
             currentManifest,
           });
+          manifestId = persisted.manifestId;
           currentManifest = persisted.externalManifest;
+          latestOutcome = plan.resources.length > 0 ? 'PREPARED' : null;
         }
         this.validatePlan(plan, adapter);
         const preflight = preflightByTarget.get(target.targetId);
@@ -639,6 +654,10 @@ export class SaasTenantPropagationService {
           throw new ConflictException('Prepared external resource plan exceeds or differs from the approved provider preflight contract');
         }
         await adapter.recover({ ...context, plan });
+        preflightPlansByTarget.set(target.targetId, {
+          plan, manifestId: plan.resources.length > 0 ? manifestId : null,
+          latestOutcome, providerReceiptReference,
+        });
         preflightRecoveredTargetIds.add(target.targetId);
       } catch (error) {
         preflightFailureCodes[target.targetId] = this.failureCode(error);
@@ -695,9 +714,9 @@ export class SaasTenantPropagationService {
       const previous = latestReceiptByTarget.get(target.targetId);
       if (previous?.status === 'VERIFIED') continue;
       const adapter = this.adapterFor(target);
-      const planEntry = (currentManifest.plans as Record<string, unknown> | undefined)?.[target.targetId];
-      let plan: SaasExternalPropagationPlan | undefined;
-      let resourceManifestId: string | null = null;
+      const preparedPlan = preflightPlansByTarget.get(target.targetId);
+      let plan: SaasExternalPropagationPlan | undefined = preparedPlan?.plan;
+      let resourceManifestId: string | null = preparedPlan?.manifestId ?? null;
       let resourceEventState: string | null = null;
       let lastProviderReceiptReference: string | null = null;
       let plannedCopies = '0';
@@ -742,6 +761,11 @@ export class SaasTenantPropagationService {
       };
 
       try {
+        if (!preparedPlan || !plan) {
+          throw new ConflictException('Global preparation barrier did not retain a validated target plan');
+        }
+        resourceEventState = preparedPlan.latestOutcome;
+        lastProviderReceiptReference = preparedPlan.providerReceiptReference;
         if (target.storeKind === 'BACKUP') {
           if (!this.backupWriterFenceCoordinator) {
             throw new ServiceUnavailableException('Backup writer-fence coordinator is unavailable; backup mutation is blocked');
@@ -753,50 +777,19 @@ export class SaasTenantPropagationService {
         }
         await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets,
           prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest, context.retentionPolicyVersions ?? {});
-        if (planEntry) {
-          const loaded = await this.loadPlanFromManifest({
-            tenantId, actorUserId, requestId, runId: prepared.run.run_id,
-            sourceExportDigest: prepared.request.export_bundle_digest, target, adapter, planEntry,
-          });
-          plan = loaded.plan;
-          resourceManifestId = loaded.manifestId;
-          resourceEventState = loaded.latestOutcome;
-          lastProviderReceiptReference = loaded.providerReceiptReference;
-          if (plan.resources.length > 0 && !resourceEventState) {
-            throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
-          }
-          if (resourceEventState === 'FAILED_RETRYABLE') {
-            await recordResourceEvent('PREPARED');
-            resourceEventState = 'PREPARED';
-          }
-          if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState ?? '')) {
-            throw new ConflictException('The per-resource manifest has terminal outcomes and cannot be silently re-executed');
-          }
-          if (plan.resources.length > 0
-            && !['PREPARED', 'DELETE_REQUESTED', 'DELETED'].includes(resourceEventState ?? '')) {
-            throw new ConflictException('Per-resource recovery state is not resumable');
-          }
-          if (!preflightRecoveredTargetIds.has(target.targetId)) {
-            await adapter.recover({ ...context, plan });
-          }
-        } else {
-          plan = await adapter.prepare(context);
-          this.validatePlan(plan, adapter);
-          let persisted: { manifestId: string; externalManifest: Record<string, unknown> };
-          try {
-            persisted = await this.persistResourceManifestAndRunPlan({
-              tenantId, actorUserId, requestId, requestVersion: Number(prepared.request.version),
-              runId: prepared.run.run_id, target, plan,
-              sourceExportDigest: prepared.request.export_bundle_digest,
-              currentManifest,
-            });
-          } catch (error) {
-            ledgerWriteFailed = true;
-            throw error;
-          }
-          resourceManifestId = persisted.manifestId;
-          currentManifest = persisted.externalManifest;
-          resourceEventState = plan.resources.length > 0 ? 'PREPARED' : null;
+        if (plan.resources.length > 0 && !resourceEventState) {
+          throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
+        }
+        if (resourceEventState === 'FAILED_RETRYABLE') {
+          await recordResourceEvent('PREPARED');
+          resourceEventState = 'PREPARED';
+        }
+        if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState ?? '')) {
+          throw new ConflictException('The per-resource manifest has terminal outcomes and cannot be silently re-executed');
+        }
+        if (plan.resources.length > 0
+          && !['PREPARED', 'DELETE_REQUESTED', 'DELETED'].includes(resourceEventState ?? '')) {
+          throw new ConflictException('Per-resource recovery state is not resumable');
         }
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
