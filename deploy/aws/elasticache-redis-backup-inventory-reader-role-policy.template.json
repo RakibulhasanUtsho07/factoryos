@@ -8,7 +8,9 @@
         "elasticache:DescribeCacheClusters",
         "elasticache:DescribeReplicationGroups",
         "elasticache:DescribeGlobalReplicationGroups",
-        "elasticache:DescribeSnapshots"
+        "elasticache:DescribeSnapshots",
+        "elasticache:DescribeServerlessCaches",
+        "elasticache:DescribeServerlessCacheSnapshots"
       ],
       "Resource": "*"
     },
@@ -19,7 +21,9 @@
         "elasticache:DescribeCacheClusters",
         "elasticache:DescribeReplicationGroups",
         "elasticache:DescribeGlobalReplicationGroups",
-        "elasticache:DescribeSnapshots"
+        "elasticache:DescribeSnapshots",
+        "elasticache:DescribeServerlessCaches",
+        "elasticache:DescribeServerlessCacheSnapshots"
       ],
       "Resource": "*"
     }

@@ -63,6 +63,37 @@ function snapshot(id: string, createdAt = '2026-11-01T05:30:00.000Z'): string {
     + '</NodeSnapshot></NodeSnapshots></Snapshot>';
 }
 
+function serverlessCache(region: string, createdAt = '2026-10-10T00:00:00.000Z', engine = 'redis'): string {
+  const name = 'serverless-' + region;
+  return '<member><ServerlessCacheName>' + name + '</ServerlessCacheName>'
+    + '<ARN>arn:aws:elasticache:' + region + ':' + account + ':serverlesscache:' + name + '</ARN>'
+    + '<Engine>' + engine + '</Engine><MajorEngineVersion>7</MajorEngineVersion>'
+    + '<FullEngineVersion>7.1.0</FullEngineVersion><Status>available</Status>'
+    + '<SnapshotRetentionLimit>14</SnapshotRetentionLimit><DailySnapshotTime>04:00</DailySnapshotTime>'
+    + '<StorageEncryptionType>sse-kms</StorageEncryptionType>'
+    + (createdAt ? '<CreateTime>' + createdAt + '</CreateTime>' : '')
+    + '</member>';
+}
+
+function serverlessSnapshot(region: string, name = 'serverless-snapshot-' + region, createdAt = '2026-11-01T01:00:00.000Z'): string {
+  const cacheName = 'serverless-' + region;
+  return '<ServerlessCacheSnapshot><ServerlessCacheSnapshotName>' + name + '</ServerlessCacheSnapshotName>'
+    + '<ARN>arn:aws:elasticache:' + region + ':' + account + ':serverlesscachesnapshot:' + name + '</ARN>'
+    + '<SnapshotType>manual</SnapshotType><Status>available</Status>'
+    + (createdAt ? '<CreateTime>' + createdAt + '</CreateTime>' : '')
+    + '<ExpiryTime>2026-12-01T01:00:00.000Z</ExpiryTime><BytesUsedForCache>123456</BytesUsedForCache>'
+    + '<ServerlessCacheConfiguration><ServerlessCacheName>' + cacheName + '</ServerlessCacheName>'
+    + '<Engine>redis</Engine><MajorEngineVersion>7</MajorEngineVersion>'
+    + '</ServerlessCacheConfiguration></ServerlessCacheSnapshot>';
+}
+
+function nextPage(action: string, collection: string, items: string[], nextToken?: string): string {
+  return '<' + action + 'Response><' + action + 'Result><' + collection + '>'
+    + items.join('') + '</' + collection + '>'
+    + (nextToken ? '<NextToken>' + nextToken + '</NextToken>' : '')
+    + '</' + action + 'Result></' + action + 'Response>';
+}
+
 function page(action: string, collection: string, items: string[], marker?: string): string {
   return '<' + action + 'Response><' + action + 'Result><' + collection + '>'
     + items.join('') + '</' + collection + '>'
@@ -137,6 +168,12 @@ function makeInput(
         snapshot('manual.' + region),
       ]));
     }
+    if (action === 'DescribeServerlessCaches') {
+      return new Response(nextPage(action, 'ServerlessCaches', [serverlessCache(region)]));
+    }
+    if (action === 'DescribeServerlessCacheSnapshots') {
+      return new Response(nextPage(action, 'ServerlessCacheSnapshots', [serverlessSnapshot(region)]));
+    }
     return new Response('<ErrorResponse><Error><Code>UnsupportedAction</Code></Error></ErrorResponse>', { status: 400 });
   });
   const input: AwsElastiCacheRedisBackupInventoryInput = {
@@ -172,13 +209,19 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.global_replication_groups[0]?.members).toHaveLength(2);
     expect(result.global_replication_groups[0]?.observed_in_regions).toEqual(['ap-northeast-1', 'ap-southeast-1']);
     expect(result.snapshots).toHaveLength(2);
+    expect(result.serverless_caches).toHaveLength(2);
+    expect(result.serverless_caches[0]?.cache_arn).toContain(':serverlesscache:');
+    expect(result.serverless_snapshots).toHaveLength(2);
+    expect(result.serverless_snapshots[0]?.snapshot_identity_kind).toBe('PROVIDER_SNAPSHOT_ARN');
+    expect(result.serverless_snapshots[0]?.snapshot_identity_reference).toMatch(/^elasticache-serverless-snapshot\.[a-f0-9]{40}$/);
+    expect(result.serverless_catalog_complete).toBe(true);
     expect(result.snapshots[0]?.snapshot_identity_kind).toBe('SNAPSHOT_NAME_AND_CREATE_TIME');
     expect(result.snapshots[0]?.snapshot_identity_reference).toMatch(/^elasticache-snapshot\.[a-f0-9]{40}$/);
-    expect(result.query_receipt_references).toHaveLength(8);
-    expect(result.pages_fetched).toBe(8);
-    expect(result.requests_attempted).toBe(10);
+    expect(result.query_receipt_references).toHaveLength(12);
+    expect(result.pages_fetched).toBe(12);
+    expect(result.requests_attempted).toBe(14);
     expect(result.whole_cache_backup_coverage_complete).toBe(false);
-    expect(result.serverless_cache_and_snapshot_surfaces_enumerated).toBe(false);
+    expect(result.serverless_cache_and_snapshot_surfaces_enumerated).toBe(true);
     expect(result.self_managed_redis_aof_rdb_and_volume_backup_surfaces_enumerated).toBe(false);
     expect(result.provider_mutation_performed).toBe(false);
     expect(result.delete_api_available).toBe(false);
@@ -201,7 +244,7 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.status).toBe('PARTIAL');
     expect(result.snapshots).toHaveLength(1);
     expect(result.blockers).toContain(account + ':ap-northeast-1:GLOBAL_DATASTORE_MEMBER_REGION_NOT_SCANNED');
-    expect(result.pages_fetched).toBe(5);
+    expect(result.pages_fetched).toBe(7);
     const snapshotRequests = requests.filter((request) => request.action === 'DescribeSnapshots');
     expect(snapshotRequests).toHaveLength(2);
     expect(snapshotRequests[0]?.body.get('Marker')).toBeNull();
@@ -267,6 +310,88 @@ describe('AWS ElastiCache Redis/Valkey backup inventory', () => {
     expect(result.status).toBe('PARTIAL');
     expect(result.snapshots[0]?.create_time).toBeNull();
     expect(result.blockers).toContain(account + ':ap-southeast-1:SNAPSHOT_GENERATION_TIMESTAMP_MISSING:legacy-snapshot');
+    expect(result.deletion_authorized).toBe(false);
+  });
+
+
+  test('exhausts empty serverless snapshot pages using NextToken rather than Marker', async () => {
+    const pages: PageMap = {
+      'ap-southeast-1:DescribeServerlessCacheSnapshots': [
+        nextPage('DescribeServerlessCacheSnapshots', 'ServerlessCacheSnapshots', [], 'serverless-next-token'),
+        nextPage('DescribeServerlessCacheSnapshots', 'ServerlessCacheSnapshots', [
+          serverlessSnapshot('ap-southeast-1', 'snapshot-after-empty-page'),
+        ]),
+      ],
+    };
+    const { input, requests } = makeInput({ regions: ['ap-southeast-1'], pages });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.serverless_snapshots).toHaveLength(1);
+    expect(result.serverless_snapshots[0]?.snapshot_name).toBe('snapshot-after-empty-page');
+    expect(result.serverless_catalog_complete).toBe(true);
+    const snapshotRequests = requests.filter((request) => request.action === 'DescribeServerlessCacheSnapshots');
+    expect(snapshotRequests).toHaveLength(2);
+    expect(snapshotRequests[0]?.body.get('NextToken')).toBeNull();
+    expect(snapshotRequests[1]?.body.get('NextToken')).toBe('serverless-next-token');
+    expect(snapshotRequests.every((request) => request.body.get('MaxResults') === '50')).toBe(true);
+  });
+
+  test('keeps node-based completeness separate when the serverless snapshot API is denied', async () => {
+    const { input } = makeInput({ deniedAction: 'DescribeServerlessCacheSnapshots' });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.node_based_catalog_complete).toBe(true);
+    expect(result.serverless_catalog_complete).toBe(false);
+    expect(result.serverless_cache_and_snapshot_surfaces_enumerated).toBe(false);
+    expect(result.blockers).toContain(account + ':ap-southeast-1:SERVERLESS_DESCRIBESERVERLESSCACHESNAPSHOTS_INVENTORY_INCOMPLETE');
+    expect(result.deletion_authorized).toBe(false);
+  });
+
+  test('rejects repeated serverless NextToken values and fails closed', async () => {
+    const pages: PageMap = {
+      'ap-southeast-1:DescribeServerlessCaches': [
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', [serverlessCache('ap-southeast-1')], 'repeat-token'),
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', [], 'repeat-token'),
+      ],
+    };
+    const { input } = makeInput({ regions: ['ap-southeast-1'], pages });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.status).toBe('PARTIAL');
+    expect(result.serverless_catalog_complete).toBe(false);
+    expect(result.blockers).toContain(account + ':ap-southeast-1:SERVERLESS_DESCRIBESERVERLESSCACHES_INVENTORY_INCOMPLETE');
+  });
+
+
+  test('keeps a retained Serverless snapshot even when its source cache is absent from the current cache listing', async () => {
+    const pages: PageMap = {
+      'ap-southeast-1:DescribeServerlessCaches': [
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', []),
+      ],
+      'ap-northeast-1:DescribeServerlessCaches': [
+        nextPage('DescribeServerlessCaches', 'ServerlessCaches', []),
+      ],
+    };
+    const { input } = makeInput({ pages });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.serverless_caches).toEqual([]);
+    expect(result.serverless_snapshots).toHaveLength(2);
+    expect(result.serverless_catalog_complete).toBe(true);
+    expect(result.status).toBe('COMPLETE');
+  });
+
+  test('preserves serverless snapshot ARN but marks missing creation time as incomplete', async () => {
+    const pages: PageMap = {
+      'ap-southeast-1:DescribeServerlessCacheSnapshots': [
+        nextPage('DescribeServerlessCacheSnapshots', 'ServerlessCacheSnapshots', [
+          serverlessSnapshot('ap-southeast-1', 'snapshot-without-create-time', ''),
+        ]),
+      ],
+    };
+    const { input } = makeInput({ regions: ['ap-southeast-1'], pages });
+    const result = await captureAwsElastiCacheRedisBackupInventory(input);
+    expect(result.serverless_snapshots[0]?.snapshot_arn).toContain(':serverlesscachesnapshot:');
+    expect(result.serverless_snapshots[0]?.create_time).toBeNull();
+    expect(result.serverless_catalog_complete).toBe(false);
+    expect(result.blockers).toContain(account + ':ap-southeast-1:SERVERLESS_SNAPSHOT_CREATE_TIME_MISSING:snapshot-without-create-time');
     expect(result.deletion_authorized).toBe(false);
   });
 
