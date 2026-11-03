@@ -346,7 +346,10 @@ export class SaasTenantPostgresDatasetSource {
    * implicitly exportable merely because the table is already allowlisted.
    */
   private async assertExportColumnContracts(
+    client: Awaited<ReturnType<DatabaseService['getClient']>>,
+    category: SaasTransferDatasetCategory,
     tables: readonly string[],
+  ): Promise<void> {
     const result = await client.query<{
       table_name: string;
       contract_version: number | null;
@@ -366,6 +369,7 @@ export class SaasTenantPostgresDatasetSource {
         INNER JOIN requested ON requested.relation_name = contract.relation_name
         WHERE contract.schema_name = 'public'
         ORDER BY contract.schema_name, contract.relation_name, contract.contract_version DESC
+      ),
       live_columns AS (
         SELECT
           relation.relname AS relation_name,
@@ -405,7 +409,9 @@ export class SaasTenantPostgresDatasetSource {
         WHERE relation_schema.nspname = 'public'
           AND relation.relkind IN ('r', 'p')
         GROUP BY relation.relname
+      ),
       live_manifests AS (
+        SELECT
           requested.relation_name,
           latest_contracts.data_category,
           CASE
@@ -413,6 +419,7 @@ export class SaasTenantPostgresDatasetSource {
             ELSE jsonb_build_object(
               'category', latest_contracts.data_category,
               'columns', live_columns.columns
+            )
           END AS column_manifest
         FROM requested
         LEFT JOIN latest_contracts
@@ -438,14 +445,21 @@ export class SaasTenantPostgresDatasetSource {
       ORDER BY requested.relation_name`,
       [[...tables], category],
     );
+
     if (
       result.rows.length !== tables.length ||
       result.rows.some((row) =>
         row.matches !== true ||
         !Number.isInteger(Number(row.contract_version)) ||
         Number(row.contract_version) < 1
+      )
     ) {
+      throw new ServiceUnavailableException(
         'Tenant export column contract is missing or stale for this dataset; export is blocked until schema changes are reviewed',
+      );
+    }
+  }
+
   private async *readDatasetOnClient(
     client: Awaited<ReturnType<DatabaseService['getClient']>>,
     tenantId: string,
@@ -469,9 +483,8 @@ export class SaasTenantPostgresDatasetSource {
     }
 
     await this.assertCategoryCompleteOnClient(client, category, tables);
-
-    // Validate every table in the category before yielding the first row.
     await this.assertExportColumnContracts(client, category, tables);
+
     for (const table of tables) {
       if (table === 'traceability_settings') {
         let afterFactoryId: string | null = null;

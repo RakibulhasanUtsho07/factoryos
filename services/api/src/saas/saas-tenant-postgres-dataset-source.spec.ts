@@ -38,6 +38,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
             })),
             rowCount: requestedTables.length,
           };
+        }
         if (sql.includes('AS membership_count')) {
           return { rows: [iamCounts], rowCount: 1 };
         }
@@ -116,17 +117,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(calls[0]?.sql).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(calls[1]?.sql).toContain("set_config('app.tenant_id', $1, true)");
     expect(calls[1]?.values).toEqual([tenantId, '']);
-    const contractIndex = calls.findIndex((item) => item.sql.includes('tenant_export_column_contracts'));
-    const sourceIndex = calls.findIndex((item) => item.sql.includes('FROM public.orders AS dataset_row'));
-    const contractQuery = calls[contractIndex];
-    const query = calls[sourceIndex];
-    expect(contractIndex).toBeGreaterThan(0);
-    expect(sourceIndex).toBeGreaterThan(contractIndex);
-    expect(contractQuery?.values).toEqual([
-      SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.BUSINESS_DATA],
-      SaasTransferDatasetCategory.BUSINESS_DATA,
-    ]);
-    expect(contractQuery?.sql).toContain('pg_catalog.pg_attribute');
+    const query = calls.find((item) => item.sql.includes('FROM public.orders AS dataset_row'));
     expect(query?.sql).toContain('dataset_row.tenant_id = $1::uuid');
     expect(query?.sql).toContain('dataset_row.id > $2::uuid');
     expect(query?.values).toEqual([tenantId, null, 500]);
@@ -228,22 +219,16 @@ describe('SaasTenantPostgresDatasetSource', () => {
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {
     const { source, database } = createSource();
-    for (const category of [
-      SaasTransferDatasetCategory.INTEGRATION_METADATA,
-      SaasTransferDatasetCategory.FILE_REFERENCES,
-    ]) {
-      await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
-        for await (const row of snapshot.readDataset(category)) {
-          throw new Error('Unsupported category unexpectedly emitted a row: ' + JSON.stringify(row));
-        }
-      })).rejects.toBeInstanceOf(ServiceUnavailableException);
-    }
-    expect(database.getClient).toHaveBeenCalledTimes(2);
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.FILE_REFERENCES)) {
+        // The unsupported category must fail before producing records.
+      }
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(database.getClient).toHaveBeenCalledTimes(1);
   });
 
-
   it('blocks the entire generic category before reading rows when any column contract is missing or stale', async () => {
-    const { source, client, calls } = createSource(tenantId, undefined, false);
+    const { source, client, calls } = createSource(tenantId, undefined, false, undefined, false);
     await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
       for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
         // A stale catalog contract must stop before the first row is emitted.

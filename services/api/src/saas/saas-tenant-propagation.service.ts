@@ -486,6 +486,9 @@ export class SaasTenantPropagationService {
     // Fence failures become durable BLOCKED receipts and halt the complete preparation
     // phase; they do not throw away the RUNNING run or leave an unrecorded failure.
     const backupTargets = prepared.targets.filter((target) => target.storeKind === 'BACKUP');
+    const backupFenceCategories = [...new Set(backupTargets.flatMap((target) =>
+      target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
+    ))].sort();
     for (const target of backupTargets) {
       const targetCategories = [...new Set(target.categories.filter((category) =>
         this.parseCategories(prepared.request.categories).includes(category)))].sort();
@@ -963,7 +966,6 @@ export class SaasTenantPropagationService {
     };
     const manifestDigest = this.hash(wholeManifest);
     const status = allVerified ? 'VERIFIED' : 'PARTIAL';
-    const failureCode = allVerified ? null : residual > 0n ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_INCOMPLETE';
 
     const finalized = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
