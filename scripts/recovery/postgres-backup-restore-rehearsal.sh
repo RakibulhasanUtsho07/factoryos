@@ -295,7 +295,7 @@ fi
 for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
 if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then need_command node; fi
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
-partial_file="${backup_file}.partial.$$"
+if [[ "$backup_source_mode" == "LIVE_SOURCE_DUMP" ]]; then partial_file="${backup_file}.partial.$"; else partial_file=""; fi
 pg_dump_version="$(pg_dump --version | head -n 1)"
 pg_restore_version="$(pg_restore --version | head -n 1)"
 gpg_version="$(gpg --version | head -n 1)"
