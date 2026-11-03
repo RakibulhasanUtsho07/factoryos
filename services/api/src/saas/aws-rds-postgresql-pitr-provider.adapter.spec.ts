@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 import type { AwsRdsDatabasePrincipalPgClientFactory } from './aws-rds-postgresql-database-principal-inventory';
 import {
   AwsRdsPostgresqlPitrProviderAdapter,
+  assertAwsRdsPitrScopeBudget,
   createAwsRdsPitrRetentionDryRunPlan,
   exchangeAwsRdsPitrWebIdentityToken,
   AWS_RDS_POSTGRESQL_PITR_INVENTORY_SCHEMA,
@@ -16,6 +17,16 @@ const sourceCredentials = {
   access_key_id: 'AKIAABCDEFGHIJKLMNOP',
   secret_access_key: 'source-secret-key-material-0123456789',
 };
+
+test('enforces the bounded account/region scope inventory before provider fan-out', () => {
+  expect(() => assertAwsRdsPitrScopeBudget(5000)).not.toThrow();
+  expect(() => assertAwsRdsPitrScopeBudget(5001))
+    .toThrow(/outside the supported scope limit/i);
+  expect(() => assertAwsRdsPitrScopeBudget(-1))
+    .toThrow(/outside the supported scope limit/i);
+  expect(() => assertAwsRdsPitrScopeBudget(1.5))
+    .toThrow(/outside the supported scope limit/i);
+});
 
 function xml(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'text/xml' } });
