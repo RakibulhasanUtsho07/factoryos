@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { chmod, open, stat } from 'node:fs/promises';
+import { chmod, lstat, open, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -32,24 +32,34 @@ function requireHttpsIssuer(value) {
   }
   return value;
 }
-async function writePrivateTokenFile(path, value) {
+export async function writePrivateTokenFile(path, value) {
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    throw new Error('SCIM token output file must use an absolute path');
+  }
   const absolute = resolve(path);
-  if (!path.startsWith('/')) throw new Error('SCIM token output file must use an absolute path');
-  const parent = await stat(dirname(absolute));
-  if (!parent.isDirectory() || (typeof process.getuid === 'function' && parent.uid !== process.getuid()) ||
+  const parent = await lstat(dirname(absolute));
+  if (parent.isSymbolicLink() || !parent.isDirectory() ||
+      (typeof process.getuid === 'function' && parent.uid !== process.getuid()) ||
       (parent.mode & 0o077) !== 0) {
-    throw new Error('SCIM token output directory must be runner-owned and mode 0700 or stricter');
+    throw new Error('SCIM token output directory must be a real runner-owned directory with mode 0700 or stricter');
   }
   let handle;
+  let created = false;
   try {
     handle = await open(absolute, 'wx', 0o600);
+    created = true;
     await handle.writeFile(JSON.stringify(value, null, 2) + '\n', 'utf8');
     await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await chmod(absolute, 0o600);
   } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (created) await unlink(absolute).catch(() => undefined);
     if (error?.code === 'EEXIST') throw new Error('SCIM token output file already exists; refusing to overwrite');
     throw error;
-  } finally { await handle?.close(); }
-  await chmod(absolute, 0o600);
+  }
+  return absolute;
 }
 async function main() {
   const tenantId = required('SCIM_PROVISIONING_TENANT_ID');
@@ -75,6 +85,8 @@ async function main() {
   const digest = hashScimToken(token);
   const client = new Client({ connectionString });
   let credential;
+  let credentialFileCreated = false;
+  let commitAttempted = false;
   try {
     await client.connect();
     await client.query('BEGIN');
@@ -99,21 +111,31 @@ async function main() {
       [tenantId, issuer, digest, expiresAt.toISOString()],
     );
     credential = inserted.rows[0];
+    await writePrivateTokenFile(outputPath, {
+      schema: 'factoryos.scim-provisioning-credential/v1',
+      credential_id: credential.id,
+      tenant_id: tenantId,
+      issuer,
+      expires_at_utc: new Date(credential.expires_at).toISOString(),
+      bearer_token: token,
+    });
+    credentialFileCreated = true;
+    // Persist the protected token before committing its hash so a filesystem
+    // failure cannot leave an active credential whose raw value is lost.
+    commitAttempted = true;
     await client.query('COMMIT');
   } catch (error) {
-    try { await client.query('ROLLBACK'); } catch {}
+    if (!commitAttempted) {
+      try { await client.query('ROLLBACK'); } catch {}
+      if (credentialFileCreated) await unlink(resolve(outputPath)).catch(() => undefined);
+    }
+    if (commitAttempted) {
+      throw new Error('SCIM credential commit outcome is indeterminate; token file retained for database reconciliation');
+    }
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'SCIM_CREDENTIAL_PROVISIONING_FAILED';
     throw new Error(code);
   } finally { await client.end().catch(() => undefined); }
 
-  await writePrivateTokenFile(outputPath, {
-    schema: 'factoryos.scim-provisioning-credential/v1',
-    credential_id: credential.id,
-    tenant_id: tenantId,
-    issuer,
-    expires_at_utc: new Date(credential.expires_at).toISOString(),
-    bearer_token: token,
-  });
   process.stdout.write(JSON.stringify({
     credential_id: credential.id,
     tenant_id: tenantId,
