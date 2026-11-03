@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { ConflictException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
-  POSTGRES_FINANCE_RETENTION_ADAPTER_KEY,
+  POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY,
   POSTGRES_FINANCE_RETENTION_MAX_ROWS,
   POSTGRES_FINANCE_RETENTION_RELATIONS,
   PostgresFinanceRetentionInventoryAdapter,
@@ -18,7 +18,7 @@ function context(mode: 'DRY_RUN' | 'EXECUTE' = 'DRY_RUN') {
     retentionDays: 365,
     cutoffAt: '2025-10-20T10:00:00.000Z',
     legalBasis: 'Approved finance retention basis',
-    adapterKey: POSTGRES_FINANCE_RETENTION_ADAPTER_KEY,
+    adapterKey: POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY,
     idempotencyKey: 'finance-retention-test-v1',
     reason: 'Exercise non-destructive finance retention inventory',
     mode,
@@ -69,7 +69,17 @@ describe('PostgresFinanceRetentionInventoryAdapter', () => {
     await expect(adapter.isConfigured(tenant)).resolves.toBe(false);
     process.env.FACTORYOS_FINANCE_RETENTION_MODE = 'INVENTORY_ONLY';
     await expect(adapter.isConfigured(tenant)).resolves.toBe(true);
-    expect(adapter.adapterKey).toBe(POSTGRES_FINANCE_RETENTION_ADAPTER_KEY);
+    expect(adapter.adapterKey).toBe(POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY);
+    expect(POSTGRES_FINANCE_RETENTION_RELATIONS).toHaveLength(17);
+    expect(POSTGRES_FINANCE_RETENTION_RELATIONS.map((relation) => relation.table)).toEqual(expect.arrayContaining([
+      'saas_usage_events', 'saas_usage_adjustments', 'saas_usage_reconciliations',
+      'saas_usage_rate_cards', 'saas_usage_budgets', 'saas_budget_evaluations',
+      'saas_budget_alerts', 'saas_budget_alert_acknowledgements', 'saas_workload_control_events',
+      'saas_provider_cost_events', 'saas_provider_cost_reconciliations',
+      'saas_billing_provider_accounts', 'saas_billing_provider_account_events',
+      'saas_billing_close_runs', 'saas_billing_close_events',
+      'saas_billing_provider_webhook_events', 'saas_billing_reconciliation_results',
+    ]));
   });
 
   it('requires forced tenant RLS, an explicit cutoff column and an immutable DELETE guard', async () => {
