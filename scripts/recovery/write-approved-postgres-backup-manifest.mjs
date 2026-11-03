@@ -38,7 +38,7 @@ function parseArguments(argv) {
 }
 
 function strictUtcTimestamp(value) {
-  const match = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,9}))?Z$/.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
   if (!match) return false;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(value);
@@ -69,18 +69,18 @@ if (artifactPath === outputPath) fail('manifest output cannot overwrite the back
 if (typeof args['source-database-identity'] !== 'string'
   || args['source-database-identity'].trim().length < 5
   || args['source-database-identity'].length > 512
-  || /[\\r\\n\\0]/.test(args['source-database-identity'])) {
+  || /[\r\n\0]/.test(args['source-database-identity'])) {
   fail('--source-database-identity must be a bounded single-line source DB identity');
 }
 if (!strictUtcTimestamp(args['backup-created-at-utc'])) {
   fail('--backup-created-at-utc must be a real UTC RFC3339 timestamp ending in Z');
 }
-if (!/^(0|[1-9]\\d*)$/.test(args['backup-duration-seconds'])
+if (!/^(0|[1-9]\d*)$/.test(args['backup-duration-seconds'])
   || !Number.isSafeInteger(Number(args['backup-duration-seconds']))) {
   fail('--backup-duration-seconds must be a non-negative safe integer');
 }
 for (const name of ['pg-dump-version', 'source-server-version']) {
-  if (args[name].trim().length > 256 || /[\\r\\n\\0]/.test(args[name])) {
+  if (args[name].trim().length > 256 || /[\r\n\0]/.test(args[name])) {
     fail('--' + name + ' must be a bounded single-line version string');
   }
 }
@@ -118,7 +118,7 @@ const manifest = {
   recipientFingerprint,
 };
 
-const serialized = JSON.stringify(manifest, null, 2) + '\\n';
+const serialized = JSON.stringify(manifest, null, 2) + '\n';
 const temporaryOutput = outputPath + '.partial-' + process.pid;
 await writeFile(temporaryOutput, serialized, { flag: 'wx', mode: 0o600 })
   .catch(() => fail('could not create temporary signed-backup manifest'));
