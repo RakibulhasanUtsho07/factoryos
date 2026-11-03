@@ -607,16 +607,17 @@ jobs:
           postgres_client_tmp="$RUNNER_TEMP/postgresql-16-client-tmp"
           mkdir -p "$postgres_client_bin" "$postgres_client_tmp"
           for postgres_client in pg_dump pg_restore; do
-            cat > "$postgres_client_bin/$postgres_client" <<WRAPPER
+            cat > "$postgres_client_bin/$postgres_client" <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
           : "${PGSERVICEFILE:?PGSERVICEFILE must identify the private recovery service file}"
           : "${RUNNER_TEMP:?RUNNER_TEMP is required for the mounted restore workspace}"
           [[ -f "$PGSERVICEFILE" ]]
-          exec docker run --rm --network host \\
-            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \\
-            --env "PGSERVICEFILE=$PGSERVICEFILE" \\
-            postgres:16 $postgres_client "$@"
+          client_name="${0##*/}"
+          exec docker run --rm --network host \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
+            --env "PGSERVICEFILE=$PGSERVICEFILE" \
+            postgres:16 "$client_name" "$@"
           WRAPPER
             chmod 700 "$postgres_client_bin/$postgres_client"
           done
