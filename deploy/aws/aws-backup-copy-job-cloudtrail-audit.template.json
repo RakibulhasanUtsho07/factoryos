@@ -1,0 +1,218 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Account-wide multi-Region AWS Backup CloudTrail audit trail with log-file validation and S3 Object Lock Compliance retention. Deploy once per account in its chosen trail home Region.",
+  "Parameters": {
+    "TrailName": {
+      "Type": "String",
+      "Default": "factoryos-aws-backup-copy-audit",
+      "AllowedPattern": "^[A-Za-z0-9._-]{3,128}$",
+      "Description": "Unique CloudTrail trail name in this account."
+    },
+    "CloudTrailKmsKeyArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$",
+      "Description": "Pre-provisioned KMS key ARN in this trail's home Region. Its key policy must permit CloudTrail and S3 use."
+    },
+    "ApprovedRetentionDays": {
+      "Type": "Number",
+      "MinValue": 1,
+      "MaxValue": 36500,
+      "Description": "Mandatory, owner-approved S3 Object Lock Compliance retention period for every new audit log and digest object version. No default is supplied."
+    }
+  },
+  "Resources": {
+    "AuditBucket": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "ObjectLockEnabled": true,
+        "ObjectLockConfiguration": {
+          "ObjectLockEnabled": "Enabled",
+          "Rule": {
+            "DefaultRetention": {
+              "Mode": "COMPLIANCE",
+              "Days": {
+                "Ref": "ApprovedRetentionDays"
+              }
+            }
+          }
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "IgnorePublicAcls": true,
+          "BlockPublicPolicy": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "aws:kms",
+                "KMSMasterKeyID": {
+                  "Ref": "CloudTrailKmsKeyArn"
+                }
+              },
+              "BucketKeyEnabled": true
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "factoryos:purpose",
+            "Value": "aws-backup-copy-job-audit"
+          },
+          {
+            "Key": "factoryos:data-classification",
+            "Value": "security-evidence"
+          }
+        ]
+      }
+    },
+    "AuditBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "AuditBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowCloudTrailToReadBucketAclForThisTrail",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+              },
+              "Action": "s3:GetBucketAcl",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "AuditBucket",
+                  "Arn"
+                ]
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${TrailName}"
+                  }
+                }
+              }
+            },
+            {
+              "Sid": "AllowCloudTrailToWriteOnlyThisAccountsTrailObjects",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+              },
+              "Action": "s3:PutObject",
+              "Resource": {
+                "Fn::Sub": "${AuditBucket.Arn}/factoryos/aws-backup-copy/AWSLogs/${AWS::AccountId}/*"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "s3:x-amz-acl": "bucket-owner-full-control",
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${TrailName}"
+                  }
+                }
+              }
+            },
+            {
+              "Sid": "DenyInsecureTransport",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "AuditBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${AuditBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "AwsBackupCloudTrail": {
+      "Type": "AWS::CloudTrail::Trail",
+      "DependsOn": "AuditBucketPolicy",
+      "Properties": {
+        "TrailName": {
+          "Ref": "TrailName"
+        },
+        "S3BucketName": {
+          "Ref": "AuditBucket"
+        },
+        "S3KeyPrefix": "factoryos/aws-backup-copy",
+        "KMSKeyId": {
+          "Ref": "CloudTrailKmsKeyArn"
+        },
+        "IsLogging": true,
+        "IsMultiRegionTrail": true,
+        "IncludeGlobalServiceEvents": true,
+        "EnableLogFileValidation": true,
+        "EventSelectors": [
+          {
+            "IncludeManagementEvents": true,
+            "ReadWriteType": "All"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "factoryos:purpose",
+            "Value": "aws-backup-copy-job-audit"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "TrailArn": {
+      "Value": {
+        "Fn::Sub": "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${TrailName}"
+      }
+    },
+    "AuditBucketName": {
+      "Value": {
+        "Ref": "AuditBucket"
+      }
+    },
+    "AuditBucketArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "AuditBucket",
+          "Arn"
+        ]
+      }
+    },
+    "ApprovedRetentionDays": {
+      "Value": {
+        "Ref": "ApprovedRetentionDays"
+      }
+    },
+    "LogFileValidationEnabled": {
+      "Value": true
+    }
+  }
+}

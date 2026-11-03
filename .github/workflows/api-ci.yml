@@ -120,6 +120,12 @@ jobs:
           node --check scripts/event-bus/provision-kafka-topics.mjs
           node --check scripts/event-bus/staging-fault-injection.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+      - name: Validate AWS Backup copy-job event-retention templates
+        run: |
+          python -m pip install --disable-pip-version-check cfn-lint
+          cfn-lint -t deploy/aws/aws-backup-copy-job-eventbridge-archive.template.json deploy/aws/aws-backup-copy-job-cloudtrail-audit.template.json
+          node --check scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs
+          node --test scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs
       - name: Validate protected WMS provider smoke workflow YAML
         run: ruby -e "require 'yaml'; YAML.parse_file('.github/workflows/wms-provider-live-smoke.yml')"
       - name: Test WMS provider certification smoke harness
