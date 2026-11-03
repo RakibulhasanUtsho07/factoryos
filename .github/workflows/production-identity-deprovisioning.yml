@@ -147,34 +147,30 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/as133-evidence/$PHASE_INPUT.json"
-          common_env=(
-            "OIDC_STAGING_BEARER_TOKEN=$OIDC_STAGING_BEARER_TOKEN"
-            "FACTORYOS_STAGING_API_ORIGIN=$STAGING_API_ORIGIN_INPUT"
-            "CANDIDATE_SHA=$CANDIDATE_SHA_INPUT"
-            "TARGET_TENANT_ID=$TARGET_TENANT_ID_INPUT"
-            "SIBLING_TENANT_ID=$SIBLING_TENANT_ID_INPUT"
-            "OIDC_ISSUER=$OIDC_ISSUER_INPUT"
-            "OIDC_AUDIENCE=$OIDC_AUDIENCE_INPUT"
-            "OIDC_JWKS_URI=$OIDC_JWKS_URI_INPUT"
-            "OIDC_MFA_AMR_VALUES=$OIDC_MFA_AMR_VALUES_INPUT"
-            "OIDC_MFA_ACR_VALUES=$OIDC_MFA_ACR_VALUES_INPUT"
-            "PHASE=$PHASE_INPUT"
-            "EVIDENCE_OUTPUT=$evidence"
-          )
+          export FACTORYOS_STAGING_API_ORIGIN="$STAGING_API_ORIGIN_INPUT"
+          export CANDIDATE_SHA="$CANDIDATE_SHA_INPUT"
+          export TARGET_TENANT_ID="$TARGET_TENANT_ID_INPUT"
+          export SIBLING_TENANT_ID="$SIBLING_TENANT_ID_INPUT"
+          export OIDC_ISSUER="$OIDC_ISSUER_INPUT"
+          export OIDC_AUDIENCE="$OIDC_AUDIENCE_INPUT"
+          export OIDC_JWKS_URI="$OIDC_JWKS_URI_INPUT"
+          export OIDC_MFA_AMR_VALUES="$OIDC_MFA_AMR_VALUES_INPUT"
+          export OIDC_MFA_ACR_VALUES="$OIDC_MFA_ACR_VALUES_INPUT"
+          export PHASE="$PHASE_INPUT"
+          export EVIDENCE_OUTPUT="$evidence"
           if [[ "$PHASE_INPUT" == "before" ]]; then
-            env "${common_env[@]}" node scripts/security/verify-oidc-deprovisioning.mjs
+            node scripts/security/verify-oidc-deprovisioning.mjs
             echo "baseline_run_id=$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"
           else
             baseline="$RUNNER_TEMP/as133-evidence/baseline/before.json"
             test -s "$baseline"
             chmod 600 "$baseline"
             chmod 700 "$(dirname "$baseline")"
-            env "${common_env[@]}" \
-              BASELINE_EVIDENCE_PATH="$baseline" \
-              SCIM_DEPROVISION_EVENT_REFERENCE="$EVENT_REFERENCE_INPUT" \
-              SCIM_DEPROVISIONED_AT_UTC="$DEPROVISIONED_AT_INPUT" \
-              SCIM_MAX_PROPAGATION_SECONDS="$MAX_PROPAGATION_INPUT" \
-              node scripts/security/verify-oidc-deprovisioning.mjs
+            export BASELINE_EVIDENCE_PATH="$baseline"
+            export SCIM_DEPROVISION_EVENT_REFERENCE="$EVENT_REFERENCE_INPUT"
+            export SCIM_DEPROVISIONED_AT_UTC="$DEPROVISIONED_AT_INPUT"
+            export SCIM_MAX_PROPAGATION_SECONDS="$MAX_PROPAGATION_INPUT"
+            node scripts/security/verify-oidc-deprovisioning.mjs
           fi
           echo "evidence_sha256=$(sha256sum "$evidence" | awk '{print $1}')" >> "$GITHUB_STEP_SUMMARY"
 
