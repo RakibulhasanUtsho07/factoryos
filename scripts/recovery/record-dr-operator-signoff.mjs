@@ -105,6 +105,7 @@ if (args.decision === 'PASS') {
   const sourceWatermark = utcEpochSeconds(evidence.timestamps?.sourceWatermarkUtc);
   const restoredWatermark = utcEpochSeconds(evidence.timestamps?.restoredWatermarkUtc);
   const eventAt = utcEpochSeconds(evidence.timestamps?.simulatedIncidentAtUtc);
+  const approvedBackupCreatedAt = utcEpochSeconds(evidence.backup?.approvedBackupCreatedAtUtc);
   const erasureLedgerWatermark = utcEpochSeconds(evidence.verification?.erasureReplayLedgerWatermarkUtc);
   const erasureLedgerWatermarkMs = Date.parse(evidence.verification?.erasureReplayLedgerWatermarkUtc ?? '');
   const eventAtMs = Date.parse(evidence.timestamps?.simulatedIncidentAtUtc ?? '');
@@ -131,6 +132,16 @@ if (args.decision === 'PASS') {
     ['RPO matches event cutoff and restored watermark', eventAt !== null && restoredWatermark !== null && restoredWatermark <= eventAt && evidence.measured?.observedRpoSeconds === eventAt - restoredWatermark],
     ['non-negative measured RTO', Number.isSafeInteger(evidence.measured?.observedRtoSeconds) && evidence.measured.observedRtoSeconds >= 0],
     ['encrypted backup', evidence.backup?.encryption === 'ENCRYPTED_GPG'],
+    ['approved backup artifact source', evidence.backup?.sourceMode === 'APPROVED_ARTIFACT'],
+    ['approved backup manifest path', typeof evidence.backup?.approvedManifestPath === 'string' && evidence.backup.approvedManifestPath.startsWith('/')],
+    ['approved backup manifest digest', /^[a-f0-9]{64}$/.test(evidence.backup?.approvedManifestSha256 ?? '')],
+    ['approved backup detached signature path', typeof evidence.backup?.approvedSignaturePath === 'string' && evidence.backup.approvedSignaturePath.startsWith('/')],
+    ['approved backup detached signature digest', /^[a-f0-9]{64}$/.test(evidence.backup?.approvedSignatureSha256 ?? '')],
+    ['approved backup signature from pinned signer', evidence.backup?.signatureVerification === 'VALID_PINNED_SIGNER' && /^[A-F0-9]{40}([A-F0-9]{24})?$/.test(evidence.backup?.approvedSignerFingerprint ?? '')],
+    ['approved backup source identity', evidence.backup?.approvedBackupSourceDatabaseIdentity === evidence.databases?.sourceIdentity],
+    ['approved backup creation time precedes incident', approvedBackupCreatedAt !== null && eventAt !== null && approvedBackupCreatedAt <= eventAt],
+    ['approved backup encryption recipient fingerprint', /^[A-F0-9]{40}([A-F0-9]{24})?$/.test(evidence.backup?.approvedBackupRecipientFingerprint ?? '')],
+    ['approved backup source PostgreSQL version', typeof evidence.backup?.approvedBackupSourceServerVersion === 'string' && evidence.backup.approvedBackupSourceServerVersion.trim().length > 0],
     ['checksum', evidence.backup?.checksumVerified === true && /^[a-f0-9]{64}$/.test(evidence.backup?.sha256 ?? '')],
     ['archive readability', evidence.backup?.archiveReadability === 'READABLE'],
     ['restore', evidence.verification?.restoreStatus === 'PASS'],
