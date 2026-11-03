@@ -599,6 +599,29 @@ jobs:
           connect_timeout=5
           PGSERVICE
           chmod 600 "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
+
+          # Keep dump/restore client majors aligned with the postgres:16 service image.
+          # Newer hosted-runner pg_restore versions can emit SET transaction_timeout,
+          # which PostgreSQL 16 does not recognize during restore.
+          postgres_client_bin="$RUNNER_TEMP/postgresql-16-client-bin"
+          postgres_client_tmp="$RUNNER_TEMP/postgresql-16-client-tmp"
+          mkdir -p "$postgres_client_bin" "$postgres_client_tmp"
+          for postgres_client in pg_dump pg_restore; do
+            cat > "$postgres_client_bin/$postgres_client" <<WRAPPER
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${PGSERVICEFILE:?PGSERVICEFILE must identify the private recovery service file}"
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required for the mounted restore workspace}"
+          [[ -f "$PGSERVICEFILE" ]]
+          exec docker run --rm --network host \\
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \\
+            --env "PGSERVICEFILE=$PGSERVICEFILE" \\
+            postgres:16 $postgres_client "$@"
+          WRAPPER
+            chmod 700 "$postgres_client_bin/$postgres_client"
+          done
+          export PATH="$postgres_client_bin:$PATH"
+          export TMPDIR="$postgres_client_tmp"
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE factoryos_recovery_restore_test_ci'
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
