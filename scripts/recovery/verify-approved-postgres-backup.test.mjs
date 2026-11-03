@@ -37,6 +37,7 @@ function fixture(overrides = {}) {
     artifactSha256: createHash('sha256').update(artifactBytes).digest('hex'),
     sourceDatabaseIdentity: sourceIdentity,
     backupCreatedAtUtc: '2026-10-20T09:58:00Z',
+    backupDurationSeconds: 47,
     backupTool: 'pg_dump',
     pgDumpVersion: 'pg_dump (PostgreSQL) 16.10',
     sourceServerVersion: '16.10',
@@ -67,6 +68,7 @@ function execute(fixtureData, overrides = {}) {
     '--manifest', fixtureData.manifest,
     '--signature', fixtureData.signature,
     '--signer-fingerprint', fixtureData.expectedSigner,
+    '--recipient-fingerprint', overrides.recipientFingerprint ?? fixtureData.body.recipientFingerprint,
     '--source-database-identity', overrides.sourceIdentity ?? sourceIdentity,
     '--incident-cutoff-utc', overrides.incidentCutoff ?? incidentCutoff,
     '--output', fixtureData.output,
@@ -90,6 +92,8 @@ test('approved backup verification accepts only signed artifact metadata matchin
     assert.equal(receipt.signerFingerprint, signer);
     assert.equal(receipt.sourceDatabaseIdentity, sourceIdentity);
     assert.equal(receipt.backupCreatedAtUtc, value.body.backupCreatedAtUtc);
+    assert.equal(receipt.backupDurationSeconds, value.body.backupDurationSeconds);
+    assert.equal(receipt.recipientFingerprint, value.body.recipientFingerprint);
     assert.equal(receipt.signatureStatus, 'VALID_PINNED_SIGNER');
     const mode = statSync(value.output).mode & 0o777;
     assert.equal(mode, 0o600);
@@ -128,6 +132,28 @@ test('approved backup verification rejects a source database identity mismatch',
     const result = execute(value, { sourceIdentity: 'different_source|10.0.0.8|5432' });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /does not match the connected source/);
+  } finally {
+    rmSync(value.directory, { recursive: true, force: true });
+  }
+});
+
+test('approved backup verification rejects a manifest encrypted to a different recovery key', () => {
+  const value = fixture();
+  try {
+    const result = execute(value, { recipientFingerprint: 'C'.repeat(40) });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /recipient does not match the recovery runner private key fingerprint/);
+  } finally {
+    rmSync(value.directory, { recursive: true, force: true });
+  }
+});
+
+test('approved backup verification requires a signed non-negative producer backup duration', () => {
+  const value = fixture({ manifest: { backupDurationSeconds: -1 } });
+  try {
+    const result = execute(value);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /non-negative measured backupDurationSeconds/);
   } finally {
     rmSync(value.directory, { recursive: true, force: true });
   }
