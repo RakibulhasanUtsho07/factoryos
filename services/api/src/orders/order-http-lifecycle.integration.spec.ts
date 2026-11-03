@@ -3,7 +3,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 
 import { randomUUID } from 'node:crypto';
 
@@ -280,7 +280,7 @@ pool =
         );
 
         app.useGlobalInterceptors(
-          new ApiResponseInterceptor(),
+          new ApiResponseInterceptor(app.get(Reflector)),
         );
 
         await app.listen(
