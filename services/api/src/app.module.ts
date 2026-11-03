@@ -15,6 +15,7 @@ import { AppService } from './app.service';
 
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { ScimModule } from './scim/scim.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
@@ -72,6 +73,9 @@ import { ObservabilityModule } from './observability/observability.module';
     // ----------------------------------------------------------
 
     AuthModule,
+
+    // Opt-in SCIM deprovision-only receiver; disabled unless SCIM_ENABLED=true.
+    ScimModule,
 
     // ----------------------------------------------------------
     // Audit

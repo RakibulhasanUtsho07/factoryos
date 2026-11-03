@@ -21,7 +21,7 @@ identity:
     verified_tls: false
     idp_mfa_policy_evidence: ""
   scim:
-    repository_implementation_present: false
+    repository_implementation_present: true
     applicability: OWNER_DECISION_REQUIRED
     identity_provider_scim_enabled: false
     group_role_mapping_reviewed: false

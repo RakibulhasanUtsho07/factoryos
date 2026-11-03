@@ -1,5 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
@@ -59,7 +59,7 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   app.useGlobalInterceptors(
-    new ApiResponseInterceptor(),
+    new ApiResponseInterceptor(app.get(Reflector)),
   );
 
   const swaggerEnabled = resolveSwaggerEnabled(
