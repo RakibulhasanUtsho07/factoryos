@@ -1,8 +1,35 @@
 -- Read-only production privilege evidence. Run as an approved DBA.
 -- Supply names from the deployment inventory; this script does not create or alter roles.
 -- Example: psql "$ADMIN_DSN" -v application_role=factoryos_runtime -v migration_role=factoryos_migrator -v monitoring_role=factoryos_metrics -f deploy/security/postgres-role-audit.sql
+\set ON_ERROR_STOP on
 
-\echo 'FactoryOS role attributes (runtime and migration identities)'
+\if :{?application_role}
+\else
+  \echo 'application_role is required'
+  \quit 3
+\endif
+\if :{?migration_role}
+\else
+  \echo 'migration_role is required'
+  \quit 3
+\endif
+\if :{?monitoring_role}
+\else
+  \echo 'monitoring_role is required'
+  \quit 3
+\endif
+
+SELECT count(DISTINCT rolname) = 3 AS audit_roles_present
+FROM pg_roles
+WHERE rolname IN (:'application_role', :'migration_role', :'monitoring_role')
+\gset
+\if :audit_roles_present
+\else
+  \echo 'one or more required database roles are missing; refusing an incomplete audit'
+  \quit 3
+\endif
+
+\echo 'FactoryOS role attributes (runtime, migration and monitoring identities)'
 SELECT
   rolname,
   rolcanlogin,
