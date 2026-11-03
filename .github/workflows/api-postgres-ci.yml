@@ -920,6 +920,8 @@ jobs:
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
           node --check scripts/recovery/verify-approved-postgres-backup.mjs
           node --check scripts/recovery/verify-approved-postgres-backup.test.mjs
+          node --check scripts/recovery/write-approved-postgres-backup-manifest.mjs
+          node --check scripts/recovery/write-approved-postgres-backup-manifest.test.mjs
           node --check scripts/recovery/verify-dr-environment-approval.mjs
           node --check scripts/recovery/application-restore-smoke.mjs
           node --check scripts/recovery/write-rehearsal-evidence.mjs
