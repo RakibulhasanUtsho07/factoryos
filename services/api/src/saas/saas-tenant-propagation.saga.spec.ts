@@ -470,7 +470,7 @@ describe('SaasTenantPropagationService external saga', () => {
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_runs')) {
         const manifest = JSON.parse(String(p[6])) as Record<string, unknown>;
         return { rows: [{
-          run_id: p[1], request_id: p[2], request_version: p[3], status: 'RUNNING', categories: p[4],
+          run_id: p[1], request_id: p[2], request_version: p[3], status: String(p[12]), categories: p[4],
           source_export_digest: p[5], external_manifest: manifest, target_count: p[7],
           verified_targets: 0, planned_copies: '0', deleted_copies: '0', residual_copies: '0',
           reason: p[8], idempotency_key: p[9], request_hash: p[10], executor_user_id: p[11],
@@ -847,6 +847,9 @@ describe('SaasTenantPropagationService external saga', () => {
       request: { status: 'PROPAGATION_PENDING' },
       run: { status: 'PARTIAL' },
     });
+    const runInsertValues = clientQuery.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))?.[1] as unknown[] | undefined;
+    expect(runInsertValues?.[12]).toBe('PARTIAL');
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
     expect(storedReceipts.every((receipt) =>
       receipt.outcome_code === 'BLOCKED'
@@ -869,6 +872,9 @@ describe('SaasTenantPropagationService external saga', () => {
       request: { status: 'PROPAGATION_PENDING' },
       run: { status: 'PARTIAL' },
     });
+    const runInsertValues = clientQuery.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))?.[1] as unknown[] | undefined;
+    expect(runInsertValues?.[12]).toBe('PARTIAL');
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
     expect(storedReceipts.every((receipt) =>
       receipt.outcome_code === 'RETAINED'
