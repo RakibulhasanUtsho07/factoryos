@@ -668,8 +668,15 @@ jobs:
           recovery_home="$(mktemp -d)"
           recovery_backup_dir="$RUNNER_TEMP/dr-backups"
           recovery_evidence_dir="$RUNNER_TEMP/dr-evidence"
+          recovery_secure_tmpdir="$RUNNER_TEMP/factoryos-dr-tmpfs"
           mkdir -m 700 -p "$recovery_backup_dir" "$recovery_evidence_dir"
           chmod 700 "$recovery_home"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 700 "$recovery_secure_tmpdir"
+          sudo mount -t tmpfs -o size=2g,nosuid,nodev,noexec,mode=0700,uid="$(id -u)",gid="$(id -g)" tmpfs "$recovery_secure_tmpdir"
+          trap 'sudo umount "$recovery_secure_tmpdir"; sudo rmdir "$recovery_secure_tmpdir"' EXIT
+          [[ "$(findmnt -n -o FSTYPE --target "$recovery_secure_tmpdir")" == "tmpfs" ]]
+          [[ "$(stat -c '%u' -- "$recovery_secure_tmpdir")" == "$(id -u)" ]]
+          [[ "$(stat -c '%a' -- "$recovery_secure_tmpdir")" == "700" ]]
           export GNUPGHOME="$recovery_home"
           cat > "$RUNNER_TEMP/factoryos-ci-recovery-key.params" <<'GPG'
           Key-Type: RSA
@@ -717,6 +724,7 @@ jobs:
             -c 'GRANT CONNECT ON DATABASE factoryos_recovery_restore_test_ci TO factoryos_app'
           PGSERVICEFILE="$RUNNER_TEMP/factoryos-recovery.pg_service.conf" \
           GNUPGHOME="$GNUPGHOME" \
+          FACTORYOS_DR_SECURE_TMPDIR="$recovery_secure_tmpdir" \
           FACTORYOS_DR_MODE=RELEASE_GATE \
           FACTORYOS_MIGRATION_MANIFEST_MODE=IDEMPOTENT_REPLAY \
           FACTORYOS_DR_APPLICATION_DATABASE_URL="postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_recovery_restore_test_ci" \
