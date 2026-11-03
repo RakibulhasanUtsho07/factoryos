@@ -14,6 +14,8 @@
 
 - `legal_entities`
 - `factories`
+- `inventory_locations` — target factory-seeded default location is rebound under the dedicated transfer-import role; child locations are inserted parent-first.
+- `traceability_settings` — factory-seeded composite-key row is reconciled by `(tenant_id, factory_id)` under the dedicated transfer-import role.
 - `orders`
 - `order_lines`
 - `order_event_projections`

@@ -116,6 +116,7 @@ BEGIN
 
     is_export_allowlisted := item.relation_name IN (
       'legal_entities', 'factories', 'orders', 'order_lines', 'order_event_projections',
+      'inventory_locations', 'traceability_settings',
       'inventory_items', 'inventory_stock_balances', 'inventory_movements',
       'business_blueprints', 'business_blueprint_versions', 'business_entities',
       'business_relations', 'business_processes', 'business_process_steps', 'business_rules',
@@ -137,6 +138,7 @@ BEGIN
     category := CASE
       WHEN item.relation_name IN (
         'legal_entities', 'factories', 'orders', 'order_lines', 'order_event_projections',
+        'inventory_locations', 'traceability_settings',
         'inventory_items', 'inventory_stock_balances', 'inventory_movements',
         'business_blueprints', 'business_blueprint_versions', 'business_entities',
         'business_relations', 'business_processes', 'business_process_steps', 'business_rules',
