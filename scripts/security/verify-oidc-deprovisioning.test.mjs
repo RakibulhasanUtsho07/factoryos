@@ -167,6 +167,7 @@ nodeTest('rejects an IdP event before the baseline, insufficient token lifetime 
       eventReference: 'idp-audit/ref-1',
       deprovisionedAtUtc: new Date(nowMs + 1000).toISOString(),
       maxLatencySeconds: 3600,
+      now: () => nowMs + 2000,
     }), /remain valid beyond/);
     await assert.rejects(runDeprovisionProbe({ ...common, phase: 'before', outputPath: beforePath }), /already exists/);
   } finally { await rm(directory, { recursive: true, force: true }); }
