@@ -1,6 +1,6 @@
 # Manufacturing lifecycle cross-slice acceptance
 
-**Status: PARTIAL — the consolidated PostgreSQL acceptance path now joins zero-finished-stock make-to-order, supplier/GRN provenance, production consumption/output, quality rework/scrap and the recovered-lot WMS shipment/POD/recall journey. Exact-head CI and release evidence remain required.**
+**Status: PARTIAL — the consolidated PostgreSQL journey now exercises concurrent PO/GRN/work-order/release/output retries and an approved KG→G BOM snapshot across supplier receipt, production consumption/output, quality rework/scrap and recovered-lot WMS shipment/POD/recall. Exact-head CI and release evidence remain required.**
 
 ## Required lifecycle
 
@@ -10,6 +10,10 @@ Task 14 requires one consistent path across persistence and service boundaries:
 
 Quantities use four-decimal fixed point. Identical idempotency-key replays must not post duplicate movements; changed-payload replay must fail closed; failed writes must roll back inventory, quality, genealogy, audit and outbox rows together.
 
+The consolidated fixture includes deterministic concurrent duplicate-delivery checks at PO create, GRN post, work-order create, work-order release and production output. Each pair uses the same idempotency key and canonical request from parallel calls; the test asserts one first execution, one replay and one persisted business effect. The GRN assertion reads back one receipt, one stock movement and exactly `3000.0000 G` accepted.
+
+The same fixture creates factory-scoped KG and G units, submits and independently approves the exact `1000/1` conversion, receives base-unit G stock, and writes the product BOM as `1 KG` per finished unit. The immutable BOM snapshot retains the approved conversion rule ID/version/factor and resolves to `1000.0000 G`; a three-unit work order therefore reserves and consumes exactly `3000.0000 G`, with that quantity/unit carried through the material lot and consumption genealogy. Finished output remains `3.0000 PCS`. This is an explicit cross-module UoM boundary test, not merely a standalone conversion check.
+
 ## Consolidated persisted PostgreSQL acceptance
 
 Authoritative integration path: `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`, test `runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy`.
@@ -18,8 +22,8 @@ The scenario uses one tenant/factory and connected persisted identities:
 
 1. **GRN provenance and incoming quality:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. A supplier inspection HOLD is persisted against the received line, and work-order release is asserted to fail while that hold is active. A recorded RELEASE disposition removes the hold before the same work order can be released.
 2. **Make-to-order guard:** a draft sales order line is created with zero finished-good stock. The work order is planned before confirmation. Order confirmation is asserted to leave finished-good on-hand/reserved quantities at `0.0000` and create zero `ORDER_LINE` reservations. The work-order BOM reservation is the material allocation boundary.
-3. **Production and genealogy:** the exact GRN-linked material lot is consumed once by the released work order; operation events, output posting and the material-to-output genealogy connect to the same sales order/work order.
-   The output idempotency test confirms an identical key returns the original production-report/output-posting IDs; a changed-payload reuse is rejected and a persisted query confirms exactly one production report and one output posting remain for the work order.
+3. **Production and genealogy:** the exact GRN-linked material lot is consumed once by the released work order; operation events, output posting and the material-to-output genealogy connect to the same sales order/work order. The cross-UoM assertion proves the BOM's `1 KG → 1000 G` snapshot drives a `3000.0000 G` requirement and consumption for three finished units.
+   Concurrent identical output calls with one key return one first execution and one replay; changed-payload reuse is rejected and a persisted query confirms exactly one production report and one output posting remain for the work order.
 4. **Quality/rework:** the output lot is inspected, defected, held and quarantined; REWORK consumes `3.0000` source units and records exactly `2.0000` recovered plus `1.0000` scrap. The recovered lot is separately identified, requires follow-up inspection PASS and an independent verifier. Verification replay does not create a duplicate movement. A persisted `REWORKED_INTO` genealogy edge connects the quarantined source lot to the recovered lot only after verified rework and passed follow-up inspection; its audit/outbox evidence is asserted, and premature edges are rejected.
 5. **WMS shipment:** only the separately accepted recovered lot proceeds through put-away/pick, carton/pallet packing, order-line-bound shipment, delivery/POD and recall. Shipment persistence must reference the same sales `order_id` and `order_line_id` created for the make-to-order flow; the quarantined source identity is never packed or shipped.
 6. **Failure and isolation:** injected failure during rework verification/output posting compares rework state/version, quality-event, audit/outbox counts and stock balances to prove rollback. Cross-tenant reads fail closed.
@@ -53,11 +57,15 @@ The same transaction checks that the PO is approved, the GRN is posted, received
 
 Overall factory lifecycle remains **PARTIAL** until:
 
-1. API CI, PostgreSQL integration CI, production dependency/security checks and SRS/HLD/Blueprint traceability all pass on the exact current PR head; rerun after every source change.
-2. Review confirms no duplicate/conflicting migrations and verifies that the incoming-material HOLD/RELEASE block-and-retry assertions pass in the consolidated fixture.
-3. Provider-originated carrier sandbox callbacks/native signature/retry evidence, effective object-storage IAM, independent upload/read-back digest verification and authorized factory/site sign-off are recorded against the tested release SHA.
-4. Physical barcode/QR/printer/mobile-offline/RFID hardware-in-the-loop acceptance is completed where required by the release scope.
-5. Branch promotion `rakibul-hasan → dev → main` is reviewed with exact-head CI and post-merge commit verification.
+1. API CI, full PostgreSQL integration CI, production dependency/security checks and SRS/HLD/Blueprint traceability pass on the exact current PR head; rerun after every source change.
+2. Independent review confirms no duplicate/conflicting migrations and the cross-UoM conversion snapshot, concurrent replay, incoming-quality HOLD/RELEASE and rollback assertions pass in the consolidated fixture.
+3. Competing independent orders with different idempotency keys are exercised under shared-stock contention in the selected staging topology; duplicate-delivery CI does not prove site concurrency/load acceptance.
+4. Lot-and-serial identities are exercised together across receipt, reservations, multi-operation WIP, output, quality and forward/reverse genealogy, including partial consumption, split/merge and mixed-unit conversions at the factory's configured precision.
+5. Actual-cost capture, material/labour/overhead allocation, WIP/finished-goods valuation and downstream accounting/stock valuation reconciliation are integrated with production and signed off by the finance owner. The existing finance workbench is not proof of manufacturing actual-cost posting.
+6. The complete maker-checker cycle-count journey (blind count, independent approval, stale-balance rejection, recount/escalation and reconciliation) is accepted on physical mobile clients with offline queue, cross-device replay and real ledger reconciliation.
+7. Provider-originated carrier sandbox callbacks/native signature/retry evidence, effective object-storage IAM, independent upload/read-back digest verification and authorized factory/site sign-off are recorded against the tested release SHA.
+8. Physical barcode/QR/GS1 DataMatrix and GS1-128 printer/scanner, mobile-offline and RFID hardware-in-the-loop acceptance is completed where required. [Issue #283](https://github.com/RakibulhasanUtsho07/factoryos/issues/283) remains open until target-device evidence and site-owner approval are attached.
+9. Branch promotion `rakibul-hasan → dev → main` is reviewed with exact-head CI and post-merge commit verification.
 
 The forecast/planning APIs must remain non-committing: planning must not create inventory reservations or purchase orders. A green CI suite proves only the tested software persistence contract; it does not certify real carrier/storage accounts, physical hardware or factory acceptance.
 
@@ -69,4 +77,4 @@ The forecast/planning APIs must remain non-committing: planning must not create 
 - `scripts/audit/migration-manifest.txt`
 - `migrations/067_supplier_purchase_order_lifecycle.sql`, `072_goods_receipt_grn.sql`, `074_lot_serial_product_genealogy.sql`, `082_product_bom_routing_version_contracts.sql`, `090_production_work_order_operation_lifecycle.sql`, `091_production_output_inventory_posting.sql`, `093_quality_inspection_ncr_holds_disposition.sql`, `098_quality_rework_execution_and_verification.sql`, `207_production_order_finished_good_reservation_boundary.sql`, `208_wms_traceability_scoped_quality_holds.sql`, `209_wms_scoped_quality_hold_guards.sql`, `210_quality_guard_wms_shipment_leaf_holds.sql`, `211_quality_guard_wms_shipment_hold_scope.sql`, and `212_quality_rework_genealogy_link_guard.sql`.
 
-**Release rule:** do not mark the full lifecycle PASS until exact-head automation, review, applicable live-provider evidence, hardware acceptance and named site/process-owner sign-off are recorded.
+**Release rule:** do not mark the full lifecycle PASS until exact-head automation, review, actual-cost/valuation and cycle-count acceptance, applicable live-provider evidence, hardware acceptance and named site/process-owner sign-off are recorded.
