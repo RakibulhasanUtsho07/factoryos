@@ -1,52 +1,55 @@
 # Dependency security posture
 
-Last reviewed: 2026-10-10
+Last reviewed: 2026-11-01
 
-## Production dependency gate
+## Current audit baseline
 
-The repository's npm workspace lockfile is shared across the web app and API. CI runs `npm audit --omit=dev` after `npm ci` to fail changes that introduce known vulnerabilities into production dependencies. This is a narrow production gate; it does not claim that all development-tool dependencies are vulnerability-free.
+The full workspace audit was captured from the locked install in Production Dependency Security workflow [run 41315563071](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/41315563071), against diagnostic baseline commit [8ea4174d3f2803b6fb29d755e15e59573a4450a7](https://github.com/RakibulhasanUtsho07/factoryos/commit/8ea4174d3f2803b6fb29d755e15e59573a4450a7).
 
-## Reviewed development-tool advisories
+- `npm audit`: **40 affected package records** — 0 critical, 2 high, 35 moderate, 3 low.
+- `npm audit --omit=dev`: **0 production dependency vulnerabilities** at that baseline.
+- The 40 records are affected package records, not 40 independent CVEs. npm aggregates advisories through multiple direct and transitive tooling packages.
+- The full workspace is not clean. A passing production-only audit must not be represented as a clean development dependency audit.
 
-The last full audit before the argparse override reported 25 findings (20 moderate and 5 high), while `npm audit --omit=dev` reported zero. PR #35 added an `argparse@2.0.1` root override and synchronized the lockfile to remove the obsolete `sprintf-js` 1.x package from the old `js-yaml` 3 tooling chain. The override passed Web CI, API CI, the full PostgreSQL-backed API suite, and the production dependency audit.
+## Patched transitive dependencies in this remediation
 
-A fresh full `npm audit` has not yet been captured for the merged lockfile, so the current full-audit count must be rechecked after pulling this revision. The remaining known upstream advisory is:
+The root overrides and lockfile now pin these dependencies to patched versions:
 
-- **`braces` / GHSA-vfj7-8cjw-p6xm**: the current upstream advisory reports affected versions through 3.0.3 and no patched version. In this workspace it is pulled by Next's ESLint plugin through `fast-glob` and `micromatch`.
+| Dependency | Previous | Patched | Audit path |
+|---|---:|---:|---|
+| `undici` | 6.29.0 | 6.29.1 | High; nested below `@nestjs/mau` |
+| `zod` | 4.6.5 | 4.6.7 | High; nested below `eslint-plugin-react-hooks` |
+| `fast-uri` | 3.1.8 | 3.1.9 | Moderate; nested below Ajv |
 
-Development-tool findings remain relevant to CI/developer tooling, so they are tracked rather than declared fixed or globally ignored. Revisit the full audit when upstream fixes or a compatible dependency-chain update becomes available.
+These overrides preserve the existing major lines. The audited lockfile marks these three copies as development-only. A CI contract checks each root override against the exact locked version, registry tarball URL, SHA-512 integrity value and dev-only metadata. The full audit reporter still runs after `npm ci`, so remaining findings stay visible.
 
 References:
-- https://github.com/advisories/GHSA-vfj7-8cjw-p6xm
-- https://github.com/advisories/GHSA-hp3w-g68c-fv3c
+- https://github.com/advisories/GHSA-4qv8-2p9j-2685
+- https://github.com/advisories/GHSA-xjj6-f33q-929c
+- https://github.com/advisories/GHSA-2m5v-pch6-74hx
+- https://github.com/advisories/GHSA-qrxm-fqhp-jwvm
+- https://github.com/advisories/GHSA-9fm3-97px-rjf6
+- https://github.com/advisories/GHSA-mrhx-c7xc-m3w5
+- https://github.com/advisories/GHSA-w74x-v6f9-j3xg
+- https://github.com/advisories/GHSA-xhq7-xmqj-769h
+- https://github.com/advisories/GHSA-wjr9-j795-jxcr
+- https://github.com/advisories/GHSA-333x-w4r6-6crp
 
-## Safe remediation policy
+## Remaining development-tool advisories — NOT FIXED
 
-- Do not use `npm audit fix --force` as an automated fix; npm previously proposed downgrades to `eslint-config-next`, `ts-jest`, and `@nestjs/mau` that would be incompatible with the repository's current toolchain.
-- Keep root `overrides` and `package-lock.json` synchronized. The verified overrides patch `handlebars` to 4.7.10, `tmp` to 0.2.7, `undici` 6.x to 6.29.0, and `argparse` to 2.0.1. The `argparse` override passed the full CI suite and removes the obsolete `sprintf-js` chain from the lockfile.
-- Re-run full `npm audit`, production `npm audit --omit=dev`, all lint/build jobs, and the PostgreSQL-backed API suite after every dependency update.
+These compatibility blockers remain open and must not be presented as remediated:
 
+- **`glob` / GHSA-3g3m-2fjr-6pw4 (Moderate):** the audit found vulnerable locked copies `glob@13.0.6` and nested `glob@10.5.0`; the advisory's fixed version is `14.0.2`. Current Jest and `test-exclude` dependency ranges are major-version constrained and do not admit 14.0.2. A coordinated parent-toolchain update requires compatibility review.
+- **`minimatch` / GHSA-g3hv-75wg-m249 (Moderate):** the fixed version is `11.0.1`, while this lockfile has 3.x, 9.x and 10.x copies required by ESLint, Nest CLI, TypeScript ESLint and glob consumers. A blanket 11.x override crosses declared major ranges and is not accepted without compatibility evidence.
+- **`deepmerge` / GHSA-gcqx-w48m-w2h4 (Low):** locked `deepmerge@4.3.1` is used by Jest configuration. No patched release was listed in the audit metadata reviewed for this baseline; keep it tracked and re-check upstream before changing the test runner.
 
-### Latest verified production security workflow — 2026-10-20
+npm's aggregate suggestions include old major releases such as ESLint 4 and Jest 25.1.0. Those are not acceptable remediation because they downgrade the current toolchain. Do not run `npm audit fix --force` or use broad cross-major overrides to suppress the report.
 
-The Production Dependency Security workflow passed on tested configuration/code SHA [540da01a88d089970b70177572180a0a959f153a](https://github.com/RakibulhasanUtsho07/factoryos/commit/540da01a88d089970b70177572180a0a959f153a), run [39412702649](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39412702649). That workflow completed locked dependency installation, recovery/load harness syntax checks, bounded load safety contract tests, backup/restore precondition contract tests, and `npm audit --omit=dev`.
+## CI and release policy
 
-This run does **not** perform a fresh full-development-tree `npm audit`. The development-tool advisory recorded in the older full-audit notes below must not be marked resolved based only on a passing production-only audit. Re-run the full audit when preparing the next dependency/security review and update this section with the exact lockfile SHA and result.
-
-## Latest audit results — 2026-10-10
-
-After installing the updated workspace lockfile and rerunning the dependency audits:
-
-- `npm audit --omit=dev`: 0 vulnerabilities.
-- `npm audit`: 5 high-severity findings. The reported advisory identifies the `braces` dependency chain.
-
-The dependency path is:
-
-`eslint-config-next@16.4.0` → `@next/eslint-plugin-next@16.4.0` → `fast-glob@3.3.1` → `micromatch@4.0.8` → `braces@3.0.3`.
-
-`npm explain braces` confirms that this dependency is reached through the Web workspace's development tooling.
-
-The upstream advisory currently lists affected versions through `3.0.3` and no patched version. The finding remains unresolved; it is not considered fixed merely because production dependencies have a clean audit.
-
-Do not run `npm audit fix --force`. Reassess this finding when a compatible upstream fix or alternative dependency chain becomes available.
-
+- `npm ci` must install the committed lockfile.
+- The workspace advisory reporter is diagnostic and displays the findings; it does not turn advisory presence into PASS.
+- `npm audit --omit=dev` remains a blocking production dependency gate.
+- Run API CI, PostgreSQL integration CI, Web CI, the full workspace advisory report and production audit on the exact PR head after every dependency update.
+- Do not describe the full workspace as clean until full `npm audit` returns zero findings or the remaining risk is formally accepted through the approved security governance process.
+- This work is separate from PR #297's external erasure acceptance and does not change AS-137 / NFR-PROD-14 or authorize branch promotion.
