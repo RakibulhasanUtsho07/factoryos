@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
-interface ConfigReader {
+export interface WmsPodStorageConfigReader {
   get<T = string>(propertyPath: string): T | undefined;
 }
 
@@ -40,7 +40,7 @@ function hmac(key: string | Buffer, value: string): Buffer {
   return createHmac('sha256', key).update(value, 'utf8').digest();
 }
 
-function requiredConfig(config: ConfigReader, name: string): string {
+function requiredConfig(config: WmsPodStorageConfigReader, name: string): string {
   const value = config.get<string>(name);
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new ServiceUnavailableException(
@@ -51,7 +51,7 @@ function requiredConfig(config: ConfigReader, name: string): string {
 }
 
 function boundedInteger(
-  config: ConfigReader,
+  config: WmsPodStorageConfigReader,
   name: string,
   fallback: number,
   minimum: number,
@@ -65,7 +65,7 @@ function boundedInteger(
   return value;
 }
 
-function readConfiguration(config: ConfigReader): S3PodConfiguration {
+function readConfiguration(config: WmsPodStorageConfigReader): S3PodConfiguration {
   const endpointInput = requiredConfig(config, 'WMS_POD_STORAGE_ENDPOINT');
   const bucket = requiredConfig(config, 'WMS_POD_STORAGE_BUCKET');
   const region = requiredConfig(config, 'WMS_POD_STORAGE_REGION');
@@ -176,17 +176,17 @@ async function readBoundedResponse(
  * comes only from trusted server configuration plus a validated relative key;
  * carrier payloads cannot choose an arbitrary URL or cause redirect following.
  */
-export async function verifyWmsPodObjectDigest(
-  config: ConfigReader,
+/**
+ * Reads and hashes the current persisted bytes for one safe object key. A 404
+ * is exposed as null only by the explicit IfPresent variant, for idempotent
+ * erasure recovery after a previously-issued DELETE.
+ */
+export async function readWmsPodObjectDigestIfPresent(
+  config: WmsPodStorageConfigReader,
   objectKey: string,
-  expectedSha256: string,
   fetcher: typeof fetch = globalThis.fetch,
-): Promise<VerifiedPodObject> {
+): Promise<VerifiedPodObject | null> {
   assertSafeObjectKey(objectKey);
-  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
-    throw new BadRequestException('proof_sha256 must be SHA-256 hex');
-  }
-
   const storage = readConfiguration(config);
   const basePath = storage.endpoint.pathname === '/'
     ? ''
@@ -195,57 +195,7 @@ export async function verifyWmsPodObjectDigest(
   const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
   const target = new URL(storage.endpoint.origin);
   target.pathname = canonicalUri;
-
-  const payloadHash = sha256Hex(Buffer.alloc(0));
-  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-  const dateStamp = amzDate.slice(0, 8);
-  const canonicalHeadersByName: Record<string, string> = {
-    host: target.host.toLowerCase(),
-    'x-amz-content-sha256': payloadHash,
-    'x-amz-date': amzDate,
-  };
-  if (storage.sessionToken) {
-    canonicalHeadersByName['x-amz-security-token'] = storage.sessionToken;
-  }
-  const signedHeaderNames = Object.keys(canonicalHeadersByName).sort();
-  const canonicalHeaders = signedHeaderNames
-    .map((name) => name + ':' + canonicalHeadersByName[name]!.trim().replace(/\s+/g, ' ') + '\n')
-    .join('');
-  const signedHeaders = signedHeaderNames.join(';');
-  const canonicalRequest = [
-    'GET',
-    canonicalUri,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join('\n');
-  const scope = dateStamp + '/' + storage.region + '/s3/aws4_request';
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    amzDate,
-    scope,
-    sha256Hex(canonicalRequest),
-  ].join('\n');
-  const dateKey = hmac('AWS4' + storage.secretAccessKey, dateStamp);
-  const regionKey = hmac(dateKey, storage.region);
-  const serviceKey = hmac(regionKey, 's3');
-  const signingKey = hmac(serviceKey, 'aws4_request');
-  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
-  const authorization = 'AWS4-HMAC-SHA256 Credential=' +
-    storage.accessKeyId + '/' + scope +
-    ', SignedHeaders=' + signedHeaders +
-    ', Signature=' + signature;
-
-  const headers: Record<string, string> = {
-    'x-amz-content-sha256': payloadHash,
-    'x-amz-date': amzDate,
-    'accept-encoding': 'identity',
-    Authorization: authorization,
-  };
-  if (storage.sessionToken) {
-    headers['x-amz-security-token'] = storage.sessionToken;
-  }
+  const headers = signedPodS3Headers(storage, 'GET', target, canonicalUri, '');
 
   let response: Response;
   try {
@@ -259,22 +209,49 @@ export async function verifyWmsPodObjectDigest(
     throw new ServiceUnavailableException('Unable to retrieve POD object from configured storage');
   }
   if (response.status === 404) {
-    throw new UnprocessableEntityException('POD object was not found in configured storage');
+    await response.body?.cancel().catch(() => undefined);
+    return null;
   }
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     throw new ServiceUnavailableException('POD storage rejected object retrieval; check storage access policy');
   }
-
   const bytes = await readBoundedResponse(response, storage.maxBytes);
-  const actualSha256 = sha256Hex(bytes);
+  return { sha256: sha256Hex(bytes), byteLength: bytes.byteLength };
+}
+
+export async function readWmsPodObjectDigest(
+  config: WmsPodStorageConfigReader,
+  objectKey: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject> {
+  const result = await readWmsPodObjectDigestIfPresent(config, objectKey, fetcher);
+  if (!result) throw new UnprocessableEntityException('POD object was not found in configured storage');
+  return result;
+}
+
+/**
+ * Independently hashes persisted bytes and compares them with the digest
+ * supplied by the trusted caller. The S3 ETag is never treated as a content hash.
+ */
+export async function verifyWmsPodObjectDigest(
+  config: WmsPodStorageConfigReader,
+  objectKey: string,
+  expectedSha256: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject> {
+  assertSafeObjectKey(objectKey);
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
+    throw new BadRequestException('proof_sha256 must be SHA-256 hex');
+  }
+  const result = await readWmsPodObjectDigest(config, objectKey, fetcher);
   const expected = Buffer.from(expectedSha256.toLowerCase(), 'hex');
-  const actual = Buffer.from(actualSha256, 'hex');
+  const actual = Buffer.from(result.sha256, 'hex');
   if (!timingSafeEqual(actual, expected)) {
     throw new UnprocessableEntityException('Stored POD object SHA-256 does not match the signed carrier digest');
   }
-  return { sha256: actualSha256, byteLength: bytes.byteLength };
+  return result;
 }
-
 
 function validatePodContentType(bytes: Buffer, declaredContentType: string): UploadedVerifiedPodObject['contentType'] {
   let detected: UploadedVerifiedPodObject['contentType'] | null = null;
@@ -302,7 +279,7 @@ function validatePodContentType(bytes: Buffer, declaredContentType: string): Upl
  * never accepts a caller-controlled URL or follows redirects.
  */
 export async function uploadWmsPodObjectAndVerify(
-  config: ConfigReader,
+  config: WmsPodStorageConfigReader,
   objectKey: string,
   bytes: Buffer,
   declaredContentType: string,
@@ -400,4 +377,334 @@ export class WmsPodStorageVerifier {
   verifyObjectDigest(objectKey: string, expectedSha256: string): Promise<VerifiedPodObject> {
     return verifyWmsPodObjectDigest(this.config, objectKey, expectedSha256);
   }
+}
+
+
+/**
+ * Signs a bounded S3 request using the same path-style endpoint and credential
+ * contract as the POD read/write helpers. Host is signed but supplied by fetch.
+ */
+function signedPodS3Headers(
+  storage: S3PodConfiguration,
+  method: 'GET' | 'DELETE',
+  target: URL,
+  canonicalUri: string,
+  canonicalQuery: string,
+): Record<string, string> {
+  const payloadHash = sha256Hex(Buffer.alloc(0));
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const canonicalHeadersByName: Record<string, string> = {
+    host: target.host.toLowerCase(),
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  if (storage.sessionToken) {
+    canonicalHeadersByName['x-amz-security-token'] = storage.sessionToken;
+  }
+  const signedHeaderNames = Object.keys(canonicalHeadersByName).sort();
+  const canonicalHeaders = signedHeaderNames
+    .map((name) => name + ':' + canonicalHeadersByName[name]!.trim().replace(/\s+/g, ' ') + '\n')
+    .join('');
+  const signedHeaders = signedHeaderNames.join(';');
+  const canonicalRequest = [
+    method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
+  ].join('\n');
+  const scope = dateStamp + '/' + storage.region + '/s3/aws4_request';
+  const stringToSign = [
+    'AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest),
+  ].join('\n');
+  const dateKey = hmac('AWS4' + storage.secretAccessKey, dateStamp);
+  const regionKey = hmac(dateKey, storage.region);
+  const serviceKey = hmac(regionKey, 's3');
+  const signingKey = hmac(serviceKey, 'aws4_request');
+  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+  const headers: Record<string, string> = {
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    'accept-encoding': 'identity',
+    Authorization: 'AWS4-HMAC-SHA256 Credential=' + storage.accessKeyId + '/' + scope
+      + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature,
+  };
+  if (storage.sessionToken) headers['x-amz-security-token'] = storage.sessionToken;
+  return headers;
+}
+
+function assertTenantPodObjectKey(tenantId: string, objectKey: string): void {
+  const normalizedTenantId = tenantId.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalizedTenantId)) {
+    throw new BadRequestException('tenantId must be a UUID');
+  }
+  assertSafeObjectKey(objectKey);
+  const tenantPrefix = 'pod/' + normalizedTenantId + '/';
+  if (!objectKey.startsWith(tenantPrefix)) {
+    throw new BadRequestException('POD object key is outside the requested tenant prefix');
+  }
+  const parts = objectKey.split('/');
+  if (parts.length !== 5 || parts[0] !== 'pod' || parts.slice(1).some((part) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part))) {
+    throw new BadRequestException('POD object key must use the tenant/factory/shipment/object UUID hierarchy');
+  }
+}
+
+async function assertPodBucketUnversioned(
+  storage: S3PodConfiguration,
+  fetcher: typeof fetch,
+): Promise<void> {
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket);
+  const canonicalQuery = 'versioning=';
+  const target = new URL(storage.endpoint.origin);
+  target.pathname = canonicalUri;
+  target.search = '?' + canonicalQuery;
+
+  let response: Response;
+  try {
+    response = await fetcher(target, {
+      method: 'GET',
+      headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, canonicalQuery),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('Unable to verify POD bucket versioning state');
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException('POD bucket versioning state could not be verified; deletion is blocked');
+  }
+  let xml: string;
+  try {
+    // Stream with a hard byte ceiling; do not buffer an untrusted provider response
+    // and then check its size after allocating the complete body.
+    xml = (await readBoundedResponse(response, 16384)).toString('utf8');
+  } catch {
+    throw new ServiceUnavailableException('POD bucket versioning response could not be read within its safety limit');
+  }
+  // S3 returns an empty VersioningConfiguration when bucket versioning is off.
+  // Enabled, suspended, unknown or provider-specific configurations are blocked:
+  // DELETE without versionId would only create a marker and leave old bytes behind.
+  const emptyConfiguration =
+    /<VersioningConfiguration\b[^>]*\/>/i.test(xml)
+    || /<VersioningConfiguration\b[^>]*>\s*<\/VersioningConfiguration>/i.test(xml);
+  if (!emptyConfiguration || /<Status>\s*(Enabled|Suspended)\s*<\/Status>/i.test(xml)) {
+    throw new ServiceUnavailableException(
+      'POD bucket must have independently verified, disabled object versioning before erasure',
+    );
+  }
+}
+
+const POD_LIST_PAGE_SIZE = 1000;
+const POD_ERASURE_MAX_OBJECTS = 100000;
+const POD_LIST_RESPONSE_MAX_BYTES = 1024 * 1024;
+
+function awsQueryEncode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    '%' + character.charCodeAt(0).toString(16).toUpperCase());
+}
+
+function canonicalS3Query(parameters: Array<[string, string]>): string {
+  return parameters
+    .map(([name, value]) => [awsQueryEncode(name), awsQueryEncode(value)] as const)
+    .sort(([leftName, leftValue], [rightName, rightValue]) =>
+      leftName < rightName ? -1 : leftName > rightName ? 1
+        : leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0)
+    .map(([name, value]) => name + '=' + value)
+    .join('&');
+}
+
+function decodeS3XmlText(value: string): string {
+  const decoded = value
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_match, decimal: string) => String.fromCodePoint(Number(decimal)));
+  if (/&(?:#|[A-Za-z])/.test(decoded)) {
+    throw new ServiceUnavailableException('POD storage returned malformed XML entity encoding');
+  }
+  return decoded;
+}
+
+function xmlText(xml: string, tagName: string): string | null {
+  const match = xml.match(new RegExp('<' + tagName + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + tagName + '>','i'));
+  return match ? decodeS3XmlText(match[1]!.trim()) : null;
+}
+
+/**
+ * Lists every key in this tenant's POD namespace using signed ListObjectsV2.
+ * Unknown key shapes, repeated continuation tokens, oversized pages and failed
+ * pagination are errors, never silently treated as an empty/incomplete inventory.
+ */
+export async function listWmsPodTenantObjects(
+  config: WmsPodStorageConfigReader,
+  tenantId: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<string[]> {
+  const normalizedTenantId = tenantId.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalizedTenantId)) {
+    throw new BadRequestException('tenantId must be a UUID');
+  }
+  const storage = readConfiguration(config);
+  await assertPodBucketUnversioned(storage, fetcher);
+
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket);
+  const prefix = 'pod/' + normalizedTenantId + '/';
+  const objects: string[] = [];
+  const knownKeys = new Set<string>();
+  const seenTokens = new Set<string>();
+  let continuationToken: string | null = null;
+  let pageCount = 0;
+
+  do {
+    pageCount += 1;
+    if (pageCount > Math.ceil(POD_ERASURE_MAX_OBJECTS / POD_LIST_PAGE_SIZE)) {
+      throw new ServiceUnavailableException('POD inventory exceeded the configured page limit; erasure is blocked');
+    }
+    const parameters: Array<[string, string]> = [
+      ['list-type', '2'],
+      ['max-keys', String(POD_LIST_PAGE_SIZE)],
+      ['prefix', prefix],
+    ];
+    if (continuationToken !== null) parameters.push(['continuation-token', continuationToken]);
+    const canonicalQuery = canonicalS3Query(parameters);
+    const target = new URL(storage.endpoint.origin);
+    target.pathname = canonicalUri;
+    target.search = '?' + canonicalQuery;
+
+    let response: Response;
+    try {
+      response = await fetcher(target, {
+        method: 'GET',
+        headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, canonicalQuery),
+        redirect: 'error',
+        signal: AbortSignal.timeout(storage.timeoutMs),
+      });
+    } catch {
+      throw new ServiceUnavailableException('POD tenant inventory could not be enumerated');
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ServiceUnavailableException('POD storage rejected tenant inventory enumeration');
+    }
+    let xml: string;
+    try {
+      xml = (await readBoundedResponse(response, POD_LIST_RESPONSE_MAX_BYTES)).toString('utf8');
+    } catch {
+      throw new ServiceUnavailableException('POD tenant inventory page exceeded its safety limit or was incomplete');
+    }
+
+    const contents = [...xml.matchAll(/<Contents(?:\s[^>]*)?>([\s\S]*?)<\/Contents>/gi)];
+    for (const content of contents) {
+      const key = xmlText(content[1]!, 'Key');
+      if (!key || !key.startsWith(prefix)) {
+        throw new ServiceUnavailableException('POD inventory returned an invalid key outside the tenant prefix');
+      }
+      try {
+        assertTenantPodObjectKey(normalizedTenantId, key);
+      } catch {
+        throw new ServiceUnavailableException('POD inventory contains an unsupported tenant object key; erasure is blocked');
+      }
+      if (knownKeys.has(key)) {
+        throw new ServiceUnavailableException('POD inventory pagination returned a duplicate object identity');
+      }
+      knownKeys.add(key);
+      objects.push(key);
+      if (objects.length > POD_ERASURE_MAX_OBJECTS) {
+        throw new ServiceUnavailableException('POD tenant inventory exceeds the 100,000-object erasure limit');
+      }
+    }
+
+    const isTruncated = xmlText(xml, 'IsTruncated');
+    if (isTruncated !== 'true' && isTruncated !== 'false') {
+      throw new ServiceUnavailableException('POD inventory page has no valid IsTruncated marker');
+    }
+    if (isTruncated === 'true') {
+      const token = xmlText(xml, 'NextContinuationToken');
+      if (!token || seenTokens.has(token) || token === continuationToken) {
+        throw new ServiceUnavailableException('POD inventory pagination token is missing or repeated');
+      }
+      seenTokens.add(token);
+      continuationToken = token;
+    } else {
+      continuationToken = null;
+    }
+  } while (continuationToken !== null);
+
+  return objects.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+}
+
+/**
+ * Deletes one previously identified tenant-scoped POD object from an
+ * independently verified unversioned S3-compatible bucket. It verifies the
+ * stored bytes before mutation and performs a separate GET after DELETE; this
+ * primitive does not enumerate tenant data or by itself constitute an erasure
+ * adapter or whole-tenant erasure receipt.
+ */
+export async function deleteWmsPodObjectAndVerifyGone(
+  config: WmsPodStorageConfigReader,
+  tenantId: string,
+  objectKey: string,
+  expectedSha256: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<VerifiedPodObject & { verifiedAbsent: true }> {
+  assertTenantPodObjectKey(tenantId, objectKey);
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256)) {
+    throw new BadRequestException('expectedSha256 must be SHA-256 hex');
+  }
+
+  const storage = readConfiguration(config);
+  await assertPodBucketUnversioned(storage, fetcher);
+  const before = await verifyWmsPodObjectDigest(config, objectKey, expectedSha256, fetcher);
+
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const encodedKey = objectKey.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
+  const target = new URL(storage.endpoint.origin);
+  target.pathname = canonicalUri;
+
+  let deletion: Response;
+  try {
+    deletion = await fetcher(target, {
+      method: 'DELETE',
+      headers: signedPodS3Headers(storage, 'DELETE', target, canonicalUri, ''),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('POD object deletion outcome is uncertain; provider reconciliation is required');
+  }
+  if (!deletion.ok) {
+    await deletion.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException('POD storage did not accept the object deletion request');
+  }
+  await deletion.body?.cancel().catch(() => undefined);
+
+  let readBack: Response;
+  try {
+    readBack = await fetcher(target, {
+      method: 'GET',
+      headers: signedPodS3Headers(storage, 'GET', target, canonicalUri, ''),
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('POD deletion read-back failed; deletion is not verified');
+  }
+  if (readBack.status !== 404) {
+    await readBack.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException(
+      readBack.ok
+        ? 'POD object is still readable after deletion; deletion is not verified'
+        : 'POD deletion read-back returned an indeterminate provider status',
+    );
+  }
+  await readBack.body?.cancel().catch(() => undefined);
+  return { ...before, verifiedAbsent: true };
 }

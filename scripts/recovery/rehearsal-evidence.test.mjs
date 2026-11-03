@@ -59,6 +59,17 @@ function sampleEvidence() {
       apiReadinessStatus: 'PASS',
       tenantIsolationStatus: 'PASS',
       auditContinuityStatus: 'PASS',
+      erasureReplayStatus: 'PASS',
+      erasureReplayLedgerReference: 'external-ledger-prod-2026-10-20',
+      erasureReplayLedgerSha256: 'd'.repeat(64),
+      erasureReplayLedgerWatermarkUtc: '2026-10-20T10:01:00Z',
+      erasureReplayRequests: 3,
+      erasureReplayResiduals: 0,
+      erasureVerificationRequests: 3,
+      erasureVerificationResiduals: 0,
+      erasureReplaySqlSha256: 'e'.repeat(64),
+      erasureVerificationSqlSha256: 'f'.repeat(64),
+      erasureVerificationMethod: 'INDEPENDENT_READ_ONLY',
       migrationRecoveryStatus: 'PASS',
     },
     measured: {
@@ -102,6 +113,17 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_API_READINESS_STATUS: 'PASS',
       FACTORYOS_DR_TENANT_ISOLATION_STATUS: 'PASS',
       FACTORYOS_DR_AUDIT_CONTINUITY_STATUS: 'PASS',
+      FACTORYOS_DR_ERASURE_REPLAY_STATUS: 'PASS',
+      FACTORYOS_DR_ERASURE_LEDGER_REFERENCE: 'external-ledger-prod-2026-10-20',
+      FACTORYOS_DR_ERASURE_LEDGER_SHA256: 'd'.repeat(64),
+      FACTORYOS_DR_ERASURE_LEDGER_WATERMARK_UTC: '2026-10-20T10:01:00Z',
+      FACTORYOS_DR_ERASURE_REPLAYED_REQUESTS: '3',
+      FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS: '0',
+      FACTORYOS_DR_ERASURE_VERIFIED_REQUESTS: '3',
+      FACTORYOS_DR_ERASURE_VERIFICATION_RESIDUALS: '0',
+      FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256: 'e'.repeat(64),
+      FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256: 'f'.repeat(64),
+      FACTORYOS_DR_ERASURE_VERIFY_METHOD: 'INDEPENDENT_READ_ONLY',
       FACTORYOS_DR_BACKUP_DURATION_SECONDS: '45',
       FACTORYOS_DR_RESTORE_DURATION_SECONDS: '120',
       FACTORYOS_DR_SOURCE_WATERMARK_UTC: '2026-10-20T09:59:50Z',
@@ -121,6 +143,12 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
     assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
     assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+    assert.equal(receipt.verification.erasureReplayStatus, 'PASS');
+    assert.equal(receipt.verification.erasureReplayLedgerSha256, 'd'.repeat(64));
+    assert.equal(receipt.verification.erasureReplayRequests, 3);
+    assert.equal(receipt.verification.erasureReplayResiduals, 0);
+    assert.equal(receipt.verification.erasureVerificationRequests, 3);
+    assert.equal(receipt.verification.erasureVerificationResiduals, 0);
     assert.equal(receipt.candidate.migrationManifestMode, 'PENDING');
     assert.equal(receipt.candidate.migrationManifestSha256, 'b'.repeat(64));
     assert.equal(receipt.candidate.migrationCount, 8);
@@ -251,6 +279,28 @@ test('PASS sign-off rejects an idempotent CI replay receipt as a production migr
 });
 
 
+
+test('PASS sign-off rejects restore evidence with unresolved erasure replay residuals', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-erasure-residuals-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.verification.erasureReplayResiduals = 1;
+    writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Restore erasure residual gate regression test.',
+      '--reference', 'CHG-DR-ERASURE-101',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /zero erasure replay residuals/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('PASS sign-off rejects a missing or malformed candidate commit SHA', () => {
   for (const sha of [null, 'not-a-commit-sha', 'a'.repeat(39), 'g'.repeat(40)]) {
