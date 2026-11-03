@@ -582,7 +582,7 @@ test('environment approval requires an exact reviewer comment to approve non-con
         ...entry,
         comment: 'Reviewed workload target: FACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600',
       }], {
-        args: ['--targets-approved', 'true', '--rpo-target-seconds', '300', '--rto-target-seconds', '3600'],
+        targetsApproved: 'true', rpoTargetSeconds: '300', rtoTargetSeconds: '3600',
       });
       assert.equal(approved.result.status, 0, approved.result.stderr);
       const attestation = JSON.parse(readFileSync(approved.output, 'utf8'));
@@ -635,13 +635,70 @@ test('PASS sign-off rejects approval evidence whose GitHub reviewer does not mat
   }
 });
 
-test('DR release-gate workflow verifies actual Environment approvals and restricts plaintext scratch to private tmpfs', () => {
+test('DR release-gate workflow verifies signed approved backup, Environment review and private tmpfs', () => {
   const workflow = readFileSync(productionWorkflow, 'utf8');
   const script = readFileSync(rehearsalScript, 'utf8');
   assert.match(workflow, /permissions:[\s\S]*actions: read/);
+  assert.match(workflow, /approved_backup_manifest_path/);
+  assert.match(workflow, /FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT/);
+  assert.match(workflow, /FACTORYOS_BACKUP_SOURCE_MODE=APPROVED_ARTIFACT/);
+  assert.match(workflow, /verify-approved-postgres-backup\.mjs/);
   assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/approvals/);
   assert.match(workflow, /verify-dr-environment-approval\.mjs/);
   assert.match(workflow, /FACTORYOS_DR_SECURE_TMPDIR/);
   assert.match(script, /findmnt[\s\S]*tmpfs/);
   assert.match(script, /secure_tmp_owner/);
+});
+
+
+test('PASS sign-off rejects a CI-generated live-source dump instead of an approved recovery-point artifact', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-live-dump-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.backup.sourceMode = 'LIVE_SOURCE_DUMP';
+    writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'A CI-generated live dump must not satisfy the approved backup gate.',
+      '--reference', 'CHG-DR-APPROVED-BACKUP-101',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /approved backup artifact source/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('PASS sign-off rejects missing approved backup signature and provenance evidence', () => {
+  const mutations = [
+    [evidence => { evidence.backup.signatureVerification = 'BAD_SIGNATURE'; }, /approved backup signature from pinned signer/],
+    [evidence => { evidence.backup.approvedManifestSha256 = null; }, /approved backup manifest digest/],
+    [evidence => { evidence.backup.approvedBackupSourceDatabaseIdentity = 'different-source'; }, /approved backup source identity/],
+    [evidence => { evidence.backup.approvedBackupCreatedAtUtc = '2026-10-20T10:00:26Z'; }, /approved backup creation time precedes incident/],
+  ];
+  for (const [mutate, expected] of mutations) {
+    const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-backup-provenance-'));
+    try {
+      const evidencePath = join(directory, 'receipt.json');
+      const evidence = sampleEvidence();
+      mutate(evidence);
+      writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
+      const result = run(process.execPath, [signoff,
+        '--evidence', evidencePath,
+        '--decision', 'PASS',
+        '--operator', 'DB Operator',
+        '--approver', 'Release Approver',
+        '--notes', 'Approved backup provenance regression contract.',
+        '--reference', 'CHG-DR-APPROVED-BACKUP-102',
+      ]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
 });
