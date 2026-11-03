@@ -929,7 +929,9 @@ jobs:
           node --check scripts/performance/api-soak-test.mjs
           node --check scripts/performance/api-soak-test.test.mjs
           node --check scripts/performance/observability-config.test.mjs
-          node --test scripts/performance/api-load-smoke.test.mjs scripts/performance/api-soak-test.test.mjs scripts/performance/observability-config.test.mjs
+          node --check scripts/performance/observability-slo-policy.mjs
+          node --check scripts/performance/observability-slo-policy.test.mjs
+          node --test scripts/performance/api-load-smoke.test.mjs scripts/performance/api-soak-test.test.mjs scripts/performance/observability-config.test.mjs scripts/performance/observability-slo-policy.test.mjs
 
       - name: Lint API
         working-directory: services/api
