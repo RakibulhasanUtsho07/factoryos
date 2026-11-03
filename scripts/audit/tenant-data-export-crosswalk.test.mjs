@@ -155,6 +155,15 @@ test("IAM exports only the dedicated logical remapping for direct and derived id
 });
 
 
+test("PostgreSQL CI invokes the export-column runtime grant through psql rather than as a shell option", async () => {
+  const files = await loadSources();
+  assert.match(
+    files.postgresWorkflow,
+    /psql "postgresql:\/\/postgres@127\.0\.0\.1:5432\/factoryos_test" \\\r?\n\s+-v ON_ERROR_STOP=1 -f scripts\/security\/grant-tenant-export-column-contract-runtime-access\.sql/,
+    "the runtime grant must execute as a psql input file after the app role exists",
+  );
+});
+
 test("generic export requires an immutable, versioned column contract before SELECT *", async () => {
   const files = await loadSources();
   const migration = files.columnContractMigration;
