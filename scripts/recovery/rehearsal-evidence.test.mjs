@@ -726,7 +726,7 @@ function createApprovedBackupFixture(directory) {
   const listing = execFileSync('gpg', ['--batch', '--with-colons', '--list-keys', 'dr-signer@example.invalid'], {
     env: gnupgEnv, encoding: 'utf8',
   });
-  const signerFingerprint = listing.split(/\\r?\\n/)
+  const signerFingerprint = listing.split(/\r?\n/)
     .find((line) => line.startsWith('fpr:'))?.split(':')[9];
   assert.match(signerFingerprint ?? '', /^[A-F0-9]{40}$/i);
   const artifactBytes = Buffer.from('synthetic encrypted PostgreSQL backup fixture');
@@ -744,7 +744,7 @@ function createApprovedBackupFixture(directory) {
     encryption: 'GPG',
     recipientFingerprint,
   };
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n', { mode: 0o600 });
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
   execFileSync('gpg', [
     '--batch', '--yes', '--local-user', signerFingerprint,
     '--detach-sign', '--output', signaturePath, manifestPath,
@@ -842,7 +842,7 @@ test('approved PostgreSQL backup verifier rejects a recovery point newer than th
     const fixture = createApprovedBackupFixture(directory);
     const manifest = JSON.parse(readFileSync(fixture.manifestPath, 'utf8'));
     manifest.backupCreatedAtUtc = '2026-10-20T10:00:01Z';
-    writeFileSync(fixture.manifestPath, JSON.stringify(manifest, null, 2) + '\\n', { mode: 0o600 });
+    writeFileSync(fixture.manifestPath, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
     execFileSync('gpg', [
       '--batch', '--yes', '--local-user', fixture.signerFingerprint,
       '--detach-sign', '--output', fixture.signaturePath, fixture.manifestPath,
