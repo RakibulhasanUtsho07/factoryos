@@ -128,6 +128,8 @@ test('SCIM adapter is tenant-scoped, deprovision-only, fail-closed and audited t
   assert.match(service, /Users:write/);
   assert.match(controller, /SkipApiResponse/);
   assert.match(controller, /application\/scim\+json/);
+  const main = await read('services/api/src/main.ts');
+  assert.match(main, /application\/scim\+json/);
   assert.match(migration, /ENABLE ROW LEVEL SECURITY/);
   assert.match(migration, /FORCE ROW LEVEL SECURITY/);
   assert.match(migration, /AS PERMISSIVE/);
