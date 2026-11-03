@@ -90,3 +90,120 @@ Treat the final SRS §131 P0 requirements and §135 scenarios AS-132–AS-141 as
 ## OT / OPC UA / MQTT / Modbus commissioning gate
 
 Migrations 157–158 and 191–193 plus the OT API adapters establish bounded protocol/API and device-gateway control-plane contracts, not a production-commissioned industrial connector. Before production use, deploy and review the trusted OT gateway; map every config:// reference to approved endpoints and secrets in the gateway trust zone; restrict routes to explicitly approved controllers/brokers; confirm OPC UA certificate policy, MQTT TLS/ACL/topic and QoS 1 settings, and Modbus unit/register/address/data-type conventions. Provision the durable spool encryption key through secret management, protect its dedicated directory and capacity, ensure a broker delivery is not acknowledged until durably spooled, and ensure a spool item is not removed until all source IDs receive a validated telemetry API acknowledgement. Exercise network loss, reconnect storms, timeout, invalid acknowledgements, response loss after database commit, duplicate delivery, source sequence gaps, retry-ceiling quarantine, manual requeue, wrong key, corrupted spool, full disk, tenant/factory isolation and controller/broker HIL behavior. This repository change does not contain a live OPC UA/MQTT/Modbus session driver or certify hardware-in-the-loop behavior; retain commissioning evidence, rollback/recovery procedure and operator approval before connecting production equipment.
+
+
+## AWS ElastiCache node-based and Serverless backup inventory status
+
+The ElastiCache reader now enumerates two separate native API families for explicitly supplied, identity-verified account/region scopes:
+
+- Node-based Redis OSS/Valkey: `DescribeCacheClusters`, `DescribeReplicationGroups`, `DescribeGlobalReplicationGroups`, and `DescribeSnapshots`.
+- ElastiCache Serverless: `DescribeServerlessCaches` and `DescribeServerlessCacheSnapshots`, including Redis OSS, Valkey and Serverless Memcached cache metadata, snapshot provider ARNs, status/type, create/expiry timestamps, and reported bytes used.
+
+Both API families use AWS SigV4 and a dedicated STS-verified reader role. Node-based Marker pagination and Serverless NextToken pagination are exhausted independently, with shared bounded request/page/item budgets, per-page local receipt references, repeated-token detection and explicit partial blockers. The reader policy template allows only the six corresponding Describe actions and explicitly denies every other action.
+
+The node-based and Serverless completion signals are separate. A denied or incomplete Serverless catalog leaves a completed node-based catalog distinguishable but makes overall inventory status PARTIAL. A snapshot ARN/hash is only a correlation reference; the inventory has no provider mutation, copy, restore or Delete API and does not authorize retention/deletion.
+
+This still does not enumerate self-managed Redis/Valkey AOF/RDB files, EBS/filesystem/volume snapshots, copied/exported snapshot destinations, AWS Backup-managed recovery points, S3 object-version backup copies or all external DR replicas. It does not discover all organization accounts/regions on its own; the caller must provide complete scopes. A mocked COMPLETE status proves only the queried catalogs for those supplied scopes.
+
+**Release disposition:** repository-level mocked API evidence only. AWS role provisioning, independent effective trust/permission review, organization and enabled-region coverage, live provider capture, controlled restore, Global Datastore failover/replication acceptance and every separately managed copy class remain unaccepted. Issue #298 stays OPEN; AS-137 / NFR-PROD-14 stay PARTIAL. Do not infer whole-cache or whole-tenant erasure proof from the node-based and Serverless inventory.
+
+
+## AWS Backup vault, recovery-point and legal-hold inventory status
+
+The separate AWS Backup reader enumerates \`BACKUP_VAULT\`, \`LOGICALLY_AIR_GAPPED_BACKUP_VAULT\` and \`RESTORE_ACCESS_BACKUP_VAULT\` records with \`ListBackupVaults\` / \`DescribeBackupVault\`. It exhausts \`ListRecoveryPointsByBackupVault\` for each discovered vault and captures recovery-point status, create/complete/restore timestamps, lifecycle, calculated deletion/cold-storage dates, encryption metadata and \`SourceBackupVaultArn\`. Logically air-gapped vault relationships to restore-access vaults are read with \`ListRestoreAccessBackupVaults\`.
+
+Legal holds are inventoried with \`ListLegalHolds\` and \`GetLegalHold\`; recovery-point memberships are separately enumerated with \`ListRecoveryPointsByLegalHold\`. The output preserves the many-to-many relationship and does not infer retention approval from an ACTIVE status. Every list API uses bounded NextToken pagination; STS verifies the exact account and dedicated reader-role name before provider reads.
+
+The dedicated reader policy grants only the required AWS Backup List/Describe/Get calls plus STS identity verification and explicitly denies all other actions. It does not grant backup/copy/restore/delete or legal-hold mutation permissions. Mocked API tests do not prove live IAM deployment, complete organization/Region discovery or actual restoreability.
+
+The AWS Backup adapter enumerates copy-job records only while AWS retains them (terminal records are removed 30 days after completion) and only within explicit, STS-verified account/Region scopes. It does not infer full organization scope, recover expired job history, or prove destination readiness from job metadata alone. All destination account/Region scopes must be supplied separately; unmatched source/destination vault or recovery-point references remain explicit gaps. Self-managed AOF/RDB/WAL/volume copies and external DR stores remain separate copy classes. AWS documents that terminal copy-job records are removed 30 days after they finish; longer-lived status evidence must be retained independently (for example, a reviewed EventBridge/CloudTrail evidence pipeline).
+
+**Release disposition:** mocked/repository-level evidence only. Live role provisioning, independent effective-policy review, complete scope proof, approved copy and restore rehearsals, and external copy-class reconciliation remain outstanding. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL. See [AWS Backup vault and recovery-point inventory](aws-backup-vault-recovery-point-inventory.md).
+
+## AWS Backup managed copy-job and destination coverage
+
+The AWS Backup reader now exhausts `ListCopyJobs` and retrieves every listed job with `DescribeCopyJob` for each explicitly supplied, STS-verified account/Region. It records source and destination backup-vault/recovery-point ARNs, job state/timestamps, destination encryption, Vault Lock/type and lifecycle metadata. `aws_backup_copy_job_catalog_enumerated` and `copy_job_destination_reconciliation_complete` are separate signals: the latter remains false when a source or destination scope is missing, a referenced vault/recovery point is absent from the corresponding catalog, or any copy job is malformed/incomplete.
+
+Before production acceptance, the cloud owner must enable and validate AWS Backup cross-account monitoring where used, account for its opt-in date boundary, provide all source and destination account/Region scopes, and verify each dedicated reader role's effective permission. Cross-account aggregation is not proof of pre-opt-in job history or of complete Organizations/Region enumeration. Destination recovery points must be independently enumerated and assessed for encryption, Vault Lock/retention, legal holds and controlled restore. Provider-reported `COMPLETED` is not restore acceptance.
+
+Only `backup:ListCopyJobs` and `backup:DescribeCopyJob` are added to the reader policy. AWS publishes no resource type for these read actions, so their allow statements use `Resource: "*"`; the explicit `NotAction` deny fence remains in place. No copy, restore, start, stop, delete, vault mutation or legal-hold mutation API is granted or implemented.
+
+Two companion CloudFormation contracts now define the retention path for history beyond AWS Backup's 30-day copy-job API window: an indefinite EventBridge Copy Job State Change archive per account/Region, and a multi-Region CloudTrail trail per account writing integrity-validated logs/digests into a KMS-encrypted, versioned S3 bucket with a mandatory owner-selected Object Lock Compliance duration. The regional archive and trail are **not deployed**; best-effort delivery is not loss-free, CloudTrail digest validation must be executed and retained, and the cold-start baseline must capture the overlapping current ListCopyJobs window plus any available 90-day regional CloudTrail Event history. The approved retention duration is intentionally not guessed or defaulted.
+
+Repository structural test: `scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs`; dedicated workflow: `.github/workflows/aws-backup-copy-job-event-retention-contract.yml`. Passing this test validates template shape only, not AWS resource creation, event delivery, key policy or live Object Lock behavior. Neither archive backfills pre-activation events. Before declaring an evidence period covered, record a cold-start baseline from current ListCopyJobs and the available per-Region 90-day CloudTrail Event history, then retain explicit gaps before first verified archive/trail delivery. CloudTrail log-file integrity validation must be executed and preserved; enabling the trail setting only causes digest files to be delivered.
+
+**Release disposition:** mocked API contract evidence only. No live AWS role, account aggregation, copy job, destination recovery point or restore was exercised. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL.
+
+## Audit retention SCP guardrail
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
+
+## AWS Backup retained-history read-back
+
+PR #316 adds a bounded EventBridge replay capture filtered to one isolated SQS target, CloudTrail standard/backfill digest verification, exact S3 object-version/Object Lock/KMS read-back, duplicate-safe source reconciliation and detached Ed25519 owner attestation. See docs/aws-backup-copy-job-audit-reconciliation.md. Repository CI is not live AWS acceptance: deployment/read-back/digest/replay/SQS-DLQ/Object Lock rehearsal and independent review remain NOT ACCEPTED until real account evidence is supplied. historicalLedgerComplete=false, exhaustiveCopyClassCoverage=false; AS-137 / NFR-PROD-14 remains PARTIAL.
+
+
+## AWS ElastiCache Serverless backup inventory status
+
+PR #312 extends the node-based Redis OSS/Valkey inventory with `DescribeServerlessCaches` and `DescribeServerlessCacheSnapshots` for explicitly supplied, STS-verified scopes. The reader captures Serverless Redis OSS, Valkey and Memcached metadata, snapshot provider ARNs, status/type, create/expiry timestamps and bytes used. It separately tracks node-based and Serverless completeness; incomplete Serverless scans keep overall status PARTIAL even when the node-based catalog is complete. Node-based Marker and Serverless NextToken pagination use shared bounded budgets and fail closed on repeated or malformed tokens.
+
+This remains repository-level mocked evidence. Self-managed AOF/RDB, EBS/filesystem/volume backups, exported/copied snapshot destinations, AWS Backup recovery points, S3 versions and all external DR copies remain out of scope. No restore, failover, AWS role provisioning or effective permission acceptance is claimed. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL.
+
+
+## AWS Backup vault, recovery-point and legal-hold inventory status
+
+The separate AWS Backup reader enumerates `BACKUP_VAULT`, `LOGICALLY_AIR_GAPPED_BACKUP_VAULT` and `RESTORE_ACCESS_BACKUP_VAULT` records with `ListBackupVaults` / `DescribeBackupVault`. It exhausts `ListRecoveryPointsByBackupVault` for each discovered vault and captures recovery-point status, create/complete/restore timestamps, lifecycle, calculated deletion/cold-storage dates, encryption metadata and `SourceBackupVaultArn`. Logically air-gapped vault relationships to restore-access vaults are read with `ListRestoreAccessBackupVaults`.
+
+Legal holds are inventoried with `ListLegalHolds` and `GetLegalHold`; recovery-point memberships are separately enumerated with `ListRecoveryPointsByLegalHold`. The output preserves the many-to-many relationship and does not infer retention approval from an ACTIVE status. Every list API uses bounded NextToken pagination; STS verifies the exact account and dedicated reader-role name before provider reads.
+
+The dedicated reader policy grants only the required AWS Backup List/Describe/Get calls plus STS identity verification and explicitly denies all other actions. It does not grant backup/copy/restore/delete or legal-hold mutation permissions. Mocked API tests do not prove live IAM deployment, complete organization/Region discovery or actual restoreability.
+
+The adapter does **not** enumerate AWS Backup copy-job history, all cross-account/Region destinations unless those scopes are supplied, self-managed AOF/RDB/WAL/volume copies or external DR stores. Source-vault ARNs outside supplied scopes and unmatched legal-hold relationships create explicit blockers. Whole-backup coverage and deletion authorization remain false.
+
+**Release disposition:** mocked/repository-level evidence only. Live role provisioning, independent effective-policy review, complete scope proof, approved copy and restore rehearsals, and external copy-class reconciliation remain outstanding. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL. See [AWS Backup vault and recovery-point inventory](aws-backup-vault-recovery-point-inventory.md).
+
+
+## AWS Backup managed copy-job and destination coverage
+
+The AWS Backup reader now exhausts `ListCopyJobs` and retrieves every listed job with `DescribeCopyJob` for each explicitly supplied, STS-verified account/Region. It records source and destination backup-vault/recovery-point ARNs, job state/timestamps, destination encryption, Vault Lock/type and lifecycle metadata. `aws_backup_copy_job_catalog_enumerated` and `copy_job_destination_reconciliation_complete` are separate signals: the latter remains false when a source or destination scope is missing, a referenced vault/recovery point is absent from the corresponding catalog, or any copy job is malformed/incomplete.
+
+Before production acceptance, the cloud owner must enable and validate AWS Backup cross-account monitoring where used, account for its opt-in date boundary, provide all source and destination account/Region scopes, and verify each dedicated reader role's effective permission. Cross-account aggregation is not proof of pre-opt-in job history or of complete Organizations/Region enumeration. Destination recovery points must be independently enumerated and assessed for encryption, Vault Lock/retention, legal holds and controlled restore. Provider-reported `COMPLETED` is not restore acceptance.
+
+Only `backup:ListCopyJobs` and `backup:DescribeCopyJob` are added to the reader policy. AWS publishes no resource type for these read actions, so their allow statements use `Resource: "*"`; the explicit `NotAction` deny fence remains in place. No copy, restore, start, stop, delete, vault mutation or legal-hold mutation API is granted or implemented.
+
+**Release disposition:** mocked API contract evidence only. No live AWS role, account aggregation, copy job, destination recovery point or restore was exercised. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL.
+
+
+## AWS Backup copy-job history retention and audit guardrail
+
+Two companion CloudFormation contracts define a retention path beyond AWS Backup's 30-day copy-job API window: an indefinite EventBridge Copy Job State Change archive per account/Region, and a multi-Region CloudTrail trail per account writing integrity-validated logs/digests into a KMS-encrypted, versioned S3 bucket with a mandatory owner-selected Object Lock Compliance duration. The regional archive and trail are **not deployed**; best-effort delivery is not loss-free, CloudTrail digest validation must be executed and retained, and the cold-start baseline must capture the overlapping current ListCopyJobs window plus any available 90-day regional CloudTrail Event history. The approved retention duration is intentionally not guessed or defaulted.
+
+Repository structural test: `scripts/audit/aws-backup-copy-job-event-retention-contract.test.mjs`; dedicated workflow: `.github/workflows/aws-backup-copy-job-event-retention-contract.yml`. Passing this test validates template shape only, not AWS resource creation, event delivery, key policy or live Object Lock behavior. Neither archive backfills pre-activation events. Before declaring an evidence period covered, record a cold-start baseline from current ListCopyJobs and the available per-Region 90-day CloudTrail Event history, then retain explicit gaps before first verified archive/trail delivery. CloudTrail log-file integrity validation must be executed and preserved; enabling the trail setting only causes digest files to be delivered.
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
+**Release disposition:** template-contract evidence only. Live AWS deployment, log/event delivery, digest-chain verification, Object Lock behavior, KMS policy, SCP attachment and independent governance review remain outstanding.
+
+
+## AWS Backup retained-history read-back
+
+PR #316 adds a bounded EventBridge replay capture filtered to one isolated SQS target, CloudTrail standard/backfill digest verification, exact S3 object-version/Object Lock/KMS read-back, duplicate-safe source reconciliation and detached Ed25519 owner attestation. See [AWS Backup copy-job audit read-back and reconciliation](aws-backup-copy-job-audit-reconciliation.md). Repository CI is not live AWS acceptance: deployment/read-back/digest/replay/SQS-DLQ/Object Lock rehearsal and independent review remain NOT ACCEPTED until real account evidence is supplied. `historicalLedgerComplete=false`, `exhaustiveCopyClassCoverage=false`; AS-137 / NFR-PROD-14 remains PARTIAL.
+
+## Backup writer-fence and external copy-class evidence — migrations 219–233
+
+The current `rakibul-hasan` integration candidate adds an immutable external-resource identity/receipt manifest (219), reciprocal legal-hold and propagation race fences (220–221), tenant/category backup writer-fence and reviewed writer-principal inventory (222–223), provider acceptance and release-confirmation gates (224–225), bounded external copy-class coverage/reconciliation/attestation and an unclassified-store catch-all (226–232), and an immutable tenant-export column contract (233). The ordered `scripts/audit/migration-manifest.txt` is authoritative; CI validates the complete manifest and its hash before applying DDL.
+
+The S3 tenant-backup erasure preflight requires an accepted writer-principal inventory and a current, fully passing provider-acceptance record; it rechecks those records before prepare, mutation and verification. Writer-epoch release remains blocked until provider Deny removal is independently read back. Copy-class evidence uses canonical Ed25519 signatures and a deployment-owned artifact reference; the API reads the source bytes itself, applies SHA-256 verification, opens without following symlinks, rejects hard links and writable/non-regular files, and enforces bounded artifact size. The Linux runtime additionally checks the exact evidence-root and artifact mounts in `/proc/self/mountinfo` for per-mount `ro`.
+
+Kubernetes v1.30+ admission policies cover the dedicated read-only evidence PVC/Pod, tokenless API ServiceAccount, legacy token Secrets and namespace-enrollment lock. CI runs disposable Kubernetes 1.35, 1.36 and 1.37 admission tests, but those tests do not provision or attest a production cluster.
+
+**Release disposition:** repository contracts and mocked provider evidence only. The production cluster provisioner has not supplied independently reviewed runtime mount/namespace evidence; live S3 policy-deny/read-back, CopyObject/multipart/replication writer coverage, delayed-writer/crash/tombstone scenarios, restore-after-replay, complete producer identity and every external copy class remain outstanding. Keep AS-137 / NFR-PROD-14 **PARTIAL** and do not treat a passing CI gate as authorization to erase provider data.
+
+## Migration manifest reconciliation across release branches
+
+This `rakibul-hasan` candidate contains migration 213 plus the ordered WP10 sequence 219–233. Migrations 214–218 (tenant export/transfer and external-erasure outcomes) currently exist only on `main`; preserve them when reconciling the verified `dev` candidate with `main`. The final main candidate must contain the union of the main-only 214–218 changes and the dev-side 219–233 changes in reviewed dependency order, with the manifest validator and full PostgreSQL CI passing on that exact SHA. Never drop or renumber the main-only migrations to make the branch graph appear linear.

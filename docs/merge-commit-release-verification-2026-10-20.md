@@ -128,3 +128,12 @@ The PostgreSQL workflow on `c0cdefdcbdd3ad17befdb9476bfcd22efa41f66d` re-ran `sc
 
 The dependency promotion passed repository CI. This remains separate from production release authorization and does not change the OPEN / NOT_ACCEPTED status of SRS FR-MSO-03 and FR-MSO-05 pending live-provider acceptance evidence and independent sign-off.
 
+## 2026-10-31 — structured external-store inventory evidence gate
+
+The external copy-coverage catch-all `UNCLASSIFIED_EXTERNAL_STORE` now has a stricter evidence contract. A signed `NOT_APPLICABLE` assertion is accepted only when the exact read-only evidence artifact is a valid `factoryos.external-store-inventory/v1` manifest, checked at submission, independent ACCEPT review, and propagation/recovery checkpoints.
+
+The manifest is tenant/category-bound and carries a canonical scope digest over provider, account, project and region references. It must include one current, complete and pagination-exhausted receipt for each of seven discovery source classes: tenant scope catalog, resource type catalog, IAM writer principals, replication/delivery, scheduled/delayed writers, restore/DR paths, and secondary external stores. Unknown store counts must be zero and every discovered store kind must be in the current catalog. The evidence signer now refuses to sign a sentinel `NOT_APPLICABLE` claim when these checks fail. Regression tests cover missing/duplicate sources, pagination gaps, stale evidence, scope mismatch, unknown kinds and a re-signed incomplete manifest; the propagation test asserts no adapter prepare/delete call occurs.
+
+Implementation and operator format: [external-store inventory evidence manifest](external-store-inventory-evidence.md).
+
+**Evidence boundary:** this validates the structure, freshness, tenant/category binding and digest integrity of an owner-attested evidence artifact. It does not independently query or authenticate cloud-provider APIs, establish that a malicious owner enumerated every account/region, or defeat privileged cloud/storage administrators. Provider-native discovery receipts, cross-account read-only discovery and independent infrastructure review remain separate acceptance requirements. AS-137 / NFR-PROD-14 remain **PARTIAL** until those real-world controls and provider staging are independently evidenced.

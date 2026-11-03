@@ -1,6 +1,8 @@
 import { jest } from '@jest/globals';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
 const requester = '16010000-0000-4000-8000-000000000001';
@@ -22,6 +24,7 @@ describe('SaasTenantPropagationService', () => {
   const adapter = {
     storeKind: 'OBJECT_STORAGE' as const,
     adapterKey: 'object-store.v1',
+    adapterVersion: '1.0.0',
     isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
     prepare: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     erase: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
@@ -64,9 +67,11 @@ describe('SaasTenantPropagationService', () => {
       }
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: [] };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: [] };
       throw new Error('unexpected SQL in no-target closure test: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, [adapter as never]);
+    const testMountVerifier: BackupCopyEvidenceMountVerifier = { assertPathMountedReadOnly: async () => undefined };
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(testMountVerifier as never), [adapter as never]);
   });
 
   it('does not call a provider or complete erasure when a required external-copy class has no reviewed target', async () => {
@@ -83,6 +88,63 @@ describe('SaasTenantPropagationService', () => {
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='VERIFIED'"))).toBe(false);
     expect(audit.recordWithClient).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate a CACHE target while no matching provider adapter is registered', async () => {
+    database.query.mockResolvedValue({
+      rows: [{
+        id: '16050000-0000-4000-8000-000000000001',
+        tenant_id: tenant,
+        target_id: 'cache-main',
+        store_kind: 'CACHE',
+        adapter_key: 'cache.redis.v1',
+        config_reference: 'factoryos-cache-prod-v1',
+        categories: ['BUSINESS_DATA'],
+        required: true,
+        status: 'PENDING',
+        registered_by_user_id: requester,
+      }],
+    } as never);
+
+    await expect(service.reviewTarget(tenant, reviewer, 'cache-main', {
+      decision: 'APPROVE',
+      expected_status: 'PENDING',
+      reason: 'Provider integration is not installed',
+    })).rejects.toThrow('No provider adapter registered for target cache-main');
+
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate a registered adapter when its deployment configuration is unavailable', async () => {
+    const targetRow = {
+      id: '16050000-0000-4000-8000-000000000002',
+      tenant_id: tenant,
+      target_id: 'object-store-main',
+      store_kind: 'OBJECT_STORAGE',
+      adapter_key: 'object-store.v1',
+      config_reference: 'factoryos-object-store-prod-v1',
+      categories: ['BUSINESS_DATA'],
+      required: true,
+      status: 'PENDING',
+      registered_by_user_id: requester,
+    };
+    database.query.mockResolvedValue({ rows: [targetRow] } as never);
+    adapter.isConfigured.mockResolvedValue(false);
+
+    await expect(service.reviewTarget(tenant, reviewer, 'object-store-main', {
+      decision: 'APPROVE',
+      expected_status: 'PENDING',
+      reason: 'Config reference must resolve before activation',
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(adapter.isConfigured).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: tenant,
+      targetId: 'object-store-main',
+      storeKind: 'OBJECT_STORAGE',
+      adapterKey: 'object-store.v1',
+      configReference: 'factoryos-object-store-prod-v1',
+    }));
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
   it('requires a propagation actor distinct from the requester, reviewer and PostgreSQL executor', async () => {
