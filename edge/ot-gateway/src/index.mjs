@@ -198,10 +198,11 @@ function resolveModbusProfile(config, body) {
   return { profile, registers, requestId: body.request_id };
 }
 
-function allSecretPaths(config) {
+export function allSecretPaths(config) {
   return [
     config.security.serverCertFile,
     config.security.serverKeyFile,
+    ...(config.security.clientCaFile ? [config.security.clientCaFile] : []),
     ...(config.mqtt ? [config.mqtt.caFile, config.mqtt.clientCertFile, config.mqtt.clientKeyFile] : []),
     ...config.opcua.flatMap((device) => [device.serverCaFile, device.clientCertFile, device.clientKeyFile]),
   ];
