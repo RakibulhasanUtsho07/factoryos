@@ -120,6 +120,10 @@ describe('PostgresFinanceRetentionInventoryAdapter', () => {
       verifiedManifestDigest: result.manifestDigest,
       residualRows: '0',
     });
+    expect(database.transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ tenantId: tenant, isolationLevel: 'REPEATABLE READ', readOnly: true }),
+    );
     const countCalls = database.query.mock.calls.filter((call) =>
       String(call[0]).includes('bounded_finance_retention_inventory'));
     expect(countCalls).toHaveLength(POSTGRES_FINANCE_RETENTION_RELATIONS.length * 2);
