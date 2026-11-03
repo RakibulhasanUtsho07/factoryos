@@ -734,16 +734,27 @@ describe('SaasTenantPropagationService external saga', () => {
     expect(storedResourceManifests.some((manifest) => manifest.target_id === 'target-OBJECT_STORAGE')).toBe(false);
   });
 
-  it('fails closed before any inventory when backup writer-fence acquisition fails', async () => {
+  it('persists BLOCKED outcomes and starts no inventory when backup writer-fence acquisition fails', async () => {
     backupFenceCoordinator.beginPropagationFence.mockImplementationOnce(async () => {
       operationSequence += 1;
       firstFenceOrder = operationSequence;
       throw new Error('provider policy read-back unavailable');
     });
-    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
       expected_version: 4, reason: 'Require backup fence before inventory', idempotency_key: 'external-propagation-fence-fails',
-    })).rejects.toThrow('provider policy read-back unavailable');
+    });
+
+    expect(result).toMatchObject({
+      wholeTenantErasureVerified: false,
+      request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL' },
+    });
     expect(firstFenceOrder).toBeGreaterThan(0);
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.every((receipt) =>
+      receipt.status === 'FAILED' && receipt.outcome_code === 'BLOCKED'
+      && receipt.manifest_kind === 'SCOPE_INTENT',
+    )).toBe(true);
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).not.toHaveBeenCalled();
       expect(adapter.erase).not.toHaveBeenCalled();

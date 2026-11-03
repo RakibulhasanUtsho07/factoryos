@@ -470,31 +470,6 @@ export class SaasTenantPropagationService {
       };
     }
 
-    // Acquire every BACKUP category fence after the RUNNING run is durable,
-    // but before any adapter inventories or mutates an external store. The
-    // coordinator installs/read-backs the provider deny before returning.
-    const backupTargets = prepared.targets.filter((target) => target.storeKind === 'BACKUP');
-    const backupFenceCategories = [...new Set(backupTargets.flatMap((target) =>
-      target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
-    ))].sort();
-    if (backupTargets.length > 0 && !this.backupWriterFenceCoordinator) {
-      throw new ServiceUnavailableException('Required backup writer-fence coordinator is not registered; external propagation is halted before provider inventory');
-    }
-    // Acquire every target's exact scope before entering the adapter loop. Different
-    // category targets may use different reviewed provider configuration/adapter bindings.
-    for (const target of backupTargets) {
-      const targetCategories = [...new Set(target.categories.filter((category) =>
-        this.parseCategories(prepared.request.categories).includes(category)))].sort();
-      if (targetCategories.length === 0) continue;
-      await this.backupWriterFenceCoordinator!.beginPropagationFence({
-        tenantId, requestId, requestVersion: Number(prepared.request.version),
-        runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
-        categories: targetCategories, actorUserId,
-        configReference: target.configReference, adapterKey: target.adapterKey,
-        adapterVersion: this.adapterFor(target).adapterVersion,
-      });
-    }
-
     let currentManifest = this.jsonObject(prepared.run.external_manifest);
     currentManifest.activeLegalHoldCategories = prepared.activeLegalHoldCategories;
     currentManifest.policyBlockedCategories = prepared.policyBlockedCategories;
@@ -507,12 +482,55 @@ export class SaasTenantPropagationService {
     const preflightFailureReasons = new Map<string, string>();
     const preflightByTarget = new Map<string, SaasExternalPropagationPreflight>();
 
+    // Install/read back every BACKUP writer fence before any provider inventory begins.
+    // Fence failures become durable BLOCKED receipts and halt the complete preparation
+    // phase; they do not throw away the RUNNING run or leave an unrecorded failure.
+    const backupTargets = prepared.targets.filter((target) => target.storeKind === 'BACKUP');
+    for (const target of backupTargets) {
+      const targetCategories = [...new Set(target.categories.filter((category) =>
+        this.parseCategories(prepared.request.categories).includes(category)))].sort();
+      if (targetCategories.length === 0) continue;
+      try {
+        const adapter = this.adapters.find((candidate) =>
+          candidate.storeKind === target.storeKind && candidate.adapterKey === target.adapterKey);
+        if (!adapter) throw new ServiceUnavailableException(
+          'No provider adapter registered for backup writer-fence target ' + target.targetId,
+        );
+        if (!this.backupWriterFenceCoordinator) {
+          throw new ServiceUnavailableException(
+            'Required backup writer-fence coordinator is not registered; provider inventory is blocked',
+          );
+        }
+        await this.backupWriterFenceCoordinator.beginPropagationFence({
+          tenantId, requestId, requestVersion: Number(prepared.request.version),
+          runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
+          categories: targetCategories, actorUserId,
+          configReference: target.configReference, adapterKey: target.adapterKey,
+          adapterVersion: adapter.adapterVersion,
+        });
+      } catch (error) {
+        preflightFailureCodes[target.targetId] = this.failureCode(error);
+        preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+        preflightFailureReasons.set(target.targetId,
+          'Backup writer-fence installation/read-back failed; no provider inventory or deletion was started.');
+      }
+    }
+    const backupWriterFenceBarrierFailed = Object.keys(preflightFailureCodes).length > 0;
+
     // Global barrier: prepare and seal every remaining target resource manifest, then
     // recover every previous attempt. No adapter.erase() is reachable until all targets
     // pass this phase, so a late target inventory failure cannot follow an earlier delete.
     for (const target of prepared.targets) {
       const previous = latestReceiptByTarget.get(target.targetId);
       if (previous?.status === 'VERIFIED') continue;
+      if (preflightFailureCodes[target.targetId]) continue;
+      if (backupWriterFenceBarrierFailed) {
+        preflightFailureCodes[target.targetId] = 'BACKUP_WRITER_FENCE_BARRIER_BLOCKED';
+        preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+        preflightFailureReasons.set(target.targetId,
+          'A required backup writer fence failed installation/read-back; the global provider preparation barrier remained closed.');
+        continue;
+      }
       if (prepared.activeLegalHoldCategories.length > 0) {
         preflightFailureCodes[target.targetId] = 'ACTIVE_LEGAL_HOLD';
         preflightFailureOutcomes.set(target.targetId, 'RETAINED');
