@@ -202,8 +202,11 @@ export class SaasTenantFinanceRetentionService {
       }
       const verified = await this.adapter.verify(context, result);
       if (result.failureCode) {
+        if (!/^[A-Z][A-Z0-9_]{1,99}$/.test(result.failureCode)) {
+          throw new ConflictException('Finance adapter failureCode must be a bounded uppercase code');
+        }
         status = 'BLOCKED';
-        failureCode = this.key(result.failureCode, 'failureCode');
+        failureCode = result.failureCode;
       } else if (!DIGEST.test(verified.verifiedManifestDigest) || verified.verifiedManifestDigest !== result.manifestDigest
         || !OPAQUE.test(verified.verificationReference) || verified.residualRows !== '0' || residualRows !== '0'
         || (mode === 'DRY_RUN' && deletedRows !== '0')
