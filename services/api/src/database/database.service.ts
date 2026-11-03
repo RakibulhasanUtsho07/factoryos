@@ -48,6 +48,9 @@ export interface DatabaseContext {
   /** Optional per-operation isolation; default transaction behavior is unchanged. */
   isolationLevel?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
 
+  /** Enforce PostgreSQL transaction-level read-only mode before the snapshot is used. */
+  readOnly?: boolean;
+
   /** Acquire a session advisory lock before BEGIN/snapshot creation, then release it. */
   advisoryLockKey?: string | null;
 }
@@ -402,8 +405,9 @@ export class DatabaseService
       const beginStatement = isolationLevel
         ? `BEGIN ISOLATION LEVEL ${isolationLevel}`
         : 'BEGIN';
+      const transactionStatement = context?.readOnly ? beginStatement + ' READ ONLY' : beginStatement;
 
-      await client.query(beginStatement);
+      await client.query(transactionStatement);
 
       // --------------------------------------------------------
       // TRANSACTION-LOCAL RLS CONTEXT
