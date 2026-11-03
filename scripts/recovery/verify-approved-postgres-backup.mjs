@@ -85,6 +85,7 @@ if (manifest.artifactFileName !== basename(artifactPath)) fail('approved manifes
 if (manifest.sourceDatabaseIdentity !== args['source-database-identity']) fail('approved backup source database identity does not match the connected source');
 if (manifest.backupTool !== 'pg_dump') fail('approved manifest must identify pg_dump as the backup tool');
 if (typeof manifest.pgDumpVersion !== 'string' || !manifest.pgDumpVersion.trim()) fail('approved manifest is missing the source pg_dump version');
+if (!Number.isSafeInteger(manifest.backupDurationSeconds) || manifest.backupDurationSeconds < 0) fail('approved backup manifest must record a non-negative measured backupDurationSeconds');
 if (typeof manifest.sourceServerVersion !== 'string' || !manifest.sourceServerVersion.trim()) fail('approved manifest is missing the source PostgreSQL server version');
 if (manifest.encryption !== 'GPG') fail('approved backup must declare GPG encryption');
 if (typeof manifest.recipientFingerprint !== 'string' || !/^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$/.test(manifest.recipientFingerprint)) {
@@ -133,6 +134,7 @@ const approval = {
   backupCreatedAtUtc: manifest.backupCreatedAtUtc,
   backupTool: manifest.backupTool,
   pgDumpVersion: manifest.pgDumpVersion,
+  backupDurationSeconds: manifest.backupDurationSeconds,
   sourceServerVersion: manifest.sourceServerVersion,
   encryption: manifest.encryption,
   recipientFingerprint: manifest.recipientFingerprint.toUpperCase(),
