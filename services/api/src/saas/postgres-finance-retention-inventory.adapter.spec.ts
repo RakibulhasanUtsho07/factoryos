@@ -32,6 +32,12 @@ function createDatabase(options: {
   deleteGuardMissingTable?: string;
 } = {}) {
   const query = jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>();
+  const transaction = jest.fn<(...args: unknown[]) => Promise<unknown>>();
+  transaction.mockImplementation(async (...args: unknown[]) => {
+    const callback = args[0] as ((client: unknown) => Promise<unknown>) | undefined;
+    if (!callback) throw new Error('read-only inventory must run in a transaction');
+    return callback({ query });
+  });
   query.mockImplementation(async (...args: unknown[]) => {
     const sql = String(args[0]);
     const values = (args[1] ?? []) as unknown[];
@@ -54,7 +60,7 @@ function createDatabase(options: {
     }
     throw new Error('unexpected finance inventory SQL: ' + sql);
   });
-  return { query } as unknown as DatabaseService & { query: typeof query };
+  return { query, transaction } as unknown as DatabaseService & { query: typeof query; transaction: typeof transaction };
 }
 
 describe('PostgresFinanceRetentionInventoryAdapter', () => {
