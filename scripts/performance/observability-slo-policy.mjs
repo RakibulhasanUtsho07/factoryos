@@ -242,7 +242,7 @@ export function validateAlertRules(policy, rulesText) {
 
   const expectedLabel = policy.status === 'APPROVED' ? 'approved' : 'proposed';
   for (const block of blocks) {
-    if (!new RegExp('policy_status:\s*' + expectedLabel + '\b').test(block.text)) {
+    if (!block.text.split(/\r?\n/).some((line) => line.trim() === 'policy_status: ' + expectedLabel)) {
       errors.push('alert ' + block.name + ' must use policy_status: ' + expectedLabel);
     }
   }
