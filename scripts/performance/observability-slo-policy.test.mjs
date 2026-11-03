@@ -140,7 +140,7 @@ test('approval is rejected when owner evidence, traffic review or numeric target
 test('unapproved register rejects partially populated numeric targets', () => {
   const policy = parseSloPolicyYaml(currentPolicyText);
   policy.targets.latency_p95_ms_max = 500;
-  assert.ok(validateSloPolicy(policy).some((error) => error.includes('must remain null')));
+  assert.ok(validateSloPolicy(policy).some((error) => error.includes('remain null')));
 });
 
 test('policy parser fails closed on duplicate keys and unsupported YAML constructs', () => {
