@@ -113,7 +113,7 @@ test('approved SLO values cannot drift from the threshold expressions in alert-r
     '  latency_p99_ms_max: 1500',
     '  queue_freshness_seconds_max: 300',
     '  saturation_recovery_seconds_max: 30',
-  ].join('\\n');
+  ].join('\n');
   const rules = currentAlertRulesText.replaceAll('policy_status: proposed', 'policy_status: approved');
   const result = validateObservabilitySloPolicy(yaml, rules, {
     requireApproved: true,
