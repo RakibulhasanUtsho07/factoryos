@@ -1,7 +1,23 @@
 import { jest } from '@jest/globals';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
-import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
-import type { SaasExternalPropagationPlan } from './saas-tenant-propagation.adapters';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
+import { digestSaasExternalPropagationResources, REQUIRED_EXTERNAL_STORE_KINDS,
+  EXTERNAL_COPY_COVERAGE_STORE_KINDS, UNCLASSIFIED_EXTERNAL_STORE_KIND } from './saas-tenant-propagation.adapters';
+import { REQUIRED_BACKUP_COPY_CLASSES } from './backup-copy-class-coverage.constants';
+import {
+  canonicalizeExternalStoreInventorySourceReceipt, digestExternalStoreInventoryScope,
+  EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA, REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS,
+} from './external-store-inventory-manifest';
+import { canonicalizeBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
+  canonicalizeExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
+import { canonicalizePostgresqlWalPitrSourceReceipt, POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA,
+  digestPostgresqlWalPitrInventoryScope, REQUIRED_POSTGRESQL_WAL_PITR_SOURCES } from './postgresql-wal-pitr-inventory-manifest';
+import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
 const requester = '16010000-0000-4000-8000-000000000001';
@@ -9,6 +25,197 @@ const reviewer = '16010000-0000-4000-8000-000000000002';
 const postgresExecutor = '16010000-0000-4000-8000-000000000003';
 const propagationExecutor = '16010000-0000-4000-8000-000000000004';
 const independentAttestor = '16010000-0000-4000-8000-000000000005';
+const priorInventorySourceTrust = process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+const priorPostgresqlWalPitrSourceTrust = process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON;
+const postgresqlWalPitrCollectorKeys = new Map(REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((sourceKind) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [sourceKind, { keyId: 'collector.pg.' + sourceKind.toLowerCase(),
+    ownerReference: 'owner.collector.pg.' + sourceKind.toLowerCase(), publicKey: pair.publicKey, privateKey: pair.privateKey }] as const;
+}));
+const postgresqlWalPitrSourceTrust = JSON.stringify([...postgresqlWalPitrCollectorKeys.entries()].map(([sourceKind, key]) => ({
+  keyId: key.keyId, ownerReference: key.ownerReference, sourceKinds: [sourceKind],
+  publicKeyPem: key.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+})));
+process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON = postgresqlWalPitrSourceTrust;
+const inventoryCollectorKeys = new Map(REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [sourceKind, {
+    keyId: 'collector.' + sourceKind.toLowerCase(),
+    ownerReference: 'owner.collector.' + sourceKind.toLowerCase(),
+    publicKey: pair.publicKey,
+    privateKey: pair.privateKey,
+  }] as const;
+}));
+const inventorySourceTrust = JSON.stringify([...inventoryCollectorKeys.entries()].map(([sourceKind, key]) => ({
+  keyId: key.keyId,
+  ownerReference: key.ownerReference,
+  sourceKinds: [sourceKind],
+  publicKeyPem: key.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+})));
+process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = inventorySourceTrust;
+
+function createExternalInventoryManifest(tenantId: string, categoryCode: string) {
+  const now = new Date().toISOString();
+  const scope = {
+    provider_references: ['provider.ci.account'],
+    account_references: ['account.ci.tenant'],
+    project_references: ['project.ci.factoryos'],
+    region_references: ['region.ci.primary'],
+  };
+  const scopeSha256 = digestExternalStoreInventoryScope(scope);
+  const manifestId = '17000000-0000-4000-8000-000000000001';
+  const sources = REQUIRED_EXTERNAL_INVENTORY_SOURCE_KINDS.map((sourceKind) => {
+    const collector = inventoryCollectorKeys.get(sourceKind)!;
+    const receipt = {
+      source_kind: sourceKind,
+      source_reference: 'discovery.ci.' + sourceKind.toLowerCase(),
+      collection_run_reference: 'collector-run.ci.' + sourceKind.toLowerCase(),
+      status: 'COMPLETE',
+      pagination_exhausted: true,
+      pages_fetched: 1,
+      item_count: 0,
+      result_sha256: createHash('sha256').update(sourceKind).digest('hex'),
+      scope_sha256: scopeSha256,
+      started_at: now,
+      completed_at: now,
+      attestation_key_id: collector.keyId,
+      attestation_owner_reference: collector.ownerReference,
+      attestation_signature: '',
+    };
+    receipt.attestation_signature = sign(null, Buffer.from(canonicalizeExternalStoreInventorySourceReceipt(
+      receipt, { tenantId, categoryCode, manifestId },
+    ), 'utf8'), collector.privateKey).toString('base64url');
+    return receipt;
+  });
+  return {
+    schema: EXTERNAL_STORE_INVENTORY_MANIFEST_SCHEMA,
+    manifest_id: manifestId,
+    tenant_id: tenantId,
+    category_code: categoryCode,
+    generated_at: now,
+    scope,
+    scope_sha256: scopeSha256,
+    inventory_complete: true,
+    unclassified_store_count: 0,
+    discovered_store_kinds: ['OBJECT_STORAGE', 'CACHE', 'SEARCH_INDEX', 'VECTOR_STORE', 'LEARNING_ARTIFACT', 'EXTERNAL_PROVIDER', 'REPLICA', 'BACKUP'],
+    sources,
+  };
+}
+const { publicKey: backupEvidencePublicKey, privateKey: backupEvidencePrivateKey } = generateKeyPairSync('ed25519');
+const backupEvidenceKeyId = 'copy-owner-ed25519-test-v1';
+const backupEvidenceOwner = 'owner.infra.ci';
+const priorBackupEvidenceTrust = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
+const priorBackupEvidenceRoot = process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
+const backupEvidenceRoot = mkdtempSync(join(tmpdir(), 'factoryos-saga-evidence-'));
+process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
+// Keep the synthetic artifact root alive for the whole Jest process: async teardown
+// work from the Nest service may still perform a final checkpoint after this suite completes.
+// Cleanup happens only when the test process exits, never while a service callback can read it.
+process.on('exit', () => {
+  chmodSync(backupEvidenceRoot, 0o755);
+  if (priorBackupEvidenceTrust === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = priorBackupEvidenceTrust;
+  if (priorBackupEvidenceRoot === undefined) delete process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR;
+  else process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = priorBackupEvidenceRoot;
+  if (priorInventorySourceTrust === undefined) delete process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_EXTERNAL_INVENTORY_SOURCE_TRUSTED_KEYS_JSON = priorInventorySourceTrust;
+  if (priorPostgresqlWalPitrSourceTrust === undefined) delete process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON;
+  else process.env.FACTORYOS_POSTGRESQL_WAL_PITR_SOURCE_TRUSTED_KEYS_JSON = priorPostgresqlWalPitrSourceTrust;
+  rmSync(backupEvidenceRoot, { recursive: true, force: true });
+});
+const backupEvidenceTrust = JSON.stringify([{
+  keyId: backupEvidenceKeyId,
+  ownerReference: backupEvidenceOwner,
+  publicKeyPem: backupEvidencePublicKey.export({ type: 'spki', format: 'pem' }).toString(),
+}]);
+function signExternalCopyCoverageRow(row: Record<string, unknown>) {
+  const payload: ExternalCopyCoverageEvidenceAttestationPayload = {
+    attestationKeyId: String(row.attestation_key_id),
+    attestationOwnerReference: String(row.attestation_owner_reference),
+    tenantId: String(row.tenant_id),
+    categoryCode: String(row.category_code),
+    storeKind: String(row.store_kind),
+    disposition: String(row.disposition),
+    evidenceReference: String(row.evidence_reference),
+    evidenceSha256: String(row.evidence_sha256),
+    evidenceAt: new Date(row.evidence_at as string | Date).toISOString(),
+    dataOwnerReference: String(row.data_owner_reference),
+    infrastructureOwnerReference: String(row.infrastructure_owner_reference),
+    policyReference: String(row.policy_reference),
+    reason: String(row.reason),
+  };
+  row.attestation_signature = sign(null, Buffer.from(canonicalizeExternalCopyCoverageEvidenceAttestation(payload), 'utf8'), backupEvidencePrivateKey)
+    .toString('base64url');
+}
+
+function signBackupCopyClassRow(row: Record<string, unknown>) {
+  const payload: BackupCopyClassEvidenceAttestationPayload = {
+    attestationKeyId: String(row.attestation_key_id),
+    attestationOwnerReference: String(row.attestation_owner_reference),
+    tenantId: String(row.tenant_id),
+    categoryCode: String(row.category_code),
+    copyClassCode: String(row.copy_class_code),
+    disposition: String(row.disposition),
+    evidenceReference: String(row.evidence_reference),
+    evidenceSha256: String(row.evidence_sha256),
+    evidenceAt: new Date(row.evidence_at as string | Date).toISOString(),
+    dataOwnerReference: String(row.data_owner_reference),
+    infrastructureOwnerReference: String(row.infrastructure_owner_reference),
+    policyReference: String(row.policy_reference),
+    reason: String(row.reason),
+  };
+  row.attestation_signature = sign(
+    null, Buffer.from(canonicalizeBackupCopyClassEvidenceAttestation(payload), 'utf8'), backupEvidencePrivateKey,
+  ).toString('base64url');
+}
+function createWalPitrNotApplicableManifest(tenantId: string, categoryCode: string) {
+  const generatedAt = new Date().toISOString();
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const scope = {
+    cluster_references: [],
+    archive_references: [],
+    provider_references: ['provider.pg.discovery'],
+    account_references: ['account.pg.production'],
+    region_references: ['region.pg.primary'],
+    writer_principal_references: [],
+    replication_path_references: [],
+    restore_path_references: [],
+  };
+  const scopeSha256 = digestPostgresqlWalPitrInventoryScope(scope);
+  const inventoryId = '16080000-0000-4000-8000-000000000001';
+  return {
+    schema: POSTGRESQL_WAL_PITR_INVENTORY_SCHEMA,
+    tenant_id: tenantId,
+    category_code: categoryCode,
+    copy_class_code: 'POSTGRESQL_WAL_PITR',
+    inventory_id: inventoryId,
+    generated_at: generatedAt,
+    scope,
+    scope_sha256: scopeSha256,
+    inventory_complete: true,
+    pagination_exhausted: true,
+    unclassified_archive_count: 0,
+    sources: REQUIRED_POSTGRESQL_WAL_PITR_SOURCES.map((source_kind) => {
+      const collector = postgresqlWalPitrCollectorKeys.get(source_kind)!;
+      const receipt = { source_kind, source_reference: 'source.pg.' + source_kind.toLowerCase(),
+        collection_run_reference: 'run.pg.' + source_kind.toLowerCase(), status: 'COMPLETE',
+        pagination_exhausted: true, pages_fetched: 1, item_count: 0,
+        result_sha256: createHash('sha256').update(source_kind).digest('hex'), scope_sha256: scopeSha256,
+        started_at: startedAt, completed_at: generatedAt, attestation_key_id: collector.keyId,
+        attestation_owner_reference: collector.ownerReference, attestation_signature: '',
+      };
+      receipt.attestation_signature = sign(null, Buffer.from(canonicalizePostgresqlWalPitrSourceReceipt(
+        receipt, { tenantId, categoryCode, inventoryId },
+      ), 'utf8'), collector.privateKey).toString('base64url');
+      return receipt;
+    }),
+    clusters: [],
+    archives: [],
+    segments: [],
+    replication_paths: [],
+    restore_paths: [],
+  };
+}
 const requestId = '16020000-0000-4000-8000-000000000001';
 const sourceDigest = 'b'.repeat(64);
 const sqlDigest = 'c'.repeat(64);
@@ -30,111 +237,165 @@ describe('SaasTenantPropagationService external saga', () => {
   const iam = { authorize: jest.fn<(...args: unknown[]) => Promise<void>>() };
   const audit = { recordWithClient: jest.fn<(...args: unknown[]) => Promise<string>>() };
   const storedReceipts: Record<string, unknown>[] = [];
-  const adapterMocks: ReturnType<typeof createAdapter>[] = [];
-  let activeRun: Record<string, unknown> | null;
+  const storedResourceManifests: Record<string, unknown>[] = [];
+  const storedResourceItems: Record<string, unknown>[] = [];
+  const storedResourceEvents: Record<string, unknown>[] = [];
+  let backupCopyClassRows: Record<string, unknown>[] = [];
+  let externalCopyCoverageRows: Record<string, unknown>[] = [];
+  let retentionPolicyRows: Array<{ category_code: string; version: number; disposition: string }> = [];
   let activateHoldAfterPrepare = false;
-  let legalHoldActivated = false;
-  let residualOnFirstVerificationTarget: string | null = null;
-  let mismatchedDeletionTarget: string | null = null;
-  let executionFailureTarget: string | null = null;
-  let verificationFailureTarget: string | null = null;
-  const verifyCallsByTarget = new Map<string, number>();
-  let retentionPolicyRows: Array<{ category_code: string; version: number; disposition: string }>;
-  let activeRequest: ReturnType<typeof requestRow>;
+  let activeLegalHold = false;
+  let operationSequence = 0;
+  let firstFenceOrder = 0;
+  let firstPrepareOrder = 0;
+  let lastPrepareOrder = 0;
+  let firstDeleteIntentOrder = 0;
+  let firstEraseOrder = 0;
+  let backupFenceCoordinator: { beginPropagationFence: ReturnType<typeof jest.fn>; assertFenceHeld: ReturnType<typeof jest.fn>; recordPropagationVerification: ReturnType<typeof jest.fn> };
+  const adapterMocks: ReturnType<typeof createAdapter>[] = [];
   let service: SaasTenantPropagationService;
-
-  function latestReceiptRows(): Record<string, unknown>[] {
-    const latest = new Map<string, Record<string, unknown>>();
-    const ordered = [...storedReceipts].sort((a, b) => Number(b.attempt_no) - Number(a.attempt_no));
-    for (const receipt of ordered) {
-      const targetId = String(receipt.target_id);
-      if (!latest.has(targetId)) latest.set(targetId, receipt);
-    }
-    return [...latest.values()];
-  }
 
   function createAdapter(kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]) {
     const adapter = {
       storeKind: kind,
-      adapterKey: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      adapterKey: kind === 'BACKUP' ? 's3.tenant-backup.v1' : kind.toLowerCase().replaceAll('_', '.') + '.v1',
       adapterVersion: '1.0.0',
       isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
-      preflight: jest.fn<(...args: unknown[]) => Promise<{
-        outcome: 'READY' | 'BLOCKED' | 'RETAINED'; resourceClass: string; adapterVersion: string;
-        maxPageSize: number; maxBatchSize: number; reason?: string;
-      }>>(),
       prepare: jest.fn<(...args: unknown[]) => Promise<SaasExternalPropagationPlan>>(),
-      execute: jest.fn<(...args: unknown[]) => Promise<{ deletedCopies: string; manifestDigest: string; providerReceiptReference: string }>>(),
+      erase: jest.fn<(...args: unknown[]) => Promise<{ deletedCopies: string; manifestDigest: string; providerReceiptReference: string }>>(),
       verify: jest.fn<(...args: unknown[]) => Promise<{ verifiedManifestDigest: string; residualCopies: string; residualReferences: string[]; verificationReference: string }>>(),
       recover: jest.fn<(...args: unknown[]) => Promise<void>>(),
     };
     adapter.isConfigured.mockResolvedValue(true);
-    adapter.preflight.mockResolvedValue({
-      outcome: 'READY', resourceClass: kind, adapterVersion: '1.0.0',
-      maxPageSize: 500, maxBatchSize: 100,
-    });
     adapter.prepare.mockImplementation(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstPrepareOrder === 0) firstPrepareOrder = operationSequence;
+      lastPrepareOrder = operationSequence;
       const input = args[0] as { target: { targetId: string } };
-      if (activateHoldAfterPrepare) legalHoldActivated = true;
-      return { manifestDigest: 'a'.repeat(64), plannedCopies: '2', planReference: 'plan.' + input.target.targetId };
-    });
-    adapter.execute.mockImplementation(async (...args: unknown[]) => {
-      const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
-      if (executionFailureTarget === input.target.targetId) {
-        throw new Error('simulated provider timeout after deletion dispatch');
-      }
-      return {
-        deletedCopies: input.plan.plannedCopies,
-        manifestDigest: mismatchedDeletionTarget === input.target.targetId ? 'f'.repeat(64) : input.plan.manifestDigest,
-        providerReceiptReference: 'receipt.' + input.target.targetId,
+      const resources = [
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.1', resourceVersionReference: null },
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.2', resourceVersionReference: null },
+      ];
+      const plan = {
+        manifestDigest: digestSaasExternalPropagationResources(resources),
+        plannedCopies: String(resources.length),
+        planReference: 'plan.' + input.target.targetId,
+        adapterVersion: '1.0.0',
+        resourceClass: 'OBJECT_COPY',
+        maxPageSize: 500,
+        maxBatchSize: 500,
+        policyVersions: { deletionPolicy: '1.0.0' },
+        resources,
       };
+      if (activateHoldAfterPrepare) activeLegalHold = true;
+      return plan;
+    });
+    adapter.erase.mockImplementation(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstEraseOrder === 0) firstEraseOrder = operationSequence;
+      const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
+      return { deletedCopies: input.plan.plannedCopies, manifestDigest: input.plan.manifestDigest,
+        providerReceiptReference: 'receipt.' + input.target.targetId };
     });
     adapter.verify.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
-      const targetId = input.target.targetId;
-      if (verificationFailureTarget === targetId) {
-        throw new Error('simulated provider verification timeout');
-      }
-      const verifyCount = (verifyCallsByTarget.get(targetId) ?? 0) + 1;
-      verifyCallsByTarget.set(targetId, verifyCount);
-      const leaveResidual = residualOnFirstVerificationTarget === targetId && verifyCount === 1;
-      return {
-        verifiedManifestDigest: input.plan.manifestDigest,
-        residualCopies: leaveResidual ? '1' : '0',
-        residualReferences: leaveResidual ? ['residual.' + targetId] : [],
-        verificationReference: 'verify.' + targetId + '.' + verifyCount,
-      };
+      return { verifiedManifestDigest: input.plan.manifestDigest, residualCopies: '0',
+        residualReferences: [], verificationReference: 'verify.' + input.target.targetId };
     });
     adapter.recover.mockResolvedValue(undefined);
     return adapter;
   }
 
   beforeEach(() => {
+    chmodSync(backupEvidenceRoot, 0o755);
+    for (const name of readdirSync(backupEvidenceRoot)) chmodSync(join(backupEvidenceRoot, name), 0o644);
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = backupEvidenceTrust;
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_ROOT_DIR = backupEvidenceRoot;
     jest.resetAllMocks();
     storedReceipts.length = 0;
-    adapterMocks.length = 0;
-    activeRun = null;
-    activateHoldAfterPrepare = false;
-    legalHoldActivated = false;
-    activeRequest = requestRow();
-    residualOnFirstVerificationTarget = null;
-    mismatchedDeletionTarget = null;
-    executionFailureTarget = null;
-    verificationFailureTarget = null;
+    storedResourceManifests.length = 0;
+    storedResourceItems.length = 0;
+    storedResourceEvents.length = 0;
+    backupCopyClassRows = [];
+    externalCopyCoverageRows = [];
     retentionPolicyRows = [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }];
-    verifyCallsByTarget.clear();
+    activateHoldAfterPrepare = false;
+    activeLegalHold = false;
+    operationSequence = 0;
+    firstFenceOrder = 0;
+    firstPrepareOrder = 0;
+    lastPrepareOrder = 0;
+    firstDeleteIntentOrder = 0;
+    firstEraseOrder = 0;
+    adapterMocks.length = 0;
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
     const targets = REQUIRED_EXTERNAL_STORE_KINDS.map((kind) => ({
       id: 'target-' + kind, tenant_id: tenant, target_id: 'target-' + kind,
-      store_kind: kind, adapter_key: kind.toLowerCase().replaceAll('_', '.') + '.v1',
+      store_kind: kind, adapter_key: kind === 'BACKUP' ? 's3.tenant-backup.v1' : kind.toLowerCase().replaceAll('_', '.') + '.v1',
       config_reference: 'config.' + kind.toLowerCase().replaceAll('_', '.'),
       registration_reason: 'Reviewed fake adapter target', categories: ['BUSINESS_DATA'], required: true,
       status: 'ACTIVE', registered_by_user_id: requester, reviewed_by_user_id: reviewer,
       reviewed_at: '2026-10-20T10:00:00.000Z', review_reason: 'Approved for integration test',
       created_at: '2026-10-20T09:00:00.000Z', updated_at: '2026-10-20T10:00:00.000Z',
     }));
+    externalCopyCoverageRows = EXTERNAL_COPY_COVERAGE_STORE_KINDS.map((kind, index) => {
+      const evidenceReference = `evidence.external-copy-coverage.${kind.toLowerCase()}`;
+      const evidenceBytes = kind === UNCLASSIFIED_EXTERNAL_STORE_KIND
+        ? Buffer.from(JSON.stringify(createExternalInventoryManifest(tenant, 'BUSINESS_DATA')), 'utf8')
+        : Buffer.from(`Synthetic external copy coverage evidence for ${kind}; tenant ${tenant}; fixture v1`, 'utf8');
+      const evidencePath = join(backupEvidenceRoot, evidenceReference);
+      writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
+      chmodSync(evidencePath, 0o444);
+      const row: Record<string, unknown> = {
+        decision_id: `16060000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        tenant_id: tenant, category_code: 'BUSINESS_DATA', store_kind: kind, revision: 1,
+        disposition: kind === UNCLASSIFIED_EXTERNAL_STORE_KIND ? 'NOT_APPLICABLE' : 'SUPPORTED', evidence_reference: evidenceReference,
+        evidence_sha256: createHash('sha256').update(evidenceBytes).digest('hex'), evidence_at: new Date().toISOString(),
+        attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
+        data_owner_reference: `owner.data.${kind.toLowerCase()}`, infrastructure_owner_reference: backupEvidenceOwner,
+        policy_reference: `policy.retention.${kind.toLowerCase()}`, reason: 'Synthetic signed external inventory fixture',
+        status: 'ACCEPTED', submitted_by_user_id: requester, reviewed_by_user_id: reviewer,
+        valid_until: '2099-01-01T00:00:00.000Z',
+      };
+      signExternalCopyCoverageRow(row);
+      return row;
+    });
+    backupCopyClassRows = REQUIRED_BACKUP_COPY_CLASSES.map((copyClass, index) => {
+      const evidenceReference = `evidence.backup-copy-class.${copyClass.toLowerCase()}`;
+      const evidenceBytes = copyClass === 'POSTGRESQL_WAL_PITR'
+        ? Buffer.from(JSON.stringify(createWalPitrNotApplicableManifest(tenant, 'BUSINESS_DATA')), 'utf8')
+        : Buffer.from(`Synthetic evidence pack for ${copyClass}; tenant ${tenant}; fixture v1`, 'utf8');
+      const evidencePath = join(backupEvidenceRoot, evidenceReference);
+      writeFileSync(evidencePath, evidenceBytes, { mode: 0o444 });
+      chmodSync(evidencePath, 0o444);
+      const row: Record<string, unknown> = {
+        decision_id: `16070000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        tenant_id: tenant, category_code: 'BUSINESS_DATA', copy_class_code: copyClass, revision: 1,
+        disposition: copyClass === 'S3_OBJECT_VERSIONS' ? 'SUPPORTED' : 'NOT_APPLICABLE',
+        evidence_reference: evidenceReference, evidence_sha256: createHash('sha256').update(evidenceBytes).digest('hex'),
+        evidence_at: new Date().toISOString(), data_owner_reference: `owner.data.${copyClass.toLowerCase()}`,
+        infrastructure_owner_reference: backupEvidenceOwner,
+        attestation_key_id: backupEvidenceKeyId, attestation_owner_reference: backupEvidenceOwner,
+        policy_reference: `policy.backup.${copyClass.toLowerCase()}`,
+        reason: 'Synthetic signed evidence fixture for policy-gate regression tests',
+        status: 'ACCEPTED', submitted_by_user_id: requester, reviewed_by_user_id: reviewer,
+        valid_until: '2099-01-01T00:00:00.000Z',
+      };
+      signBackupCopyClassRow(row);
+      return row;
+    });
+    chmodSync(backupEvidenceRoot, 0o555);
     for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) adapterMocks.push(createAdapter(kind));
+    backupFenceCoordinator = {
+      beginPropagationFence: jest.fn(async () => {
+        operationSequence += 1;
+        firstFenceOrder = operationSequence;
+        return [];
+      }),
+      assertFenceHeld: jest.fn(async () => undefined),
+      recordPropagationVerification: jest.fn(async () => []),
+    };
 
     database.transaction.mockImplementation(async (...args: unknown[]) => {
       const callback = args.find((value) => typeof value === 'function') as
@@ -145,7 +406,7 @@ describe('SaasTenantPropagationService external saga', () => {
     database.query.mockImplementation(async (...args: unknown[]) => {
       const sql = String(args[0]);
       if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) {
-        return { rows: latestReceiptRows() };
+        return { rows: [...storedReceipts] };
       }
       throw new Error('unexpected database.query SQL: ' + sql);
     });
@@ -153,49 +414,71 @@ describe('SaasTenantPropagationService external saga', () => {
       const sql = String(args[0]);
       const p = (args[1] ?? []) as unknown[];
       if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
-      if (sql.includes('FROM saas_tenant_data_erasure_requests') && sql.includes('FOR UPDATE')) return { rows: [{ ...activeRequest }] };
-      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('run_id=$3') && sql.includes('FOR UPDATE')) {
-        return { rows: activeRun ? [{ ...activeRun }] : [] };
-      }
-      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('idempotency_key')) {
-        return { rows: activeRun ? [{ ...activeRun }] : [] };
-      }
+      if (sql.includes('FROM saas_tenant_data_erasure_requests') && sql.includes('FOR UPDATE')) return { rows: [requestRow()] };
+      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('idempotency_key')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_data_transfers')) {
         return { rows: [{ source_manifest: { tenantId: tenant, categories: ['BUSINESS_DATA'] },
           source_bundle_digest: sourceDigest, actor_user_id: requester }] };
       }
-      if (sql.includes('FROM saas_tenant_data_retention_policies')) {
-        return { rows: retentionPolicyRows };
-      }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
-      if (sql.includes('FROM saas_tenant_data_legal_holds')) {
-        return { rows: legalHoldActivated ? [{ categories: ['BUSINESS_DATA'] }] : [] };
-      }
+      if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: activeLegalHold ? [{ categories: ['BUSINESS_DATA'] }] : [] };
+      if (sql.includes('FROM saas_tenant_data_retention_policies')) return { rows: retentionPolicyRows };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: externalCopyCoverageRows };
+      if (sql.includes('FROM public.saas_tenant_backup_copy_class_coverage_decisions')) return { rows: backupCopyClassRows };
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifests')) {
+        storedResourceManifests.push({
+          tenant_id: p[0], id: p[1], request_id: p[2], run_id: p[3], request_version: p[4],
+          target_id: p[5], store_kind: p[6], adapter_key: p[7], adapter_version: p[8],
+          resource_class: p[9], max_page_size: p[10], max_batch_size: p[11],
+          source_export_digest: p[12], manifest_digest: p[13], resource_count: p[14],
+          policy_versions: JSON.parse(String(p[15])), created_by_user_id: p[16],
+        });
+        return { rows: [{ id: p[1] }] };
+      }
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_manifest_items')) {
+        const manifestId = String(p[1]);
+        const rows = JSON.parse(String(p[2])) as Record<string, unknown>[];
+        storedResourceItems.push(...rows.map((row) => ({ ...row, tenant_id: p[0], manifest_id: manifestId })));
+        return { rows: [] };
+      }
+      if (sql.includes("UPDATE saas_tenant_external_propagation_manifests SET state='SEALED'")) {
+        return { rows: [{ id: p[1] }] };
+      }
+      if (sql.includes('INSERT INTO saas_tenant_external_propagation_resource_events')) {
+        const manifestId = String(p[1]);
+        const outcomeCode = String(p[2]);
+        if (outcomeCode === 'DELETE_REQUESTED') {
+          operationSequence += 1;
+          if (firstDeleteIntentOrder === 0) firstDeleteIntentOrder = operationSequence;
+        }
+        const items = storedResourceItems.filter((item) => item.manifest_id === manifestId);
+        storedResourceEvents.push(...items.map((item) => ({
+          manifest_id: manifestId,
+          resource_ordinal: item.resource_ordinal,
+          resource_identity_digest: item.resource_identity_digest,
+          outcome_code: outcomeCode,
+          provider_receipt_reference: p[3],
+          verification_reference: p[4],
+          verified_manifest_digest: p[5],
+          residual_count: p[6],
+          failure_code: p[7],
+          residual_reason: p[8],
+        })));
+        return { rows: [{ inserted_count: items.length }] };
+      }
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_runs')) {
         const manifest = JSON.parse(String(p[6])) as Record<string, unknown>;
-        activeRun = {
+        return { rows: [{
           run_id: p[1], request_id: p[2], request_version: p[3], status: 'RUNNING', categories: p[4],
           source_export_digest: p[5], external_manifest: manifest, target_count: p[7],
           verified_targets: 0, planned_copies: '0', deleted_copies: '0', residual_copies: '0',
           reason: p[8], idempotency_key: p[9], request_hash: p[10], executor_user_id: p[11],
           failure_code: null, manifest_digest: null, finished_at: null,
-        };
-        return { rows: [{ ...activeRun }] };
+        }] };
       }
-      if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: latestReceiptRows() };
-      if (sql.includes('UPDATE saas_tenant_external_propagation_runs') && sql.includes("SET status='RUNNING'") && sql.includes('RETURNING *')) {
-        activeRun = {
-          ...(activeRun ?? {}),
-          status: 'RUNNING', failure_code: null, finished_at: null, manifest_digest: null,
-          verified_targets: 0, planned_copies: '0', deleted_copies: '0', residual_copies: '0',
-        };
-        return { rows: [{ ...activeRun }] };
-      }
-      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) {
-        if (activeRun) activeRun.external_manifest = JSON.parse(String(p[3])) as Record<string, unknown>;
-        return { rows: [] };
-      }
+      if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: [...storedReceipts] };
+      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) return { rows: [{ run_id: p[2] }] };
       if (sql.includes('SELECT COALESCE(MAX(attempt_no),0)+1 AS attempt_no')) {
         const targetId = String(p[3]);
         return { rows: [{ attempt_no: storedReceipts.filter((row) => row.target_id === targetId).length + 1 }] };
@@ -208,292 +491,425 @@ describe('SaasTenantPropagationService external saga', () => {
           verification_reference: p[12], residual_manifest: p[13], failure_code: p[14],
           provider_receipt_reference: p[15], outcome_code: p[16], manifest_kind: p[17],
           resource_class: p[18], adapter_version: p[19], max_page_size: p[20], max_batch_size: p[21],
-          policy_versions: typeof p[22] === 'string' ? JSON.parse(p[22]) : p[22],
-          residual_reason: p[23], completed_at: p[24],
+          policy_versions: JSON.parse(String(p[22])), residual_reason: p[23], completed_at: p[24],
         });
         return { rows: [] };
       }
       if (sql.includes('UPDATE saas_tenant_external_propagation_runs') && sql.includes('RETURNING *')) {
         const manifest = JSON.parse(String(p[4])) as Record<string, unknown>;
-        activeRun = {
-          ...(activeRun ?? {}),
+        return { rows: [{
           run_id: p[2], status: p[3], external_manifest: manifest, manifest_digest: p[5],
           target_count: p[6], verified_targets: p[7], planned_copies: p[8], deleted_copies: p[9],
-          residual_copies: p[10], failure_code: p[11],
-          request_id: requestId, request_version: 1, source_export_digest: sourceDigest,
-        };
-        return { rows: [{ ...activeRun }] };
+          residual_copies: p[10], failure_code: p[11], request_hash: 'd'.repeat(64),
+          request_id: requestId, request_version: 1,
+        }] };
       }
       if (sql.includes("UPDATE saas_tenant_data_erasure_requests") && sql.includes("status='VERIFIED'")) {
-        activeRequest = {
-          ...activeRequest, status: 'VERIFIED', row_version: 5, propagation_run_id: p[2],
+        return { rows: [{
+          ...requestRow(), status: 'VERIFIED', row_version: 5, propagation_run_id: p[2],
           propagation_manifest_digest: p[3], propagation_verified_at: '2026-10-20T12:00:00.000Z',
-        };
-        return { rows: [{ ...activeRequest }] };
+        }] };
       }
       throw new Error('unexpected transaction SQL: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never);
+    const testMountVerifier: BackupCopyEvidenceMountVerifier = { assertPathMountedReadOnly: async () => undefined };
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(testMountVerifier as never), adapterMocks as never, backupFenceCoordinator as never);
   });
 
-  it('rechecks active legal holds after preparing a provider plan and never erases after a new hold appears', async () => {
-    activateHoldAfterPrepare = true;
+  it('blocks propagation when an accepted external copy-coverage signature is tampered with', async () => {
+    const first = externalCopyCoverageRows[0];
+    const signature = String(first?.attestation_signature ?? '');
+    if (!signature) throw new Error('Signed external copy-coverage fixture is missing a signature');
+    first!.attestation_signature = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Tampered external copy coverage must block provider execution',
+      idempotency_key: 'external-propagation-tampered-copy-coverage-signature',
+    })).rejects.toThrow('External copy-coverage evidence attestation is invalid or its signer is no longer trusted');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
 
-    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Block deletion when a legal hold is activated during planning',
-      idempotency_key: 'legal-hold-race-saga-v1',
+  it('blocks propagation when external copy-coverage evidence bytes no longer match the signed digest', async () => {
+    const first = externalCopyCoverageRows[0];
+    if (!first) throw new Error('External copy-coverage fixture is missing');
+    const evidenceReference = String(first.evidence_reference);
+    chmodSync(backupEvidenceRoot, 0o755);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    // Make the sealed fixture writable only for the controlled tamper setup.
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, 'tampered external inventory bytes', { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Changed external evidence bytes must block provider execution',
+      idempotency_key: 'external-propagation-tampered-copy-coverage-bytes',
+    })).rejects.toThrow(/Backup copy-class evidence artifact .* is not a stable, readable regular file matching the claimed SHA-256 digest/);
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks propagation when the signed unclassified-store catch-all decision is missing', async () => {
+    const index = externalCopyCoverageRows.findIndex((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (index < 0) throw new Error('Unclassified external-store coverage fixture is missing');
+    externalCopyCoverageRows.splice(index, 1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Missing complete-inventory evidence must block propagation',
+      idempotency_key: 'external-propagation-unclassified-store-coverage-missing',
+    })).rejects.toThrow('External propagation requires current independently reviewed signed copy-class coverage for BUSINESS_DATA/UNCLASSIFIED_EXTERNAL_STORE');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks propagation when the complete-inventory sentinel reports a newly discovered unknown store', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    sentinel.disposition = 'UNRESOLVED';
+    signExternalCopyCoverageRow(sentinel);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A newly discovered store must block propagation until classified',
+      idempotency_key: 'external-propagation-unclassified-store-block',
+    })).rejects.toThrow('An unclassified external store type was discovered or remains unresolved');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks a signed SUPPORTED assertion for the unclassified catch-all', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    sentinel.disposition = 'SUPPORTED';
+    signExternalCopyCoverageRow(sentinel);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'The catch-all sentinel is never an executable store kind',
+      idempotency_key: 'external-propagation-unclassified-store-forged-supported',
+    })).rejects.toThrow('An unclassified external store type was discovered or remains unresolved');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks a signed NOT_APPLICABLE sentinel when the complete inventory manifest reports an unclassified store', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    const evidenceReference = String(sentinel.evidence_reference);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    const invalidManifest = createExternalInventoryManifest(tenant, 'BUSINESS_DATA');
+    invalidManifest.unclassified_store_count = 1;
+    const invalidBytes = Buffer.from(JSON.stringify(invalidManifest), 'utf8');
+
+    chmodSync(backupEvidenceRoot, 0o755);
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, invalidBytes, { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    sentinel.evidence_sha256 = createHash('sha256').update(invalidBytes).digest('hex');
+    signExternalCopyCoverageRow(sentinel);
+
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A signed but incomplete inventory manifest must block propagation',
+      idempotency_key: 'external-propagation-inventory-manifest-incomplete',
+    })).rejects.toThrow('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('blocks a source receipt whose claims were altered after the collector signed it', async () => {
+    const sentinel = externalCopyCoverageRows.find((row) => row.store_kind === UNCLASSIFIED_EXTERNAL_STORE_KIND);
+    if (!sentinel) throw new Error('Unclassified external-store coverage fixture is missing');
+    const evidenceReference = String(sentinel.evidence_reference);
+    const evidencePath = join(backupEvidenceRoot, evidenceReference);
+    const manifest = createExternalInventoryManifest(tenant, 'BUSINESS_DATA');
+    manifest.sources[0]!.item_count = 99;
+    const alteredBytes = Buffer.from(JSON.stringify(manifest), 'utf8');
+
+    chmodSync(backupEvidenceRoot, 0o755);
+    chmodSync(evidencePath, 0o644);
+    writeFileSync(evidencePath, alteredBytes, { mode: 0o644 });
+    chmodSync(evidencePath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    sentinel.evidence_sha256 = createHash('sha256').update(alteredBytes).digest('hex');
+    signExternalCopyCoverageRow(sentinel);
+
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Collector signature must bind the source receipt values',
+      idempotency_key: 'external-propagation-source-receipt-tamper',
+    })).rejects.toThrow('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('fails closed when a backup copy class is unresolved', async () => {
+    const wal = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
+    if (!wal) throw new Error('WAL/PITR copy-class fixture is missing');
+    wal.disposition = 'UNRESOLVED';
+    signBackupCopyClassRow(wal);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Unresolved WAL/PITR must block whole-tenant erasure',
+      idempotency_key: 'external-propagation-wal-unresolved',
+    })).rejects.toThrow('Unresolved backup copy class blocks whole-tenant erasure');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
+  it('blocks propagation when the previously trusted evidence signing key is removed', async () => {
+    process.env.FACTORYOS_BACKUP_COPY_EVIDENCE_TRUSTED_KEYS_JSON = '[]';
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A removed signing key must invalidate accepted evidence',
+      idempotency_key: 'external-propagation-revoked-evidence-key',
+    })).rejects.toThrow('trusted-key configuration is invalid');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
+  it('blocks propagation when an accepted evidence signature has been tampered with', async () => {
+    const first = backupCopyClassRows[0];
+    const signature = String(first?.attestation_signature ?? '');
+    if (!signature) throw new Error('Signed backup copy-class fixture is missing a signature');
+    first!.attestation_signature = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'A tampered source-owner signature must block provider execution',
+      idempotency_key: 'external-propagation-tampered-evidence-signature',
+    })).rejects.toThrow('attestation is invalid or its signer is no longer trusted');
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
+  it('blocks propagation when source artifact bytes change after acceptance', async () => {
+    const first = backupCopyClassRows[0];
+    if (!first) throw new Error('Signed backup copy-class fixture is missing');
+    chmodSync(backupEvidenceRoot, 0o755);
+    const tamperedArtifactPath = join(backupEvidenceRoot, String(first.evidence_reference));
+    chmodSync(tamperedArtifactPath, 0o644);
+    writeFileSync(tamperedArtifactPath, 'tampered evidence after independent review');
+    chmodSync(tamperedArtifactPath, 0o444);
+    chmodSync(backupEvidenceRoot, 0o555);
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Source evidence bytes must still match the signed digest',
+      idempotency_key: 'external-propagation-tampered-source-artifact',
+    })).rejects.toThrow(/evidence artifact .* is not a stable, readable regular file matching the claimed SHA-256 digest/);
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
+  });
+
+  it('fails closed when a prepared plan was produced by a different adapter version', async () => {
+    const walEvidence = backupCopyClassRows.find((row) => row.copy_class_code === 'POSTGRESQL_WAL_PITR');
+    if (!walEvidence) throw new Error('WAL/PITR evidence fixture is missing');
+    const walBytes = readFileSync(join(backupEvidenceRoot, String(walEvidence.evidence_reference)));
+    expect(createHash('sha256').update(walBytes).digest('hex')).toBe(walEvidence.evidence_sha256);
+    const directReader = new BackupCopyClassEvidenceArtifactReader({
+      assertPathMountedReadOnly: async () => undefined,
+    } as never);
+    await expect(directReader.readVerifiedArtifact(
+      String(walEvidence.evidence_reference), String(walEvidence.evidence_sha256),
+    )).resolves.toMatchObject({ reference: walEvidence.evidence_reference, sha256: walEvidence.evidence_sha256 });
+    adapterMocks[0]!.prepare.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { target: { targetId: string } };
+      const resources = [
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.1', resourceVersionReference: null },
+        { resourceKind: 'OBJECT_COPY', resourceReference: 'resource.' + input.target.targetId + '.2', resourceVersionReference: null },
+      ];
+      return {
+        manifestDigest: digestSaasExternalPropagationResources(resources),
+        plannedCopies: String(resources.length),
+        planReference: 'plan.' + input.target.targetId,
+        adapterVersion: '2.0.0',
+        resourceClass: 'OBJECT_COPY',
+        maxPageSize: 500,
+        maxBatchSize: 500,
+        policyVersions: { deletionPolicy: '1.0.0' },
+        resources,
+      };
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
-    expect(adapterMocks).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Reject stale adapter execution contract', idempotency_key: 'external-propagation-version-mismatch',
+    });
+
+    expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL', residualCopies: '2' } });
+    expect(adapterMocks[0]!.erase).not.toHaveBeenCalled();
+    expect(adapterMocks[0]!.verify).not.toHaveBeenCalled();
+    expect(storedResourceManifests.some((manifest) => manifest.target_id === 'target-OBJECT_STORAGE')).toBe(false);
+  });
+
+  it('fails closed before any inventory when backup writer-fence acquisition fails', async () => {
+    backupFenceCoordinator.beginPropagationFence.mockImplementationOnce(async () => {
+      operationSequence += 1;
+      firstFenceOrder = operationSequence;
+      throw new Error('provider policy read-back unavailable');
+    });
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Require backup fence before inventory', idempotency_key: 'external-propagation-fence-fails',
+    })).rejects.toThrow('provider policy read-back unavailable');
+    expect(firstFenceOrder).toBeGreaterThan(0);
     for (const adapter of adapterMocks) {
-      expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.execute).not.toHaveBeenCalled();
-      expect(adapter.recover).not.toHaveBeenCalled();
+      expect(adapter.prepare).not.toHaveBeenCalled();
+      expect(adapter.erase).not.toHaveBeenCalled();
     }
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED'
-      && receipt.outcome_code === 'RETAINED'
-      && receipt.failure_code === 'ACTIVE_LEGAL_HOLD'
-      && receipt.residual_copies === '2'
-      && receipt.manifest_kind === 'RESOURCE_IDENTITIES')).toBe(true);
-    expect(audit.recordWithClient).toHaveBeenCalledWith(
-      expect.objectContaining({ query: clientQuery }),
-      expect.objectContaining({
-        action: 'TENANT_ERASURE_PROPAGATION_PARTIAL',
-        payload: expect.objectContaining({ postgresqlReceiptScope: 'POSTGRESQL_ONLY' }),
-      }),
-    );
-    expect(audit.recordWithClient).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
-    );
   });
 
-  it('persists durable BLOCKED outcomes and starts no destructive provider calls when a required adapter is unconfigured', async () => {
-    const missingAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
-    if (!missingAdapter) throw new Error('OBJECT_STORAGE adapter fixture was not created');
-    missingAdapter.isConfigured.mockResolvedValue(false);
-
+  it('prepares and recovers every target before issuing the first delete intent', async () => {
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Require every external store adapter before erasure',
-      idempotency_key: 'missing-adapter-saga-v1',
+      expected_version: 4, reason: 'Require a global prepare barrier', idempotency_key: 'global-prepare-barrier-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.run.status).toBe('PARTIAL');
-    expect(activeRun).not.toBeNull();
+    expect(result).toMatchObject({ wholeTenantErasureVerified: true, request: { status: 'VERIFIED' } });
+    expect(lastPrepareOrder).toBeGreaterThan(firstPrepareOrder);
+    expect(firstDeleteIntentOrder).toBeGreaterThan(lastPrepareOrder);
+    expect(firstEraseOrder).toBeGreaterThan(firstDeleteIntentOrder);
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE')).toMatchObject({
+    expect(storedReceipts.every((receipt) =>
+      receipt.outcome_code === 'COMPLETED'
+      && receipt.manifest_kind === 'RESOURCE_IDENTITIES'
+      && JSON.stringify(receipt.policy_versions) === JSON.stringify({ BUSINESS_DATA: 1 }),
+    )).toBe(true);
+  });
+
+  it('writes a durable BLOCKED receipt when an approved target has no registered adapter', async () => {
+    const index = adapterMocks.findIndex((adapter) => adapter.storeKind === 'CACHE');
+    if (index < 0) throw new Error('CACHE adapter fixture is missing');
+    adapterMocks.splice(index, 1);
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Missing provider integration must fail closed',
+      idempotency_key: 'missing-provider-adapter-v1',
+    });
+
+    expect(result).toMatchObject({
+      wholeTenantErasureVerified: false,
+      request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL' },
+    });
+    const blocked = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
+    expect(blocked).toMatchObject({
       status: 'FAILED', outcome_code: 'BLOCKED', manifest_kind: 'SCOPE_INTENT',
-      failure_code: 'ADAPTER_UNCONFIGURED',
+      failure_code: 'ADAPTER_UNAVAILABLE', adapter_version: null,
     });
-    for (const adapter of adapterMocks) {
-      expect(adapter.prepare).not.toHaveBeenCalled();
-      expect(adapter.execute).not.toHaveBeenCalled();
-      expect(adapter.verify).not.toHaveBeenCalled();
-      expect(adapter.recover).not.toHaveBeenCalled();
-    }
-    expect(audit.recordWithClient).toHaveBeenCalledWith(
-      expect.objectContaining({ query: clientQuery }),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
-    );
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
-  it('records a blocked preflight for one target and aborts the run-wide deletion barrier', async () => {
-    const blockedAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
-    if (!blockedAdapter) throw new Error('OBJECT_STORAGE adapter fixture was not created');
-    blockedAdapter.preflight.mockResolvedValue({
-      outcome: 'BLOCKED', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 500, maxBatchSize: 100, reason: 'Provider namespace is not approved',
-    });
+  it('blocks every target deletion when any target inventory preparation fails', async () => {
+    const failingAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'CACHE');
+    if (!failingAdapter) throw new Error('CACHE adapter fixture is missing');
+    failingAdapter.prepare.mockRejectedValueOnce(new Error('simulated incomplete provider inventory'));
 
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Block the run when any provider target fails preflight',
-      idempotency_key: 'blocked-preflight-barrier-v1',
+      expected_version: 4, reason: 'No target may delete before all inventories are ready',
+      idempotency_key: 'global-prepare-failure-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.request.status).toBe('PROPAGATION_PENDING');
-    expect(result.run.status).toBe('PARTIAL');
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE')).toMatchObject({
-      status: 'FAILED', outcome_code: 'BLOCKED', failure_code: 'PREFLIGHT_BLOCKED',
-      manifest_kind: 'SCOPE_INTENT',
+    expect(result).toMatchObject({
+      wholeTenantErasureVerified: false,
+      request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL' },
     });
-    for (const adapter of adapterMocks) {
-      expect(adapter.preflight).toHaveBeenCalledTimes(1);
-      expect(adapter.prepare).not.toHaveBeenCalled();
-      expect(adapter.execute).not.toHaveBeenCalled();
-      expect(adapter.verify).not.toHaveBeenCalled();
-    }
-    expect(audit.recordWithClient).toHaveBeenCalledWith(
-      expect.objectContaining({ query: clientQuery }),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
-    );
+    expect(adapterMocks.some((adapter) => adapter.erase.mock.calls.length > 0)).toBe(false);
+    expect(storedResourceEvents.some((event) => event.outcome_code === 'DELETE_REQUESTED')).toBe(false);
+    expect(storedReceipts).toHaveLength(1);
+    expect(storedReceipts[0]?.outcome_code).toBe('BLOCKED');
+    expect(storedReceipts[0]?.manifest_kind).toBe('SCOPE_INTENT');
   });
 
-  it('persists a BLOCKED outcome when no current DELETE retention policy exists', async () => {
+  it('blocks provider deletion when the active legal-hold set changes after preparation begins', async () => {
+    activateHoldAfterPrepare = true;
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4, reason: 'Recheck legal holds at global provider checkpoints',
+      idempotency_key: 'legal-hold-after-prepare-v1',
+    });
+
+    expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' } });
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(storedResourceEvents.some((event) => event.outcome_code === 'DELETE_REQUESTED')).toBe(false);
+  });
+
+  it('persists BLOCKED retention outcomes when no current DELETE policy exists', async () => {
     retentionPolicyRows = [];
-
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Require a current retention policy before any provider deletion',
-      idempotency_key: 'missing-retention-policy-barrier-v1',
+      expected_version: 4, reason: 'A versioned DELETE policy is mandatory',
+      idempotency_key: 'missing-delete-policy-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.request.status).toBe('PROPAGATION_PENDING');
-    expect(result.run.status).toBe('PARTIAL');
+    expect(result).toMatchObject({
+      wholeTenantErasureVerified: false,
+      request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL' },
+    });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.every((receipt) => receipt.outcome_code === 'BLOCKED'
-      && receipt.failure_code === 'RETENTION_POLICY_BLOCKED'
-      && receipt.manifest_kind === 'SCOPE_INTENT')).toBe(true);
-    for (const adapter of adapterMocks) {
-      expect(adapter.preflight).not.toHaveBeenCalled();
-      expect(adapter.prepare).not.toHaveBeenCalled();
-      expect(adapter.execute).not.toHaveBeenCalled();
-    }
+    expect(storedReceipts.every((receipt) =>
+      receipt.outcome_code === 'BLOCKED'
+      && receipt.manifest_kind === 'SCOPE_INTENT'
+      && receipt.failure_code === 'RETENTION_POLICY_BLOCKED',
+    )).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
-  it('keeps the request pending when a provider deletion receipt has a different manifest digest', async () => {
-    mismatchedDeletionTarget = 'target-OBJECT_STORAGE';
-
+  it('persists RETAINED outcomes without invoking providers when an active legal hold exists at run start', async () => {
+    activeLegalHold = true;
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Reject a provider receipt that does not match its prepared scope',
-      idempotency_key: 'manifest-mismatch-saga-v1',
+      expected_version: 4, reason: 'Legal hold must retain the category across all stores',
+      idempotency_key: 'active-legal-hold-retained-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
-    const mismatchedReceipt = storedReceipts.find((receipt) => receipt.target_id === mismatchedDeletionTarget);
-    expect(mismatchedReceipt).toMatchObject({
-      status: 'FAILED', failure_code: 'VERIFICATION_MISMATCH', outcome_code: 'FAILED_RETRYABLE',
-      manifest_kind: 'RESOURCE_IDENTITIES',
+    expect(result).toMatchObject({
+      wholeTenantErasureVerified: false,
+      request: { status: 'PROPAGATION_PENDING' },
+      run: { status: 'PARTIAL' },
     });
-    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
-    expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
-    expect(audit.recordWithClient).toHaveBeenCalledWith(
-      expect.objectContaining({ query: clientQuery }),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
-    );
-    expect(audit.recordWithClient).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
-    );
-  });
-
-  it('recovers a partial provider result idempotently without re-erasing targets already verified', async () => {
-    const retryTarget = 'target-OBJECT_STORAGE';
-    residualOnFirstVerificationTarget = retryTarget;
-    const input = {
-      expected_version: 4,
-      reason: 'Retry an explicitly residual external store after reconciliation',
-      idempotency_key: 'partial-recovery-saga-v1',
-    };
-
-    const first = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
-    expect(first.wholeTenantErasureVerified).toBe(false);
-    expect(first.run.status).toBe('PARTIAL');
-    expect(first.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.find((receipt) => receipt.target_id === retryTarget)).toMatchObject({
-      status: 'RESIDUALS', outcome_code: 'FAILED_RETRYABLE', manifest_kind: 'RESOURCE_IDENTITIES',
-    });
-
-    const second = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
-    expect(second.wholeTenantErasureVerified).toBe(true);
-    expect(second.run.status).toBe('VERIFIED');
-    expect(second.request).toMatchObject({ requestId, status: 'VERIFIED', version: 5 });
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
-
-    const recoveryAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
-    expect(recoveryAdapter?.recover).toHaveBeenCalledTimes(1);
-    expect(recoveryAdapter?.prepare).toHaveBeenCalledTimes(1);
-    expect(recoveryAdapter?.execute).toHaveBeenCalledTimes(2);
-    expect(recoveryAdapter?.verify).toHaveBeenCalledTimes(2);
-    for (const adapter of adapterMocks.filter((candidate) => candidate.storeKind !== 'OBJECT_STORAGE')) {
-      expect(adapter.execute).toHaveBeenCalledTimes(1);
-      // A persisted plan from a blocked target does not prove a prior provider mutation.
-      expect(adapter.recover).not.toHaveBeenCalled();
-    }
+    expect(storedReceipts.every((receipt) =>
+      receipt.outcome_code === 'RETAINED'
+      && receipt.manifest_kind === 'SCOPE_INTENT'
+      && receipt.failure_code === 'ACTIVE_LEGAL_HOLD',
+    )).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.prepare.mock.calls.length === 0)).toBe(true);
+    expect(adapterMocks.every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
   });
 
-  it('stops later provider deletions and records BLOCKED receipts after an uncertain provider outcome', async () => {
-    executionFailureTarget = 'target-OBJECT_STORAGE';
+  it('stops later provider deletions after an uncertain deletion receipt', async () => {
+    const firstAdapter = adapterMocks[0]!;
+    firstAdapter.erase.mockImplementationOnce(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstEraseOrder === 0) firstEraseOrder = operationSequence;
+      const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
+      return { deletedCopies: input.plan.plannedCopies, manifestDigest: 'f'.repeat(64),
+        providerReceiptReference: 'mismatched-receipt.' + input.target.targetId };
+    });
 
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Stop cross-store deletes after an uncertain provider result',
-      idempotency_key: 'abort-after-uncertain-provider-v1',
+      expected_version: 4, reason: 'A provider receipt must not widen execution to later targets',
+      idempotency_key: 'uncertain-provider-outcome-barrier-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.run.status).toBe('PARTIAL');
-    expect(result.request.status).toBe('PROPAGATION_PENDING');
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-
-    const uncertain = storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE');
-    expect(uncertain).toMatchObject({
-      status: 'FAILED', outcome_code: 'FAILED_RETRYABLE',
-      manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2', residual_copies: '2',
-    });
-    expect(JSON.parse(String(uncertain?.residual_manifest))).toEqual([]);
-
-    const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
-    expect(skipped).toMatchObject({
-      status: 'FAILED', outcome_code: 'BLOCKED',
-      failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', manifest_kind: 'RESOURCE_IDENTITIES',
-      planned_copies: '2', residual_copies: '2',
-    });
-    expect(JSON.parse(String(skipped?.residual_manifest))).toEqual([]);
-    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
-    expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
-    for (const adapter of adapterMocks.slice(1)) {
-      expect(adapter.execute).not.toHaveBeenCalled();
-      expect(adapter.verify).not.toHaveBeenCalled();
-    }
-    expect(audit.recordWithClient).toHaveBeenCalledWith(
-      expect.objectContaining({ query: clientQuery }),
-      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
-    );
+    expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' } });
+    expect(firstAdapter.erase).toHaveBeenCalledTimes(1);
+    expect(firstAdapter.verify).not.toHaveBeenCalled();
+    expect(adapterMocks.slice(1).every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(storedReceipts.some((receipt) => receipt.outcome_code === 'FAILED_RETRYABLE')).toBe(true);
   });
 
-  it('retains the full prepared scope as unresolved when post-delete verification throws', async () => {
-    verificationFailureTarget = 'target-OBJECT_STORAGE';
+  it('stops later target deletions when the pinned retention-policy version changes', async () => {
+    const firstAdapter = adapterMocks[0]!;
+    firstAdapter.erase.mockImplementationOnce(async (...args: unknown[]) => {
+      operationSequence += 1;
+      if (firstEraseOrder === 0) firstEraseOrder = operationSequence;
+      retentionPolicyRows = [{ category_code: 'BUSINESS_DATA', version: 2, disposition: 'DELETE' }];
+      const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
+      return { deletedCopies: input.plan.plannedCopies, manifestDigest: input.plan.manifestDigest,
+        providerReceiptReference: 'receipt.' + input.target.targetId };
+    });
 
     const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
-      expected_version: 4,
-      reason: 'Do not infer zero residual copies when provider read-back fails',
-      idempotency_key: 'verification-timeout-unresolved-v1',
+      expected_version: 4, reason: 'Pin retention policy version through all deletes',
+      idempotency_key: 'retention-policy-version-drift-v1',
     });
 
-    expect(result.wholeTenantErasureVerified).toBe(false);
-    expect(result.run.status).toBe('PARTIAL');
-    const uncertain = storedReceipts.find((receipt) => receipt.target_id === 'target-OBJECT_STORAGE');
-    expect(uncertain).toMatchObject({
-      status: 'FAILED', outcome_code: 'FAILED_RETRYABLE',
-      manifest_kind: 'RESOURCE_IDENTITIES', planned_copies: '2',
-      deleted_copies: '2', residual_copies: '2',
-    });
-    expect(JSON.parse(String(uncertain?.residual_manifest))).toEqual([]);
-    const skipped = storedReceipts.find((receipt) => receipt.target_id === 'target-CACHE');
-    expect(skipped).toMatchObject({
-      status: 'FAILED', outcome_code: 'BLOCKED',
-      failure_code: 'RUN_ABORTED_AFTER_TARGET_FAILURE', residual_copies: '2',
-    });
-    expect(JSON.parse(String(skipped?.residual_manifest))).toEqual([]);
-    expect(adapterMocks[0]?.execute).toHaveBeenCalledTimes(1);
-    expect(adapterMocks[0]?.verify).toHaveBeenCalledTimes(1);
-    for (const adapter of adapterMocks.slice(1)) {
-      expect(adapter.execute).not.toHaveBeenCalled();
-      expect(adapter.verify).not.toHaveBeenCalled();
-    }
+    expect(result).toMatchObject({ wholeTenantErasureVerified: false, request: { status: 'PROPAGATION_PENDING' } });
+    expect(firstAdapter.erase).toHaveBeenCalledTimes(1);
+    expect(adapterMocks.slice(1).every((adapter) => adapter.erase.mock.calls.length === 0)).toBe(true);
+    expect(storedReceipts.some((receipt) => JSON.stringify(receipt.policy_versions) === JSON.stringify({ BUSINESS_DATA: 1 }))).toBe(true);
   });
 
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
@@ -508,56 +924,32 @@ describe('SaasTenantPropagationService external saga', () => {
         verifiedTargets: REQUIRED_EXTERNAL_STORE_KINDS.length, plannedCopies: '16', deletedCopies: '16', residualCopies: '0' },
     });
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedResourceManifests).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedResourceItems).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'PREPARED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETE_REQUESTED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'DELETED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(storedResourceEvents.filter((event) => event.outcome_code === 'VERIFIED')).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length * 2);
+    expect(backupFenceCoordinator.beginPropagationFence).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: tenant, requestId, requestVersion: 1, sourceExportDigest: sourceDigest,
+      categories: ['BUSINESS_DATA'], actorUserId: propagationExecutor,
+    }));
+    expect(backupFenceCoordinator.recordPropagationVerification).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: tenant, categories: ['BUSINESS_DATA'], residualCopies: 0,
+    }));
+    expect(firstFenceOrder).toBeGreaterThan(0);
+    expect(firstPrepareOrder).toBeGreaterThan(firstFenceOrder);
+    expect(firstDeleteIntentOrder).toBeGreaterThan(lastPrepareOrder);
+    expect(firstEraseOrder).toBeGreaterThan(firstDeleteIntentOrder);
     for (const adapter of adapterMocks) {
-      expect(adapter.preflight).toHaveBeenCalledTimes(1);
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.execute).toHaveBeenCalledTimes(1);
+      expect(adapter.erase).toHaveBeenCalledTimes(1);
       expect(adapter.verify).toHaveBeenCalledTimes(1);
-      const prepareInput = adapter.prepare.mock.calls[0]?.[0] as {
-        executionLimits?: Record<string, unknown>;
-      } | undefined;
-      const executeInput = adapter.execute.mock.calls[0]?.[0] as {
-        executionLimits?: Record<string, unknown>;
-      } | undefined;
-      expect(prepareInput?.executionLimits).toEqual({
-        resourceClass: adapter.storeKind, adapterVersion: '1.0.0', maxPageSize: 500, maxBatchSize: 100,
-      });
-      expect(executeInput?.executionLimits).toEqual(prepareInput?.executionLimits);
     }
-    expect(storedReceipts.every((receipt) => receipt.outcome_code === 'COMPLETED'
-      && receipt.manifest_kind === 'RESOURCE_IDENTITIES' && receipt.adapter_version === '1.0.0')).toBe(true);
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED',
         payload: expect.objectContaining({ postgresqlReceiptScope: 'POSTGRESQL_ONLY', residualCopies: '0' }) }),
     );
   });
-
-  it('replays an already verified idempotency key without calling a provider again', async () => {
-    const input = {
-      expected_version: 4,
-      reason: 'Verify every external copy',
-      idempotency_key: 'external-propagation-replay-v1',
-    };
-
-    const first = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
-    expect(first.wholeTenantErasureVerified).toBe(true);
-    expect(first.request).toMatchObject({ status: 'VERIFIED', version: 5 });
-
-    const second = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
-    expect(second).toMatchObject({
-      wholeTenantErasureVerified: true,
-      replayed: true,
-      request: { requestId, status: 'VERIFIED', version: 5 },
-      run: { status: 'VERIFIED' },
-    });
-    for (const adapter of adapterMocks) {
-      expect(adapter.prepare).toHaveBeenCalledTimes(1);
-      expect(adapter.execute).toHaveBeenCalledTimes(1);
-      expect(adapter.verify).toHaveBeenCalledTimes(1);
-      expect(adapter.recover).not.toHaveBeenCalled();
-    }
-    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-  });
-
 });

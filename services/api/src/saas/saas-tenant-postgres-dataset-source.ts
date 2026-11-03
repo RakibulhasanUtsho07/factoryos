@@ -340,6 +340,112 @@ export class SaasTenantPostgresDatasetSource {
     }
   }
 
+  /**
+   * Compare the complete exportable table shape with its reviewed, append-only
+   * migration snapshot before any row can be emitted. A new column is not
+   * implicitly exportable merely because the table is already allowlisted.
+   */
+  private async assertExportColumnContracts(
+    tables: readonly string[],
+    const result = await client.query<{
+      table_name: string;
+      contract_version: number | null;
+      matches: boolean | null;
+    }>(
+      `WITH requested AS (
+        SELECT unnest($1::text[]) AS relation_name
+      ),
+      latest_contracts AS (
+        SELECT DISTINCT ON (contract.schema_name, contract.relation_name)
+          contract.schema_name,
+          contract.relation_name,
+          contract.contract_version,
+          contract.data_category,
+          contract.column_manifest
+        FROM factoryos_governance.tenant_export_column_contracts contract
+        INNER JOIN requested ON requested.relation_name = contract.relation_name
+        WHERE contract.schema_name = 'public'
+        ORDER BY contract.schema_name, contract.relation_name, contract.contract_version DESC
+      live_columns AS (
+        SELECT
+          relation.relname AS relation_name,
+          jsonb_agg(
+            jsonb_build_object(
+              'ordinal', column_meta.attnum,
+              'name', column_meta.attname,
+              'type', format_type(column_meta.atttypid, column_meta.atttypmod),
+              'notNull', column_meta.attnotnull,
+              'identity', column_meta.attidentity,
+              'generated', column_meta.attgenerated,
+              'default', pg_get_expr(default_value.adbin, default_value.adrelid),
+              'collation', CASE
+                WHEN column_meta.attcollation = 0 THEN NULL
+                ELSE collation_schema.nspname || '.' || collation_row.collname
+              END
+            )
+            ORDER BY column_meta.attnum
+          ) AS columns
+        FROM pg_catalog.pg_class relation
+        INNER JOIN pg_catalog.pg_namespace relation_schema
+          ON relation_schema.oid = relation.relnamespace
+        INNER JOIN requested
+          ON requested.relation_name = relation.relname
+        INNER JOIN pg_catalog.pg_attribute column_meta
+          ON column_meta.attrelid = relation.oid
+          AND column_meta.attnum > 0
+          AND NOT column_meta.attisdropped
+        LEFT JOIN pg_catalog.pg_attrdef default_value
+          ON default_value.adrelid = relation.oid
+          AND default_value.adnum = column_meta.attnum
+        LEFT JOIN pg_catalog.pg_collation collation_row
+          ON collation_row.oid = column_meta.attcollation
+          AND column_meta.attcollation <> 0
+        LEFT JOIN pg_catalog.pg_namespace collation_schema
+          ON collation_schema.oid = collation_row.collnamespace
+        WHERE relation_schema.nspname = 'public'
+          AND relation.relkind IN ('r', 'p')
+        GROUP BY relation.relname
+      live_manifests AS (
+          requested.relation_name,
+          latest_contracts.data_category,
+          CASE
+            WHEN live_columns.columns IS NULL THEN NULL
+            ELSE jsonb_build_object(
+              'category', latest_contracts.data_category,
+              'columns', live_columns.columns
+          END AS column_manifest
+        FROM requested
+        LEFT JOIN latest_contracts
+          ON latest_contracts.relation_name = requested.relation_name
+        LEFT JOIN live_columns
+          ON live_columns.relation_name = requested.relation_name
+      )
+      SELECT
+        requested.relation_name AS table_name,
+        latest_contracts.contract_version,
+        (
+          latest_contracts.relation_name IS NOT NULL
+          AND live_manifests.column_manifest IS NOT NULL
+          AND latest_contracts.data_category = $2
+          AND live_manifests.data_category = $2
+          AND latest_contracts.column_manifest = live_manifests.column_manifest
+        ) AS matches
+      FROM requested
+      LEFT JOIN latest_contracts
+        ON latest_contracts.relation_name = requested.relation_name
+      LEFT JOIN live_manifests
+        ON live_manifests.relation_name = requested.relation_name
+      ORDER BY requested.relation_name`,
+      [[...tables], category],
+    );
+    if (
+      result.rows.length !== tables.length ||
+      result.rows.some((row) =>
+        row.matches !== true ||
+        !Number.isInteger(Number(row.contract_version)) ||
+        Number(row.contract_version) < 1
+    ) {
+        'Tenant export column contract is missing or stale for this dataset; export is blocked until schema changes are reviewed',
   private async *readDatasetOnClient(
     client: Awaited<ReturnType<DatabaseService['getClient']>>,
     tenantId: string,
@@ -364,6 +470,8 @@ export class SaasTenantPostgresDatasetSource {
 
     await this.assertCategoryCompleteOnClient(client, category, tables);
 
+    // Validate every table in the category before yielding the first row.
+    await this.assertExportColumnContracts(client, category, tables);
     for (const table of tables) {
       if (table === 'traceability_settings') {
         let afterFactoryId: string | null = null;

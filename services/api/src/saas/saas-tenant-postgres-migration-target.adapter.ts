@@ -15,6 +15,7 @@ import type {
   SaasTenantTransferExportManifest,
 } from './saas-tenant-data-transfer.adapters';
 import { SAAS_TENANT_DATASET_TABLES } from './saas-tenant-postgres-dataset-source';
+import { resolveSaasTenantImportOrder } from './saas-tenant-transfer-dependency-order';
 import { assertSaasTenantTransferFieldSafe } from './saas-tenant-transfer-field-guard';
 import { assertSaasTenantIamEffectiveAccess, buildSaasTenantIamRemappingPlan } from './saas-tenant-iam-remapping.plan';
 import type { SaasTenantIamPortableSnapshot, SaasTenantIamTargetDirectory, SaasIamTransferStatus, SaasTenantMembershipStatus } from './saas-tenant-iam-remapping.plan';
@@ -324,8 +325,21 @@ export class SaasTenantPostgresMigrationTargetAdapter
         throw new ConflictException('Source bundle exceeds the supported record-count limit');
       }
 
+      const stagedReleaseEvaluationPointers = await client.query(
+        "SELECT 1 FROM pg_temp.factoryos_transfer_stage " +
+          "WHERE table_name = 'research_knowledge_releases' " +
+          "AND row_payload->>'evaluation_id' IS NOT NULL LIMIT 1",
+      );
+      if (stagedReleaseEvaluationPointers.rows.length > 0 &&
+          !allTables.includes('research_release_evaluations')) {
+        throw new ConflictException(
+          'Research releases with attached evaluations must be imported together with their evaluation records',
+        );
+      }
+
+      const orderedTables = await this.dependencyOrder(client, allTables);
       await client.query('SET CONSTRAINTS ALL DEFERRED');
-      for (const table of this.dependencyOrder(allTables)) {
+      for (const table of orderedTables) {
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
         if (table === 'inventory_locations') {
@@ -337,24 +351,34 @@ export class SaasTenantPostgresMigrationTargetAdapter
           continue;
         }
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
-        const projectionSql = keys.map((key) =>
-          table === 'business_blueprints' && key === 'current_version_id'
-            ? 'NULL AS ' + this.quoteIdentifier(key)
-            : 'target_row.' + this.quoteIdentifier(key),
-        ).join(', ');
+        const projectionSql = keys.map((key) => {
+          if (table === 'business_blueprints' && key === 'current_version_id') {
+            return 'NULL AS ' + this.quoteIdentifier(key);
+          }
+          if (table === 'research_knowledge_releases' && key === 'evaluation_id') {
+            return 'NULL AS ' + this.quoteIdentifier(key);
+          }
+          if (table === 'research_knowledge_releases' && key === 'status') {
+            return "CASE WHEN target_row.evaluation_id IS NOT NULL THEN 'DRAFT' ELSE target_row.status END AS " +
+              this.quoteIdentifier(key);
+          }
+          return 'target_row.' + this.quoteIdentifier(key);
+        }).join(', ');
         await client.query(
           'INSERT INTO public.' + this.quoteIdentifier(table) + ' (' + columnSql + ') ' +
           'SELECT ' + projectionSql + ' ' +
           'FROM pg_temp.factoryos_transfer_stage AS staged ' +
           'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.' + this.quoteIdentifier(table) +
           ', staged.row_payload) AS target_row ' +
-          'WHERE staged.table_name = $1 ORDER BY staged.sequence',
+          'WHERE staged.table_name = $1 ORDER BY ' + this.insertOrderBy(table),
           [table],
         );
       }
 
       // business_blueprints and business_blueprint_versions have a circular, immediate FK.
       // Insert blueprints with a null current pointer, insert versions, then restore the pointer.
+      // Evidence predecessors are inserted by factory/source/revision order, and research
+      // release versions by release_key/version so their BEFORE INSERT guards see parents first.
       if (tableColumnsInBundle.get('business_blueprints')?.includes('current_version_id')) {
         await client.query(
           'UPDATE public.business_blueprints AS target_row ' +
@@ -363,6 +387,33 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'WHERE staged.table_name = \'business_blueprints\' ' +
             'AND target_row.id = (staged.row_payload->>\'id\')::uuid ' +
             'AND staged.row_payload->>\'current_version_id\' IS NOT NULL',
+        );
+      }
+
+      if (tableColumnsInBundle.get('research_knowledge_releases')?.includes('evaluation_id')) {
+        await client.query(
+          'UPDATE public.research_knowledge_releases AS target_row ' +
+            `SET evaluation_id = (staged.row_payload->>'evaluation_id')::uuid, ` +
+            `status = staged.row_payload->>'status' ` +
+            'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+            `WHERE staged.table_name = 'research_knowledge_releases' ` +
+            `AND target_row.id = (staged.row_payload->>'id')::uuid ` +
+            `AND staged.row_payload->>'evaluation_id' IS NOT NULL`,
+        );
+      }
+
+      // Research releases and their evaluations have a second immediate FK cycle.
+      // Releases with an evaluation pointer were inserted as DRAFT with a null pointer;
+      // all evaluation rows now exist, so restore source status and pointer together.
+      if (tableColumnsInBundle.get('research_knowledge_releases')?.includes('evaluation_id')) {
+        await client.query(
+          'UPDATE public.research_knowledge_releases AS target_row ' +
+            `SET evaluation_id = (staged.row_payload->>'evaluation_id')::uuid, ` +
+            `status = staged.row_payload->>'status' ` +
+            'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+            `WHERE staged.table_name = 'research_knowledge_releases' ` +
+            `AND target_row.id = (staged.row_payload->>'id')::uuid ` +
+            `AND staged.row_payload->>'evaluation_id' IS NOT NULL`,
         );
       }
 
@@ -557,6 +608,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return columns;
   }
 
+
   private async importTraceabilitySettings(
     client: PoolClient,
     tenantId: string,
@@ -710,32 +762,65 @@ export class SaasTenantPostgresMigrationTargetAdapter
     }
   }
 
-  private dependencyOrder(tables: string[]): string[] {
-    const preferred = [
-      'legal_entities', 'factories', 'inventory_locations', 'traceability_settings',
-      'business_blueprints', 'business_blueprint_versions',
-      'business_entities', 'business_relations',
-      'business_processes', 'business_process_steps',
-      'business_rules', 'business_terms', 'business_exceptions',
-      'business_change_proposals', 'business_conflicts', 'business_feedback',
-      'orders', 'order_lines', 'order_event_projections',
-      'inventory_items', 'inventory_stock_balances', 'inventory_movements',
-      'growth_opportunities', 'growth_scenarios', 'growth_experiments',
-      'risk_classes', 'policies', 'approvals',
-      'saas_usage_rate_cards', 'saas_usage_events', 'saas_usage_adjustments',
-      'saas_usage_reconciliations', 'saas_usage_budgets', 'saas_budget_evaluations',
-      'saas_workload_control_events', 'saas_budget_alerts', 'saas_budget_alert_acknowledgements',
-      'saas_provider_cost_events', 'saas_provider_cost_reconciliations',
-      'ai_decision_envelopes', 'ai_context_packages', 'ai_verification_runs',
-      'research_sources', 'research_claims', 'research_claim_links',
-      'research_knowledge_releases', 'research_relevance_mappings',
-      'research_release_evaluations',
-      'business_evidence', 'business_evidence_links', 'growth_opportunity_evidence',
-      'growth_experiment_results', 'growth_opportunity_outcomes',
-      'audit_events',
-    ];    const ordered = preferred.filter((table) => tables.includes(table));
-    for (const table of tables) if (!ordered.includes(table)) ordered.push(table);
-    return ordered;
+  /**
+   * Per-row ordering required by domain BEFORE INSERT guards. Other relations
+   * retain deterministic source sequence order after their table dependencies
+   * have been resolved from the target's foreign-key catalog.
+   */
+  private insertOrderBy(table: string): string {
+    if (table === 'business_evidence') {
+      return "(staged.row_payload->>'factory_id') ASC, " +
+        "(staged.row_payload->>'source_key') ASC NULLS FIRST, " +
+        "COALESCE((staged.row_payload->>'revision_no')::integer, 1) ASC, staged.sequence ASC";
+    }
+    if (table === 'research_knowledge_releases') {
+      return "(staged.row_payload->>'release_key') ASC, " +
+        "(staged.row_payload->>'version')::integer ASC, staged.sequence ASC";
+    }
+    return 'staged.sequence ASC';
+  }
+
+  /**
+   * Derive parent-before-child insert order from the destination schema itself.
+   * Only FKs whose child and parent are both in this import are ordering edges.
+   * Deferrable FKs are checked at COMMIT after SET CONSTRAINTS ALL DEFERRED.
+   * The exact blueprint, research evaluation and evidence predecessor cycles
+   * have dedicated importer staging/row-order strategies; all others are rejected.
+   */
+  private async dependencyOrder(client: PoolClient, tables: string[]): Promise<string[]> {
+    if (tables.length === 0) return [];
+    const result = await client.query<{
+      child_table: string;
+      parent_table: string;
+      constraint_name: string;
+      is_deferrable: boolean;
+      child_columns: string[];
+      parent_columns: string[];
+    }>(
+      'SELECT child.relname AS child_table, parent.relname AS parent_table, ' +
+        'con.conname AS constraint_name, con.condeferrable AS is_deferrable, ' +
+        'array_agg(child_column.attname::text ORDER BY child_key.ordinality) AS child_columns, ' +
+        'array_agg(parent_column.attname::text ORDER BY parent_key.ordinality) AS parent_columns ' +
+        'FROM pg_constraint con ' +
+        'INNER JOIN pg_class child ON child.oid = con.conrelid ' +
+        'INNER JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace ' +
+        'INNER JOIN pg_class parent ON parent.oid = con.confrelid ' +
+        'INNER JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace ' +
+        'INNER JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS child_key(attnum, ordinality) ON TRUE ' +
+        'INNER JOIN pg_attribute child_column ON child_column.attrelid = con.conrelid ' +
+        'AND child_column.attnum = child_key.attnum AND NOT child_column.attisdropped ' +
+        'INNER JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS parent_key(attnum, ordinality) ' +
+        'ON parent_key.ordinality = child_key.ordinality ' +
+        'INNER JOIN pg_attribute parent_column ON parent_column.attrelid = con.confrelid ' +
+        'AND parent_column.attnum = parent_key.attnum AND NOT parent_column.attisdropped ' +
+        'WHERE con.contype = \'f\' AND child_namespace.nspname = \'public\' ' +
+        'AND parent_namespace.nspname = \'public\' ' +
+        'AND child.relname = ANY($1::text[]) AND parent.relname = ANY($1::text[]) ' +
+        'GROUP BY con.oid, child.relname, parent.relname, con.conname, con.condeferrable ' +
+        'ORDER BY child.relname, parent.relname, con.conname',
+      [tables],
+    );
+    return resolveSaasTenantImportOrder(tables, result.rows);
   }
 
   private validateIamPortableRow(table: string, row: Record<string, unknown>, tenantId: string): void {

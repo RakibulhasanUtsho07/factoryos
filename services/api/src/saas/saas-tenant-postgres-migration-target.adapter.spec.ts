@@ -26,6 +26,43 @@ function chunksOf(text: string, sizes: number[]): AsyncIterable<Buffer> {
 }
 
 describe('SaasTenantPostgresMigrationTargetAdapter', () => {
+  it('queries the live target foreign-key graph and resolves parent-before-child order', async () => {
+    const config = { get: jest.fn(() => undefined) };
+    const sourceDb = { query: jest.fn() };
+    const adapter = new SaasTenantPostgresMigrationTargetAdapter(config as never, sourceDb as never);
+    const clientQuery = jest.fn(async (_sql: string, _values?: unknown[]) => ({
+      rows: [{ child_table: 'orders', parent_table: 'factories', constraint_name: 'orders_factory_fk',
+        is_deferrable: false, child_columns: ['factory_id'], parent_columns: ['id'] }],
+    }));
+    const dependencyOrder = (adapter as unknown as {
+      dependencyOrder(client: unknown, tables: string[]): Promise<string[]>;
+    }).dependencyOrder.bind(adapter);
+    await expect(dependencyOrder({ query: clientQuery }, ['orders', 'factories']))
+      .resolves.toEqual(['factories', 'orders']);
+    expect(clientQuery).toHaveBeenCalledTimes(1);
+    expect(clientQuery.mock.calls[0]?.[1]).toEqual([['orders', 'factories']]);
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('pg_constraint');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.condeferrable AS is_deferrable');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('con.confkey');
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain('parent_columns');
+  });
+
+  it('orders trigger-bound evidence revisions and research release versions explicitly', () => {
+    const adapter = new SaasTenantPostgresMigrationTargetAdapter(
+      { get: jest.fn(() => undefined) } as never,
+      { query: jest.fn() } as never,
+    );
+    const insertOrderBy = (adapter as unknown as { insertOrderBy(table: string): string })
+      .insertOrderBy.bind(adapter);
+
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'factory_id'");
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'source_key'");
+    expect(insertOrderBy('business_evidence')).toContain("staged.row_payload->>'revision_no'");
+    expect(insertOrderBy('research_knowledge_releases')).toContain("staged.row_payload->>'release_key'");
+    expect(insertOrderBy('research_knowledge_releases')).toContain("staged.row_payload->>'version'");
+    expect(insertOrderBy('orders')).toBe('staged.sequence ASC');
+  });
+
   it('rejects nested action-token hashes in target JSON data before accepting an import', () => {
     const adapter = new SaasTenantPostgresMigrationTargetAdapter(
       { get: jest.fn(() => undefined) } as never,

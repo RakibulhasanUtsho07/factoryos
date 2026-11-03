@@ -183,6 +183,23 @@ export class SaasTenantRetentionService {
         if (replay.rows[0].request_hash !== requestHash) throw new ConflictException('Idempotency-Key was used for another legal hold request');
         return { row: replay.rows[0], replayed: true };
       }
+
+      // The tenant row lock above serializes this check against starting a new
+      // propagation run. The database trigger repeats the same fence for direct
+      // SQL writers, so this query supplies a clean conflict instead of relying
+      // on the trigger's defensive SQLSTATE alone.
+      const runningPropagation = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
+        `SELECT categories
+         FROM saas_tenant_external_propagation_runs
+         WHERE tenant_id=$1 AND status='RUNNING'
+         FOR SHARE`,
+        [tenantId],
+      );
+      if (runningPropagation.rows.some((run) =>
+        this.categoriesOverlap(categories, this.parseCategories(run.categories)))) {
+        throw new ConflictException('Cannot create an overlapping legal hold while external erasure propagation is running');
+      }
+
       const inserted = await client.query<LegalHoldRow>(
         `INSERT INTO saas_tenant_data_legal_holds
          (tenant_id, categories, case_reference, reason, idempotency_key, request_hash, created_by_user_id)

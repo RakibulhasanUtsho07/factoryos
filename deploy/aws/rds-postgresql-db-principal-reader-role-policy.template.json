@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConnectOnlyAsTheDedicatedDatabaseInventoryLogin",
+      "Effect": "Allow",
+      "Action": "rds-db:connect",
+      "Resource": [
+        "arn:<PARTITION>:rds-db:<REGION>:<ACCOUNT_ID>:dbuser:<DBI_RESOURCE_ID>/factoryos_db_inventory_reader",
+        "arn:<PARTITION>:rds-db:<REGION>:<ACCOUNT_ID>:dbuser:<DB_CLUSTER_RESOURCE_ID>/factoryos_db_inventory_reader"
+      ]
+    }
+  ]
+}

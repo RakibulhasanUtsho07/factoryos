@@ -1,6 +1,8 @@
 import { jest } from '@jest/globals';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import type { BackupCopyEvidenceMountVerifier } from './backup-copy-class-evidence-mount-verifier';
 
 const tenant = '16000000-0000-4000-8000-000000000001';
 const requester = '16010000-0000-4000-8000-000000000001';
@@ -24,9 +26,8 @@ describe('SaasTenantPropagationService', () => {
     adapterKey: 'object-store.v1',
     adapterVersion: '1.0.0',
     isConfigured: jest.fn<(...args: unknown[]) => Promise<boolean>>(),
-    preflight: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     prepare: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
-    execute: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    erase: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     verify: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     recover: jest.fn<(...args: unknown[]) => Promise<void>>(),
   };
@@ -37,10 +38,6 @@ describe('SaasTenantPropagationService', () => {
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
     adapter.isConfigured.mockResolvedValue(true);
-    adapter.preflight.mockResolvedValue({
-      outcome: 'READY', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 500, maxBatchSize: 100,
-    });
     database.transaction.mockImplementation(async (...args: unknown[]) => {
       const callback = args.find((value) => typeof value === 'function') as
         ((client: unknown) => Promise<unknown>) | undefined;
@@ -69,10 +66,15 @@ describe('SaasTenantPropagationService', () => {
         return { rows: [{ verified_by_user_id: independentAttestor }] };
       }
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
+      if (sql.includes('FROM saas_tenant_data_retention_policies')) {
+        return { rows: [{ category_code: 'BUSINESS_DATA', version: 1, disposition: 'DELETE' }] };
+      }
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: [] };
+      if (sql.includes('FROM public.saas_tenant_external_copy_coverage_decisions')) return { rows: [] };
       throw new Error('unexpected SQL in no-target closure test: ' + sql);
     });
-    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, [adapter as never]);
+    const testMountVerifier: BackupCopyEvidenceMountVerifier = { assertPathMountedReadOnly: async () => undefined };
+    service = new SaasTenantPropagationService(database as never, iam as never, audit as never, new BackupCopyClassEvidenceArtifactReader(testMountVerifier as never), [adapter as never]);
   });
 
   it('does not call a provider or complete erasure when a required external-copy class has no reviewed target', async () => {
@@ -84,11 +86,68 @@ describe('SaasTenantPropagationService', () => {
 
     expect(iam.authorize).toHaveBeenCalledWith(propagationExecutor, tenant, 'saas.data_retention.propagate');
     expect(adapter.prepare).not.toHaveBeenCalled();
-    expect(adapter.execute).not.toHaveBeenCalled();
+    expect(adapter.erase).not.toHaveBeenCalled();
     expect(adapter.verify).not.toHaveBeenCalled();
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_runs'))).toBe(false);
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='VERIFIED'"))).toBe(false);
     expect(audit.recordWithClient).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate a CACHE target while no matching provider adapter is registered', async () => {
+    database.query.mockResolvedValue({
+      rows: [{
+        id: '16050000-0000-4000-8000-000000000001',
+        tenant_id: tenant,
+        target_id: 'cache-main',
+        store_kind: 'CACHE',
+        adapter_key: 'cache.redis.v1',
+        config_reference: 'factoryos-cache-prod-v1',
+        categories: ['BUSINESS_DATA'],
+        required: true,
+        status: 'PENDING',
+        registered_by_user_id: requester,
+      }],
+    } as never);
+
+    await expect(service.reviewTarget(tenant, reviewer, 'cache-main', {
+      decision: 'APPROVE',
+      expected_status: 'PENDING',
+      reason: 'Provider integration is not installed',
+    })).rejects.toThrow('No provider adapter registered for target cache-main');
+
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate a registered adapter when its deployment configuration is unavailable', async () => {
+    const targetRow = {
+      id: '16050000-0000-4000-8000-000000000002',
+      tenant_id: tenant,
+      target_id: 'object-store-main',
+      store_kind: 'OBJECT_STORAGE',
+      adapter_key: 'object-store.v1',
+      config_reference: 'factoryos-object-store-prod-v1',
+      categories: ['BUSINESS_DATA'],
+      required: true,
+      status: 'PENDING',
+      registered_by_user_id: requester,
+    };
+    database.query.mockResolvedValue({ rows: [targetRow] } as never);
+    adapter.isConfigured.mockResolvedValue(false);
+
+    await expect(service.reviewTarget(tenant, reviewer, 'object-store-main', {
+      decision: 'APPROVE',
+      expected_status: 'PENDING',
+      reason: 'Config reference must resolve before activation',
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(adapter.isConfigured).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: tenant,
+      targetId: 'object-store-main',
+      storeKind: 'OBJECT_STORAGE',
+      adapterKey: 'object-store.v1',
+      configReference: 'factoryos-object-store-prod-v1',
+    }));
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
   it('requires a propagation actor distinct from the requester, reviewer and PostgreSQL executor', async () => {
@@ -98,79 +157,6 @@ describe('SaasTenantPropagationService', () => {
       idempotency_key: 'propagate-separation-v1',
     })).rejects.toBeInstanceOf(ConflictException);
     expect(adapter.prepare).not.toHaveBeenCalled();
-    expect(adapter.execute).not.toHaveBeenCalled();
-  });
-
-  it('accepts only bounded, version-pinned, non-destructive preflight results', () => {
-    const internals = service as unknown as {
-      validatePreflight(value: never, adapter: never): {
-        outcome: string; adapterVersion: string; resourceClass: string; maxPageSize: number; maxBatchSize: number;
-      };
-    };
-    const validate = internals.validatePreflight.bind(service);
-    const valid = validate({
-      outcome: 'READY', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 500, maxBatchSize: 100,
-    } as never, adapter as never);
-    expect(valid).toMatchObject({
-      outcome: 'READY', adapterVersion: '1.0.0', resourceClass: 'OBJECT_STORAGE',
-      maxPageSize: 500, maxBatchSize: 100,
-    });
-    expect(() => validate({
-      outcome: 'READY', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 5001, maxBatchSize: 100,
-    } as never, adapter as never)).toThrow(ConflictException);
-    expect(() => validate({
-      outcome: 'READY', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.1',
-      maxPageSize: 500, maxBatchSize: 100,
-    } as never, adapter as never)).toThrow(ConflictException);
-  });
-
-  it('refuses preflight reasons that expose a URL or credential-like material', () => {
-    const internals = service as unknown as {
-      validatePreflight(value: never, adapter: never): unknown;
-    };
-    expect(() => internals.validatePreflight({
-      outcome: 'BLOCKED', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 100, maxBatchSize: 50, reason: 'Blocked at https://store.example/private',
-    } as never, adapter as never)).toThrow(ConflictException);
-    expect(() => internals.validatePreflight({
-      outcome: 'RETAINED', resourceClass: 'OBJECT_STORAGE', adapterVersion: '1.0.0',
-      maxPageSize: 100, maxBatchSize: 50, reason: 'Bearer token could not be refreshed',
-    } as never, adapter as never)).toThrow(ConflictException);
-  });
-
-  it('writes an explicit BLOCKED receipt without pretending a scope-intent digest is a resource manifest', async () => {
-    clientQuery.mockImplementation(async (...args: unknown[]) => {
-      const sql = String(args[0]);
-      if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
-      if (sql.includes('COALESCE(MAX(attempt_no),0)+1')) return { rows: [{ attempt_no: 1 }] };
-      if (sql.includes('INSERT INTO saas_tenant_external_propagation_receipts')) return { rows: [] };
-      throw new Error('unexpected SQL in blocked-receipt test: ' + sql);
-    });
-    const internals = service as unknown as {
-      insertReceipt(input: never): Promise<void>;
-    };
-    await internals.insertReceipt({
-      tenantId: tenant, actorUserId: propagationExecutor, requestId, runId: '16040000-0000-4000-8000-000000000001',
-      target: {
-        tenantId: tenant, targetId: 'object-store-a', storeKind: 'OBJECT_STORAGE',
-        adapterKey: 'object-store.v1', configReference: 'factoryos.external.object-store', categories: ['BUSINESS_DATA'], required: true,
-      },
-      plannedCopies: '0', deletedCopies: '0', residualCopies: '0', manifestDigest: 'c'.repeat(64),
-      verifiedManifestDigest: null, verificationReference: null, providerReceiptReference: null,
-      residualManifest: [], status: 'FAILED', failureCode: 'ADAPTER_UNAVAILABLE',
-      outcomeCode: 'BLOCKED', manifestKind: 'SCOPE_INTENT', resourceClass: 'OBJECT_STORAGE',
-      adapterVersion: null, maxPageSize: null, maxBatchSize: null,
-      policyVersions: { BUSINESS_DATA: 1 }, residualReason: 'No adapter is registered for the target.',
-    } as never);
-    const insertCall = clientQuery.mock.calls.find((call) =>
-      String(call[0]).includes('INSERT INTO saas_tenant_external_propagation_receipts'));
-    expect(insertCall).toBeDefined();
-    expect(String(insertCall?.[0])).toContain('outcome_code');
-    expect(String(insertCall?.[0])).toContain('manifest_kind');
-    expect(insertCall?.[1]).toContain('BLOCKED');
-    expect(insertCall?.[1]).toContain('SCOPE_INTENT');
-    expect(insertCall?.[1]).toContain('ADAPTER_UNAVAILABLE');
+    expect(adapter.erase).not.toHaveBeenCalled();
   });
 });

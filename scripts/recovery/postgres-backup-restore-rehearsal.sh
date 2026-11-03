@@ -27,6 +27,11 @@ failure_probe_sql="${FACTORYOS_MIGRATION_FAILURE_PROBE_SQL:-$repo_root/services/
 evidence_file="${FACTORYOS_RECOVERY_EVIDENCE_JSON:-}"
 event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
 app_database_url="${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
+erasure_replay_sql="${FACTORYOS_RESTORE_ERASURE_REPLAY_SQL:-}"
+erasure_verify_sql="${FACTORYOS_RESTORE_ERASURE_VERIFY_SQL:-}"
+erasure_ledger_reference="${FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE:-}"
+erasure_ledger_sha256="${FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256:-}"
+candidate_sha="${FACTORYOS_CANDIDATE_SHA:-}"
 
 current_stage="configuration"
 rehearsal_status="RUNNING"
@@ -51,6 +56,15 @@ application_smoke_status="NOT_REPORTED"
 api_readiness_status="NOT_REPORTED"
 tenant_isolation_status="NOT_REPORTED"
 audit_continuity_status="NOT_REPORTED"
+erasure_replay_status="NOT_RUN"
+erasure_ledger_watermark_utc=""
+erasure_replayed_requests=""
+erasure_replay_residuals=""
+erasure_verified_requests=""
+erasure_verification_residuals=""
+erasure_replay_sql_sha256=""
+erasure_verify_sql_sha256=""
+erasure_verify_method=""
 checksum_sha256=""
 checksum_verified=false
 archive_status="NOT_RUN"
@@ -92,6 +106,17 @@ emit_evidence() {
   export FACTORYOS_DR_API_READINESS_STATUS="$api_readiness_status"
   export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status"
   export FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
+  export FACTORYOS_DR_ERASURE_REPLAY_STATUS="$erasure_replay_status"
+  export FACTORYOS_DR_ERASURE_LEDGER_REFERENCE="$erasure_ledger_reference"
+  export FACTORYOS_DR_ERASURE_LEDGER_SHA256="$erasure_ledger_sha256"
+  export FACTORYOS_DR_ERASURE_LEDGER_WATERMARK_UTC="$erasure_ledger_watermark_utc"
+  export FACTORYOS_DR_ERASURE_REPLAYED_REQUESTS="$erasure_replayed_requests"
+  export FACTORYOS_DR_ERASURE_REPLAY_RESIDUALS="$erasure_replay_residuals"
+  export FACTORYOS_DR_ERASURE_VERIFIED_REQUESTS="$erasure_verified_requests"
+  export FACTORYOS_DR_ERASURE_VERIFICATION_RESIDUALS="$erasure_verification_residuals"
+  export FACTORYOS_DR_ERASURE_REPLAY_SQL_SHA256="$erasure_replay_sql_sha256"
+  export FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256="$erasure_verify_sql_sha256"
+  export FACTORYOS_DR_ERASURE_VERIFY_METHOD="$erasure_verify_method"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest"
   export FACTORYOS_DR_MIGRATION_MANIFEST_MODE="$manifest_mode"
   export FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
@@ -157,6 +182,7 @@ need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 [[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "confirm the restore target is disposable and isolated before continuing"
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
+  for tool in date stat readlink grep sed awk sha256sum git; do need_command "$tool"; done
   need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
   need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
   [[ "$manifest_mode" == "PENDING" || "$manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "FACTORYOS_MIGRATION_MANIFEST_MODE must be PENDING or IDEMPOTENT_REPLAY"
@@ -164,12 +190,27 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   need_value FACTORYOS_RECOVERY_EVENT_TIME_UTC "$event_time_utc"
   need_value FACTORYOS_RECOVERY_OPERATOR "${FACTORYOS_RECOVERY_OPERATOR:-}"
   need_value FACTORYOS_RECOVERY_APPROVER "${FACTORYOS_RECOVERY_APPROVER:-}"
+  need_value FACTORYOS_CANDIDATE_SHA "$candidate_sha"
+  need_value FACTORYOS_RESTORE_ERASURE_REPLAY_SQL "$erasure_replay_sql"
+  need_value FACTORYOS_RESTORE_ERASURE_VERIFY_SQL "$erasure_verify_sql"
+  need_value FACTORYOS_RESTORE_ERASURE_LEDGER_REFERENCE "$erasure_ledger_reference"
+  need_value FACTORYOS_RESTORE_ERASURE_LEDGER_SHA256 "$erasure_ledger_sha256"
+  [[ "$candidate_sha" =~ ^[a-f0-9]{40}$ ]] || die "candidate SHA must be a full 40-character lowercase commit SHA"
+  [[ "$erasure_ledger_reference" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$ ]] || die "erasure ledger reference must be a safe opaque identifier"
+  [[ "$erasure_ledger_sha256" =~ ^[a-f0-9]{64}$ ]] || die "erasure ledger SHA-256 must be 64 lowercase hexadecimal characters"
   [[ "$evidence_file" == /* ]] || die "evidence output must be an absolute path"
   [[ -d "$(dirname "$evidence_file")" ]] || die "evidence output directory must already exist"
   [[ ! -e "$evidence_file" && ! -L "$evidence_file" ]] || die "evidence output already exists; refusing to overwrite a receipt"
   [[ "$FACTORYOS_RECOVERY_OPERATOR" != "$FACTORYOS_RECOVERY_APPROVER" ]] || die "operator and approver must be different people"
   [[ -f "$watermark_sql" && -r "$watermark_sql" ]] || die "watermark SQL must be a readable reviewed query"
   [[ -f "$failure_probe_sql" && -r "$failure_probe_sql" ]] || die "migration failure-recovery probe SQL is missing or unreadable"
+  for replay_file in "$erasure_replay_sql" "$erasure_verify_sql"; do
+    [[ "$replay_file" == /* && -f "$replay_file" && -r "$replay_file" && ! -L "$replay_file" ]] || die "restore erasure replay and verification SQL must be absolute readable regular files, not symlinks"
+    replay_mode="$(stat -c '%a' -- "$replay_file")" || die "could not inspect restore erasure SQL permissions"
+    [[ "$replay_mode" =~ ^[0-7]{3,4}$ ]] || die "restore erasure SQL permissions could not be verified"
+    (( (8#$replay_mode & 0022) == 0 )) || die "restore erasure SQL must not be group/world writable"
+  done
+  [[ "$(readlink -f -- "$erasure_replay_sql")" != "$(readlink -f -- "$erasure_verify_sql")" ]] || die "restore erasure replay and verification SQL must be separate files"
   [[ "$event_time_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "event time must be UTC RFC 3339 ending in Z"
   date -u -d "$event_time_utc" +%s >/dev/null 2>&1 || die "event timestamp is invalid"
   event_epoch_preflight="$(date -u -d "$event_time_utc" +%s)"
@@ -178,6 +219,8 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
   [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
   need_command node
+  need_command git
+  [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$candidate_sha" ]] || die "candidate SHA does not match the checked-out repository"
   if ! (cd "$repo_root" && node scripts/audit/verify-migration-manifest.mjs); then
     die "canonical ordered migration manifest failed inventory verification"
   fi
@@ -195,7 +238,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
 fi
 
-for tool in pg_dump pg_restore psql gpg sha256sum mktemp date; do need_command "$tool"; done
+for tool in pg_dump pg_restore psql gpg sha256sum mktemp; do need_command "$tool"; done
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
 partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
@@ -224,6 +267,14 @@ run_watermark_query() {
   printf '%s' "$result"
 }
 
+read_single_marker() {
+  local marker="$1" marker_file="$2" count value
+  count="$(grep -c "^${marker}=" "$marker_file" || true)"
+  [[ "$count" == "1" ]] || die "restore erasure SQL must emit exactly one ${marker} marker"
+  value="$(sed -n "s/^${marker}=//p" "$marker_file")"
+  [[ -n "$value" ]] || die "restore erasure SQL emitted an empty ${marker} marker"
+  printf '%s' "$value"
+}
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   current_stage="source_watermark"
   source_watermark_utc="$(run_watermark_query "$source_service" "$watermark_sql")"
@@ -331,6 +382,69 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
   (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes the restored durable-write watermark"
   observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
+  current_stage="erasure_tombstone_replay"
+  erasure_replay_sql_sha256="$(sha256sum -- "$erasure_replay_sql" | awk '{print $1}')"
+  erasure_verify_sql_sha256="$(sha256sum -- "$erasure_verify_sql" | awk '{print $1}')"
+  replay_log="$tmpdir/erasure-replay.log"
+  verify_log="$tmpdir/erasure-verify.log"
+  if ! psql -w "service=$target_service" -X -qAt -1 -v ON_ERROR_STOP=1 \
+      -v "candidate_sha=$candidate_sha" \
+      -v "target_database_identity=$target_identity" \
+      -v "snapshot_watermark_utc=$restored_watermark_utc" \
+      -v "incident_cutoff_utc=$event_time_utc" \
+      -v "ledger_reference=$erasure_ledger_reference" \
+      -v "ledger_sha256=$erasure_ledger_sha256" \
+      -f "$erasure_replay_sql" > "$replay_log" 2>&1; then
+    die "out-of-band erasure tombstone replay SQL failed; restore target remains quarantined"
+  fi
+  [[ "$(sha256sum -- "$erasure_replay_sql" | awk '{print $1}')" == "$erasure_replay_sql_sha256" ]] || die "erasure replay SQL changed while being executed"
+  replay_status_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_STATUS "$replay_log")"
+  replay_ledger_marker="$(read_single_marker FACTORYOS_ERASURE_LEDGER_SHA256 "$replay_log")"
+  replay_reference_marker="$(read_single_marker FACTORYOS_ERASURE_LEDGER_REFERENCE "$replay_log")"
+  replay_candidate_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_CANDIDATE_SHA "$replay_log")"
+  replay_target_marker="$(read_single_marker FACTORYOS_ERASURE_REPLAY_TARGET_IDENTITY "$replay_log")"
+  erasure_ledger_watermark_utc="$(read_single_marker FACTORYOS_ERASURE_LEDGER_WATERMARK_UTC "$replay_log")"
+  erasure_replayed_requests="$(read_single_marker FACTORYOS_ERASURE_REPLAYED_REQUESTS "$replay_log")"
+  erasure_replay_residuals="$(read_single_marker FACTORYOS_ERASURE_REPLAY_RESIDUALS "$replay_log")"
+  [[ "$replay_status_marker" == "PASS" ]] || die "erasure replay SQL did not report PASS"
+  [[ "$replay_ledger_marker" == "$erasure_ledger_sha256" ]] || die "erasure replay ledger digest does not match the approved external ledger"
+  [[ "$replay_reference_marker" == "$erasure_ledger_reference" ]] || die "erasure replay ledger reference does not match the approved external ledger"
+  [[ "$replay_candidate_marker" == "$candidate_sha" ]] || die "erasure replay receipt is bound to a different candidate SHA"
+  [[ "$replay_target_marker" == "$target_identity" ]] || die "erasure replay receipt is bound to a different restore database"
+  [[ "$erasure_replayed_requests" =~ ^(0|[1-9][0-9]*)$ ]] || die "erasure replay request count is invalid"
+  [[ "$erasure_replay_residuals" == "0" ]] || die "erasure tombstone replay left unresolved residuals"
+  [[ "$erasure_ledger_watermark_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "erasure replay ledger watermark must be UTC RFC 3339"
+  date -u -d "$erasure_ledger_watermark_utc" +%s >/dev/null 2>&1 || die "erasure replay ledger watermark is invalid"
+  ledger_watermark_epoch_ns="$(date -u -d "$erasure_ledger_watermark_utc" +%s%N)"
+  event_epoch_ns="$(date -u -d "$event_time_utc" +%s%N)"
+  current_epoch_ns="$(date -u +%s%N)"
+  (( ledger_watermark_epoch_ns >= event_epoch_ns && ledger_watermark_epoch_ns <= current_epoch_ns )) || die "erasure tombstone ledger must cover the exact incident cutoff and cannot be from the future"
+
+  current_stage="erasure_tombstone_verification"
+  if ! PGOPTIONS="-c default_transaction_read_only=on" psql -w "service=$target_service" -X -qAt -1 -c "SET TRANSACTION READ ONLY" -v ON_ERROR_STOP=1 \
+      -v "candidate_sha=$candidate_sha" \
+      -v "target_database_identity=$target_identity" \
+      -v "snapshot_watermark_utc=$restored_watermark_utc" \
+      -v "incident_cutoff_utc=$event_time_utc" \
+      -v "ledger_reference=$erasure_ledger_reference" \
+      -v "ledger_sha256=$erasure_ledger_sha256" \
+      -f "$erasure_verify_sql" > "$verify_log" 2>&1; then
+    die "independent read-only erasure replay verification SQL failed; restore target remains quarantined"
+  fi
+  [[ "$(sha256sum -- "$erasure_verify_sql" | awk '{print $1}')" == "$erasure_verify_sql_sha256" ]] || die "erasure verification SQL changed while being executed"
+  verify_status_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_STATUS "$verify_log")"
+  verify_ledger_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_LEDGER_SHA256 "$verify_log")"
+  verify_reference_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_LEDGER_REFERENCE "$verify_log")"
+  verify_candidate_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_CANDIDATE_SHA "$verify_log")"
+  verify_target_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_TARGET_IDENTITY "$verify_log")"
+  verify_requests_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_REPLAYED_REQUESTS "$verify_log")"
+  verify_residuals_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_RESIDUALS "$verify_log")"
+  erasure_verified_requests="$verify_requests_marker"
+  erasure_verification_residuals="$verify_residuals_marker"
+  verify_method_marker="$(read_single_marker FACTORYOS_ERASURE_VERIFY_METHOD "$verify_log")"
+  erasure_verify_method="$verify_method_marker"
+  [[ "$verify_status_marker" == "PASS" && "$verify_ledger_marker" == "$erasure_ledger_sha256" && "$verify_reference_marker" == "$erasure_ledger_reference" && "$verify_candidate_marker" == "$candidate_sha" && "$verify_target_marker" == "$target_identity" && "$verify_requests_marker" == "$erasure_replayed_requests" && "$verify_residuals_marker" == "0" && "$verify_method_marker" == "INDEPENDENT_READ_ONLY" ]] || die "independent erasure replay verification did not reconcile to the exact ledger, candidate and restore target"
+  erasure_replay_status="PASS"
 fi
 
 current_stage="schema_smoke"
@@ -389,5 +503,6 @@ printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
 printf 'Candidate migrations: %s (%s entries, mode %s)\n' "$candidate_migration_status" "$candidate_migration_count" "$manifest_mode"
 printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
 printf 'Schema smoke: %s; API smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$schema_smoke_status" "$application_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
+printf 'Erasure tombstone replay: %s; requests: %s; residuals: %s; ledger SHA-256: %s\n' "$erasure_replay_status" "${erasure_replayed_requests:-NOT_RUN}" "${erasure_replay_residuals:-NOT_RUN}" "${erasure_ledger_sha256:-NOT_SET}"
 printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
 printf 'Operator sign-off is pending post-run review.\n'

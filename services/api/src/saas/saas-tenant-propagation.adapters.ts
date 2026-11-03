@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 
 export const SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS = Symbol('SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS');
 export const SAAS_TENANT_FINANCE_RETENTION_ADAPTER = Symbol('SAAS_TENANT_FINANCE_RETENTION_ADAPTER');
+
+export const UNCLASSIFIED_EXTERNAL_STORE_KIND = 'UNCLASSIFIED_EXTERNAL_STORE' as const;
 
 export const REQUIRED_EXTERNAL_STORE_KINDS = [
   'OBJECT_STORAGE',
@@ -14,7 +17,13 @@ export const REQUIRED_EXTERNAL_STORE_KINDS = [
   'BACKUP',
 ] as const;
 
+export const EXTERNAL_COPY_COVERAGE_STORE_KINDS = [
+  ...REQUIRED_EXTERNAL_STORE_KINDS,
+  UNCLASSIFIED_EXTERNAL_STORE_KIND,
+] as const;
+
 export type SaasExternalStoreKind = typeof REQUIRED_EXTERNAL_STORE_KINDS[number];
+export type SaasExternalCopyCoverageStoreKind = typeof EXTERNAL_COPY_COVERAGE_STORE_KINDS[number];
 
 export interface SaasTenantExternalDataTarget {
   tenantId: string;
@@ -34,20 +43,6 @@ export type SaasExternalPropagationOutcome =
 
 export type SaasExternalManifestKind = 'RESOURCE_IDENTITIES' | 'SCOPE_INTENT';
 
-export interface SaasExternalPropagationContext {
-  tenantId: string;
-  requestId: string;
-  requestVersion: number;
-  runId: string;
-  categories: SaasTransferDatasetCategory[];
-  /** Immutable, latest DELETE retention-policy version captured for every category. */
-  policyVersions: Record<string, number>;
-  sourceExportDigest: string;
-  sourceManifest: Record<string, unknown>;
-  idempotencyKey: string;
-  target: SaasTenantExternalDataTarget;
-}
-
 /** A non-destructive capability/policy probe; it never authorizes mutation by itself. */
 export interface SaasExternalPropagationPreflight {
   outcome: 'READY' | 'BLOCKED' | 'RETAINED';
@@ -58,7 +53,7 @@ export interface SaasExternalPropagationPreflight {
   reason?: string;
 }
 
-/** The exact, validated bounds that every destructive-capable adapter call must honor. */
+/** Exact bounds that destructive-capable provider operations must honor. */
 export interface SaasExternalPropagationExecutionLimits {
   resourceClass: string;
   adapterVersion: string;
@@ -66,16 +61,93 @@ export interface SaasExternalPropagationExecutionLimits {
   maxBatchSize: number;
 }
 
-export interface SaasExternalPropagationExecutionContext extends SaasExternalPropagationContext {
-  executionLimits: SaasExternalPropagationExecutionLimits;
+export interface SaasExternalPropagationContext {
+  tenantId: string;
+  requestId: string;
+  requestVersion: number;
+  runId: string;
+  categories: SaasTransferDatasetCategory[];
+  /** Immutable latest DELETE retention-policy version captured for every category. */
+  retentionPolicyVersions?: Record<string, number>;
+  sourceExportDigest: string;
+  sourceManifest: Record<string, unknown>;
+  idempotencyKey: string;
+  target: SaasTenantExternalDataTarget;
+}
+
+export interface SaasExternalPropagationResourceIdentity {
+  /** Provider-specific resource class within one store target, never a payload. */
+  resourceKind: string;
+  /** Opaque stable provider identity; URLs, paths to credentials and secrets are forbidden. */
+  resourceReference: string;
+  /** Optional opaque immutable provider version/generation identity. */
+  resourceVersionReference?: string | null;
+  /** Optional SHA-256 of the exact provider bytes captured before mutation. */
+  resourceContentDigest?: string | null;
+}
+
+/**
+ * Canonical digest shared by adapters and the erasure ledger. Fields are normalized
+ * to an explicit nullable version reference and sorted bytewise, not locale-wise.
+ */
+export function canonicalizeSaasExternalPropagationResources(
+  resources: SaasExternalPropagationResourceIdentity[],
+): Array<{
+  resourceKind: string;
+  resourceReference: string;
+  resourceVersionReference: string | null;
+  resourceContentDigest: string | null;
+}> {
+  return resources.map((resource) => ({
+    resourceKind: resource.resourceKind,
+    resourceReference: resource.resourceReference,
+    resourceVersionReference: resource.resourceVersionReference ?? null,
+    resourceContentDigest: resource.resourceContentDigest ?? null,
+  })).sort((left, right) => {
+    const fields: Array<keyof typeof left> = [
+      'resourceKind', 'resourceReference', 'resourceVersionReference', 'resourceContentDigest',
+    ];
+    for (const field of fields) {
+      const a = left[field] ?? '';
+      const b = right[field] ?? '';
+      if (a < b) return -1;
+      if (a > b) return 1;
+    }
+    return 0;
+  });
+}
+
+export function digestSaasExternalPropagationResources(
+  resources: SaasExternalPropagationResourceIdentity[],
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeSaasExternalPropagationResources(resources)), 'utf8')
+    .digest('hex');
 }
 
 export interface SaasExternalPropagationPlan {
-  /** SHA-256 of the exact sorted external object/record identity manifest. */
+  /** SHA-256 of canonicalizeSaasExternalPropagationResources(resources). */
   manifestDigest: string;
+  /** Must equal resources.length; the service independently checks both values. */
   plannedCopies: string;
   /** Opaque provider-side snapshot/cursor reference; never a raw URL or credential. */
   planReference: string;
+  /** Semantic version of the exact adapter implementation/policy contract. */
+  adapterVersion: string;
+  /** Kind of resource represented in this provider's bounded identity list. */
+  resourceClass: string;
+  /** Provider's maximum identity enumeration page size. */
+  maxPageSize: number;
+  /** Maximum number of ledger identities inserted per database batch. */
+  maxBatchSize: number;
+  /** Small object of non-secret policy/version labels used for the delete decision. */
+  policyVersions: Record<string, string>;
+  /**
+   * Complete, duplicate-free identity set covered by manifestDigest. The adapter
+   * must refuse preparation if provider enumeration is incomplete; the service
+   * seals these identities before it issues any destructive operation.
+   */
+  resources: SaasExternalPropagationResourceIdentity[];
 }
 
 export interface SaasExternalPropagationDeleteReceipt {
@@ -96,37 +168,33 @@ export interface SaasExternalPropagationVerification {
 export interface SaasTenantExternalDataPropagationAdapter {
   readonly storeKind: SaasExternalStoreKind;
   readonly adapterKey: string;
-  /** Semver-like immutable implementation version; written into every receipt. */
+  /** Build/version contract must match every plan this adapter creates or resumes. */
   readonly adapterVersion: string;
 
   /** Resolves the opaque config reference through deployment secret/config management. */
   isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean>;
 
-  /**
-   * Non-destructive capability/policy preflight. Page and batch sizes are hard upper bounds;
-   * the orchestrator rejects unbounded, missing, or out-of-range declarations.
-   */
-  preflight(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPreflight>;
+  /** Optional capability probe. It is advisory only; prepare() must still be complete and non-destructive. */
+  preflight?(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPreflight>;
 
   /**
-   * Dry-run: enumerate every known copy for the tenant/category scope and snapshot exact identities.
-   * This operation must be non-destructive and use bounded pages/batches. Include applicable
-   * replicas, object versions, tombstones, vector metadata and delayed-delete queues; incomplete
-   * enumeration must reject the request.
+   * Enumerate every known copy for the tenant/category scope and snapshot the exact identity set.
+   * Adapters must include replicas, versioned objects, tombstones, vector metadata and delayed-delete
+   * queues applicable to their store; incomplete enumeration must reject the request.
    */
-  prepare(input: SaasExternalPropagationExecutionContext): Promise<SaasExternalPropagationPlan>;
+  prepare(input: SaasExternalPropagationContext): Promise<SaasExternalPropagationPlan>;
 
   /**
-   * Execute only the prepared identities. Retrying the same run/target key must reconcile the
-   * prior attempt instead of widening scope or double-counting removals.
+   * Idempotently delete exactly the prepared identities. Retrying the same run/target key must
+   * reconcile the prior attempt instead of widening scope or double-counting removals.
    */
-  execute(input: SaasExternalPropagationExecutionContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
+  erase(input: SaasExternalPropagationContext & { plan: SaasExternalPropagationPlan }): Promise<SaasExternalPropagationDeleteReceipt>;
 
   /**
    * Independently read back the scope after deletion, reconcile provider receipts and report residuals.
    * VERIFIED is allowed only when the digest matches and residualCopies is exactly zero.
    */
-  verify(input: SaasExternalPropagationExecutionContext & {
+  verify(input: SaasExternalPropagationContext & {
     plan: SaasExternalPropagationPlan;
     deletion: SaasExternalPropagationDeleteReceipt;
   }): Promise<SaasExternalPropagationVerification>;
@@ -135,7 +203,7 @@ export interface SaasTenantExternalDataPropagationAdapter {
    * Recover an uncertain previous attempt using the stable idempotency key and provider-side receipt.
    * This runs before re-issuing erase after a timeout or process crash.
    */
-  recover(input: SaasExternalPropagationExecutionContext & { plan?: SaasExternalPropagationPlan }): Promise<void>;
+  recover(input: SaasExternalPropagationContext & { plan?: SaasExternalPropagationPlan }): Promise<void>;
 }
 
 export interface SaasFinanceRetentionContext {
