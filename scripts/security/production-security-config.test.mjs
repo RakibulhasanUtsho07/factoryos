@@ -165,3 +165,17 @@ test('AS-133 protected staging workflow binds exact deployed SHA, real IdP token
   assert.match(workflow, /Never mark AS-133 accepted from this workflow alone/);
   assert.doesNotMatch(workflow, /environment:\s*\n\s*name: production\s*$/m);
 });
+
+
+test('SCIM provisioning uses transaction-local tenant context and explicit column-scoped grants under forced RLS', async () => {
+  const provisioner = await read('scripts/security/create-scim-provisioning-credential.mjs');
+  const grants = await read('deploy/security/scim-provisioning-role-grants.sql');
+  const migration = await read('migrations/230_scim_tenant_deprovision_credentials.sql');
+  assert.match(provisioner, /client\.query\("SELECT set_config\('app\.tenant_id', \$1, true\)", \[tenantId\]\)/);
+  assert.match(migration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(grants, /UPDATE \(last_used_at\)/);
+  assert.match(grants, /INSERT \(tenant_id, issuer, token_sha256, scopes, status, expires_at\)/);
+  assert.match(grants, /UPDATE \(status, revoked_at\)/);
+  assert.match(grants, /GRANT SELECT \(id, status\)[\s\S]*ON TABLE public\.tenants/);
+  assert.doesNotMatch(grants, /GRANT\s+(?:ALL|BYPASSRLS|TRUNCATE)/i);
+});
