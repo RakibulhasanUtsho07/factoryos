@@ -1,0 +1,115 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Isolated SQS capture and DLQ for AWS Backup EventBridge archive replays filtered to one dedicated rule.",
+  "Parameters": {
+    "CaptureQueueName": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "DeadLetterQueueName": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "CaptureRuleName": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9_-]{1,64}$"
+    }
+  },
+  "Resources": {
+    "ReplayCaptureDeadLetterQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": { "Ref": "DeadLetterQueueName" },
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "VisibilityTimeout": 120
+      }
+    },
+    "ReplayCaptureQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": { "Ref": "CaptureQueueName" },
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "VisibilityTimeout": 120,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": { "Fn::GetAtt": ["ReplayCaptureDeadLetterQueue", "Arn"] },
+          "maxReceiveCount": 5
+        }
+      }
+    },
+    "ReplayCaptureRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Name": { "Ref": "CaptureRuleName" },
+        "EventBusName": "default",
+        "State": "ENABLED",
+        "EventPattern": {
+          "source": ["aws.backup"],
+          "detail-type": ["Copy Job State Change"],
+          "replay-name": [{ "exists": true }]
+        },
+        "Targets": [{
+          "Id": "ReplayCaptureQueue",
+          "Arn": { "Fn::GetAtt": ["ReplayCaptureQueue", "Arn"] },
+          "DeadLetterConfig": {
+            "Arn": { "Fn::GetAtt": ["ReplayCaptureDeadLetterQueue", "Arn"] }
+          },
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 86400,
+            "MaximumRetryAttempts": 185
+          }
+        }]
+      }
+    },
+    "ReplayCaptureQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [{ "Ref": "ReplayCaptureQueue" }],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Sid": "AllowOnlyTheReplayCaptureRule",
+            "Effect": "Allow",
+            "Principal": { "Service": "events.amazonaws.com" },
+            "Action": "sqs:SendMessage",
+            "Resource": { "Fn::GetAtt": ["ReplayCaptureQueue", "Arn"] },
+            "Condition": {
+              "ArnEquals": { "aws:SourceArn": { "Fn::GetAtt": ["ReplayCaptureRule", "Arn"] } },
+              "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } }
+            }
+          }]
+        }
+      }
+    },
+    "ReplayCaptureDeadLetterQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [{ "Ref": "ReplayCaptureDeadLetterQueue" }],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Sid": "AllowOnlyTheReplayCaptureRuleToWriteDeadLetters",
+            "Effect": "Allow",
+            "Principal": { "Service": "events.amazonaws.com" },
+            "Action": "sqs:SendMessage",
+            "Resource": { "Fn::GetAtt": ["ReplayCaptureDeadLetterQueue", "Arn"] },
+            "Condition": {
+              "ArnEquals": { "aws:SourceArn": { "Fn::GetAtt": ["ReplayCaptureRule", "Arn"] } },
+              "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } }
+            }
+          }]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ReplayCaptureQueueArn": { "Value": { "Fn::GetAtt": ["ReplayCaptureQueue", "Arn"] } },
+    "ReplayCaptureQueueUrl": { "Value": { "Ref": "ReplayCaptureQueue" } },
+    "ReplayCaptureDeadLetterQueueArn": { "Value": { "Fn::GetAtt": ["ReplayCaptureDeadLetterQueue", "Arn"] } },
+    "ReplayCaptureDeadLetterQueueUrl": { "Value": { "Ref": "ReplayCaptureDeadLetterQueue" } },
+    "ReplayCaptureRuleArn": { "Value": { "Fn::GetAtt": ["ReplayCaptureRule", "Arn"] } }
+  }
+}

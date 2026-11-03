@@ -231,3 +231,125 @@ Rollback must cover application config and secret-version references, not only t
 - approval_utc: <pending>
 
 The approval register must be updated only by authorized release personnel once evidence is complete. Do not mark the release approved from the implementation branch or this report draft.
+
+
+## AWS ElastiCache Redis OSS / Valkey backup inventory reader
+
+The ElastiCache inventory uses a separate `FactoryOSElasticacheBackupReader` identity. The checked-in policy template `deploy/aws/elasticache-redis-backup-inventory-reader-role-policy.template.json` allows only `elasticache:DescribeCacheClusters`, `elasticache:DescribeReplicationGroups`, `elasticache:DescribeGlobalReplicationGroups`, `elasticache:DescribeSnapshots`, `elasticache:DescribeServerlessCaches` and `elasticache:DescribeServerlessCacheSnapshots`, and explicitly denies other actions. The matching trust template requires the designated source role and a unique ExternalId. The source-role policy template allows assumption of only that dedicated role across the AWS partitions represented in the file.
+
+The API requires already-assumed temporary credentials and verifies STS `GetCallerIdentity` against the exact account and reader-role name before ElastiCache requests. It captures no endpoints, cache content, security-group details, parameter values, credentials or raw descriptions. Node-based Marker and Serverless NextToken pagination use a bounded shared request/page/item budget; repeated or malformed continuation values fail closed. Review the actual provisioned role trust, permissions boundary, SCP and session policy independently; the checked-in templates are not deployment evidence.
+
+This slice covers node-based Redis OSS/Valkey and ElastiCache Serverless cache/snapshot API catalogs (including Serverless Memcached metadata). Snapshot name/create-time or provider-ARN references are correlation identities only, not delete selectors or deletion authority. Self-managed Redis/Valkey AOF/RDB files, EBS/filesystem/volume backup chains, copied/exported snapshots, AWS Backup recovery points and external DR copies remain outside this adapter. The output permanently leaves `whole_cache_backup_coverage_complete` and all deletion flags false.
+
+**Independent review and production staging remain pending.** A successful mocked test suite is not evidence that AWS roles were provisioned, all enabled accounts/regions were scanned, cache snapshots were restored, Global Datastore replicas were restored/failover-tested, or external copies were discovered.
+
+
+## AWS Backup inventory reader identity (read-only)
+
+The policy allows only `ListBackupVaults`, `DescribeBackupVault`, `ListRecoveryPointsByBackupVault`, `ListLegalHolds`, `GetLegalHold`, `ListRecoveryPointsByLegalHold`, `ListRestoreAccessBackupVaults`, `ListCopyJobs`, `DescribeCopyJob` and STS `GetCallerIdentity`, and explicitly denies all other actions.
+
+The adapter requires temporary credentials from the already-assumed role and validates the exact account and assumed-role name through STS before AWS Backup API calls. It captures vault type/state, Vault Lock/encryption settings, recovery-point lifecycle/encryption/source-vault metadata and legal-hold associations without retaining free-form legal-hold descriptions. No backup job start/copy/restore/delete, vault mutation, legal-hold create/cancel, tag or KMS operation is implemented.
+
+The reader policy scopes vault-read actions to approved backup-vault ARNs and legal-hold reads to approved legal-hold ARNs. Copy-job list/detail operations use Resource: "*" because AWS publishes no resource type for `ListCopyJobs` / `DescribeCopyJob`; the explicit `NotAction` deny allowlist remains. The source-role policy uses explicit target-account role ARNs rather than wildcard account matching.
+
+## AWS Backup copy-job reader permissions
+
+The `FactoryOSAwsBackupInventoryReader` policy also includes `backup:ListCopyJobs` and `backup:DescribeCopyJob` to inventory managed backup-copy attempts and their source/destination vault and recovery-point references. AWS does not define a resource-level ARN type for either action, so both read-only permissions necessarily use `Resource: "*"`; they are explicitly listed in the `NotAction` deny allowlist. This does not broaden the policy to copy creation, restore, deletion, vault mutation, or legal-hold mutation. Independently verify the deployed policy after interpolation and the effective SCP, permissions boundary, session policy and trust-chain result.
+
+AWS Backup removes terminal copy-job records 30 days after they finish; `copy_job_terminal_record_retention_days: 30` is exposed in the result and must not be interpreted as lifetime history. A separate retained audit/event pipeline is required for longer-term historical evidence. Every source and destination account/Region still requires its own STS-verified inventory scope and approved reader role. For AWS Backup cross-account monitoring, verify the opt-in state and activation time; the aggregate API view does not retroactively guarantee jobs created before monitoring was enabled. Reconcile destination recovery points under the destination account's role, including their independent encryption, retention, legal-hold and restore controls. A `COMPLETED` copy job does not prove a successful restore or that all copies were inventoried.
+
+## AWS Backup copy-job history retention infrastructure
+
+The companion templates are `deploy/aws/aws-backup-copy-job-eventbridge-archive.template.json` (per account/Region) and `deploy/aws/aws-backup-copy-job-cloudtrail-audit.template.json` (one multi-Region trail per account). The former retains direct Copy Job State Change events with EventBridge RetentionDays 0; the latter records read/write management events, enables CloudTrail log-file validation, and writes to an S3 bucket with versioning, customer-managed KMS encryption, and default Object Lock Compliance retention.
+
+The CloudTrail archive duration is a mandatory parameter with no default. An authorized data/security/legal owner must approve the retention schedule before deployment because Compliance mode blocks deletion or shortening of protected object versions until their retention expires. The KMS key is separately provisioned; review its key policy, CloudTrail GenerateDataKey/DescribeKey access, S3 use, key deletion/disablement controls, and home-Region binding. The bucket and trail templates retain the bucket when the stack is deleted/replaced, but infrastructure administrators, KMS administrators, CloudTrail stop/delete permissions and EventBridge archive delete/retention permissions remain explicit independent trust boundaries. Guard and monitor those privileged paths.
+
+EventBridge and CloudTrail service event delivery are best effort. CloudTrail digest validation uses its per-Region signed digest chain; enabling log-file validation only makes digest files available and does not execute validation. CloudTrail logs are unordered, EventBridge archive replay can be out of order, and a regional archive only covers events received after archive creation. Capture a deployment baseline before the API's 30-day ListCopyJobs view expires and export the available 90-day CloudTrail Event history where eligible; record archive creation, trail start and first successful log/digest delivery timestamps. No archive or trail in these templates retroactively populates earlier time ranges. Perform the cold-start ListCopyJobs and available 90-day CloudTrail Event history baseline, record the exact activation and first verified delivery times, validate digest chains continuously, and retain gaps/reconciliation results. A green template-contract workflow is not evidence of live delivery, valid digests, or immutable provider storage.
+
+**Acceptance boundary:** current tests use mocked AWS responses. Live role provisioning, cross-account monitoring configuration, effective IAM review, organization/Region scope enumeration and provider-backed copy/restore rehearsals remain pending. No production-copy or deletion permission is granted.
+
+## Audit retention SCP guardrail
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
+
+## AWS Backup retained-history read-back
+
+docs/aws-backup-copy-job-audit-reconciliation.md documents the isolated EventBridge FilterArns replay path, encrypted SQS capture/DLQ, CloudTrail standard/backfill digest validation, exact S3 version read-back, live trail/bucket/KMS/retention checks, source-ID deduplication and detached Ed25519 owner attestation. The scripts are operator-run and do not mutate backup or CloudTrail objects. No live AWS stack deployment, digest verification, replay, or independent owner acceptance has occurred; those remain explicit external release gates.
+
+
+## AWS ElastiCache Serverless cache and snapshot inventory
+
+The dedicated ElastiCache reader policy now includes only the six node-based and Serverless Describe actions: `DescribeCacheClusters`, `DescribeReplicationGroups`, `DescribeGlobalReplicationGroups`, `DescribeSnapshots`, `DescribeServerlessCaches`, and `DescribeServerlessCacheSnapshots`. The adapter exhausts node-based Marker and Serverless NextToken pagination under a shared bounded request/page/item budget, with STS identity checks and fail-closed repeated-token handling.
+
+The inventory records Serverless cache metadata and provider snapshot ARNs, but the ARN digest is only a correlation reference. It is not a provider delete selector. Self-managed AOF/RDB/volume backups, exported/copied snapshots, AWS Backup recovery points and external DR copies remain separate uncovered surfaces. The feature is mocked repository evidence only; live role provisioning, effective-policy review, complete account/region proof and restore/failover acceptance remain pending.
+
+
+## AWS Backup inventory reader identity (read-only)
+
+The WP10 AWS Backup inventory uses a separate `FactoryOSAwsBackupInventoryReader` assumed role. Its policy template is `deploy/aws/aws-backup-vault-recovery-point-inventory-reader-role-policy.template.json`; the trust and source-role templates are adjacent. The policy allows only `ListBackupVaults`, `DescribeBackupVault`, `ListRecoveryPointsByBackupVault`, `ListLegalHolds`, `GetLegalHold`, `ListRecoveryPointsByLegalHold`, `ListRestoreAccessBackupVaults` and STS `GetCallerIdentity`, and explicitly denies all other actions.
+
+The adapter requires temporary credentials from the already-assumed role and validates the exact account and assumed-role name through STS before AWS Backup API calls. It captures vault type/state, Vault Lock/encryption settings, recovery-point lifecycle/encryption/source-vault metadata and legal-hold associations without retaining free-form legal-hold descriptions. No backup job start/copy/restore/delete, vault mutation, legal-hold create/cancel, tag or KMS operation is implemented.
+
+The reader policy scopes vault-read actions to approved backup-vault ARNs and legal-hold reads to approved legal-hold ARNs; only account/Region-wide list discovery and STS caller-identity verification use Resource: "*". The source-role policy uses explicit target-account role ARNs rather than wildcard account matching. The checked-in IAM policy and trust files are examples, not proof of effective production permissions. Before enablement, the cloud owner must provision and independently review the actual trust, ExternalId, permission boundaries, SCP/session-policy interactions, organization controls and every enabled account/Region. Repository CI and mocked responses do not constitute live restore, copy or deletion acceptance.
+
+
+## AWS Backup copy-job reader permissions
+
+The `FactoryOSAwsBackupInventoryReader` policy also includes `backup:ListCopyJobs` and `backup:DescribeCopyJob` to inventory managed backup-copy attempts and their source/destination vault and recovery-point references. AWS does not define a resource-level ARN type for either action, so both read-only permissions necessarily use `Resource: "*"`; they are explicitly listed in the `NotAction` deny allowlist. This does not broaden the policy to copy creation, restore, deletion, vault mutation, or legal-hold mutation. Independently verify the deployed policy after interpolation and the effective SCP, permissions boundary, session policy and trust-chain result.
+
+AWS Backup removes terminal copy-job records 30 days after they finish; `copy_job_terminal_record_retention_days: 30` is exposed in the result and must not be interpreted as lifetime history. A separate retained audit/event pipeline is required for longer-term historical evidence. Every source and destination account/Region still requires its own STS-verified inventory scope and approved reader role. For AWS Backup cross-account monitoring, verify the opt-in state and activation time; the aggregate API view does not retroactively guarantee jobs created before monitoring was enabled. Reconcile destination recovery points under the destination account's role, including their independent encryption, retention, legal-hold and restore controls. A `COMPLETED` copy job does not prove a successful restore or that all copies were inventoried.
+
+**Acceptance boundary:** current tests use mocked AWS responses. Live role provisioning, cross-account monitoring configuration, effective IAM review, organization/Region scope enumeration and provider-backed copy/restore rehearsals remain pending. No production-copy or deletion permission is granted.
+
+
+## AWS Backup copy-job history retention infrastructure
+
+The companion templates are `deploy/aws/aws-backup-copy-job-eventbridge-archive.template.json` (per account/Region) and `deploy/aws/aws-backup-copy-job-cloudtrail-audit.template.json` (one multi-Region trail per account). The former retains direct Copy Job State Change events with EventBridge RetentionDays 0; the latter records read/write management events, enables CloudTrail log-file validation, and writes to an S3 bucket with versioning, customer-managed KMS encryption, and default Object Lock Compliance retention.
+
+The CloudTrail archive duration is a mandatory parameter with no default. An authorized data/security/legal owner must approve the retention schedule before deployment because Compliance mode blocks deletion or shortening of protected object versions until their retention expires. The KMS key is separately provisioned; review its key policy, CloudTrail GenerateDataKey/DescribeKey access, S3 use, key deletion/disablement controls, and home-Region binding. The bucket and trail templates retain the bucket when the stack is deleted/replaced, but infrastructure administrators, KMS administrators, CloudTrail stop/delete permissions and EventBridge archive delete/retention permissions remain explicit independent trust boundaries. Guard and monitor those privileged paths.
+
+EventBridge and CloudTrail service event delivery are best effort. CloudTrail digest validation uses its per-Region signed digest chain; enabling log-file validation only makes digest files available and does not execute validation. CloudTrail logs are unordered, EventBridge archive replay can be out of order, and a regional archive only covers events received after archive creation. Capture a deployment baseline before the API's 30-day ListCopyJobs view expires and export the available 90-day CloudTrail Event history where eligible; record archive creation, trail start and first successful log/digest delivery timestamps. No archive or trail in these templates retroactively populates earlier time ranges. Perform the cold-start ListCopyJobs and available 90-day CloudTrail Event history baseline, record the exact activation and first verified delivery times, validate digest chains continuously, and retain gaps/reconciliation results. A green template-contract workflow is not evidence of live delivery, valid digests, or immutable provider storage.
+
+**Acceptance boundary:** current templates and tests are mocked repository contracts. The retention archive, CloudTrail trail, KMS key and SCP are not deployed or independently validated in a real AWS account. No production-copy or deletion permission is granted.
+
+## Audit retention SCP guardrail
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
+
+## AWS Backup retained-history read-back
+
+`docs/aws-backup-copy-job-audit-reconciliation.md` documents the isolated EventBridge `FilterArns` replay path, encrypted SQS capture/DLQ, CloudTrail standard/backfill digest validation, exact S3 version read-back, live trail/bucket/KMS/retention checks, source-ID deduplication and detached Ed25519 owner attestation. The scripts are operator-run and do not mutate backup or CloudTrail objects. No live AWS stack deployment, digest verification, replay, or independent owner acceptance has occurred; those remain explicit external release gates.
+
+## 10. Backup-copy evidence volume deployment gate
+
+Signed backup-copy-class evidence is accepted only when the API can read exact evidence bytes from a deployment-owned Linux read-only mount. POSIX mode checks and the runtime `/proc/self/mountinfo` per-mount `ro` check are necessary runtime controls, but production provisioning must also prevent the API identity from writing to or remounting that volume. The evidence publisher must be a separate identity and the volume reference must identify the exact immutable evidence source.
+
+For Kubernetes v1.30+, install the `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` in `deploy/security/backup-copy-evidence-readonly-policy.yaml` and `deploy/security/backup-copy-evidence-readonly-binding.yaml`. Label the intended production API namespace `factoryos.io/backup-evidence-enforcement=required` only after the policy has been accepted and the binding is installed; restart all API Pods so they are re-admitted under the policy. The policy enforces one direct absolute evidence-root environment path backed by the dedicated `factoryos-backup-evidence` PVC, requires source-level and container-mount read-only flags, forbids subPath, and checks that no regular/init/ephemeral container in the selected production namespace reuses the PVC read-write. It also requires non-root execution, a read-only container root filesystem, no privilege escalation/privileged mode, and dropped capabilities. The publisher must stage evidence outside the API namespace/workload. The manifest requires Kubernetes v1.30+; a different platform needs an equivalent enforced workload control.
+
+The release validator requires both the application evidence record and a separate `backup_copy_evidence.deployment_provisioning` record. The deployment record is exact-candidate-SHA-bound and requires accepted policies, active Deny bindings, namespace enrollment, a fully observed/updated/available Deployment, a bound read-only PVC, every container security context, tokenless ServiceAccount, API-identity RBAC absence across namespaces, an immutable sha256-pinned API image with matching per-Pod runtime imageID, per-replica write-denial and remount-capability evidence, negative admission probes, and a distinct infrastructure reviewer. The checked-in template keeps these fields empty/false/NOT_RUN. Do not turn them into passing values without operator-run evidence and independent review. CI validates policy/configuration contracts; it does not apply the policy to a live cluster or attest an actual production mount.
+
+## Admission policy lock and deployment provisioning
+
+The evidence namespace uses four fail-closed Kubernetes v1.30+ ValidatingAdmissionPolicies: read-only Pod/PVC enforcement, dedicated tokenless ServiceAccount protection, denial of legacy ServiceAccount-token Secrets, and namespace enrollment lock. Four Deny bindings activate the controls; the API's dedicated ServiceAccount has `automountServiceAccountToken: false`. All Pod containers (regular, init and ephemeral) must be non-root, no-escalation, read-only-rootfs, drop all capabilities, add none, avoid unmasked proc and use RuntimeDefault seccomp. Evidence PVC aliases must remain read-only with no subPath or mount propagation.
+
+Use the single operator provisioning entry point rather than the earlier two-policy manual sequence:
+
+```sh
+EXPECTED_KUBE_CONTEXT=prod-eu-1 \
+API_NAMESPACE=factoryos-api \
+API_DEPLOYMENT=factoryos-api \
+API_CONTAINER=api \
+CANDIDATE_SHA="$(git rev-parse HEAD)" \
+PROVISIONING_EVIDENCE_OUTPUT=./backup-evidence-provisioning.json \
+./deploy/security/provision-backup-copy-evidence-enforcement.sh
+```
+
+See [Backup evidence volume deployment provisioning](backup-copy-evidence-deployment-provisioning.md) for the required Deployment annotation/PVC shape, preflight, rollout and per-replica runtime probes, the expected negative admission results, and the evidence-handling procedure. It checks every Ready API Pod carries the exact candidate SHA and probes each replica's real mount namespace.
+
+The provisioner output is operator-run evidence, not independent infrastructure approval. A separate reviewer must inspect policy/binding protection, CSI/storage configuration, node and privileged host/storage-administrator boundaries, IAM roles and audit logs. A cluster administrator who can change the admission policies/bindings or underlying storage remains outside the API-process guarantee. Real-provider staging and full backup/copy class and writer-principal enumeration remain separate release blockers.

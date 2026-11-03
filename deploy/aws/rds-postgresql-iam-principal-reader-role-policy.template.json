@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyAccountIdentityPolicyCatalog",
+      "Effect": "Allow",
+      "Action": "iam:GetAccountAuthorizationDetails",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEveryActionExceptTheReviewedIdentityCatalogRead",
+      "Effect": "Deny",
+      "NotAction": "iam:GetAccountAuthorizationDetails",
+      "Resource": "*"
+    }
+  ]
+}

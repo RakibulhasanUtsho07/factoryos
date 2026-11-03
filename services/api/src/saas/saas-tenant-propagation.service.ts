@@ -8,14 +8,26 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
+import { S3TenantBackupWriterFenceCoordinator } from './s3-tenant-backup-writer-fence.coordinator';
 import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasure.dto';
 import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
 import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
-import { REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS } from './saas-tenant-propagation.adapters';
+import {
+  canonicalizeSaasExternalPropagationResources, digestSaasExternalPropagationResources,
+  REQUIRED_EXTERNAL_STORE_KINDS, EXTERNAL_COPY_COVERAGE_STORE_KINDS,
+  UNCLASSIFIED_EXTERNAL_STORE_KIND, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS,
+} from './saas-tenant-propagation.adapters';
+import { REQUIRED_BACKUP_COPY_CLASSES, S3_BACKUP_COPY_CLASS_ADAPTER_KEY } from './backup-copy-class-coverage.constants';
+import { verifyBackupCopyClassEvidenceAttestation, type BackupCopyClassEvidenceAttestationPayload,
+  verifyExternalCopyCoverageEvidenceAttestation, type ExternalCopyCoverageEvidenceAttestationPayload } from './backup-copy-class-evidence-attestation';
+import { BackupCopyClassEvidenceArtifactReader } from './backup-copy-class-evidence-artifact-reader';
+import { validateExternalStoreInventoryManifest } from './external-store-inventory-manifest';
+import { validatePostgresqlWalPitrInventoryManifest } from './postgresql-wal-pitr-inventory-manifest';
 import type {
-  SaasExternalManifestKind, SaasExternalPropagationContext, SaasExternalPropagationExecutionContext,
-  SaasExternalPropagationOutcome, SaasExternalPropagationPlan, SaasExternalPropagationPreflight,
+  SaasExternalPropagationContext, SaasExternalPropagationDeleteReceipt,
+  SaasExternalManifestKind, SaasExternalPropagationOutcome, SaasExternalPropagationPlan,
+  SaasExternalPropagationPreflight, SaasExternalPropagationResourceIdentity,
   SaasTenantExternalDataPropagationAdapter, SaasTenantExternalDataTarget,
 } from './saas-tenant-propagation.adapters';
 
@@ -34,6 +46,28 @@ type TargetRow = QueryResultRow & {
   registered_by_user_id: string; reviewed_by_user_id: string | null; reviewed_at: string | null;
   review_reason: string | null; created_at: string; updated_at: string;
 };
+type CopyCoverageRow = QueryResultRow & {
+  decision_id: string; tenant_id: string; category_code: SaasTransferDatasetCategory;
+  store_kind: (typeof EXTERNAL_COPY_COVERAGE_STORE_KINDS)[number]; revision: string | number;
+  disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
+  evidence_reference: string; evidence_sha256: string; evidence_at: string; reason: string;
+  attestation_key_id: string | null; attestation_owner_reference: string | null; attestation_signature: string | null;
+  data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
+  reviewed_by_user_id: string | null; valid_until: string | null;
+};
+
+type BackupCopyClassCoverageRow = QueryResultRow & {
+  decision_id: string; tenant_id: string; category_code: SaasTransferDatasetCategory;
+  copy_class_code: (typeof REQUIRED_BACKUP_COPY_CLASSES)[number]; revision: string | number;
+  disposition: 'SUPPORTED' | 'NOT_APPLICABLE' | 'UNRESOLVED';
+  evidence_reference: string; evidence_sha256: string; evidence_at: string | Date;
+  attestation_key_id: string; attestation_owner_reference: string; attestation_signature: string;
+  data_owner_reference: string; infrastructure_owner_reference: string; policy_reference: string; reason: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; submitted_by_user_id: string;
+  reviewed_by_user_id: string | null; valid_until: string | Date | null;
+};
+
 type PropagationRunRow = QueryResultRow & {
   run_id: string; request_hash: string; status: 'RUNNING' | 'PARTIAL' | 'FAILED' | 'VERIFIED';
   external_manifest: Record<string, unknown> | string; manifest_digest: string | null; target_count: number;
@@ -46,42 +80,11 @@ type PropagationReceiptRow = QueryResultRow & {
   residual_copies: string | number; manifest_digest: string; verified_manifest_digest: string | null;
   verification_reference: string | null; provider_receipt_reference: string | null;
   residual_manifest: unknown[] | string; failure_code: string | null;
-  outcome_code: SaasExternalPropagationOutcome;
-  manifest_kind: SaasExternalManifestKind;
-  resource_class: string;
-  adapter_version: string | null;
-  max_page_size: number | null;
-  max_batch_size: number | null;
-  policy_versions: Record<string, number> | string;
-  residual_reason: string | null;
-  completed_at: string;
-};
-
-class ExternalPropagationDispositionError extends Error {
-  constructor(
-    readonly outcome: 'BLOCKED' | 'RETAINED',
-    readonly reason: string,
-    readonly code: string,
-  ) {
-    super(reason);
-    this.name = 'ExternalPropagationDispositionError';
-  }
-}
-
-type ExternalTargetReadiness = {
-  adapter?: SaasTenantExternalDataPropagationAdapter;
-  preflight?: SaasExternalPropagationPreflight;
-  plan?: SaasExternalPropagationPlan;
-  outcome?: Exclude<SaasExternalPropagationOutcome, 'COMPLETED'>;
-  failureCode?: string;
-  reason?: string;
-  preexistingPlan: boolean;
-  /** True only when an earlier provider mutation may have occurred without verified reconciliation. */
-  recoverPriorAttempt: boolean;
 };
 
 const CATEGORY_VALUES = Object.values(SaasTransferDatasetCategory);
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+const SAFE_RESOURCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/;
 const HEX_DIGEST = /^[a-f0-9]{64}$/;
 const NON_NEGATIVE_INTEGER = /^(0|[1-9][0-9]*)$/;
 
@@ -91,8 +94,11 @@ export class SaasTenantPropagationService {
     private readonly database: DatabaseService,
     private readonly iamService: IamService,
     private readonly auditService: AuditService,
+    private readonly backupEvidenceArtifactReader: BackupCopyClassEvidenceArtifactReader,
     @Optional() @Inject(SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS)
     private readonly adapters: SaasTenantExternalDataPropagationAdapter[] = [],
+    @Optional() @Inject(S3TenantBackupWriterFenceCoordinator)
+    private readonly backupWriterFenceCoordinator?: S3TenantBackupWriterFenceCoordinator,
   ) {}
 
   async registerTarget(tenantValue: string, actorValue: string, input: RegisterSaasExternalDataTargetDto) {
@@ -156,6 +162,33 @@ export class SaasTenantPropagationService {
       || decision === 'RESUME' && expectedStatus === 'PAUSED';
     if (!nextStatus || !validPair) throw new BadRequestException('decision and expected_status do not form a supported target lifecycle transition');
 
+    // Do not let a target become ACTIVE unless the exact provider adapter exists
+    // and its deployment configuration is ready. Do this before opening the row-
+    // locking transaction because config resolution may itself involve a secret
+    // manager; recheck the immutable binding after locking the current row below.
+    let activationBinding: { id: string; target: SaasTenantExternalDataTarget } | undefined;
+    if (nextStatus === 'ACTIVE') {
+      const candidateResult = await this.database.query<TargetRow>(
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND target_id=$2',
+        [tenantId, targetId],
+        { tenantId, userId: actorUserId },
+      );
+      const candidate = candidateResult.rows[0];
+      if (!candidate) throw new NotFoundException('External data target not found');
+      const candidateTarget = this.mapTarget(candidate);
+      const adapter = this.adapterFor(candidateTarget);
+      let configured = false;
+      try {
+        configured = await adapter.isConfigured(candidateTarget);
+      } catch {
+        configured = false;
+      }
+      if (!configured) {
+        throw new ServiceUnavailableException('External target cannot be activated because its registered provider adapter is not configured');
+      }
+      activationBinding = { id: candidate.id, target: candidateTarget };
+    }
+
     const result = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
       const found = await client.query<TargetRow>(
@@ -165,6 +198,17 @@ export class SaasTenantPropagationService {
       const current = found.rows[0];
       if (!current) throw new NotFoundException('External data target not found');
       if (current.status !== expectedStatus) throw new ConflictException('External target status changed; reload before reviewing');
+      if (activationBinding && (
+        current.id !== activationBinding.id
+        || current.store_kind !== activationBinding.target.storeKind
+        || current.adapter_key !== activationBinding.target.adapterKey
+        || current.config_reference !== activationBinding.target.configReference
+        || current.required !== activationBinding.target.required
+        || JSON.stringify(this.parseCategories(current.categories).slice().sort())
+          !== JSON.stringify(activationBinding.target.categories.slice().sort())
+      )) {
+        throw new ConflictException('External target binding changed during adapter readiness check; reload and review again');
+      }
       if (current.registered_by_user_id === actorUserId) throw new ConflictException('Target registration and review require different actors');
       const updated = await client.query<TargetRow>(
         `UPDATE saas_tenant_external_data_targets
@@ -220,7 +264,7 @@ export class SaasTenantPropagationService {
         throw new ConflictException('Idempotency-Key was used for another external propagation request');
       }
       if (run?.status === 'VERIFIED') {
-        return { replayed: true, request, run, targets: [] as SaasTenantExternalDataTarget[], latestReceipts: [] as PropagationReceiptRow[] };
+        return { replayed: true, request, run, targets: [] as SaasTenantExternalDataTarget[], latestReceipts: [] as PropagationReceiptRow[], copyCoverageRows: [] as CopyCoverageRow[], copyCoverageManifest: [] as Array<Record<string, unknown>>, copyCoverageDigest: '', backupCopyClassRows: [] as BackupCopyClassCoverageRow[], backupCopyClassCoverageManifest: [] as Array<Record<string, unknown>>, backupCopyClassCoverageDigest: '' };
       }
       if (request.status !== 'PROPAGATION_PENDING') {
         if (request.status === 'VERIFIED') throw new ConflictException('Tenant erasure has already been externally verified');
@@ -265,49 +309,60 @@ export class SaasTenantPropagationService {
         "SELECT categories FROM saas_tenant_data_legal_holds WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE",
         [tenantId],
       );
-      // Record the hold disposition rather than aborting before a durable run/receipt exists.
-      // The per-target loop below will emit RETAINED evidence and will not call providers.
       const activeLegalHoldCategories = [...new Set(holdResult.rows
         .flatMap((hold) => this.parseCategories(hold.categories))
-        .filter((category) => categories.includes(category)))];
+        .filter((category) => categories.includes(category)))].sort();
+      // Persist a durable RETAINED/BLOCKED outcome rather than aborting before a run
+      // exists; a legal hold or non-DELETE policy must never reach a provider adapter.
+      const retentionPolicySnapshot = await this.readRetentionPolicySnapshot(client, tenantId, categories);
+      const retentionPolicyVersions = retentionPolicySnapshot.policyVersions;
+      const policyBlockedCategories = retentionPolicySnapshot.blockedCategories;
 
       const targetResult = await client.query<TargetRow>(
         `SELECT * FROM saas_tenant_external_data_targets
-         WHERE tenant_id=$1 AND required=true AND status='ACTIVE'
-         ORDER BY store_kind,target_id FOR SHARE`,
+         WHERE tenant_id=$1 ORDER BY store_kind,target_id FOR SHARE`,
         [tenantId],
       );
-      const targets = targetResult.rows.map((row) => this.mapTarget(row))
-        .filter((target) => target.categories.some((category) => categories.includes(category)));
-      this.assertTargetCoverage(categories, targets);
-
-      // Pin the latest explicit DELETE retention-policy version for every requested
-      // category. Missing policies and REVIEW/ANONYMIZE policies do not authorize
-      // a provider-side delete operation.
-      const policyResult = await client.query<{
-        category_code: string; version: string | number; disposition: string;
-      }>(
-        `SELECT DISTINCT ON (category_code) category_code, version, disposition
-         FROM saas_tenant_data_retention_policies
-         WHERE tenant_id=$1 AND category_code = ANY($2::varchar[])
-         ORDER BY category_code,version DESC`,
+      const relevantTargetRows = targetResult.rows.filter((row) =>
+        this.parseCategories(row.categories).some((category) => categories.includes(category)));
+      if (relevantTargetRows.some((row) => row.status !== 'ACTIVE' || row.required !== true)) {
+        throw new ConflictException('A required external target is pending, blocked or inactive; copy-class coverage cannot be accepted from a partial target inventory');
+      }
+      const targets = relevantTargetRows.map((row) => this.mapTarget(row));
+      const coverageResult = await client.query<CopyCoverageRow>(
+        `SELECT DISTINCT ON (category_code,store_kind) *
+         FROM public.saas_tenant_external_copy_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,store_kind,revision DESC`,
         [tenantId, categories],
       );
-      const policyByCategory = new Map(policyResult.rows.map((row) => [row.category_code, row]));
-      const policyVersions: Record<string, number> = {};
-      const policyBlockedCategories: SaasTransferDatasetCategory[] = [];
-      for (const category of categories) {
-        const policy = policyByCategory.get(category);
-        if (!policy || policy.disposition !== 'DELETE') policyBlockedCategories.push(category);
-        if (policy) {
-          const version = Number(policy.version);
-          if (!Number.isSafeInteger(version) || version < 1) {
-            throw new ConflictException('A requested retention policy has an invalid version');
+      await this.assertTargetCoverage(categories, targets, coverageResult.rows);
+      const copyCoverageManifest = this.copyCoverageManifest(coverageResult.rows);
+      const copyCoverageDigest = this.hash(copyCoverageManifest);
+      const backupCopyClassResult = await client.query<BackupCopyClassCoverageRow>(
+        `SELECT DISTINCT ON (category_code,copy_class_code) *
+         FROM public.saas_tenant_backup_copy_class_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,copy_class_code,revision DESC`,
+        [tenantId, categories],
+      );
+      await this.assertBackupCopyClassCoverage(categories, targets, backupCopyClassResult.rows);
+      const backupCopyClassCoverageManifest = this.backupCopyClassCoverageManifest(backupCopyClassResult.rows);
+      const backupCopyClassCoverageDigest = this.hash(backupCopyClassCoverageManifest);
+      // One fence lifecycle represents one sealed backup inventory per category.
+      // Until cross-target aggregate manifests are supported, reject overlapping
+      // BACKUP targets rather than letting one target verify a shared fence early.
+      const backupCategoryOwners = new Map<SaasTransferDatasetCategory, string>();
+      for (const target of targets.filter((candidate) => candidate.storeKind === 'BACKUP')) {
+        for (const category of target.categories.filter((value) => categories.includes(value))) {
+          const priorTarget = backupCategoryOwners.get(category);
+          if (priorTarget) {
+            throw new ConflictException('Overlapping required BACKUP targets share category ' + category
+              + '; one sealed provider inventory per category is required before whole-tenant propagation');
           }
-          policyVersions[category] = version;
+          backupCategoryOwners.set(category, target.targetId);
         }
       }
-
       const sourceManifest = this.jsonObject(transfer.source_manifest);
       if (!run) {
         const runId = randomUUID();
@@ -315,60 +370,95 @@ export class SaasTenantPropagationService {
           version: 1, requestId, requestVersion: Number(request.version),
           sourceExportDigest: request.export_bundle_digest,
           sourceManifestDigest: this.hash(sourceManifest), sourceManifest,
-          policyVersions: this.parsePolicyVersions(policyVersions),
+          // Keep main's established policyVersions key while exposing an explicit
+          // retentionPolicyVersions alias to the resource-ledger adapter context.
+          policyVersions: retentionPolicyVersions, retentionPolicyVersions,
           policyBlockedCategories,
           activeLegalHoldCategories,
-          targetIds: targets.map((target) => target.targetId).sort(), plans: {},
+          targetIds: targets.map((target) => target.targetId).sort(), copyClassCoverage: copyCoverageManifest,
+          copyClassCoverageDigest: copyCoverageDigest,
+          backupCopyClassCoverage: backupCopyClassCoverageManifest,
+          backupCopyClassCoverageDigest, plans: {},
         };
+        const initialRunStatus = activeLegalHoldCategories.length > 0 || policyBlockedCategories.length > 0
+          ? 'PARTIAL' : 'RUNNING';
         const inserted = await client.query<PropagationRunRow>(
           `INSERT INTO saas_tenant_external_propagation_runs
            (tenant_id,run_id,request_id,request_version,status,categories,source_export_digest,
             external_manifest,target_count,reason,idempotency_key,request_hash,executor_user_id)
-           VALUES ($1,$2,$3,$4,'RUNNING',$5::jsonb,$6,$7::jsonb,$8,$9,$10,$11,$12) RETURNING *`,
+           VALUES ($1,$2,$3,$4,$13,$5::jsonb,$6,$7::jsonb,$8,$9,$10,$11,$12) RETURNING *`,
           [tenantId, runId, requestId, Number(request.version), JSON.stringify(categories),
             request.export_bundle_digest, JSON.stringify(externalManifest), targets.length,
-            reason, idempotencyKey, requestHash, actorUserId],
+            reason, idempotencyKey, requestHash, actorUserId, initialRunStatus],
         );
         run = inserted.rows[0];
       } else if (run.status === 'PARTIAL' || run.status === 'FAILED') {
         const currentManifest = this.jsonObject(run.external_manifest);
         const previousTargets = Array.isArray(currentManifest.targetIds) ? currentManifest.targetIds.map(String).sort() : [];
         const newTargets = targets.map((target) => target.targetId).sort();
+        if (String(currentManifest.copyClassCoverageDigest ?? '') !== copyCoverageDigest) {
+          throw new ConflictException('Reviewed copy-class coverage changed; start a separately reviewed propagation run');
+        }
+        if (String(currentManifest.backupCopyClassCoverageDigest ?? '') !== backupCopyClassCoverageDigest) {
+          throw new ConflictException('Reviewed backup copy-class inventory changed; start a separately reviewed propagation run');
+        }
         if (JSON.stringify(previousTargets) !== JSON.stringify(newTargets)) {
           throw new ConflictException('Reviewed external target inventory changed; start a separately reviewed propagation run');
         }
-        const restarted = await client.query<PropagationRunRow>(
-          `UPDATE saas_tenant_external_propagation_runs
-           SET status='RUNNING',failure_code=NULL,finished_at=NULL,manifest_digest=NULL,
-               verified_targets=0,planned_copies=0,deleted_copies=0,residual_copies=0
-           WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
-          [tenantId, requestId, run.run_id],
-        );
-        run = restarted.rows[0];
+        if (activeLegalHoldCategories.length > 0 || policyBlockedCategories.length > 0) {
+          // Keep this run non-RUNNING under migration 221's database fence. The
+          // global preflight below writes a durable RETAINED/BLOCKED receipt.
+        } else {
+          const restarted = await client.query<PropagationRunRow>(
+            `UPDATE saas_tenant_external_propagation_runs
+             SET status='RUNNING',failure_code=NULL,finished_at=NULL,manifest_digest=NULL,
+                 verified_targets=0,planned_copies=0,deleted_copies=0,residual_copies=0
+             WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
+            [tenantId, requestId, run.run_id],
+          );
+          run = restarted.rows[0];
+        }
       } else {
         const currentManifest = this.jsonObject(run.external_manifest);
         const previousTargets = Array.isArray(currentManifest.targetIds) ? currentManifest.targetIds.map(String).sort() : [];
         const newTargets = targets.map((target) => target.targetId).sort();
+        if (String(currentManifest.copyClassCoverageDigest ?? '') !== copyCoverageDigest) {
+          throw new ConflictException('Reviewed copy-class coverage changed; start a separately reviewed propagation run');
+        }
+        if (String(currentManifest.backupCopyClassCoverageDigest ?? '') !== backupCopyClassCoverageDigest) {
+          throw new ConflictException('Reviewed backup copy-class inventory changed; start a separately reviewed propagation run');
+        }
         if (JSON.stringify(previousTargets) !== JSON.stringify(newTargets)) {
           throw new ConflictException('Reviewed external target inventory changed during propagation');
         }
       }
-      const existingManifest = this.jsonObject(run.external_manifest);
-      const persistedPolicyVersions = this.parsePolicyVersions(existingManifest.policyVersions ?? {});
-      if (JSON.stringify(persistedPolicyVersions) !== JSON.stringify(this.parsePolicyVersions(policyVersions))) {
-        throw new ConflictException('Retention policy version changed during an existing external propagation run; create a newly reviewed run');
-      }
-      const persistedPolicyBlockedCategories = Array.isArray(existingManifest.policyBlockedCategories)
-        ? existingManifest.policyBlockedCategories.map(String).sort() : [];
-      if (JSON.stringify(persistedPolicyBlockedCategories) !== JSON.stringify(policyBlockedCategories.slice().sort())) {
-        throw new ConflictException('Retention policy disposition changed during an existing external propagation run; create a newly reviewed run');
+      if (run) {
+        const persisted = this.jsonObject(run.external_manifest);
+        const persistedRetentionPolicyVersions = this.parseRetentionPolicyVersions(
+          persisted.retentionPolicyVersions ?? persisted.policyVersions ?? {},
+        );
+        if (JSON.stringify(persistedRetentionPolicyVersions) !== JSON.stringify(retentionPolicyVersions)) {
+          throw new ConflictException(
+            'Retention policy version changed during an existing external propagation run; create a newly reviewed run',
+          );
+        }
+        const persistedPolicyBlockedCategories = Array.isArray(persisted.policyBlockedCategories)
+          ? persisted.policyBlockedCategories.map(String).sort() : [];
+        if (JSON.stringify(persistedPolicyBlockedCategories) !== JSON.stringify(policyBlockedCategories.slice().sort())) {
+          throw new ConflictException(
+            'Retention policy disposition changed during an existing external propagation run; create a separately reviewed run',
+          );
+        }
       }
       const receipts = await client.query<PropagationReceiptRow>(
         `SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 ORDER BY target_id,attempt_no DESC`,
         [tenantId, requestId, run.run_id],
       );
-      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, activeLegalHoldCategories, policyBlockedCategories };
+      return { replayed: false, request, run, targets, latestReceipts: receipts.rows,
+        copyCoverageRows: coverageResult.rows, copyCoverageManifest, copyCoverageDigest,
+        backupCopyClassRows: backupCopyClassResult.rows, backupCopyClassCoverageManifest, backupCopyClassCoverageDigest,
+        retentionPolicyVersions, policyBlockedCategories, activeLegalHoldCategories };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation:' + tenantId + ':' + requestId });
 
     if (prepared.replayed) {
@@ -380,373 +470,372 @@ export class SaasTenantPropagationService {
       };
     }
 
-    let currentManifest = this.jsonObject(prepared.run.external_manifest);
+    // The replay branch above returns before execution; non-replayed preparations
+    // always carry these snapshots, while the inferred transaction union keeps them
+    // optional because the replay shape intentionally omits execution-only fields.
+    const retentionPolicyVersions = prepared.retentionPolicyVersions ?? {};
     const activeLegalHoldCategories = prepared.activeLegalHoldCategories ?? [];
     const policyBlockedCategories = prepared.policyBlockedCategories ?? [];
+
+    let currentManifest = this.jsonObject(prepared.run.external_manifest);
     currentManifest.activeLegalHoldCategories = activeLegalHoldCategories;
-    const policyVersions = this.parsePolicyVersions(currentManifest.policyVersions ?? {});
+    currentManifest.policyBlockedCategories = policyBlockedCategories;
+    currentManifest.policyVersions = retentionPolicyVersions;
+    currentManifest.retentionPolicyVersions = retentionPolicyVersions;
     const latestReceiptByTarget = new Map(prepared.latestReceipts.map((receipt) => [receipt.target_id, receipt]));
-    const readinessByTarget = new Map<string, ExternalTargetReadiness>();
-    const initialPlans = this.jsonObject(currentManifest.plans ?? {});
-    let globallyReady = true;
+    const preflightRecoveredTargetIds = new Set<string>();
+    const preflightFailureCodes: Record<string, string> = {};
+    const preflightFailureOutcomes = new Map<string, 'BLOCKED' | 'RETAINED'>();
+    const preflightFailureReasons = new Map<string, string>();
+    const preflightByTarget = new Map<string, SaasExternalPropagationPreflight>();
+    const preflightPlansByTarget = new Map<string, {
+      plan: SaasExternalPropagationPlan;
+      manifestId: string | null;
+      latestOutcome: string | null;
+      providerReceiptReference: string | null;
+    }>();
 
-    // Phase 1: non-destructive provider capability/configuration preflight for every
-    // unverified target. Nothing is prepared or deleted until all targets pass.
-    for (const target of prepared.targets) {
-      const previous = latestReceiptByTarget.get(target.targetId);
-      if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-      const preexistingPlan = Object.prototype.hasOwnProperty.call(initialPlans, target.targetId);
-      const providerOutcomeMayBeUnknown = previous?.status === 'RESIDUALS'
-        || (previous?.outcome_code === 'FAILED_RETRYABLE'
-          && ['ADAPTER_OPERATION_FAILED', 'VERIFICATION_MISMATCH',
-            'EXTERNAL_RESIDUALS_REMAIN', 'EXTERNAL_VERIFICATION_MISMATCH'].includes(previous.failure_code ?? ''))
-        || (!previous && prepared.run.status === 'RUNNING' && preexistingPlan);
-      const state: ExternalTargetReadiness = {
-        preexistingPlan,
-        recoverPriorAttempt: preexistingPlan && providerOutcomeMayBeUnknown,
-      };
-      readinessByTarget.set(target.targetId, state);
-      const held = activeLegalHoldCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category));
-      if (held) {
-        state.outcome = 'RETAINED';
-        state.failureCode = 'ACTIVE_LEGAL_HOLD';
-        state.reason = 'An active legal hold retains this target/category scope; provider deletion was not attempted.';
-        globallyReady = false;
-        continue;
-      }
-      if (policyBlockedCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category))) {
-        state.outcome = 'BLOCKED';
-        state.failureCode = 'RETENTION_POLICY_BLOCKED';
-        state.reason = 'A current DELETE retention policy is missing or has a non-delete disposition for this category.';
-        globallyReady = false;
-        continue;
-      }
-
+    // Install/read back every BACKUP writer fence before any provider inventory begins.
+    // Fence failures become durable BLOCKED receipts and halt the complete preparation
+    // phase; they do not throw away the RUNNING run or leave an unrecorded failure.
+    const backupTargets = prepared.targets.filter((target) => target.storeKind === 'BACKUP');
+    const backupFenceCategories = [...new Set(backupTargets.flatMap((target) =>
+      target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
+    ))].sort();
+    for (const target of backupTargets) {
+      const targetCategories = [...new Set(target.categories.filter((category) =>
+        this.parseCategories(prepared.request.categories).includes(category)))].sort();
+      if (targetCategories.length === 0) continue;
       try {
-        state.adapter = this.adapterFor(target);
-        this.validateAdapterVersion(state.adapter.adapterVersion);
-        if (!(await state.adapter.isConfigured(target))) {
-          state.outcome = 'BLOCKED';
-          state.failureCode = 'ADAPTER_UNCONFIGURED';
-          state.reason = 'The target adapter has no resolved deployment configuration; provider deletion was not attempted.';
-          globallyReady = false;
-          continue;
+        const adapter = this.adapters.find((candidate) =>
+          candidate.storeKind === target.storeKind && candidate.adapterKey === target.adapterKey);
+        if (!adapter) throw new ServiceUnavailableException(
+          'No provider adapter registered for backup writer-fence target ' + target.targetId,
+        );
+        if (!this.backupWriterFenceCoordinator) {
+          throw new ServiceUnavailableException(
+            'Required backup writer-fence coordinator is not registered; provider inventory is blocked',
+          );
         }
-        state.preflight = this.validatePreflight(await state.adapter.preflight(
-          this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey),
-        ), state.adapter);
-        if (state.preflight.outcome !== 'READY') {
-          state.outcome = state.preflight.outcome;
-          state.failureCode = state.preflight.outcome === 'BLOCKED' ? 'PREFLIGHT_BLOCKED' : 'PREFLIGHT_RETAINED';
-          state.reason = this.safeReason(state.preflight.reason, 'Adapter preflight returned ' + state.preflight.outcome.toLowerCase());
-          globallyReady = false;
-        }
-      } catch {
-        state.outcome = !state.adapter
-          ? 'BLOCKED'
-          : 'FAILED_RETRYABLE';
-        state.failureCode = !state.adapter ? 'ADAPTER_UNAVAILABLE' : 'PREFLIGHT_FAILED';
-        state.reason = !state.adapter
-          ? 'No provider adapter is registered for this target; no provider deletion was attempted.'
-          : 'The provider preflight did not produce a safe, complete readiness result; operator recovery is required.';
-        globallyReady = false;
-      }
-    }
-
-    // Phase 2: bounded dry-run for every target. Plans are persisted before any
-    // irreversible operation. A single failed plan aborts the whole execution barrier.
-    if (globallyReady) {
-      for (const target of prepared.targets) {
-        const previous = latestReceiptByTarget.get(target.targetId);
-        if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-        const state = readinessByTarget.get(target.targetId);
-        if (!state || state.outcome || !state.adapter || !state.preflight) {
-          globallyReady = false;
-          if (state && !state.outcome) {
-            state.outcome = 'FAILED_RETRYABLE';
-            state.failureCode = 'PREFLIGHT_INCOMPLETE';
-            state.reason = 'The provider did not retain a validated readiness result; no deletion was attempted.';
-          }
-          continue;
-        }
-        const plans = this.jsonObject(currentManifest.plans ?? {});
-        const planEntry = plans[target.targetId];
-        const plan = this.decodePlan(planEntry);
-        if (planEntry !== undefined && !plan) {
-          state.outcome = 'FAILED_RETRYABLE';
-          state.failureCode = 'PERSISTED_PLAN_MALFORMED';
-          state.reason = 'The persisted resource-identity plan is malformed; a newly reviewed run is required.';
-          globallyReady = false;
-          continue;
-        }
-
-        try {
-          if (plan) {
-            const storedPlan = this.jsonObject(planEntry ?? {});
-            if (storedPlan.adapterVersion !== state.preflight.adapterVersion
-              || storedPlan.resourceClass !== state.preflight.resourceClass
-              || Number(storedPlan.maxPageSize) !== state.preflight.maxPageSize
-              || Number(storedPlan.maxBatchSize) !== state.preflight.maxBatchSize
-              || JSON.stringify(this.parsePolicyVersions(storedPlan.policyVersions ?? {})) !== JSON.stringify(policyVersions)
-              || storedPlan.storeKind !== target.storeKind
-              || storedPlan.adapterKey !== target.adapterKey
-              || storedPlan.configReference !== target.configReference) {
-              state.outcome = 'BLOCKED';
-              state.failureCode = 'PERSISTED_PLAN_VERSION_CHANGED';
-              state.reason = 'The provider version, execution limits, target identity, or retention policy changed; a newly reviewed run is required.';
-              globallyReady = false;
-              continue;
-            }
-            state.plan = plan;
-            state.preexistingPlan = true;
-          } else {
-            const nextPlan = await state.adapter.prepare(this.executionContext(
-              this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey),
-              state.preflight,
-            ));
-            this.validatePlan(nextPlan);
-            state.plan = nextPlan;
-            state.preexistingPlan = false;
-            currentManifest = {
-              ...currentManifest,
-              plans: {
-                ...this.jsonObject(currentManifest.plans ?? {}),
-                [target.targetId]: {
-                  manifestDigest: nextPlan.manifestDigest, plannedCopies: nextPlan.plannedCopies,
-                  planReference: nextPlan.planReference, storeKind: target.storeKind,
-                  adapterKey: target.adapterKey, configReference: target.configReference,
-                  adapterVersion: state.preflight.adapterVersion, resourceClass: state.preflight.resourceClass,
-                  maxPageSize: state.preflight.maxPageSize, maxBatchSize: state.preflight.maxBatchSize,
-                  policyVersions, manifestKind: 'RESOURCE_IDENTITIES',
-                },
-              },
-            };
-            await this.persistRunManifest(tenantId, actorUserId, requestId, prepared.run.run_id, currentManifest);
-          }
-        } catch (error) {
-          if (!state.outcome) {
-            state.outcome = 'FAILED_RETRYABLE';
-            state.failureCode = error instanceof ConflictException ? 'DRY_RUN_INVALID' : 'DRY_RUN_FAILED';
-            state.reason = 'The provider dry-run did not produce a validated resource-identity manifest; no deletion was attempted.';
-          }
-          globallyReady = false;
-        }
-      }
-    }
-
-    // Phase 3: re-check approval, legal holds, target inventory, policy versions,
-    // and each exact persisted plan for EVERY target before any target can execute.
-    // This closes the race where a hold or changed policy appears during dry-run.
-    if (globallyReady) {
-      for (const target of prepared.targets) {
-        const previous = latestReceiptByTarget.get(target.targetId);
-        if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-        const state = readinessByTarget.get(target.targetId);
-        if (!state?.adapter || !state.preflight || !state.plan) {
-          globallyReady = false;
-          if (state) {
-            state.outcome = 'FAILED_RETRYABLE';
-            state.failureCode = 'PREDELETE_PREFLIGHT_INCOMPLETE';
-            state.reason = 'The validated resource-identity plan is unavailable; no deletion was attempted.';
-          }
-          continue;
-        }
-        try {
-          await this.assertExternalDeletionPreconditions({
-            tenantId, actorUserId, requestId, expectedVersion,
-            request: prepared.request, runId: prepared.run.run_id, target, plan: state.plan, policyVersions,
-          });
-        } catch (error) {
-          globallyReady = false;
-          if (error instanceof ConflictException && /legal hold/i.test(error.message)) {
-            state.outcome = 'RETAINED';
-            state.failureCode = 'ACTIVE_LEGAL_HOLD';
-            state.reason = 'An active legal hold blocks deletion for this target/category scope.';
-          } else if (error instanceof ExternalPropagationDispositionError) {
-            state.outcome = error.outcome;
-            state.failureCode = error.code;
-            state.reason = error.reason;
-          } else {
-            state.outcome = 'BLOCKED';
-            state.failureCode = 'PREDELETE_GUARD_BLOCKED';
-            state.reason = 'A required approval, policy, ownership, or target-scope guard changed before deletion; operator review is required.';
-          }
-        }
-      }
-    }
-
-    // If any target fails configuration, preflight, dry-run, or the final guard,
-    // persist explicit outcomes and perform NO provider deletion in this run.
-    if (!globallyReady) {
-      for (const target of prepared.targets) {
-        const previous = latestReceiptByTarget.get(target.targetId);
-        if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-        const state = readinessByTarget.get(target.targetId);
-        const planEntry = this.jsonObject(currentManifest.plans ?? {})[target.targetId];
-        const plan = state?.plan ?? this.decodePlan(planEntry);
-        const outcomeCode = state?.outcome ?? 'BLOCKED';
-        const failureCode = state?.failureCode ?? 'GLOBAL_PREFLIGHT_BLOCKED';
-        const residualReason = state?.reason
-          ?? 'A required target did not pass preflight, dry-run, or the final scope guard; no provider deletion was attempted.';
-        let plannedCopies = '0';
-        let deletedCopies = '0';
-        let residualCopies = '0';
-        let residualManifest: string[] = [];
-        let manifestKind: SaasExternalManifestKind = 'SCOPE_INTENT';
-        let manifestDigest = this.hash({
-          manifestKind: 'SCOPE_INTENT', tenantId, requestId, runId: prepared.run.run_id,
-          targetId: target.targetId, storeKind: target.storeKind,
-          categories: this.parseCategories(prepared.request.categories),
-          sourceExportDigest: prepared.request.export_bundle_digest, policyVersions,
+        await this.backupWriterFenceCoordinator.beginPropagationFence({
+          tenantId, requestId, requestVersion: Number(prepared.request.version),
+          runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
+          categories: targetCategories, actorUserId,
+          configReference: target.configReference, adapterKey: target.adapterKey,
+          adapterVersion: adapter.adapterVersion,
         });
-        if (plan) {
-          manifestKind = 'RESOURCE_IDENTITIES';
-          manifestDigest = plan.manifestDigest;
-          plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
-          // The run-wide barrier prevented execution, so the planned count remains
-          // unresolved. Do not invent provider resource identifiers for this scope.
-          residualCopies = plannedCopies;
-        }
-        // Preserve the last known counts if this is a retry after a prior uncertain
-        // provider attempt; a new blocked attempt must not erase prior residual evidence.
-        if (previous && previous.outcome_code !== 'COMPLETED') {
-          plannedCopies = String(previous.planned_copies);
-          deletedCopies = String(previous.deleted_copies);
-          residualCopies = String(previous.residual_copies);
-          if (previous.manifest_digest) manifestDigest = previous.manifest_digest;
-          if (previous.manifest_kind) manifestKind = previous.manifest_kind;
-          residualManifest = this.residualReferences(this.jsonArray(previous.residual_manifest));
-        }
-        const preflight = state?.preflight;
-        await this.insertReceipt({
-          tenantId, actorUserId, requestId, runId: prepared.run.run_id, target,
-          plannedCopies, deletedCopies, residualCopies, manifestDigest,
-          verifiedManifestDigest: previous?.verified_manifest_digest ?? null,
-          verificationReference: previous?.verification_reference ?? null,
-          providerReceiptReference: previous?.provider_receipt_reference ?? null,
-          residualManifest: this.residualReferences(residualManifest),
-          status: 'FAILED', failureCode, outcomeCode, manifestKind,
-          resourceClass: preflight?.resourceClass ?? target.storeKind,
-          adapterVersion: preflight?.adapterVersion ?? state?.adapter?.adapterVersion ?? null,
-          maxPageSize: preflight?.maxPageSize ?? null, maxBatchSize: preflight?.maxBatchSize ?? null,
-          policyVersions, residualReason,
-        });
+      } catch (error) {
+        preflightFailureCodes[target.targetId] = this.failureCode(error);
+        preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+        preflightFailureReasons.set(target.targetId,
+          'Backup writer-fence installation/read-back failed; no provider inventory or deletion was started.');
       }
     }
+    const backupWriterFenceBarrierFailed = Object.keys(preflightFailureCodes).length > 0;
 
-    // Phase 4: execute only after every target has a valid dry-run plan and every
-    // target passed its final pre-delete guard. Once one target fails, later targets
-    // receive durable BLOCKED receipts and are not destructively attempted.
-    const readyForExecution = globallyReady;
+    // Global barrier: prepare and seal every remaining target resource manifest, then
+    // recover every previous attempt. No adapter.erase() is reachable until all targets
+    // pass this phase, so a late target inventory failure cannot follow an earlier delete.
     for (const target of prepared.targets) {
       const previous = latestReceiptByTarget.get(target.targetId);
-      if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-      if (!readyForExecution) continue;
-
-      if (!globallyReady) {
-        const state = readinessByTarget.get(target.targetId);
-        const prior = latestReceiptByTarget.get(target.targetId);
-        const plan = state?.plan;
-        let plannedCopies = '0';
-        let deletedCopies = '0';
-        let residualCopies = '0';
-        let manifestKind: SaasExternalManifestKind = 'SCOPE_INTENT';
-        let manifestDigest = this.hash({
-          manifestKind: 'SCOPE_INTENT', tenantId, requestId, runId: prepared.run.run_id,
-          targetId: target.targetId, storeKind: target.storeKind,
-          categories: this.parseCategories(prepared.request.categories),
-          sourceExportDigest: prepared.request.export_bundle_digest, policyVersions,
-        });
-        if (plan) {
-          manifestKind = 'RESOURCE_IDENTITIES';
-          manifestDigest = plan.manifestDigest;
-          plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
-          residualCopies = plannedCopies;
-        }
-        if (prior && prior.outcome_code !== 'COMPLETED') {
-          plannedCopies = String(prior.planned_copies);
-          deletedCopies = String(prior.deleted_copies);
-          residualCopies = String(prior.residual_copies);
-          manifestDigest = prior.manifest_digest || manifestDigest;
-          manifestKind = prior.manifest_kind || manifestKind;
-        }
-        await this.insertReceipt({
-          tenantId, actorUserId, requestId, runId: prepared.run.run_id, target,
-          plannedCopies, deletedCopies, residualCopies, manifestDigest,
-          verifiedManifestDigest: prior?.verified_manifest_digest ?? null,
-          verificationReference: prior?.verification_reference ?? null,
-          providerReceiptReference: prior?.provider_receipt_reference ?? null,
-          residualManifest: this.residualReferences(prior ? this.jsonArray(prior.residual_manifest) : []),
-          status: 'FAILED', failureCode: 'RUN_ABORTED_AFTER_TARGET_FAILURE',
-          outcomeCode: 'BLOCKED', manifestKind,
-          resourceClass: state?.preflight?.resourceClass ?? target.storeKind,
-          adapterVersion: state?.preflight?.adapterVersion ?? state?.adapter?.adapterVersion ?? null,
-          maxPageSize: state?.preflight?.maxPageSize ?? null,
-          maxBatchSize: state?.preflight?.maxBatchSize ?? null,
-          policyVersions,
-          residualReason: 'A prior target failed or became retained during execution; this target was not executed.',
-        });
+      if (previous?.status === 'VERIFIED') continue;
+      if (preflightFailureCodes[target.targetId]) continue;
+      if (backupWriterFenceBarrierFailed) {
+        preflightFailureCodes[target.targetId] = 'BACKUP_WRITER_FENCE_BARRIER_BLOCKED';
+        preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+        preflightFailureReasons.set(target.targetId,
+          'A required backup writer fence failed installation/read-back; the global provider preparation barrier remained closed.');
         continue;
       }
+      if (activeLegalHoldCategories.length > 0) {
+        preflightFailureCodes[target.targetId] = 'ACTIVE_LEGAL_HOLD';
+        preflightFailureOutcomes.set(target.targetId, 'RETAINED');
+        preflightFailureReasons.set(target.targetId,
+          'An active legal hold retains the requested tenant/category scope; no provider deletion was attempted.');
+        continue;
+      }
+      if (policyBlockedCategories.length > 0) {
+        preflightFailureCodes[target.targetId] = 'RETENTION_POLICY_BLOCKED';
+        preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+        preflightFailureReasons.set(target.targetId,
+          'A current DELETE retention policy is missing or has a non-delete disposition for the requested category.');
+        continue;
+      }
+      let adapter: SaasTenantExternalDataPropagationAdapter | undefined;
+      try {
+        adapter = this.adapterFor(target);
+        if (!(await adapter.isConfigured(target))) {
+          throw new ServiceUnavailableException('Required external propagation adapter became unavailable during global preparation');
+        }
+        if (target.storeKind === 'BACKUP') {
+          if (!this.backupWriterFenceCoordinator) {
+            throw new ServiceUnavailableException('Backup writer-fence coordinator is unavailable; backup mutation is blocked');
+          }
+          await this.backupWriterFenceCoordinator.assertFenceHeld({
+            tenantId,
+            categories: target.categories.filter((category) => this.parseCategories(prepared.request.categories).includes(category)),
+            configReference: target.configReference,
+            adapterKey: target.adapterKey,
+            adapterVersion: adapter.adapterVersion,
+          });
+        }
+        const context = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
+        if (adapter.preflight) {
+          const preflight = await adapter.preflight(context);
+          if (!preflight || preflight.outcome !== 'READY'
+            || typeof preflight.resourceClass !== 'string'
+            || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(preflight.resourceClass)
+            || typeof preflight.adapterVersion !== 'string'
+            || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(preflight.adapterVersion)
+            || !Number.isSafeInteger(preflight.maxPageSize) || preflight.maxPageSize < 1 || preflight.maxPageSize > 5000
+            || !Number.isSafeInteger(preflight.maxBatchSize) || preflight.maxBatchSize < 1 || preflight.maxBatchSize > 1000
+            || (preflight.reason !== undefined && /(https?:\/\/|password|secret|credential|access[-_]?key|token)/i.test(preflight.reason))) {
+            throw new ConflictException('External provider preflight is blocked or contains invalid/unbounded execution declarations');
+          }
+          preflightByTarget.set(target.targetId, preflight);
+        }
+        await this.assertCurrentCopyCoverage(
+          tenantId, actorUserId, context.categories, prepared.targets,
+          prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest,
+          context.retentionPolicyVersions ?? {},
+        );
+        const planEntry = (this.jsonObject(currentManifest.plans ?? {}) as Record<string, unknown>)[target.targetId];
+        let plan: SaasExternalPropagationPlan;
+        let manifestId: string | null = null;
+        let latestOutcome: string | null = null;
+        let providerReceiptReference: string | null = null;
+        if (planEntry) {
+          const loaded = await this.loadPlanFromManifest({
+            tenantId, actorUserId, requestId, runId: prepared.run.run_id,
+            sourceExportDigest: prepared.request.export_bundle_digest, target, adapter, planEntry,
+          });
+          plan = loaded.plan;
+          manifestId = loaded.manifestId;
+          latestOutcome = loaded.latestOutcome;
+          providerReceiptReference = loaded.providerReceiptReference;
+          if (plan.resources.length > 0 && !latestOutcome) {
+            throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
+          }
+          if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(latestOutcome ?? '')) {
+            throw new ConflictException('The per-resource manifest has a terminal outcome and cannot be silently re-executed');
+          }
+          if (plan.resources.length > 0
+            && !['PREPARED', 'DELETE_REQUESTED', 'DELETED', 'FAILED_RETRYABLE'].includes(latestOutcome ?? '')) {
+            throw new ConflictException('Per-resource recovery state is not resumable');
+          }
+          if (latestOutcome === 'FAILED_RETRYABLE' && plan.resources.length > 0) {
+            await this.appendResourceEvents({
+              tenantId, actorUserId, manifestId,
+              expectedResourceCount: plan.resources.length, outcomeCode: 'PREPARED',
+              providerReceiptReference: null, verificationReference: null,
+              verifiedManifestDigest: null, residualCount: '0', failureCode: null, residualReason: null,
+            });
+            latestOutcome = 'PREPARED';
+          }
+        } else {
+          plan = await adapter.prepare(context);
+          this.validatePlan(plan, adapter);
+          const persisted = await this.persistResourceManifestAndRunPlan({
+            tenantId, actorUserId, requestId, requestVersion: Number(prepared.request.version),
+            runId: prepared.run.run_id, target, plan,
+            sourceExportDigest: prepared.request.export_bundle_digest,
+            currentManifest,
+          });
+          manifestId = persisted.manifestId;
+          currentManifest = persisted.externalManifest;
+          latestOutcome = plan.resources.length > 0 ? 'PREPARED' : null;
+        }
+        this.validatePlan(plan, adapter);
+        const preflight = preflightByTarget.get(target.targetId);
+        if (preflight && (plan.resourceClass !== preflight.resourceClass
+          || plan.adapterVersion !== preflight.adapterVersion
+          || plan.maxPageSize > preflight.maxPageSize
+          || plan.maxBatchSize > preflight.maxBatchSize)) {
+          throw new ConflictException('Prepared external resource plan exceeds or differs from the approved provider preflight contract');
+        }
+        await adapter.recover({ ...context, plan });
+        preflightPlansByTarget.set(target.targetId, {
+          plan, manifestId: plan.resources.length > 0 ? manifestId : null,
+          latestOutcome, providerReceiptReference,
+        });
+        preflightRecoveredTargetIds.add(target.targetId);
+      } catch (error) {
+        preflightFailureCodes[target.targetId] = this.failureCode(error);
+        const message = error instanceof Error ? error.message : '';
+        if (/active legal hold/i.test(message)) {
+          preflightFailureOutcomes.set(target.targetId, 'RETAINED');
+          preflightFailureReasons.set(target.targetId,
+            'An active legal hold appeared during global preparation; provider deletion was not attempted.');
+        } else {
+          preflightFailureOutcomes.set(target.targetId, 'BLOCKED');
+          preflightFailureReasons.set(target.targetId,
+            'Global provider preparation failed its live policy, evidence, writer-fence or resource-manifest checkpoint.');
+        }
+      }
+    }
+    for (const [blockedTargetId, failureCode] of Object.entries(preflightFailureCodes)) {
+      const blockedTarget = prepared.targets.find((target) => target.targetId === blockedTargetId);
+      if (!blockedTarget) continue;
+      await this.insertReceipt({
+        tenantId, actorUserId, requestId, runId: prepared.run.run_id, target: blockedTarget,
+        plannedCopies: '0', deletedCopies: '0', residualCopies: '0',
+        manifestDigest: this.hash({
+          version: 1, tenantId, requestId, runId: prepared.run.run_id,
+          targetId: blockedTargetId, sourceExportDigest: prepared.request.export_bundle_digest,
+          failureCode,
+        }),
+        verifiedManifestDigest: null, verificationReference: null,
+        providerReceiptReference: null, residualManifest: [], status: 'FAILED', failureCode,
+        outcomeCode: preflightFailureOutcomes.get(blockedTargetId) ?? 'BLOCKED',
+        manifestKind: 'SCOPE_INTENT',
+        resourceClass: blockedTarget.storeKind,
+        adapterVersion: this.adapters.find((candidate) =>
+          candidate.storeKind === blockedTarget.storeKind && candidate.adapterKey === blockedTarget.adapterKey)?.adapterVersion ?? null,
+        maxPageSize: null, maxBatchSize: null,
+        retentionPolicyVersions: retentionPolicyVersions,
+        residualReason: preflightFailureReasons.get(blockedTargetId)
+          ?? 'Global provider preparation was blocked before destructive execution.',
+      });
+    }
+    const globalPreflightReady = Object.keys(preflightFailureCodes).length === 0;
+    currentManifest.globalPreparation = {
+      version: 1,
+      outcome: globalPreflightReady ? 'READY' : 'BLOCKED',
+      preparedTargetIds: [...preflightRecoveredTargetIds].sort(),
+      blockedTargets: Object.entries(preflightFailureCodes)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([targetId, failureCode]) => ({ targetId, failureCode })),
+    };
 
-      const state = readinessByTarget.get(target.targetId);
-      const plan = state?.plan;
+    if (globalPreflightReady) {
+    let destructiveFailureObserved = false;
+    for (const target of prepared.targets) {
+      if (destructiveFailureObserved) break;
+      const previous = latestReceiptByTarget.get(target.targetId);
+      if (previous?.status === 'VERIFIED') continue;
+      const adapter = this.adapterFor(target);
+      const preparedPlan = preflightPlansByTarget.get(target.targetId);
+      let plan: SaasExternalPropagationPlan | undefined = preparedPlan?.plan;
+      let resourceManifestId: string | null = preparedPlan?.manifestId ?? null;
+      let resourceEventState: string | null = null;
+      let lastProviderReceiptReference: string | null = null;
       let plannedCopies = '0';
       let deletedCopies = '0';
       let residualCopies = '0';
-      let manifestKind: SaasExternalManifestKind = 'SCOPE_INTENT';
-      let outcomeCode: SaasExternalPropagationOutcome = 'FAILED_RETRYABLE';
-      let adapterVersion: string | null = state?.preflight?.adapterVersion ?? null;
-      let resourceClass = state?.preflight?.resourceClass ?? target.storeKind;
-      let maxPageSize: number | null = state?.preflight?.maxPageSize ?? null;
-      let maxBatchSize: number | null = state?.preflight?.maxBatchSize ?? null;
-      let residualReason: string | null = null;
-      let planDigest = this.hash({
-        manifestKind: 'SCOPE_INTENT', tenantId, requestId, runId: prepared.run.run_id,
-        targetId: target.targetId, storeKind: target.storeKind,
-        categories: this.parseCategories(prepared.request.categories),
-        sourceExportDigest: prepared.request.export_bundle_digest, policyVersions,
-      });
+      let planDigest = this.hash({ tenantId, requestId, runId: prepared.run.run_id, targetId: target.targetId, source: prepared.request.export_bundle_digest });
       let verifiedDigest: string | null = null;
       let verificationReference: string | null = null;
       let providerReceiptReference: string | null = null;
       let residualManifest: string[] = [];
       let receiptStatus: 'VERIFIED' | 'RESIDUALS' | 'FAILED' = 'FAILED';
       let failureCode: string | null = null;
-      const adapter = state?.adapter;
-      const configured = !!state?.preflight;
-      const baseContext = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
+      let ledgerWriteFailed = false;
+      const context = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
+      const recordResourceEvent = async (
+        outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE',
+        details: {
+          providerReceiptReference?: string | null;
+          verificationReference?: string | null;
+          verifiedManifestDigest?: string | null;
+          residualCount?: string;
+          failureCode?: string | null;
+          residualReason?: string | null;
+        } = {},
+      ) => {
+        if (!resourceManifestId || !plan || plan.resources.length === 0) return;
+        try {
+          await this.appendResourceEvents({
+            tenantId, actorUserId, manifestId: resourceManifestId,
+            expectedResourceCount: plan.resources.length, outcomeCode,
+            providerReceiptReference: details.providerReceiptReference ?? null,
+            verificationReference: details.verificationReference ?? null,
+            verifiedManifestDigest: details.verifiedManifestDigest ?? null,
+            residualCount: details.residualCount ?? '0',
+            failureCode: details.failureCode ?? null,
+            residualReason: details.residualReason ?? null,
+          });
+        } catch (error) {
+          ledgerWriteFailed = true;
+          throw error;
+        }
+      };
 
       try {
-        if (!adapter || !state?.preflight || !plan || state.outcome) {
-          throw new ConflictException('External target did not pass the run-wide execution barrier');
+        if (!preparedPlan || !plan) {
+          throw new ConflictException('Global preparation barrier did not retain a validated target plan');
+        }
+        resourceEventState = preparedPlan.latestOutcome;
+        lastProviderReceiptReference = preparedPlan.providerReceiptReference;
+        if (target.storeKind === 'BACKUP') {
+          if (!this.backupWriterFenceCoordinator) {
+            throw new ServiceUnavailableException('Backup writer-fence coordinator is unavailable; backup mutation is blocked');
+          }
+          await this.backupWriterFenceCoordinator.assertFenceHeld({
+            tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+            configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
+          });
+        }
+        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets,
+          prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest, context.retentionPolicyVersions ?? {});
+        if (plan.resources.length > 0 && !resourceEventState) {
+          throw new ConflictException('Sealed resource manifest is missing its initial per-resource PREPARED events');
+        }
+        if (resourceEventState === 'FAILED_RETRYABLE') {
+          await recordResourceEvent('PREPARED');
+          resourceEventState = 'PREPARED';
+        }
+        if (['VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState ?? '')) {
+          throw new ConflictException('The per-resource manifest has terminal outcomes and cannot be silently re-executed');
+        }
+        if (plan.resources.length > 0
+          && !['PREPARED', 'DELETE_REQUESTED', 'DELETED'].includes(resourceEventState ?? '')) {
+          throw new ConflictException('Per-resource recovery state is not resumable');
         }
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
-        manifestKind = 'RESOURCE_IDENTITIES';
-        const context = this.executionContext(baseContext, state.preflight);
-        if (state.recoverPriorAttempt) {
-          // Recover only when a prior provider mutation could have happened. A saved
-          // dry-run plan alone is not evidence of a prior mutation: targets blocked
-          // behind another target's failure must not be needlessly reconciled.
-          await this.assertExternalDeletionPreconditions({
-            tenantId, actorUserId, requestId, expectedVersion,
-            request: prepared.request, runId: prepared.run.run_id, target, plan, policyVersions,
-          });
-          await adapter.recover({ ...context, plan });
+
+        let deletion: SaasExternalPropagationDeleteReceipt;
+        if (resourceEventState === 'DELETED' && plan.resources.length > 0) {
+          if (!lastProviderReceiptReference) {
+            throw new ConflictException('Per-resource DELETED state has no durable provider receipt reference');
+          }
+          providerReceiptReference = this.reference(lastProviderReceiptReference, 'providerReceiptReference');
+          deletedCopies = plannedCopies;
+          deletion = {
+            deletedCopies,
+            manifestDigest: plan.manifestDigest,
+            providerReceiptReference,
+          };
+        } else {
+          if (resourceEventState === 'PREPARED') {
+            await recordResourceEvent('DELETE_REQUESTED');
+            resourceEventState = 'DELETE_REQUESTED';
+          }
+          if (target.storeKind === 'BACKUP') {
+            await this.backupWriterFenceCoordinator!.assertFenceHeld({
+              tenantId, categories: target.categories.filter((category) => backupFenceCategories.includes(category)),
+              configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
+            });
+          }
+          await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets,
+          prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest, context.retentionPolicyVersions ?? {});
+          deletion = await adapter.erase({ ...context, plan });
+          deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
+          providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
+          if (deletion.manifestDigest !== plan.manifestDigest) {
+            throw new ConflictException('External adapter deletion receipt digest differs from the exact prepared manifest');
+          }
+          if (deletedCopies === plannedCopies && resourceEventState === 'DELETE_REQUESTED') {
+            await recordResourceEvent('DELETED', { providerReceiptReference });
+            resourceEventState = 'DELETED';
+          }
         }
-        // Re-check once again immediately before each destructive operation. A hold
-        // may still be activated after the run-wide guard but during provider execution.
-        await this.assertExternalDeletionPreconditions({
-          tenantId, actorUserId, requestId, expectedVersion,
-          request: prepared.request, runId: prepared.run.run_id, target, plan, policyVersions,
-        });
-        const deletion = await adapter.execute({ ...context, plan });
-        deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
-        providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
         if (deletion.manifestDigest !== plan.manifestDigest) {
-          throw new ConflictException('External adapter deletion receipt digest differs from the exact prepared manifest');
+          throw new ConflictException('Recovered deletion receipt digest differs from the sealed resource manifest');
         }
+
+        await this.assertCurrentCopyCoverage(tenantId, actorUserId, context.categories, prepared.targets,
+          prepared.copyCoverageDigest, prepared.backupCopyClassCoverageDigest, context.retentionPolicyVersions ?? {});
         const verification = await adapter.verify({ ...context, plan, deletion });
         residualCopies = this.count(verification.residualCopies, 'residualCopies');
         verifiedDigest = this.digestOrNull(verification.verifiedManifestDigest);
@@ -754,89 +843,68 @@ export class SaasTenantPropagationService {
         residualManifest = this.residualReferences(verification.residualReferences);
         const verified = verifiedDigest === plan.manifestDigest && deletedCopies === plannedCopies
           && residualCopies === '0' && residualManifest.length === 0;
-        if (verified) {
-          receiptStatus = 'VERIFIED';
-          outcomeCode = 'COMPLETED';
-          residualReason = null;
-        } else {
-          // Only actual opaque provider references belong in residual_manifest.
-          // A positive count without references remains a count-only FAILED receipt.
-          if (residualCopies === '0' && residualManifest.length > 0) {
-            residualCopies = String(residualManifest.length);
+        if (verified && target.storeKind === 'BACKUP') {
+          if (!this.backupWriterFenceCoordinator) {
+            throw new ServiceUnavailableException('Backup fence coordinator disappeared after provider verification; the writer gate remains closed');
           }
-          const hasKnownResiduals = residualCopies !== '0' || residualManifest.length > 0;
-          receiptStatus = residualManifest.length > 0 ? 'RESIDUALS' : 'FAILED';
-          outcomeCode = 'FAILED_RETRYABLE';
-          failureCode = hasKnownResiduals ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_MISMATCH';
-          residualReason = 'Provider deletion did not reconcile to the exact prepared manifest with zero verified residual copies.';
-          globallyReady = false;
+          const verifiedBackupCategories = target.categories.filter((category) => context.categories.includes(category));
+          await this.backupWriterFenceCoordinator.recordPropagationVerification({
+            tenantId, categories: verifiedBackupCategories,
+            manifestDigest: verifiedDigest!, verificationReference: verificationReference!,
+            residualCopies: Number(residualCopies),
+            configReference: target.configReference, adapterKey: target.adapterKey, adapterVersion: adapter.adapterVersion,
+          });
+        }
+        receiptStatus = verified ? 'VERIFIED' : 'RESIDUALS';
+        if (!verified) {
+          failureCode = 'EXTERNAL_RESIDUALS_REMAIN';
+          if (residualCopies !== '0' && residualManifest.length === 0) {
+            residualManifest = ['residual-count:' + residualCopies];
+          }
         }
       } catch (error) {
-        if (error instanceof ExternalPropagationDispositionError) {
-          outcomeCode = error.outcome;
-          residualReason = error.reason;
-          failureCode = error.code;
-          receiptStatus = 'FAILED';
-        } else if (error instanceof ConflictException && /legal hold/i.test(error.message)) {
-          outcomeCode = 'RETAINED';
-          residualReason = 'An active legal hold blocks deletion for this target/category scope.';
-          failureCode = 'ACTIVE_LEGAL_HOLD';
-          receiptStatus = 'FAILED';
-        } else {
-          failureCode = this.failureCode(error);
-          if (!adapter) {
-            outcomeCode = 'BLOCKED';
-            residualReason = 'No provider adapter is registered for this target; no resource identity manifest was accepted.';
-            failureCode = 'ADAPTER_UNAVAILABLE';
-          } else if (!configured) {
-            outcomeCode = 'BLOCKED';
-            residualReason = 'The target adapter is not configured; no provider deletion was attempted.';
-            failureCode = 'ADAPTER_UNCONFIGURED';
-          } else {
-            outcomeCode = 'FAILED_RETRYABLE';
-            residualReason = plan
-              ? 'Provider execution or verification did not produce a fully reconciled receipt; provider state must be recovered before retry.'
-              : 'Provider preflight or dry-run did not produce a complete resource identity manifest.';
-          }
-          receiptStatus = 'FAILED';
+        if (ledgerWriteFailed) {
+          throw new ServiceUnavailableException('Durable per-resource erasure ledger write failed; propagation is halted before further provider mutations');
         }
-
+        failureCode = this.failureCode(error);
         if (plan) {
           try {
             plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
             planDigest = this.digestOrNull(plan.manifestDigest) ?? planDigest;
-            manifestKind = 'RESOURCE_IDENTITIES';
-            if (residualCopies === '0' && plannedCopies !== '0') {
-              // If execute or verify throws after a possible provider mutation, the
-              // provider state is unknown even when an execution receipt claimed all
-              // deletes. Conservatively keep the entire prepared scope unresolved
-              // until a later independent read-back proves otherwise.
-              residualCopies = plannedCopies;
-              residualManifest = [];
-            }
+            residualCopies = plannedCopies === '0' ? '1' : plannedCopies;
           } catch {
             plannedCopies = '0';
             deletedCopies = '0';
-            residualCopies = '0';
-            manifestKind = 'SCOPE_INTENT';
+            residualCopies = '1';
           }
-        } else {
-          // A scope-intent digest is deliberately not represented as an enumerated
-          // resource manifest and carries no invented copy count.
-          residualCopies = '0';
-          manifestKind = 'SCOPE_INTENT';
+        } else residualCopies = '1';
+        residualManifest = ['unverified-scope:' + target.targetId];
+        receiptStatus = 'FAILED';
+      }
+
+      if (plan && resourceManifestId && plan.resources.length > 0) {
+        if (receiptStatus === 'VERIFIED') {
+          await recordResourceEvent('VERIFIED', {
+            providerReceiptReference, verificationReference,
+            verifiedManifestDigest: verifiedDigest, residualCount: '0',
+          });
+          resourceEventState = 'VERIFIED';
+        } else if (resourceEventState && !['FAILED_RETRYABLE', 'VERIFIED', 'BLOCKED', 'RETAINED'].includes(resourceEventState)) {
+          await recordResourceEvent('FAILED_RETRYABLE', {
+            providerReceiptReference, residualCount: residualCopies,
+            failureCode: failureCode ?? 'ADAPTER_OPERATION_FAILED',
+            residualReason: 'Provider outcome requires reconciliation before this resource may be retried',
+          });
+          resourceEventState = 'FAILED_RETRYABLE';
         }
-        // Do not mutate any further target after this target's outcome is uncertain,
-        // blocked, retained, or fails manifest/count/verification reconciliation.
-        globallyReady = false;
       }
 
       await this.insertReceipt({
         tenantId, actorUserId, requestId, runId: prepared.run.run_id, target,
         plannedCopies, deletedCopies, residualCopies, manifestDigest: planDigest,
         verifiedManifestDigest: verifiedDigest, verificationReference, providerReceiptReference,
-        residualManifest, status: receiptStatus, failureCode, outcomeCode, manifestKind,
-        resourceClass, adapterVersion, maxPageSize, maxBatchSize, policyVersions, residualReason,
+        residualManifest, status: receiptStatus, failureCode,
+        plan, retentionPolicyVersions: retentionPolicyVersions,
       });
       latestReceiptByTarget.set(target.targetId, {
         target_id: target.targetId, store_kind: target.storeKind, status: receiptStatus,
@@ -844,11 +912,16 @@ export class SaasTenantPropagationService {
         manifest_digest: planDigest, verified_manifest_digest: verifiedDigest,
         verification_reference: verificationReference, provider_receipt_reference: providerReceiptReference,
         residual_manifest: residualManifest, failure_code: failureCode, attempt_no: 1,
-        outcome_code: outcomeCode, manifest_kind: manifestKind, resource_class: resourceClass,
-        adapter_version: adapterVersion, max_page_size: maxPageSize, max_batch_size: maxBatchSize,
-        policy_versions: policyVersions, residual_reason: residualReason,
-        completed_at: new Date().toISOString(),
       } as PropagationReceiptRow);
+      if (receiptStatus !== 'VERIFIED') {
+        destructiveFailureObserved = true;
+        currentManifest.deletionBarrier = {
+          version: 1, outcome: 'BLOCKED', blockedAfterTarget: target.targetId,
+          failureCode: failureCode ?? 'EXTERNAL_VERIFICATION_INCOMPLETE',
+        };
+      }
+    }
+
     }
 
     const latestReceipts = await this.database.query<PropagationReceiptRow>(
@@ -857,10 +930,7 @@ export class SaasTenantPropagationService {
       [tenantId, requestId, prepared.run.run_id], { tenantId, userId: actorUserId },
     );
     const receiptByTarget = new Map(latestReceipts.rows.map((receipt) => [receipt.target_id, receipt]));
-    const verifiedTargets = prepared.targets.filter((target) => {
-      const receipt = receiptByTarget.get(target.targetId);
-      return receipt?.status === 'VERIFIED' && receipt.outcome_code === 'COMPLETED';
-    });
+    const verifiedTargets = prepared.targets.filter((target) => receiptByTarget.get(target.targetId)?.status === 'VERIFIED');
     const planned = latestReceipts.rows.reduce((sum, row) => sum + BigInt(row.planned_copies), 0n);
     const deleted = latestReceipts.rows.reduce((sum, row) => sum + BigInt(row.deleted_copies), 0n);
     const residual = latestReceipts.rows.reduce((sum, row) => sum + BigInt(row.residual_copies), 0n);
@@ -875,43 +945,94 @@ export class SaasTenantPropagationService {
         continue;
       }
       targetManifest[target.targetId] = {
-        storeKind: target.storeKind, adapterKey: target.adapterKey,
-        status: receipt.status, outcomeCode: receipt.outcome_code, manifestKind: receipt.manifest_kind,
-        resourceClass: receipt.resource_class, adapterVersion: receipt.adapter_version,
-        policyVersions: this.parsePolicyVersions(receipt.policy_versions),
-        maxPageSize: receipt.max_page_size, maxBatchSize: receipt.max_batch_size,
+        storeKind: target.storeKind, adapterKey: target.adapterKey, status: receipt.status,
         plannedCopies: String(receipt.planned_copies), deletedCopies: String(receipt.deleted_copies),
         residualCopies: String(receipt.residual_copies), manifestDigest: receipt.manifest_digest,
         verifiedManifestDigest: receipt.verified_manifest_digest,
         verificationReference: receipt.verification_reference, providerReceiptReference: receipt.provider_receipt_reference,
-        residualManifest: this.jsonArray(receipt.residual_manifest), residualReason: receipt.residual_reason,
-        completedAt: receipt.completed_at, failureCode: receipt.failure_code,
+        residualManifest: this.jsonArray(receipt.residual_manifest), failureCode: receipt.failure_code,
       };
     }
     const wholeManifest = {
-      version: 1, tenantId, requestId, requestVersion: Number(prepared.request.version),
+      version: 2, tenantId, requestId, requestVersion: Number(prepared.request.version),
       runId: prepared.run.run_id, sourceExportDigest: prepared.request.export_bundle_digest,
       postgresqlErasureRunId: prepared.request.execution_run_id, postgresqlReceiptScope: 'POSTGRESQL_ONLY',
+      copyClassCoverage: prepared.copyCoverageManifest, copyClassCoverageDigest: prepared.copyCoverageDigest,
+      backupCopyClassCoverage: prepared.backupCopyClassCoverageManifest,
+      backupCopyClassCoverageDigest: prepared.backupCopyClassCoverageDigest,
       targetManifest, plannedCopies: planned.toString(), deletedCopies: deleted.toString(), residualCopies: residual.toString(),
+      status: allVerified ? 'VERIFIED' : 'PARTIAL',
+      failureCode: allVerified ? null : residual > 0n ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_INCOMPLETE',
     };
     const manifestDigest = this.hash(wholeManifest);
     const status = allVerified ? 'VERIFIED' : 'PARTIAL';
-    const failureCode = allVerified ? null : residual > 0n ? 'EXTERNAL_RESIDUALS_REMAIN' : 'EXTERNAL_VERIFICATION_INCOMPLETE';
 
     const finalized = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const finalCategories = this.parseCategories(prepared.request.categories);
+      const finalTargetResult = await client.query<TargetRow>(
+        `SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 ORDER BY store_kind,target_id`,
+        [tenantId],
+      );
+      const finalRelevantRows = finalTargetResult.rows.filter((row) =>
+        this.parseCategories(row.categories).some((category) => finalCategories.includes(category)));
+      const finalTargetsActive = finalRelevantRows.every((row) => row.status === 'ACTIVE' && row.required === true);
+      const finalTargets = finalRelevantRows.filter((row) => row.status === 'ACTIVE' && row.required === true).map((row) => this.mapTarget(row));
+      const finalCoverageResult = await client.query<CopyCoverageRow>(
+        `SELECT DISTINCT ON (category_code,store_kind) *
+         FROM public.saas_tenant_external_copy_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,store_kind,revision DESC`,
+        [tenantId, finalCategories],
+      );
+      const finalBackupCopyClassResult = await client.query<BackupCopyClassCoverageRow>(
+        `SELECT DISTINCT ON (category_code,copy_class_code) *
+         FROM public.saas_tenant_backup_copy_class_coverage_decisions
+         WHERE tenant_id=$1 AND category_code=ANY($2::text[])
+         ORDER BY category_code,copy_class_code,revision DESC`,
+        [tenantId, finalCategories],
+      );
+      let coverageSnapshotValid = finalTargetsActive;
+      try {
+        const finalRetentionPolicyVersions = await this.readRetentionPolicyVersions(client, tenantId, finalCategories);
+        if (JSON.stringify(finalRetentionPolicyVersions) !== JSON.stringify(retentionPolicyVersions)) {
+          coverageSnapshotValid = false;
+        }
+        const finalLegalHolds = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
+          "SELECT categories FROM saas_tenant_data_legal_holds WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE",
+          [tenantId],
+        );
+        if (finalLegalHolds.rows.some((hold) =>
+          finalCategories.some((category) => this.parseCategories(hold.categories).includes(category)))) {
+          coverageSnapshotValid = false;
+        }
+        await this.assertTargetCoverage(finalCategories, finalTargets, finalCoverageResult.rows);
+        await this.assertBackupCopyClassCoverage(finalCategories, finalTargets, finalBackupCopyClassResult.rows);
+      } catch {
+        coverageSnapshotValid = false;
+      }
+      if (this.hash(this.copyCoverageManifest(finalCoverageResult.rows)) !== prepared.copyCoverageDigest
+        || this.hash(this.backupCopyClassCoverageManifest(finalBackupCopyClassResult.rows)) !== prepared.backupCopyClassCoverageDigest
+        || this.hash(this.targetBindingManifest(finalTargets, finalCategories))
+          !== this.hash(this.targetBindingManifest(prepared.targets, finalCategories))) coverageSnapshotValid = false;
+      const canFinalizeVerified = allVerified && coverageSnapshotValid;
+      const finalStatus = canFinalizeVerified ? 'VERIFIED' : 'PARTIAL';
+      const finalFailureCode = canFinalizeVerified ? null : residual > 0n ? 'EXTERNAL_RESIDUALS_REMAIN'
+        : coverageSnapshotValid ? 'EXTERNAL_VERIFICATION_INCOMPLETE' : 'COPY_CLASS_COVERAGE_CHANGED_DURING_RUN';
+      const finalManifest = { ...currentManifest, result: { ...wholeManifest, status: finalStatus, failureCode: finalFailureCode } };
       const runUpdate = await client.query<PropagationRunRow>(
         `UPDATE saas_tenant_external_propagation_runs
          SET status=$4,external_manifest=$5::jsonb,manifest_digest=$6,target_count=$7,verified_targets=$8,
              planned_copies=$9,deleted_copies=$10,residual_copies=$11,failure_code=$12,
              finished_at=CASE WHEN $4='VERIFIED' THEN clock_timestamp() ELSE NULL END
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
-        [tenantId, requestId, prepared.run.run_id, status, JSON.stringify({ ...currentManifest, result: wholeManifest }),
-          allVerified ? manifestDigest : null, prepared.targets.length, verifiedTargets.length,
-          planned.toString(), deleted.toString(), residual.toString(), failureCode],
+        [tenantId, requestId, prepared.run.run_id, finalStatus, JSON.stringify(finalManifest),
+          canFinalizeVerified ? manifestDigest : null, prepared.targets.length, verifiedTargets.length,
+          planned.toString(), deleted.toString(), residual.toString(), finalFailureCode],
       );
       const run = runUpdate.rows[0];
       let request: ErasureRequestRow | undefined;
-      if (allVerified) {
+      if (canFinalizeVerified) {
         const verified = await client.query<ErasureRequestRow>(
           `UPDATE saas_tenant_data_erasure_requests
            SET status='VERIFIED',propagation_run_id=$3,propagation_manifest_digest=$4,
@@ -924,14 +1045,16 @@ export class SaasTenantPropagationService {
         if (!request) throw new ConflictException('Erasure request changed before whole-tenant propagation could be finalized');
       }
       await this.audit(client, tenantId, actorUserId,
-        allVerified ? 'TENANT_ERASURE_PROPAGATION_VERIFIED' : 'TENANT_ERASURE_PROPAGATION_PARTIAL',
+        canFinalizeVerified ? 'TENANT_ERASURE_PROPAGATION_VERIFIED' : 'TENANT_ERASURE_PROPAGATION_PARTIAL',
         prepared.run.run_id, {
-          requestId, runId: prepared.run.run_id, status, sourceExportDigest: prepared.request.export_bundle_digest,
+          requestId, runId: prepared.run.run_id, status: finalStatus, sourceExportDigest: prepared.request.export_bundle_digest,
           postgresqlReceiptScope: 'POSTGRESQL_ONLY', targetCount: prepared.targets.length,
           verifiedTargets: verifiedTargets.length, plannedCopies: planned.toString(), deletedCopies: deleted.toString(),
-          residualCopies: residual.toString(), manifestDigest: allVerified ? manifestDigest : null, failureCode,
+          residualCopies: residual.toString(), manifestDigest: canFinalizeVerified ? manifestDigest : null,
+          failureCode: finalFailureCode, copyClassCoverageDigest: prepared.copyCoverageDigest,
+          backupCopyClassCoverageDigest: prepared.backupCopyClassCoverageDigest,
         });
-      return { run, request };
+      return { run, request, wholeTenantErasureVerified: canFinalizeVerified };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation-finalize:' + tenantId + ':' + requestId });
 
     return {
@@ -945,7 +1068,7 @@ export class SaasTenantPropagationService {
         requestId, status: 'PROPAGATION_PENDING', version: Number(prepared.request.row_version),
         postgresqlManifestDigest: prepared.request.execution_manifest_digest,
       },
-      wholeTenantErasureVerified: allVerified,
+      wholeTenantErasureVerified: finalized.wholeTenantErasureVerified,
       replayed: false,
     };
   }
@@ -965,181 +1088,194 @@ export class SaasTenantPropagationService {
     return { items: result.rows.map((row) => this.mapRun(row)), count: result.rows.length, limit };
   }
 
-  private async assertExternalDeletionPreconditions(input: {
+  private async persistResourceManifestAndRunPlan(input: {
     tenantId: string;
     actorUserId: string;
     requestId: string;
-    expectedVersion: number;
-    request: ErasureRequestRow;
+    requestVersion: number;
     runId: string;
     target: SaasTenantExternalDataTarget;
     plan: SaasExternalPropagationPlan;
-    policyVersions: Record<string, number>;
-  }) {
-    const { tenantId, actorUserId, requestId, expectedVersion, request, runId, target, plan, policyVersions } = input;
+    sourceExportDigest: string;
+    currentManifest: Record<string, unknown>;
+  }): Promise<{ manifestId: string; externalManifest: Record<string, unknown> }> {
+    const manifestId = randomUUID();
+    const canonicalResources = canonicalizeSaasExternalPropagationResources(input.plan.resources);
+    const resourceRows = canonicalResources.map((resource, index) => {
+      const identityDigest = this.hash({
+        resourceKind: resource.resourceKind,
+        resourceReference: resource.resourceReference,
+        resourceVersionReference: resource.resourceVersionReference ?? null,
+        resourceContentDigest: resource.resourceContentDigest ?? null,
+      });
+      return {
+        resource_ordinal: index + 1,
+        resource_kind: resource.resourceKind,
+        resource_identity_digest: identityDigest,
+        resource_reference: resource.resourceReference,
+        resource_version_reference: resource.resourceVersionReference ?? null,
+        resource_content_digest: resource.resourceContentDigest ?? null,
+        operation_key: 'op.' + this.hash({
+          tenantId: input.tenantId, requestId: input.requestId, runId: input.runId,
+          targetId: input.target.targetId, sourceExportDigest: input.sourceExportDigest,
+          resourceIdentityDigest: identityDigest,
+        }),
+      };
+    });
+    const planEntry = {
+      resourceManifestId: manifestId,
+      manifestDigest: input.plan.manifestDigest,
+      plannedCopies: input.plan.plannedCopies,
+      planReference: input.plan.planReference,
+      storeKind: input.target.storeKind,
+      adapterKey: input.target.adapterKey,
+      configReference: input.target.configReference,
+      adapterVersion: input.plan.adapterVersion,
+      resourceClass: input.plan.resourceClass,
+    };
+    const externalManifest = {
+      ...input.currentManifest,
+      plans: {
+        ...this.jsonObject(input.currentManifest.plans ?? {}),
+        [input.target.targetId]: planEntry,
+      },
+    };
 
     await this.database.transaction(async (client) => {
-      await this.lockTenant(client, tenantId);
-
-      const currentRequestResult = await client.query<ErasureRequestRow>(
-        `SELECT * FROM saas_tenant_data_erasure_requests
-         WHERE tenant_id=$1 AND request_id=$2 AND version=$3 FOR UPDATE`,
-        [tenantId, requestId, Number(request.version)],
+      await this.lockTenant(client, input.tenantId);
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO saas_tenant_external_propagation_manifests
+         (tenant_id,id,request_id,run_id,request_version,target_id,store_kind,adapter_key,adapter_version,
+          resource_class,max_page_size,max_batch_size,source_export_digest,manifest_digest,resource_count,
+          policy_versions,created_by_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)
+         RETURNING id::text AS id`,
+        [input.tenantId, manifestId, input.requestId, input.runId, input.requestVersion,
+          input.target.targetId, input.target.storeKind, input.target.adapterKey, input.plan.adapterVersion,
+          input.plan.resourceClass, input.plan.maxPageSize, input.plan.maxBatchSize,
+          input.sourceExportDigest, input.plan.manifestDigest, resourceRows.length,
+          JSON.stringify(input.plan.policyVersions), input.actorUserId],
       );
-      const currentRequest = currentRequestResult.rows[0];
-      if (!currentRequest || currentRequest.status !== 'PROPAGATION_PENDING') {
-        throw new ConflictException('Erasure approval is no longer eligible for external deletion');
-      }
-      if (Number(currentRequest.row_version) !== expectedVersion
-        || currentRequest.export_bundle_digest !== request.export_bundle_digest
-        || currentRequest.export_transfer_id !== request.export_transfer_id
-        || Number(currentRequest.export_transfer_version) !== Number(request.export_transfer_version)
-        || currentRequest.execution_run_id !== request.execution_run_id
-        || currentRequest.execution_manifest_digest !== request.execution_manifest_digest
-        || JSON.stringify([...this.parseCategories(currentRequest.categories)].sort())
-          !== JSON.stringify([...this.parseCategories(request.categories)].sort())) {
-        throw new ConflictException('Approved erasure request, export digest, PostgreSQL receipt or categories changed before external deletion');
-      }
+      if (!inserted.rows[0]) throw new ServiceUnavailableException('Resource manifest creation was not acknowledged');
 
-      const transferResult = await client.query<TransferRow>(
-        `SELECT t.source_manifest, t.source_bundle_digest, t.actor_user_id
-         FROM saas_tenant_data_transfers t
-         WHERE t.tenant_id=$1 AND t.transfer_id=$2 AND t.version=$3
-           AND t.operation_type='EXPORT' AND t.status='COMPLETED' AND t.source_bundle_digest=$4
-         FOR SHARE`,
-        [tenantId, currentRequest.export_transfer_id, Number(currentRequest.export_transfer_version), currentRequest.export_bundle_digest],
-      );
-      const transfer = transferResult.rows[0];
-      if (!transfer || transfer.source_bundle_digest !== currentRequest.export_bundle_digest) {
-        throw new ConflictException('Exact completed source export changed or is no longer available before external deletion');
-      }
-
-      const sourceManifest = this.jsonObject(transfer.source_manifest);
-      const attestationResult = await client.query<{ verified_by_user_id: string }>(
-        `SELECT verified_by_user_id FROM saas_tenant_data_export_preservation_attestations
-         WHERE tenant_id=$1 AND transfer_id=$2 AND transfer_version=$3 AND bundle_digest=$4
-         ORDER BY verified_at DESC FOR SHARE`,
-        [tenantId, currentRequest.export_transfer_id, Number(currentRequest.export_transfer_version), currentRequest.export_bundle_digest],
-      );
-      if (!attestationResult.rows.some((row) =>
-        row.verified_by_user_id !== currentRequest.requested_by_user_id
-        && row.verified_by_user_id !== currentRequest.reviewed_by_user_id
-        && row.verified_by_user_id !== currentRequest.execution_started_by_user_id
-        && row.verified_by_user_id !== actorUserId)) {
-        throw new ConflictException('Independent export-preservation attestation is missing or no longer independent before external deletion');
-      }
-
-      const categories = this.parseCategories(currentRequest.categories);
-      const holdResult = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
-        `SELECT categories FROM saas_tenant_data_legal_holds
-         WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE`,
-        [tenantId],
-      );
-      if (holdResult.rows.some((hold) =>
-        categories.some((category) => this.parseCategories(hold.categories).includes(category)))) {
-        throw new ConflictException('An active legal hold blocks external deletion for one or more categories');
-      }
-
-      const livePolicyResult = await client.query<{
-        category_code: string; version: string | number; disposition: string;
-      }>(
-        `SELECT DISTINCT ON (category_code) category_code, version, disposition
-         FROM saas_tenant_data_retention_policies
-         WHERE tenant_id=$1 AND category_code = ANY($2::varchar[])
-         ORDER BY category_code,version DESC`,
-        [tenantId, categories],
-      );
-      const livePolicyVersions: Record<string, number> = {};
-      const livePolicies = new Map(livePolicyResult.rows.map((row) => [row.category_code, row]));
-      for (const category of categories) {
-        const policy = livePolicies.get(category);
-        const version = Number(policy?.version);
-        if (!policy || policy.disposition !== 'DELETE' || !Number.isSafeInteger(version) || version < 1) {
-          throw new ExternalPropagationDispositionError(
-            'BLOCKED',
-            'The current retention policy no longer authorizes deletion for this category.',
-            'RETENTION_POLICY_BLOCKED',
-          );
-        }
-        livePolicyVersions[category] = version;
-      }
-      if (JSON.stringify(this.parsePolicyVersions(livePolicyVersions)) !== JSON.stringify(this.parsePolicyVersions(policyVersions))) {
-        throw new ExternalPropagationDispositionError(
-          'BLOCKED',
-          'The retention-policy version changed after the run was prepared; provider deletion was not attempted.',
-          'RETENTION_POLICY_VERSION_CHANGED',
+      for (let offset = 0; offset < resourceRows.length; offset += input.plan.maxBatchSize) {
+        const batch = resourceRows.slice(offset, offset + input.plan.maxBatchSize);
+        await client.query(
+          `INSERT INTO saas_tenant_external_propagation_manifest_items
+           (tenant_id,manifest_id,resource_ordinal,resource_kind,resource_identity_digest,
+            resource_reference,resource_version_reference,resource_content_digest,operation_key)
+           SELECT $1,$2,x.resource_ordinal,x.resource_kind,x.resource_identity_digest,
+                  x.resource_reference,x.resource_version_reference,x.resource_content_digest,x.operation_key
+           FROM jsonb_to_recordset($3::jsonb) AS x(
+             resource_ordinal integer,resource_kind text,resource_identity_digest text,
+             resource_reference text,resource_version_reference text,resource_content_digest text,operation_key text
+           )
+           ORDER BY x.resource_ordinal`,
+          [input.tenantId, manifestId, JSON.stringify(batch)],
         );
       }
 
-      const targetResult = await client.query<TargetRow>(
-        `SELECT * FROM saas_tenant_external_data_targets
-         WHERE tenant_id=$1 AND required=true AND status='ACTIVE'
-         ORDER BY store_kind,target_id FOR SHARE`,
-        [tenantId],
+      const sealed = await client.query<{ id: string }>(
+        `UPDATE saas_tenant_external_propagation_manifests SET state='SEALED'
+         WHERE tenant_id=$1 AND id=$2 AND state='STAGING' RETURNING id::text AS id`,
+        [input.tenantId, manifestId],
       );
-      const currentTargets = targetResult.rows.map((row) => this.mapTarget(row))
-        .filter((candidate) => candidate.categories.some((category) => categories.includes(category)));
-      this.assertTargetCoverage(categories, currentTargets);
+      if (!sealed.rows[0]) throw new ServiceUnavailableException('Resource manifest could not be durably sealed');
 
-      const runResult = await client.query<PropagationRunRow>(
-        `SELECT * FROM saas_tenant_external_propagation_runs
-         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 FOR UPDATE`,
-        [tenantId, requestId, runId],
+      if (resourceRows.length > 0) {
+        await this.insertResourceEventsWithClient(client, {
+          tenantId: input.tenantId, manifestId, expectedResourceCount: resourceRows.length,
+          outcomeCode: 'PREPARED', providerReceiptReference: null, verificationReference: null,
+          verifiedManifestDigest: null, residualCount: '0', failureCode: null, residualReason: null,
+        });
+      }
+
+      const runUpdated = await client.query<{ run_id: string }>(
+        `UPDATE saas_tenant_external_propagation_runs SET external_manifest=$4::jsonb
+         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 AND status='RUNNING'
+         RETURNING run_id::text AS run_id`,
+        [input.tenantId, input.requestId, input.runId, JSON.stringify(externalManifest)],
       );
-      const currentRun = runResult.rows[0];
-      if (!currentRun || currentRun.status !== 'RUNNING') {
-        throw new ConflictException('External propagation run is no longer RUNNING before provider deletion');
+      if (!runUpdated.rows[0]) {
+        throw new ConflictException('Propagation run stopped before its sealed resource manifest could be attached');
       }
-      const manifest = this.jsonObject(currentRun.external_manifest);
-      const persistedTargets = Array.isArray(manifest.targetIds) ? manifest.targetIds.map(String).sort() : [];
-      const currentTargetIds = currentTargets.map((candidate) => candidate.targetId).sort();
-      if (Number(currentRun.request_version) !== Number(currentRequest.version)
-        || currentRun.source_export_digest !== currentRequest.export_bundle_digest
-        || manifest.sourceExportDigest !== currentRequest.export_bundle_digest
-        || manifest.requestId !== requestId
-        || Number(manifest.requestVersion) !== Number(currentRequest.version)
-        || manifest.sourceManifestDigest !== this.hash(sourceManifest)
-        || JSON.stringify(this.parsePolicyVersions(manifest.policyVersions ?? {})) !== JSON.stringify(this.parsePolicyVersions(policyVersions))
-        || JSON.stringify(persistedTargets) !== JSON.stringify(currentTargetIds)) {
-        throw new ConflictException('External target inventory or exact approved manifest changed before provider deletion');
-      }
+    }, { tenantId: input.tenantId, userId: input.actorUserId,
+      advisoryLockKey: 'saas-resource-manifest:' + input.tenantId + ':' + input.runId + ':' + input.target.targetId });
 
-      const liveTarget = currentTargets.find((candidate) => candidate.targetId === target.targetId);
-      if (!liveTarget
-        || liveTarget.storeKind !== target.storeKind
-        || liveTarget.adapterKey !== target.adapterKey
-        || liveTarget.configReference !== target.configReference
-        || liveTarget.required !== target.required
-        || JSON.stringify([...liveTarget.categories].sort()) !== JSON.stringify([...target.categories].sort())) {
-        throw new ConflictException('The external target registration changed or is no longer active before provider deletion');
-      }
-
-      const plans = this.jsonObject(manifest.plans ?? {});
-      const persistedPlan = this.jsonObject(plans[target.targetId] ?? {});
-      if (persistedPlan.manifestDigest !== plan.manifestDigest
-        || String(persistedPlan.plannedCopies ?? '') !== String(plan.plannedCopies)
-        || persistedPlan.planReference !== plan.planReference
-        || persistedPlan.storeKind !== target.storeKind
-        || persistedPlan.adapterKey !== target.adapterKey
-        || persistedPlan.configReference !== target.configReference) {
-        throw new ConflictException('The exact prepared external deletion plan changed before provider deletion');
-      }
-    }, {
-      tenantId,
-      userId: actorUserId,
-      advisoryLockKey: 'saas-external-predelete:' + tenantId + ':' + requestId + ':' + runId + ':' + target.targetId,
-    });
+    return { manifestId, externalManifest };
   }
 
-  private async persistRunManifest(tenantId: string, actorUserId: string, requestId: string, runId: string, manifest: Record<string, unknown>) {
+  private async appendResourceEvents(input: {
+    tenantId: string;
+    actorUserId: string;
+    manifestId: string;
+    expectedResourceCount: number;
+    outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE';
+    providerReceiptReference: string | null;
+    verificationReference: string | null;
+    verifiedManifestDigest: string | null;
+    residualCount: string;
+    failureCode: string | null;
+    residualReason: string | null;
+  }) {
     await this.database.transaction(async (client) => {
-      await this.lockTenant(client, tenantId);
-      await client.query(
-        `UPDATE saas_tenant_external_propagation_runs SET external_manifest=$4::jsonb
-         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 AND status='RUNNING'`,
-        [tenantId, requestId, runId, JSON.stringify(manifest)],
-      );
-    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-plan:' + tenantId + ':' + requestId + ':' + runId });
+      await this.lockTenant(client, input.tenantId);
+      await this.insertResourceEventsWithClient(client, input);
+    }, { tenantId: input.tenantId, userId: input.actorUserId,
+      advisoryLockKey: 'saas-resource-events:' + input.tenantId + ':' + input.manifestId });
+  }
+
+  private async insertResourceEventsWithClient(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      manifestId: string;
+      expectedResourceCount: number;
+      outcomeCode: 'PREPARED' | 'DELETE_REQUESTED' | 'DELETED' | 'VERIFIED' | 'FAILED_RETRYABLE';
+      providerReceiptReference: string | null;
+      verificationReference: string | null;
+      verifiedManifestDigest: string | null;
+      residualCount: string;
+      failureCode: string | null;
+      residualReason: string | null;
+    },
+  ) {
+    const result = await client.query<{ inserted_count: string | number }>(
+      `WITH latest AS (
+         SELECT DISTINCT ON (e.resource_id) e.resource_id,e.attempt_no,e.event_no,e.outcome_code
+         FROM saas_tenant_external_propagation_resource_events e
+         WHERE e.tenant_id=$1 AND e.manifest_id=$2
+         ORDER BY e.resource_id,e.attempt_no DESC,e.event_no DESC
+       ), inserted AS (
+         INSERT INTO saas_tenant_external_propagation_resource_events
+           (tenant_id,manifest_id,resource_id,resource_identity_digest,manifest_digest,
+            attempt_no,event_no,outcome_code,provider_receipt_reference,verification_reference,
+            verified_manifest_digest,residual_count,failure_code,residual_reason)
+         SELECT i.tenant_id,i.manifest_id,i.id,i.resource_identity_digest,m.manifest_digest,
+           CASE WHEN latest.resource_id IS NULL THEN 1
+                WHEN $3='PREPARED' AND latest.outcome_code='FAILED_RETRYABLE' THEN latest.attempt_no+1
+                ELSE latest.attempt_no END,
+           CASE WHEN latest.resource_id IS NULL
+                  OR ($3='PREPARED' AND latest.outcome_code='FAILED_RETRYABLE') THEN 1
+                ELSE latest.event_no+1 END,
+           $3,$4,$5,$6,$7,$8,$9
+         FROM saas_tenant_external_propagation_manifest_items i
+         JOIN saas_tenant_external_propagation_manifests m
+           ON m.tenant_id=i.tenant_id AND m.id=i.manifest_id AND m.state='SEALED'
+         LEFT JOIN latest ON latest.resource_id=i.id
+         WHERE i.tenant_id=$1 AND i.manifest_id=$2
+         ORDER BY i.resource_ordinal
+         RETURNING id
+       )
+       SELECT count(*)::integer AS inserted_count FROM inserted`,
+      [input.tenantId, input.manifestId, input.outcomeCode, input.providerReceiptReference,
+        input.verificationReference, input.verifiedManifestDigest, input.residualCount,
+        input.failureCode, input.residualReason],
+    );
+    const insertedCount = Number(result.rows[0]?.inserted_count ?? 0);
+    if (insertedCount !== input.expectedResourceCount) {
+      throw new ServiceUnavailableException('Per-resource erasure event was not appended for every manifest identity');
+    }
   }
 
   private async insertReceipt(input: {
@@ -1147,9 +1283,15 @@ export class SaasTenantPropagationService {
     plannedCopies: string; deletedCopies: string; residualCopies: string; manifestDigest: string;
     verifiedManifestDigest: string | null; verificationReference: string | null; providerReceiptReference: string | null;
     residualManifest: string[]; status: 'VERIFIED' | 'RESIDUALS' | 'FAILED'; failureCode: string | null;
-    outcomeCode: SaasExternalPropagationOutcome; manifestKind: SaasExternalManifestKind;
-    resourceClass: string; adapterVersion: string | null; maxPageSize: number | null; maxBatchSize: number | null;
-    policyVersions: Record<string, number>; residualReason: string | null;
+    plan?: SaasExternalPropagationPlan;
+    retentionPolicyVersions: Record<string, number>;
+    outcomeCode?: SaasExternalPropagationOutcome;
+    manifestKind?: SaasExternalManifestKind;
+    resourceClass?: string;
+    adapterVersion?: string | null;
+    maxPageSize?: number | null;
+    maxBatchSize?: number | null;
+    residualReason?: string | null;
   }) {
     await this.database.transaction(async (client) => {
       await this.lockTenant(client, input.tenantId);
@@ -1169,8 +1311,16 @@ export class SaasTenantPropagationService {
           Number(attempt.rows[0]?.attempt_no ?? 1), input.status, input.plannedCopies, input.deletedCopies,
           input.residualCopies, input.manifestDigest, input.verifiedManifestDigest, input.verificationReference,
           JSON.stringify(input.residualManifest), input.failureCode, input.providerReceiptReference,
-          input.outcomeCode, input.manifestKind, input.resourceClass, input.adapterVersion,
-          input.maxPageSize, input.maxBatchSize, JSON.stringify(input.policyVersions), input.residualReason, new Date()],
+          input.outcomeCode ?? (input.status === 'VERIFIED' ? 'COMPLETED' : 'FAILED_RETRYABLE'),
+          input.manifestKind ?? (input.status === 'VERIFIED' || input.plan ? 'RESOURCE_IDENTITIES' : 'SCOPE_INTENT'),
+          input.resourceClass ?? input.plan?.resourceClass ?? input.target.storeKind,
+          input.adapterVersion !== undefined ? input.adapterVersion : input.plan?.adapterVersion ?? null,
+          input.maxPageSize !== undefined ? input.maxPageSize : input.plan?.maxPageSize ?? null,
+          input.maxBatchSize !== undefined ? input.maxBatchSize : input.plan?.maxBatchSize ?? null,
+          JSON.stringify(input.retentionPolicyVersions),
+          input.residualReason !== undefined ? input.residualReason :
+            (input.status === 'VERIFIED' ? null : 'External provider outcome requires reconciliation before completion.'),
+          new Date()],
       );
     }, { tenantId: input.tenantId, userId: input.actorUserId,
       advisoryLockKey: 'saas-external-receipt:' + input.tenantId + ':' + input.runId + ':' + input.target.targetId });
@@ -1199,12 +1349,335 @@ export class SaasTenantPropagationService {
     return { tenantId: row.tenant_id, targetId: row.target_id, storeKind: row.store_kind, adapterKey: row.adapter_key,
       configReference: row.config_reference, categories: this.parseCategories(row.categories), required: row.required };
   }
-  private assertTargetCoverage(categories: SaasTransferDatasetCategory[], targets: SaasTenantExternalDataTarget[]) {
-    if (!targets.length) throw new ConflictException('No reviewed external propagation targets are configured; PostgreSQL-only evidence cannot complete erasure');
-    for (const kind of REQUIRED_EXTERNAL_STORE_KINDS) for (const category of categories) {
-      if (!targets.some((target) => target.storeKind === kind && target.categories.includes(category))) {
-        throw new ConflictException('External propagation is missing an active, reviewed ' + kind + ' target for category ' + category);
+  private async assertTargetCoverage(
+    categories: SaasTransferDatasetCategory[],
+    targets: SaasTenantExternalDataTarget[],
+    decisions: CopyCoverageRow[],
+  ): Promise<void> {
+    const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.store_kind, decision]));
+    for (const category of categories) for (const kind of EXTERNAL_COPY_COVERAGE_STORE_KINDS) {
+      const decision = latest.get(category + ':' + kind);
+      const evidenceAge = decision ? Date.now() - new Date(decision.evidence_at).getTime() : Number.POSITIVE_INFINITY;
+      if (!decision || decision.status !== 'ACCEPTED' || !decision.reviewed_by_user_id
+        || decision.reviewed_by_user_id === decision.submitted_by_user_id || !decision.valid_until
+        || new Date(decision.valid_until).getTime() <= Date.now()
+        || evidenceAge < -5 * 60 * 1000 || evidenceAge > 30 * 24 * 60 * 60 * 1000
+        || !HEX_DIGEST.test(decision.evidence_sha256) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(decision.evidence_reference)
+        || !SAFE_REFERENCE.test(decision.data_owner_reference) || !SAFE_REFERENCE.test(decision.infrastructure_owner_reference)
+        || !SAFE_REFERENCE.test(decision.policy_reference)
+        || !decision.attestation_key_id || !decision.attestation_owner_reference || !decision.attestation_signature) {
+        throw new ConflictException('External propagation requires current independently reviewed signed copy-class coverage for ' + category + '/' + kind);
       }
+      const attestation: ExternalCopyCoverageEvidenceAttestationPayload = {
+        attestationKeyId: decision.attestation_key_id,
+        attestationOwnerReference: decision.attestation_owner_reference,
+        tenantId: decision.tenant_id,
+        categoryCode: decision.category_code,
+        storeKind: decision.store_kind,
+        disposition: decision.disposition,
+        evidenceReference: decision.evidence_reference,
+        evidenceSha256: decision.evidence_sha256,
+        evidenceAt: new Date(decision.evidence_at).toISOString(),
+        dataOwnerReference: decision.data_owner_reference,
+        infrastructureOwnerReference: decision.infrastructure_owner_reference,
+        policyReference: decision.policy_reference,
+        reason: decision.reason,
+      };
+      try {
+        // The deployment trust store is read on each preflight, resume and provider checkpoint.
+        verifyExternalCopyCoverageEvidenceAttestation(attestation, decision.attestation_signature);
+      } catch (error) {
+        if (error instanceof ServiceUnavailableException) throw error;
+        throw new ConflictException('External copy-coverage evidence attestation is invalid or its signer is no longer trusted for '
+          + category + '/' + kind);
+      }
+      // Re-read the exact evidence bytes at preflight, recovery and provider checkpoints.
+      if (kind === UNCLASSIFIED_EXTERNAL_STORE_KIND) {
+        if (decision.disposition !== 'NOT_APPLICABLE') {
+          throw new ConflictException('An unclassified external store type was discovered or remains unresolved; classify it and submit a new signed coverage revision before propagation: ' + category);
+        }
+        const inventoryArtifact = await this.backupEvidenceArtifactReader.readVerifiedArtifact(
+          decision.evidence_reference, decision.evidence_sha256,
+        );
+        try {
+          validateExternalStoreInventoryManifest(inventoryArtifact.bytes, decision.tenant_id, category);
+        } catch (error) {
+          if (error instanceof ServiceUnavailableException) throw error;
+          throw new ConflictException('UNCLASSIFIED_EXTERNAL_STORE coverage lacks a complete, current, scope-bound external inventory manifest for ' + category);
+        }
+        // The catch-all is governance evidence only and never an executable adapter.
+        continue;
+      }
+      await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+      if (decision.disposition === 'UNRESOLVED') {
+        throw new ConflictException('Unresolved external copy class blocks whole-tenant erasure: ' + category + '/' + kind);
+      }
+      const matching = targets.filter((target) => target.storeKind === kind && target.categories.includes(category));
+      if (decision.disposition === 'SUPPORTED' && matching.length === 0) {
+        throw new ConflictException('Copy class is marked supported but has no active required target: ' + category + '/' + kind);
+      }
+      if (decision.disposition === 'NOT_APPLICABLE' && matching.length > 0) {
+        throw new ConflictException('Copy class is marked not applicable while a required target is configured: ' + category + '/' + kind);
+      }
+    }
+  }
+
+  private copyCoverageManifest(decisions: CopyCoverageRow[]): Array<Record<string, unknown>> {
+    return decisions.map((d) => ({
+      decisionId: d.decision_id, categoryCode: d.category_code, storeKind: d.store_kind,
+      revision: String(d.revision), disposition: d.disposition, status: d.status,
+      evidenceReference: d.evidence_reference, evidenceSha256: d.evidence_sha256,
+      evidenceAt: new Date(d.evidence_at).toISOString(), attestationKeyId: d.attestation_key_id,
+      attestationOwnerReference: d.attestation_owner_reference, attestationSignature: d.attestation_signature,
+      dataOwnerReference: d.data_owner_reference, infrastructureOwnerReference: d.infrastructure_owner_reference,
+      policyReference: d.policy_reference, reason: d.reason,
+      submittedByUserId: d.submitted_by_user_id, reviewedByUserId: d.reviewed_by_user_id,
+      validUntil: d.valid_until ? new Date(d.valid_until).toISOString() : null,
+    })).sort((a, b) => {
+      const left = String(a.categoryCode) + ':' + String(a.storeKind);
+      const right = String(b.categoryCode) + ':' + String(b.storeKind);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  }
+
+  private targetBindingManifest(targets: SaasTenantExternalDataTarget[], categories: SaasTransferDatasetCategory[]) {
+    return targets.map((t) => ({
+      targetId: t.targetId, storeKind: t.storeKind, adapterKey: t.adapterKey, configReference: t.configReference,
+      required: t.required, categories: t.categories.filter((c) => categories.includes(c)).sort(),
+    })).sort((a, b) => a.targetId < b.targetId ? -1 : a.targetId > b.targetId ? 1 : 0);
+  }
+
+  private async assertBackupCopyClassCoverage(
+    categories: SaasTransferDatasetCategory[],
+    targets: SaasTenantExternalDataTarget[],
+    decisions: BackupCopyClassCoverageRow[],
+  ): Promise<void> {
+    const latest = new Map(decisions.map((decision) => [decision.category_code + ':' + decision.copy_class_code, decision]));
+    for (const category of categories) {
+      for (const copyClass of REQUIRED_BACKUP_COPY_CLASSES) {
+        const decision = latest.get(category + ':' + copyClass);
+        const evidenceAge = decision ? Date.now() - new Date(decision.evidence_at).getTime() : Number.POSITIVE_INFINITY;
+        if (!decision || decision.status !== 'ACCEPTED' || !decision.reviewed_by_user_id
+          || decision.reviewed_by_user_id === decision.submitted_by_user_id || !decision.valid_until
+          || new Date(decision.valid_until).getTime() <= Date.now()
+          || evidenceAge < -5 * 60 * 1000 || evidenceAge > 30 * 24 * 60 * 60 * 1000
+          || !HEX_DIGEST.test(decision.evidence_sha256)
+          || !SAFE_REFERENCE.test(decision.evidence_reference)
+          || !SAFE_REFERENCE.test(decision.data_owner_reference)
+          || !SAFE_REFERENCE.test(decision.infrastructure_owner_reference)
+          || !SAFE_REFERENCE.test(decision.policy_reference)
+          || !decision.attestation_key_id || !decision.attestation_owner_reference || !decision.attestation_signature) {
+          throw new ConflictException('Backup propagation requires current independently reviewed evidence for ' + category + '/' + copyClass);
+        }
+        const attestation: BackupCopyClassEvidenceAttestationPayload = {
+          attestationKeyId: decision.attestation_key_id,
+          attestationOwnerReference: decision.attestation_owner_reference,
+          tenantId: decision.tenant_id,
+          categoryCode: decision.category_code,
+          copyClassCode: decision.copy_class_code,
+          disposition: decision.disposition,
+          evidenceReference: decision.evidence_reference,
+          evidenceSha256: decision.evidence_sha256,
+          evidenceAt: new Date(decision.evidence_at).toISOString(),
+          dataOwnerReference: decision.data_owner_reference,
+          infrastructureOwnerReference: decision.infrastructure_owner_reference,
+          policyReference: decision.policy_reference,
+          reason: decision.reason,
+        };
+        try {
+          // Recheck the deployment trust store on every run/resume/provider checkpoint.
+          // Removing or rotating a compromised key invalidates the old accepted evidence.
+          verifyBackupCopyClassEvidenceAttestation(attestation, decision.attestation_signature);
+        } catch (error) {
+          if (error instanceof ServiceUnavailableException) throw error;
+          throw new ConflictException('Backup copy-class evidence attestation is invalid or its signer is no longer trusted for '
+            + category + '/' + copyClass);
+        }
+        // Re-read source bytes at every preflight/resume/provider checkpoint. A once-valid
+        // reference cannot silently disappear or be replaced by a different evidence pack.
+        if (copyClass === 'POSTGRESQL_WAL_PITR') {
+          const artifact = await this.backupEvidenceArtifactReader.readVerifiedArtifact(
+            decision.evidence_reference, decision.evidence_sha256,
+          );
+          try {
+            validatePostgresqlWalPitrInventoryManifest(
+              artifact.bytes, decision.tenant_id, category, decision.disposition,
+            );
+          } catch {
+            throw new ConflictException('PostgreSQL WAL/PITR coverage lacks a complete, current, scope-reconciled inventory manifest for '
+              + category);
+          }
+        } else {
+          await this.backupEvidenceArtifactReader.verifyArtifact(decision.evidence_reference, decision.evidence_sha256);
+        }
+        if (decision.disposition === 'UNRESOLVED') {
+          throw new ConflictException('Unresolved backup copy class blocks whole-tenant erasure: ' + category + '/' + copyClass);
+        }
+        if (copyClass === 'S3_OBJECT_VERSIONS') {
+          const s3Targets = targets.filter((target) => target.storeKind === 'BACKUP'
+            && target.categories.includes(category)
+            && target.adapterKey === S3_BACKUP_COPY_CLASS_ADAPTER_KEY);
+          if (decision.disposition !== 'SUPPORTED' || s3Targets.length === 0) {
+            throw new ConflictException('S3 object-version coverage must bind the active S3 tenant-backup adapter for ' + category);
+          }
+        } else if (decision.disposition === 'SUPPORTED') {
+          throw new ConflictException('No reviewed erasure adapter is registered for backup copy class ' + copyClass
+            + '; keep it unresolved or prove it is not applicable until a class-specific adapter is accepted');
+        }
+      }
+    }
+  }
+
+  private backupCopyClassCoverageManifest(decisions: BackupCopyClassCoverageRow[]): Array<Record<string, unknown>> {
+    return decisions.map((decision) => ({
+      decisionId: decision.decision_id,
+      categoryCode: decision.category_code,
+      copyClassCode: decision.copy_class_code,
+      revision: String(decision.revision),
+      disposition: decision.disposition,
+      status: decision.status,
+      evidenceReference: decision.evidence_reference,
+      evidenceSha256: decision.evidence_sha256,
+      evidenceAt: new Date(decision.evidence_at).toISOString(),
+      attestationKeyId: decision.attestation_key_id,
+      attestationOwnerReference: decision.attestation_owner_reference,
+      attestationSignatureSha256: createHash('sha256').update(decision.attestation_signature, 'utf8').digest('hex'),
+      dataOwnerReference: decision.data_owner_reference,
+      infrastructureOwnerReference: decision.infrastructure_owner_reference,
+      policyReference: decision.policy_reference,
+      submittedByUserId: decision.submitted_by_user_id,
+      reviewedByUserId: decision.reviewed_by_user_id,
+      validUntil: decision.valid_until ? new Date(decision.valid_until).toISOString() : null,
+    })).sort((left, right) => {
+      const a = String(left.categoryCode) + ':' + String(left.copyClassCode);
+      const b = String(right.categoryCode) + ':' + String(right.copyClassCode);
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  }
+
+  private parseRetentionPolicyVersions(value: unknown): Record<string, number> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ConflictException('Persisted retention-policy version map is malformed');
+    }
+    const result: Record<string, number> = {};
+    for (const [category, rawVersion] of Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+      const version = Number(rawVersion);
+      if (!Object.values(SaasTransferDatasetCategory).includes(category as SaasTransferDatasetCategory)
+        || !Number.isSafeInteger(version) || version < 1) {
+        throw new ConflictException('Persisted retention-policy version map contains an invalid category or version');
+      }
+      result[category] = version;
+    }
+    return result;
+  }
+
+  private async readRetentionPolicySnapshot(
+    client: PoolClient,
+    tenantId: string,
+    categories: SaasTransferDatasetCategory[],
+  ): Promise<{ policyVersions: Record<string, number>; blockedCategories: SaasTransferDatasetCategory[] }> {
+    const result = await client.query<{
+      category_code: string;
+      version: string | number;
+      disposition: string;
+    }>(
+      `SELECT DISTINCT ON (category_code) category_code, version, disposition
+       FROM saas_tenant_data_retention_policies
+       WHERE tenant_id=$1 AND category_code=ANY($2::varchar[])
+       ORDER BY category_code,version DESC`,
+      [tenantId, categories],
+    );
+    const byCategory = new Map(result.rows.map((row) => [row.category_code, row]));
+    const policyVersions: Record<string, number> = {};
+    const blockedCategories: SaasTransferDatasetCategory[] = [];
+    for (const category of [...categories].sort()) {
+      const policy = byCategory.get(category);
+      if (!policy || policy.disposition !== 'DELETE') blockedCategories.push(category);
+      if (policy) {
+        const version = Number(policy.version);
+        if (!Number.isSafeInteger(version) || version < 1) {
+          throw new ConflictException('A requested retention policy has an invalid version');
+        }
+        policyVersions[category] = version;
+      }
+    }
+    return { policyVersions, blockedCategories };
+  }
+
+  private async readRetentionPolicyVersions(
+    client: PoolClient,
+    tenantId: string,
+    categories: SaasTransferDatasetCategory[],
+  ): Promise<Record<string, number>> {
+    const result = await client.query<{
+      category_code: string;
+      version: string | number;
+      disposition: string;
+    }>(
+      `SELECT DISTINCT ON (category_code) category_code, version, disposition
+       FROM saas_tenant_data_retention_policies
+       WHERE tenant_id=$1 AND category_code=ANY($2::varchar[])
+       ORDER BY category_code,version DESC`,
+      [tenantId, categories],
+    );
+    const byCategory = new Map(result.rows.map((row) => [row.category_code, row]));
+    const versions: Record<string, number> = {};
+    for (const category of [...categories].sort()) {
+      const policy = byCategory.get(category);
+      const version = Number(policy?.version);
+      if (!policy || policy.disposition !== 'DELETE' || !Number.isSafeInteger(version) || version < 1) {
+        throw new ConflictException('The current DELETE retention policy is missing or does not authorize external erasure for ' + category);
+      }
+      versions[category] = version;
+    }
+    return versions;
+  }
+
+  private async assertCurrentCopyCoverage(tenantId: string, actorUserId: string,
+    categories: SaasTransferDatasetCategory[], expectedTargets: SaasTenantExternalDataTarget[],
+    expectedCoverageDigest: string, expectedBackupCopyClassCoverageDigest: string,
+    expectedRetentionPolicyVersions: Record<string, number>) {
+    const current = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const currentRetentionPolicyVersions = await this.readRetentionPolicyVersions(client, tenantId, categories);
+      if (JSON.stringify(currentRetentionPolicyVersions) !== JSON.stringify(this.parseRetentionPolicyVersions(expectedRetentionPolicyVersions))) {
+        throw new ConflictException('Retention policy changed during external propagation; provider mutation is blocked');
+      }
+      const activeLegalHolds = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
+        "SELECT categories FROM saas_tenant_data_legal_holds WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE",
+        [tenantId],
+      );
+      if (activeLegalHolds.rows.some((hold) =>
+        categories.some((category) => this.parseCategories(hold.categories).includes(category)))) {
+        throw new ConflictException('An active legal hold blocks external provider mutation');
+      }
+      const targetResult = await client.query<TargetRow>(
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 ORDER BY store_kind,target_id',
+        [tenantId],
+      );
+      const relevant = targetResult.rows.filter((row) => this.parseCategories(row.categories).some((c) => categories.includes(c)));
+      if (relevant.some((row) => row.status !== 'ACTIVE' || row.required !== true)) throw new ConflictException('A required external target changed state during propagation');
+      const targets = relevant.map((row) => this.mapTarget(row));
+      const result = await client.query<CopyCoverageRow>(
+        'SELECT DISTINCT ON (category_code,store_kind) * FROM public.saas_tenant_external_copy_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,store_kind,revision DESC',
+        [tenantId, categories],
+      );
+      await this.assertTargetCoverage(categories, targets, result.rows);
+      const backupCopyClasses = await client.query<BackupCopyClassCoverageRow>(
+        'SELECT DISTINCT ON (category_code,copy_class_code) * FROM public.saas_tenant_backup_copy_class_coverage_decisions WHERE tenant_id=$1 AND category_code=ANY($2::text[]) ORDER BY category_code,copy_class_code,revision DESC',
+        [tenantId, categories],
+      );
+      await this.assertBackupCopyClassCoverage(categories, targets, backupCopyClasses.rows);
+      return {
+        coverageDigest: this.hash(this.copyCoverageManifest(result.rows)),
+        backupCopyClassCoverageDigest: this.hash(this.backupCopyClassCoverageManifest(backupCopyClasses.rows)),
+        targetsDigest: this.hash(this.targetBindingManifest(targets, categories)),
+      };
+    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-copy-class-coverage-check:' + tenantId });
+    if (current.coverageDigest !== expectedCoverageDigest
+      || current.backupCopyClassCoverageDigest !== expectedBackupCopyClassCoverageDigest
+      || current.targetsDigest !== this.hash(this.targetBindingManifest(expectedTargets, categories))) {
+      throw new ConflictException('Copy-class coverage or required target inventory changed during propagation; provider mutation is blocked');
     }
   }
   private adapterFor(target: SaasTenantExternalDataTarget) {
@@ -1217,96 +1690,215 @@ export class SaasTenantPropagationService {
     return {
       tenantId: request.tenant_id, requestId: request.request_id, requestVersion: Number(request.version), runId: run.run_id,
       categories: this.parseCategories(request.categories),
-      policyVersions: this.parsePolicyVersions(externalManifest.policyVersions ?? {}),
+      retentionPolicyVersions: this.parseRetentionPolicyVersions(
+        externalManifest.retentionPolicyVersions ?? externalManifest.policyVersions ?? {},
+      ),
       sourceExportDigest: request.export_bundle_digest,
       sourceManifest: this.jsonObject(externalManifest.sourceManifest ?? {}),
       idempotencyKey: idempotencyKey + ':' + target.targetId, target,
     };
   }
-  private executionContext(
-    context: SaasExternalPropagationContext,
-    preflight: SaasExternalPropagationPreflight,
-  ): SaasExternalPropagationExecutionContext {
+  private validatePlan(
+    plan: SaasExternalPropagationPlan,
+    adapter?: SaasTenantExternalDataPropagationAdapter,
+  ) {
+    if (!plan || typeof plan !== 'object' || !HEX_DIGEST.test(plan.manifestDigest)) {
+      throw new ConflictException('Adapter plan must include a SHA-256 resource identity manifest digest');
+    }
+    this.count(plan.plannedCopies, 'plannedCopies');
+    this.reference(plan.planReference, 'planReference');
+    if (typeof plan.adapterVersion !== 'string'
+      || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(plan.adapterVersion)) {
+      throw new ConflictException('Adapter plan must pin a semantic adapter version');
+    }
+    if (adapter && (typeof adapter.adapterVersion !== 'string'
+      || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(adapter.adapterVersion)
+      || plan.adapterVersion !== adapter.adapterVersion)) {
+      throw new ConflictException('Sealed resource manifest adapter version differs from the running adapter implementation');
+    }
+    if (typeof plan.resourceClass !== 'string'
+      || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(plan.resourceClass)) {
+      throw new ConflictException('Adapter plan resourceClass has an invalid format');
+    }
+    if (!Number.isSafeInteger(plan.maxPageSize) || plan.maxPageSize < 1 || plan.maxPageSize > 5000
+      || !Number.isSafeInteger(plan.maxBatchSize) || plan.maxBatchSize < 1 || plan.maxBatchSize > 1000) {
+      throw new ConflictException('Adapter plan enumeration and database batch limits exceed the supported bounds');
+    }
+    if (!plan.policyVersions || typeof plan.policyVersions !== 'object' || Array.isArray(plan.policyVersions)
+      || Buffer.byteLength(JSON.stringify(plan.policyVersions), 'utf8') > 16384) {
+      throw new ConflictException('Adapter plan policyVersions must be a bounded object');
+    }
+    for (const [key, value] of Object.entries(plan.policyVersions)) {
+      if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(key) || typeof value !== 'string'
+        || value.length < 1 || value.length > 100
+        || /(secret|password|credential|access[-_]?key|token)/i.test(key + ':' + value)) {
+        throw new ConflictException('Adapter plan policyVersions may contain only bounded non-secret labels');
+      }
+    }
+    if (!Array.isArray(plan.resources) || plan.resources.length > 100000) {
+      throw new ConflictException('Adapter plan resources must contain at most 100,000 identities per target');
+    }
+    if (BigInt(this.count(plan.plannedCopies, 'plannedCopies')) !== BigInt(plan.resources.length)) {
+      throw new ConflictException('Adapter plannedCopies must exactly equal the enumerable resource identity count');
+    }
+    const seenIdentityDigests = new Set<string>();
+    for (const resource of plan.resources) {
+      if (!resource || typeof resource !== 'object'
+        || typeof resource.resourceKind !== 'string'
+        || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(resource.resourceKind)) {
+        throw new ConflictException('Adapter resource identity has an invalid resourceKind');
+      }
+      this.resourceReference(resource.resourceReference, 'resourceReference', 500);
+      if (resource.resourceVersionReference !== undefined && resource.resourceVersionReference !== null) {
+        this.resourceReference(resource.resourceVersionReference, 'resourceVersionReference', 200);
+      }
+      if (resource.resourceContentDigest !== undefined && resource.resourceContentDigest !== null
+        && !HEX_DIGEST.test(resource.resourceContentDigest)) {
+        throw new ConflictException('Adapter resourceContentDigest must be a SHA-256 hex digest');
+      }
+      const identityDigest = this.hash({
+        resourceKind: resource.resourceKind,
+        resourceReference: resource.resourceReference,
+        resourceVersionReference: resource.resourceVersionReference ?? null,
+        resourceContentDigest: resource.resourceContentDigest ?? null,
+      });
+      if (seenIdentityDigests.has(identityDigest)) {
+        throw new ConflictException('Adapter resource manifest contains duplicate provider identities');
+      }
+      seenIdentityDigests.add(identityDigest);
+    }
+    if (Buffer.byteLength(JSON.stringify(plan.resources), 'utf8') > 32 * 1024 * 1024) {
+      throw new ConflictException('Adapter plan resource identities must not exceed 32 MiB');
+    }
+    if (digestSaasExternalPropagationResources(plan.resources) !== plan.manifestDigest) {
+      throw new ConflictException('Adapter manifest digest does not match the canonical resource identity set');
+    }
+  }
+
+  private async loadPlanFromManifest(input: {
+    tenantId: string;
+    actorUserId: string;
+    requestId: string;
+    runId: string;
+    sourceExportDigest: string;
+    target: SaasTenantExternalDataTarget;
+    adapter: SaasTenantExternalDataPropagationAdapter;
+    planEntry: unknown;
+  }): Promise<{
+    plan: SaasExternalPropagationPlan;
+    manifestId: string;
+    latestOutcome: string | null;
+    providerReceiptReference: string | null;
+  }> {
+    const entry = this.jsonObject(input.planEntry);
+    const manifestId = this.uuid(entry.resourceManifestId, 'resourceManifestId');
+    const planReference = this.reference(entry.planReference, 'planReference');
+    const result = await this.database.query<QueryResultRow & {
+      manifest_id: string; manifest_digest: string; resource_count: string | number;
+      source_export_digest: string; store_kind: string; adapter_key: string; adapter_version: string;
+      resource_class: string; max_page_size: number; max_batch_size: number;
+      policy_versions: Record<string, unknown> | string;
+      resource_id: string | null; resource_kind: string | null; resource_reference: string | null;
+      resource_version_reference: string | null; resource_content_digest: string | null;
+      latest_outcome: string | null;
+      provider_receipt_reference: string | null;
+    }>(
+      `SELECT m.id::text AS manifest_id,m.manifest_digest,m.resource_count,m.source_export_digest,
+              m.store_kind,m.adapter_key,m.adapter_version,m.resource_class,m.max_page_size,m.max_batch_size,
+              m.policy_versions,
+              i.id::text AS resource_id,i.resource_kind,i.resource_reference,i.resource_version_reference,
+              i.resource_content_digest,latest.outcome_code AS latest_outcome,latest.provider_receipt_reference
+       FROM saas_tenant_external_propagation_manifests m
+       LEFT JOIN saas_tenant_external_propagation_manifest_items i
+         ON i.tenant_id=m.tenant_id AND i.manifest_id=m.id
+       LEFT JOIN LATERAL (
+         SELECT e.outcome_code,e.provider_receipt_reference
+         FROM saas_tenant_external_propagation_resource_events e
+         WHERE e.tenant_id=i.tenant_id AND e.manifest_id=i.manifest_id AND e.resource_id=i.id
+         ORDER BY e.attempt_no DESC,e.event_no DESC LIMIT 1
+       ) latest ON true
+       WHERE m.tenant_id=$1 AND m.id=$2::uuid AND m.request_id=$3::uuid
+         AND m.run_id=$4::uuid AND m.target_id=$5 AND m.state='SEALED'
+       ORDER BY i.resource_ordinal`,
+      [input.tenantId, manifestId, input.requestId, input.runId, input.target.targetId],
+      { tenantId: input.tenantId, userId: input.actorUserId },
+    );
+    if (!result.rows.length) throw new ConflictException('Persisted resource manifest is missing or is not SEALED');
+    const row = result.rows[0]!;
+    if (row.source_export_digest !== input.sourceExportDigest
+      || row.store_kind !== input.target.storeKind
+      || row.adapter_key !== input.target.adapterKey
+      || String(entry.storeKind) !== input.target.storeKind
+      || String(entry.adapterKey) !== input.target.adapterKey
+      || String(entry.configReference) !== input.target.configReference
+      || String(entry.manifestDigest) !== row.manifest_digest
+      || String(entry.plannedCopies) !== String(row.resource_count)
+      || String(entry.resourceManifestId) !== row.manifest_id) {
+      throw new ConflictException('Stored plan metadata does not bind to the approved target and exact source export');
+    }
+    const resources: SaasExternalPropagationResourceIdentity[] = result.rows
+      .filter((resource) => resource.resource_id !== null)
+      .map((resource) => ({
+        resourceKind: String(resource.resource_kind),
+        resourceReference: String(resource.resource_reference),
+        resourceVersionReference: resource.resource_version_reference === null
+          ? null : String(resource.resource_version_reference),
+        resourceContentDigest: resource.resource_content_digest === null
+          ? null : String(resource.resource_content_digest),
+      }));
+    const resourceEventStates = result.rows
+      .filter((resource) => resource.resource_id !== null)
+      .map((resource) => resource.latest_outcome);
+    const distinctStates = [...new Set(resourceEventStates)];
+    if (distinctStates.length > 1) {
+      throw new ConflictException('Per-resource ledger is inconsistent: items do not share one resumable state');
+    }
+    if (resourceEventStates.some((state) => state === null)) {
+      throw new ConflictException('Per-resource ledger is incomplete: one or more identities lack execution evidence');
+    }
+    const providerReceiptReferences = [...new Set(result.rows
+      .filter((resource) => resource.resource_id !== null && resource.provider_receipt_reference !== null)
+      .map((resource) => String(resource.provider_receipt_reference)))];
+    if (providerReceiptReferences.length > 1) {
+      throw new ConflictException('Per-resource ledger has conflicting provider receipt references');
+    }
+    const decodedPolicyVersions = this.jsonObject(row.policy_versions);
+    const policyVersions: Record<string, string> = {};
+    for (const [key, value] of Object.entries(decodedPolicyVersions)) {
+      if (typeof value !== 'string') {
+        throw new ConflictException('Stored policy version labels are malformed');
+      }
+      policyVersions[key] = value;
+    }
+    const plan: SaasExternalPropagationPlan = {
+      manifestDigest: row.manifest_digest,
+      plannedCopies: String(row.resource_count),
+      planReference,
+      adapterVersion: row.adapter_version,
+      resourceClass: row.resource_class,
+      maxPageSize: Number(row.max_page_size),
+      maxBatchSize: Number(row.max_batch_size),
+      policyVersions,
+      resources,
+    };
+    this.validatePlan(plan, input.adapter);
+    if (entry.adapterVersion !== undefined && String(entry.adapterVersion) !== plan.adapterVersion) {
+      throw new ConflictException('Stored adapter version does not match the sealed resource manifest');
+    }
     return {
-      ...context,
-      executionLimits: {
-        resourceClass: preflight.resourceClass,
-        adapterVersion: preflight.adapterVersion,
-        maxPageSize: preflight.maxPageSize,
-        maxBatchSize: preflight.maxBatchSize,
-      },
+      plan, manifestId,
+      latestOutcome: resourceEventStates[0] ?? null,
+      providerReceiptReference: providerReceiptReferences[0] ?? null,
     };
   }
 
-  private validateAdapterVersion(value: unknown): string {
-    if (typeof value !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(value)) {
-      throw new ConflictException('External adapter must declare an immutable semver-like version');
+  private resourceReference(value: unknown, field: string, maxLength: number) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > maxLength
+      || !SAFE_RESOURCE_REFERENCE.test(value) || value.includes('://')
+      || /(secret|password|credential|access[-_]?key|token)/i.test(value)) {
+      throw new ConflictException(field + ' must be an opaque, bounded, non-secret provider identity');
     }
     return value;
-  }
-  private validatePreflight(
-    value: SaasExternalPropagationPreflight,
-    adapter: SaasTenantExternalDataPropagationAdapter,
-  ): SaasExternalPropagationPreflight {
-    if (!value || typeof value !== 'object' || !['READY', 'BLOCKED', 'RETAINED'].includes(value.outcome)) {
-      throw new ConflictException('External adapter preflight returned an invalid outcome');
-    }
-    const adapterVersion = this.validateAdapterVersion(value.adapterVersion);
-    if (adapterVersion !== this.validateAdapterVersion(adapter.adapterVersion)) {
-      throw new ConflictException('External adapter preflight version differs from its registered implementation version');
-    }
-    if (typeof value.resourceClass !== 'string' || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(value.resourceClass)) {
-      throw new ConflictException('External adapter preflight must declare a bounded resource class');
-    }
-    if (!Number.isSafeInteger(value.maxPageSize) || value.maxPageSize < 1 || value.maxPageSize > 5000
-      || !Number.isSafeInteger(value.maxBatchSize) || value.maxBatchSize < 1 || value.maxBatchSize > 1000) {
-      throw new ConflictException('External adapter preflight page/batch limits exceed the supported bounds');
-    }
-    const result: SaasExternalPropagationPreflight = {
-      outcome: value.outcome, adapterVersion, resourceClass: value.resourceClass,
-      maxPageSize: value.maxPageSize, maxBatchSize: value.maxBatchSize,
-    };
-    if (value.outcome !== 'READY') {
-      result.reason = this.safeReason(value.reason, 'Adapter preflight returned ' + value.outcome.toLowerCase());
-    } else if (value.reason !== undefined) {
-      result.reason = this.safeReason(value.reason, 'Adapter preflight is ready');
-    }
-    return result;
-  }
-  private safeReason(value: unknown, fallback: string): string {
-    const reason = typeof value === 'string' ? value.trim() : fallback;
-    if (reason.length < 3 || reason.length > 1000 || reason.includes('://')
-      || /(?:secret|password|credential|access[-_]?key|bearer|token)/i.test(reason)) {
-      throw new ConflictException('External adapter reason must be bounded and must not contain URLs or credential-like data');
-    }
-    return reason;
-  }
-  private parsePolicyVersions(value: unknown): Record<string, number> {
-    const decoded = typeof value === 'string' ? (() => {
-      try { return JSON.parse(value) as unknown; } catch { throw new ConflictException('Stored policy-version manifest is malformed'); }
-    })() : value;
-    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
-      throw new ConflictException('Stored policy-version manifest must be an object');
-    }
-    const result: Record<string, number> = {};
-    for (const [category, rawVersion] of Object.entries(decoded as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) {
-      if (!CATEGORY_VALUES.includes(category as SaasTransferDatasetCategory)
-        || typeof rawVersion !== 'number' || !Number.isSafeInteger(rawVersion) || rawVersion < 1) {
-        throw new ConflictException('Stored policy-version manifest contains an invalid category version');
-      }
-      result[category] = rawVersion;
-    }
-    return result;
-  }
-  private validatePlan(plan: SaasExternalPropagationPlan) {
-    if (!plan || !HEX_DIGEST.test(plan.manifestDigest)) throw new ConflictException('Adapter plan must include a SHA-256 manifest digest');
-    this.count(plan.plannedCopies, 'plannedCopies'); this.reference(plan.planReference, 'planReference');
-  }
-  private decodePlan(value: unknown): SaasExternalPropagationPlan | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-    const row = value as Record<string, unknown>;
-    const plan = { manifestDigest: String(row.manifestDigest ?? ''), plannedCopies: String(row.plannedCopies ?? ''), planReference: String(row.planReference ?? '') };
-    try { this.validatePlan(plan); return plan; } catch { return undefined; }
   }
   private residualReferences(value: unknown): string[] {
     if (!Array.isArray(value) || value.length > 50) throw new ConflictException('Adapter residual manifest must be an array of at most 50 opaque references');

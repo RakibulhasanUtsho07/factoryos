@@ -19,6 +19,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
     },
     excludedCategoryHasRows = false,
     traceabilitySettingsRow?: Record<string, unknown>,
+    columnContractMatches = true,
   ) {
     const calls: Array<{ sql: string; values?: unknown[] }> = [];
     const client = {
@@ -26,6 +27,17 @@ describe('SaasTenantPostgresDatasetSource', () => {
         calls.push({ sql, values });
         if (sql.includes('tenant_export_category_has_excluded_rows')) {
           return { rows: [{ has_excluded_rows: excludedCategoryHasRows }], rowCount: 1 };
+        }
+        if (sql.includes('tenant_export_column_contracts')) {
+          const requestedTables = Array.isArray(values?.[0]) ? values[0] as string[] : [];
+          return {
+            rows: requestedTables.map((table_name) => ({
+              table_name,
+              contract_version: 1,
+              matches: columnContractMatches,
+            })),
+            rowCount: requestedTables.length,
+          };
         }
         if (sql.includes('AS membership_count')) {
           return { rows: [iamCounts], rowCount: 1 };
@@ -213,6 +225,20 @@ describe('SaasTenantPostgresDatasetSource', () => {
       }
     })).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(database.getClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks the entire generic category before reading rows when any column contract is missing or stale', async () => {
+    const { source, client, calls } = createSource(tenantId, undefined, false, undefined, false);
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        // A stale catalog contract must stop before the first row is emitted.
+      }
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(calls.some((item) => item.sql.includes('tenant_export_column_contracts'))).toBe(true);
+    expect(calls.some((item) => item.sql.includes('FROM public.orders AS dataset_row'))).toBe(false);
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a row whose tenant scope violates the explicit query scope', async () => {
