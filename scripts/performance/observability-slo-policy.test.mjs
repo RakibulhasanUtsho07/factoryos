@@ -52,7 +52,6 @@ test('release validation refuses to treat proposal values as approved targets', 
 });
 
 test('a complete owner-approved policy is accepted only when alert thresholds and labels match', () => {
-  const policy = approvedPolicy();
   const approvedRules = currentAlertRulesText.replaceAll('policy_status: proposed', 'policy_status: approved');
   const yaml = [
     'status: APPROVED',
@@ -85,6 +84,42 @@ test('a complete owner-approved policy is accepted only when alert thresholds an
     candidateSha: 'a'.repeat(40),
   });
   assert.deepEqual(valid.errors, []);
+});
+
+
+test('approved SLO values cannot drift from the threshold expressions in alert-rules.yml', () => {
+  const yaml = [
+    'status: APPROVED',
+    'service_owner: "FactoryOS Service Owner"',
+    'approver: "Operations Director"',
+    'approval_reference: "CHG-2026-1103"',
+    'approved_at_utc: "2026-11-03T10:00:00Z"',
+    'reviewed_candidate_sha: "' + 'a'.repeat(40) + '"',
+    'measurement_window: 30d',
+    'traffic_contract:',
+    '  minimum_requests_per_second: 50',
+    '  representative_routes_reviewed: true',
+    'targets:',
+    '  availability_percent: 99.9',
+    '  error_rate_percent_max: 1',
+    '  latency_p95_ms_max: 700',
+    '  latency_p99_ms_max: 1500',
+    '  throughput_requests_per_second_min: 50',
+    '  queue_freshness_seconds_max: 300',
+    '  saturation_recovery_seconds_max: 30',
+    'proposal_only_starting_points:',
+    '  error_rate_percent_max: 1',
+    '  latency_p95_ms_max: 500',
+    '  latency_p99_ms_max: 1500',
+    '  queue_freshness_seconds_max: 300',
+    '  saturation_recovery_seconds_max: 30',
+  ].join('\\n');
+  const rules = currentAlertRulesText.replaceAll('policy_status: proposed', 'policy_status: approved');
+  const result = validateObservabilitySloPolicy(yaml, rules, {
+    requireApproved: true,
+    candidateSha: 'a'.repeat(40),
+  });
+  assert.ok(result.errors.some((error) => error.includes('FactoryOSApiHighP95Latency threshold')));
 });
 
 test('approval is rejected when owner evidence, traffic review or numeric targets are incomplete', () => {

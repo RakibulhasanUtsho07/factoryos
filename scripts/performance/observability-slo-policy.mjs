@@ -110,7 +110,7 @@ export function validateSloPolicy(policy) {
   if (!['NOT_OWNER_APPROVED', 'APPROVED'].includes(policy.status)) {
     errors.push('status must be NOT_OWNER_APPROVED or APPROVED');
   }
-  if (!/^\d+[mhdw]$/.test(policy.measurement_window ?? '')) {
+  if (!/^[1-9]\d*[mhdw]$/.test(policy.measurement_window ?? '')) {
     errors.push('measurement_window must be a positive duration such as 30d');
   }
   if (!isRecord(policy.traffic_contract)) {
