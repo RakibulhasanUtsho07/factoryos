@@ -737,6 +737,7 @@ function createApprovedBackupFixture(directory) {
     artifactSha256: createHash('sha256').update(artifactBytes).digest('hex'),
     sourceDatabaseIdentity,
     backupCreatedAtUtc: '2026-10-20T09:55:00Z',
+    backupDurationSeconds: 42,
     backupTool: 'pg_dump',
     pgDumpVersion: 'pg_dump (PostgreSQL) 16.10',
     sourceServerVersion: '16.10',
@@ -782,6 +783,7 @@ test('approved PostgreSQL backup verifier accepts a signed manifest, pinned sign
     assert.equal(verification.recipientFingerprint, fixture.recipientFingerprint);
     assert.equal(verification.sourceDatabaseIdentity, fixture.sourceDatabaseIdentity);
     assert.equal(verification.backupCreatedAtUtc, '2026-10-20T09:55:00Z');
+    assert.equal(verification.backupDurationSeconds, 42);
     assert.equal(verification.artifactSha256.length, 64);
     assert.equal(verification.manifestSha256.length, 64);
     assert.equal(verification.signatureSha256.length, 64);
