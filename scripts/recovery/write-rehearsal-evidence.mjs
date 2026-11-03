@@ -64,6 +64,7 @@ const receipt = {
     approvedSignatureSha256: required('FACTORYOS_DR_APPROVED_BACKUP_SIGNATURE_SHA256'),
     approvedSignerFingerprint: required('FACTORYOS_DR_APPROVED_BACKUP_SIGNER_FINGERPRINT'),
     approvedBackupCreatedAtUtc: required('FACTORYOS_DR_APPROVED_BACKUP_CREATED_AT_UTC'),
+    approvedBackupSourceDatabaseIdentity: required('FACTORYOS_DR_APPROVED_BACKUP_SOURCE_DATABASE_IDENTITY'),
     approvedBackupSourceServerVersion: required('FACTORYOS_DR_APPROVED_BACKUP_SOURCE_SERVER_VERSION'),
     approvedBackupRecipientFingerprint: required('FACTORYOS_DR_APPROVED_BACKUP_RECIPIENT_FINGERPRINT'),
     signatureVerification: required('FACTORYOS_DR_BACKUP_SIGNATURE_STATUS') ?? 'NOT_RUN',
