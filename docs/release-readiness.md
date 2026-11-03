@@ -164,3 +164,14 @@ The dedicated reader policy grants only the required AWS Backup List/Describe/Ge
 The adapter does **not** enumerate AWS Backup copy-job history, all cross-account/Region destinations unless those scopes are supplied, self-managed AOF/RDB/WAL/volume copies or external DR stores. Source-vault ARNs outside supplied scopes and unmatched legal-hold relationships create explicit blockers. Whole-backup coverage and deletion authorization remain false.
 
 **Release disposition:** mocked/repository-level evidence only. Live role provisioning, independent effective-policy review, complete scope proof, approved copy and restore rehearsals, and external copy-class reconciliation remain outstanding. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL. See [AWS Backup vault and recovery-point inventory](aws-backup-vault-recovery-point-inventory.md).
+
+
+## AWS Backup managed copy-job and destination coverage
+
+The AWS Backup reader now exhausts `ListCopyJobs` and retrieves every listed job with `DescribeCopyJob` for each explicitly supplied, STS-verified account/Region. It records source and destination backup-vault/recovery-point ARNs, job state/timestamps, destination encryption, Vault Lock/type and lifecycle metadata. `aws_backup_copy_job_catalog_enumerated` and `copy_job_destination_reconciliation_complete` are separate signals: the latter remains false when a source or destination scope is missing, a referenced vault/recovery point is absent from the corresponding catalog, or any copy job is malformed/incomplete.
+
+Before production acceptance, the cloud owner must enable and validate AWS Backup cross-account monitoring where used, account for its opt-in date boundary, provide all source and destination account/Region scopes, and verify each dedicated reader role's effective permission. Cross-account aggregation is not proof of pre-opt-in job history or of complete Organizations/Region enumeration. Destination recovery points must be independently enumerated and assessed for encryption, Vault Lock/retention, legal holds and controlled restore. Provider-reported `COMPLETED` is not restore acceptance.
+
+Only `backup:ListCopyJobs` and `backup:DescribeCopyJob` are added to the reader policy. AWS publishes no resource type for these read actions, so their allow statements use `Resource: "*"`; the explicit `NotAction` deny fence remains in place. No copy, restore, start, stop, delete, vault mutation or legal-hold mutation API is granted or implemented.
+
+**Release disposition:** mocked API contract evidence only. No live AWS role, account aggregation, copy job, destination recovery point or restore was exercised. Issue #298 remains OPEN; AS-137 / NFR-PROD-14 remain PARTIAL.

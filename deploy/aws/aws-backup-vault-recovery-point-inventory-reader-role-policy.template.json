@@ -11,6 +11,15 @@
       "Resource": "*"
     },
     {
+      "Sid": "AllowReadOnlyCopyJobHistory",
+      "Effect": "Allow",
+      "Action": [
+        "backup:ListCopyJobs",
+        "backup:DescribeCopyJob"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "AllowReadOnlyScopedBackupVaultResources",
       "Effect": "Allow",
       "Action": [
@@ -52,7 +61,9 @@
         "backup:GetLegalHold",
         "backup:ListRecoveryPointsByLegalHold",
         "backup:ListRestoreAccessBackupVaults",
-        "sts:GetCallerIdentity"
+        "sts:GetCallerIdentity",
+        "backup:ListCopyJobs",
+        "backup:DescribeCopyJob"
       ],
       "Resource": "*"
     }
