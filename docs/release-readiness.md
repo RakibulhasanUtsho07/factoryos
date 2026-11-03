@@ -188,3 +188,8 @@ The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.temp
 A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
 
 **Release disposition:** template-contract evidence only. Live AWS deployment, log/event delivery, digest-chain verification, Object Lock behavior, KMS policy, SCP attachment and independent governance review remain outstanding.
+
+
+## AWS Backup retained-history read-back
+
+PR #316 adds a bounded EventBridge replay capture filtered to one isolated SQS target, CloudTrail standard/backfill digest verification, exact S3 object-version/Object Lock/KMS read-back, duplicate-safe source reconciliation and detached Ed25519 owner attestation. See [AWS Backup copy-job audit read-back and reconciliation](aws-backup-copy-job-audit-reconciliation.md). Repository CI is not live AWS acceptance: deployment/read-back/digest/replay/SQS-DLQ/Object Lock rehearsal and independent review remain NOT ACCEPTED until real account evidence is supplied. `historicalLedgerComplete=false`, `exhaustiveCopyClassCoverage=false`; AS-137 / NFR-PROD-14 remains PARTIAL.

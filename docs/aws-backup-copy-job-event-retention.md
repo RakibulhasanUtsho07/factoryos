@@ -119,3 +119,8 @@ The repository contract test verifies the CloudFormation resource shape only. It
 - [AWS global aws:PrincipalArn condition key](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html)
 - [Amazon S3 PutBucketLifecycleConfiguration retention implications](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html)
 - [AWS KMS service authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_kms.html)
+
+
+## Read-back and reconciliation companion
+
+The operator-driven read-back path, CloudTrail digest/object-version verification, source-local duplicate-safe reconciliation and detached Ed25519 owner attestation are documented in [AWS Backup copy-job audit read-back and reconciliation](aws-backup-copy-job-audit-reconciliation.md). This repository slice does not imply live AWS deployment or provider acceptance.
