@@ -1,0 +1,59 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Per-account/per-region indefinite EventBridge archive for AWS Backup Copy Job State Change events. Best-effort event delivery is not a completeness guarantee.",
+  "Parameters": {
+    "ArchiveName": {
+      "Type": "String",
+      "Default": "factoryos-aws-backup-copy-job-history",
+      "AllowedPattern": "^[A-Za-z0-9._-]{1,48}$",
+      "Description": "Unique EventBridge archive name in this account and Region."
+    }
+  },
+  "Resources": {
+    "AwsBackupCopyJobEventArchive": {
+      "Type": "AWS::Events::Archive",
+      "Properties": {
+        "ArchiveName": {
+          "Ref": "ArchiveName"
+        },
+        "Description": "Long-lived copy-job state-change observations; source delivery remains best effort.",
+        "EventPattern": {
+          "source": [
+            "aws.backup"
+          ],
+          "detail-type": [
+            "Copy Job State Change"
+          ]
+        },
+        "RetentionDays": 0,
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "EventArchiveName": {
+      "Value": {
+        "Ref": "AwsBackupCopyJobEventArchive"
+      }
+    },
+    "EventArchiveArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "AwsBackupCopyJobEventArchive",
+          "Arn"
+        ]
+      }
+    },
+    "RetentionDays": {
+      "Value": 0,
+      "Description": "Zero is AWS EventBridge's indefinite archive retention setting."
+    },
+    "EventBusArn": {
+      "Value": {
+        "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+      }
+    }
+  }
+}

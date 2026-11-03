@@ -63,6 +63,23 @@ AWS Backup cross-account monitoring is an explicit opt-in. AWS documents that th
 AWS Backup removes terminal copy-job records 30 days after they finish. The output exposes `copy_job_terminal_record_retention_days: 30`; a complete `ListCopyJobs` traversal therefore means only that the records still retained by AWS for each supplied scope were exhausted. It is not a lifetime copy history and cannot reconstruct older jobs after provider expiry. For longer-lived evidence, an independently operated event/CloudTrail or provider audit retention path must be designed and accepted. A job in state `COMPLETED` is provider-reported job metadata, not an independently verified restore. Cross-account/Region destination recovery points must be enumerated under destination-account credentials and evaluated for their own encryption, retention, legal-hold and restore controls. AWS legal holds on a source point do not automatically protect its copies.
 
 
+## Long-term copy-job event history
+
+The companion archive contract is documented in [AWS Backup copy-job historical event retention](aws-backup-copy-job-event-retention.md), with two infrastructure templates:
+
+- `deploy/aws/aws-backup-copy-job-eventbridge-archive.template.json`: one indefinite (RetentionDays 0) EventBridge archive for Copy Job State Change in every enabled AWS Backup account/Region.
+- `deploy/aws/aws-backup-copy-job-cloudtrail-audit.template.json`: one account-level multi-Region CloudTrail trail with log-file integrity validation and a versioned S3/KMS/Object Lock Compliance log bucket.
+
+AWS Backup service events and CloudTrail service events are best effort. CloudTrail log files are unordered; digest validation must be performed and its result retained. The Object Lock duration has no repository default: the cloud owner must provide an approved retention period and a pre-provisioned KMS key. Neither template has been deployed or tested against a live account in this change.
+
+Neither archive backfills events from before activation. At deployment, capture the current ListCopyJobs 30-day baseline and, where available, the regional CloudTrail Event history (up to its rolling 90-day window); record gaps before the first confirmed archive/trail delivery. The EventBridge archive is a replay source, not a loss-free ledger or proof that every job emitted an event. Cross-check retained CloudTrail records and the overlapping API window and preserve unresolved source disagreements.
+
+## Audit retention SCP guardrail
+
+The companion `deploy/aws/aws-backup-copy-job-audit-retention-guardrail-scp.template.json` contains exact-resource deny fences for archive deletion/retention changes, CloudTrail stop/delete/configuration changes, S3 audit-bucket lifecycle/Object Lock/policy/versioning/encryption changes and KMS key disablement/deletion/policy/grant revocation. The only exception is an exact same-account break-glass role ARN; account IDs and role names are never wildcards. The policy denies these changes; it grants no permissions.
+
+A cloud Organization administrator must interpolate the deployed archive/trail/bucket/key identities, review the exception role, enable SCP policy type, and attach the policy to every relevant member account or OU. Repository CI does not attach it. SCPs do not restrict the Organizations management account or service-linked roles; authorized Organizations management administrators can detach or edit SCPs. Management-account governance, SCP attachment rights, break-glass trust/MFA/approval and use alerts require separate review. The exception identity is an emergency pathway; its use invalidates the affected evidence period until the retention controls are revalidated.
+
 ## Request, pagination and evidence bounds
 
 AWS Backup uses API version \`2018-11-15\`, its REST-JSON protocol, regional HTTPS endpoints and SigV4. STS identity verification uses the regional STS endpoint. The adapter:
@@ -138,3 +155,4 @@ No live AWS credentials or production backup vault were used. Before production 
 - [AWS Backup cross-account copy](https://docs.aws.amazon.com/aws-backup/latest/devguide/create-cross-account-backup.html)
 - [AWS Backup legal holds](https://docs.aws.amazon.com/aws-backup/latest/devguide/legalhold.html)
 - [AWS Backup IAM service authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_backup.html)
+- [AWS Backup copy-job historical event retention](aws-backup-copy-job-event-retention.md)
