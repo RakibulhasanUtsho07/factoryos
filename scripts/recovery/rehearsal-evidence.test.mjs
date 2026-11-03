@@ -131,6 +131,9 @@ function sampleEvidence() {
       migrationRecoveryStatus: 'PASS',
     },
     measured: {
+      backupDurationSeconds: 42,
+      backupArtifactVerificationDurationSeconds: 4,
+      restoreAndVerificationDurationSeconds: 120,
       observedRpoSeconds: 35,
       observedRtoSeconds: 120,
       approvedTargets: false,
@@ -183,6 +186,7 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_ERASURE_VERIFY_SQL_SHA256: 'f'.repeat(64),
       FACTORYOS_DR_ERASURE_VERIFY_METHOD: 'INDEPENDENT_READ_ONLY',
       FACTORYOS_DR_BACKUP_DURATION_SECONDS: '45',
+      FACTORYOS_DR_BACKUP_VERIFICATION_DURATION_SECONDS: '4',
       FACTORYOS_DR_RESTORE_DURATION_SECONDS: '120',
       FACTORYOS_DR_SOURCE_WATERMARK_UTC: '2026-10-20T09:59:50Z',
       FACTORYOS_DR_RESTORED_WATERMARK_UTC: '2026-10-20T09:59:50Z',
