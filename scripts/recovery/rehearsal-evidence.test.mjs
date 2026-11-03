@@ -586,7 +586,7 @@ test('environment approval requires an exact reviewer comment to approve non-con
     try {
       const approved = runApprovalVerifier(validDirectory, [{
         ...entry,
-        comment: 'Reviewed workload target approval.\\nFACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600\\nOwner approved exactly these recovery objectives.',
+        comment: 'Reviewed workload target approval.\nFACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600\nOwner approved exactly these recovery objectives.',
       }], {
         targetsApproved: 'true', rpoTargetSeconds: '300', rtoTargetSeconds: '3600',
       });
