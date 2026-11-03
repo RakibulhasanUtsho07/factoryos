@@ -220,18 +220,14 @@ function alertBlocks(rulesText) {
 }
 
 function expressionFor(block) {
-  const lines = block.text.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.startsWith('        expr:'));
-  if (start < 0) return '';
-  const first = lines[start].slice('        expr:'.length).trim();
-  if (first !== '|') return first;
-  const expression = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (/^        (?:for|labels|annotations):/.test(line)) break;
-    expression.push(line);
-  }
-  return expression.join('\n');
+  const marker = block.text.indexOf('expr:');
+  if (marker < 0) return '';
+  const valueStart = marker + 'expr:'.length;
+  const nextFieldOffsets = ['for:', 'labels:', 'annotations:']
+    .map((field) => block.text.indexOf(String.fromCharCode(10) + '        ' + field, valueStart))
+    .filter((offset) => offset >= 0);
+  const end = nextFieldOffsets.length > 0 ? Math.min(...nextFieldOffsets) : block.text.length;
+  return block.text.slice(valueStart, end);
 }
 
 function containsNumericThreshold(expression, expected) {
@@ -276,7 +272,7 @@ export function validateAlertRules(policy, rulesText) {
       continue;
     }
     if (!containsNumericThreshold(expressionFor(block), expected)) {
-      errors.push(name + ' threshold does not match the ' + expectedLabel + ' SLO policy');
+      errors.push(name + ' threshold does not match the ' + expectedLabel + ' SLO policy (expected ' + expected + '; expression was ' + JSON.stringify(expressionFor(block)) + ')');
     }
   }
   return errors;
