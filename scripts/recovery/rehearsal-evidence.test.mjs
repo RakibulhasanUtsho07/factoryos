@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const writer = fileURLToPath(new URL('./write-rehearsal-evidence.mjs', import.meta.url));
 const signoff = fileURLToPath(new URL('./record-dr-operator-signoff.mjs', import.meta.url));
 const approvalVerifier = fileURLToPath(new URL('./verify-dr-environment-approval.mjs', import.meta.url));
+const backupVerifier = fileURLToPath(new URL('./verify-approved-postgres-backup.mjs', import.meta.url));
 const productionWorkflow = fileURLToPath(new URL('../../.github/workflows/production-dr-rehearsal.yml', import.meta.url));
 const rehearsalScript = fileURLToPath(new URL('./postgres-backup-restore-rehearsal.sh', import.meta.url));
 
@@ -700,5 +702,154 @@ test('PASS sign-off rejects missing approved backup signature and provenance evi
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+
+function createApprovedBackupFixture(directory) {
+  const home = join(directory, 'gnupg');
+  const output = join(directory, 'backup-verification.json');
+  const artifact = join(directory, 'approved-production.dump.gpg');
+  const manifestPath = join(directory, 'approved-production.manifest.json');
+  const signaturePath = join(directory, 'approved-production.manifest.json.sig');
+  const recipientFingerprint = 'B'.repeat(40);
+  const sourceDatabaseIdentity = 'factoryos_source|10.0.0.10|5432';
+  const incidentCutoffUtc = '2026-10-20T10:00:00Z';
+  require('node:fs').mkdirSync(home, { mode: 0o700 });
+  chmodSync(home, 0o700);
+  const gnupgEnv = { ...process.env, GNUPGHOME: home };
+  execFileSync('gpg', [
+    '--batch', '--pinentry-mode', 'loopback', '--passphrase', '',
+    '--quick-generate-key', 'FactoryOS DR Backup Signer <dr-signer@example.invalid>',
+    'ed25519', 'sign', '1d',
+  ], { env: gnupgEnv, stdio: 'ignore' });
+  const listing = execFileSync('gpg', ['--batch', '--with-colons', '--list-keys', 'dr-signer@example.invalid'], {
+    env: gnupgEnv, encoding: 'utf8',
+  });
+  const signerFingerprint = listing.split(/\\r?\\n/)
+    .find((line) => line.startsWith('fpr:'))?.split(':')[9];
+  assert.match(signerFingerprint ?? '', /^[A-F0-9]{40}$/i);
+  const artifactBytes = Buffer.from('synthetic encrypted PostgreSQL backup fixture');
+  writeFileSync(artifact, artifactBytes, { mode: 0o600 });
+  const manifest = {
+    schema: 'factoryos.approved-postgresql-backup/v1',
+    artifactFileName: 'approved-production.dump.gpg',
+    artifactSha256: createHash('sha256').update(artifactBytes).digest('hex'),
+    sourceDatabaseIdentity,
+    backupCreatedAtUtc: '2026-10-20T09:55:00Z',
+    backupTool: 'pg_dump',
+    pgDumpVersion: 'pg_dump (PostgreSQL) 16.10',
+    sourceServerVersion: '16.10',
+    encryption: 'GPG',
+    recipientFingerprint,
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n', { mode: 0o600 });
+  execFileSync('gpg', [
+    '--batch', '--yes', '--local-user', signerFingerprint,
+    '--detach-sign', '--output', signaturePath, manifestPath,
+  ], { env: gnupgEnv });
+  return {
+    home, output, artifact, manifestPath, signaturePath,
+    signerFingerprint, recipientFingerprint, sourceDatabaseIdentity, incidentCutoffUtc,
+  };
+}
+
+function runApprovedBackupVerifier(fixture, overrides = {}) {
+  const args = [
+    backupVerifier,
+    '--artifact', fixture.artifact,
+    '--manifest', fixture.manifestPath,
+    '--signature', fixture.signaturePath,
+    '--signer-fingerprint', fixture.signerFingerprint,
+    '--recipient-fingerprint', fixture.recipientFingerprint,
+    '--source-database-identity', fixture.sourceDatabaseIdentity,
+    '--incident-cutoff-utc', fixture.incidentCutoffUtc,
+    '--output', fixture.output,
+    ...(overrides.args ?? []),
+  ];
+  return run(process.execPath, args, { GNUPGHOME: fixture.home, ...overrides.env });
+}
+
+test('approved PostgreSQL backup verifier accepts a signed manifest, pinned signer, recipient and source identity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-'));
+  try {
+    const fixture = createApprovedBackupFixture(directory);
+    const result = runApprovedBackupVerifier(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    const verification = JSON.parse(readFileSync(fixture.output, 'utf8'));
+    assert.equal(verification.schema, 'factoryos.approved-postgresql-backup-verification/v1');
+    assert.equal(verification.signatureStatus, 'VALID_PINNED_SIGNER');
+    assert.equal(verification.signerFingerprint, fixture.signerFingerprint);
+    assert.equal(verification.recipientFingerprint, fixture.recipientFingerprint);
+    assert.equal(verification.sourceDatabaseIdentity, fixture.sourceDatabaseIdentity);
+    assert.equal(verification.backupCreatedAtUtc, '2026-10-20T09:55:00Z');
+    assert.equal(verification.artifactSha256.length, 64);
+    assert.equal(verification.manifestSha256.length, 64);
+    assert.equal(verification.signatureSha256.length, 64);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('approved PostgreSQL backup verifier rejects a different pinned signing key', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-signer-'));
+  try {
+    const fixture = createApprovedBackupFixture(directory);
+    const result = runApprovedBackupVerifier(fixture, { args: ['--signer-fingerprint', 'C'.repeat(40)] });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /signature verification failed|pinned independent backup-controller fingerprint/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('approved PostgreSQL backup verifier rejects modified artifact bytes after signing', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-digest-'));
+  try {
+    const fixture = createApprovedBackupFixture(directory);
+    writeFileSync(fixture.artifact, 'tampered backup artifact', { mode: 0o600 });
+    const result = runApprovedBackupVerifier(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /artifact SHA-256 does not match/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('approved PostgreSQL backup verifier rejects a different source database identity or recipient key', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-scope-'));
+  try {
+    const fixture = createApprovedBackupFixture(directory);
+    const wrongSource = runApprovedBackupVerifier(fixture, {
+      args: ['--source-database-identity', 'unrelated-db|10.0.0.11|5432'],
+    });
+    assert.notEqual(wrongSource.status, 0);
+    assert.match(wrongSource.stderr, /source database identity does not match/);
+    const wrongRecipient = runApprovedBackupVerifier(fixture, {
+      args: ['--recipient-fingerprint', 'D'.repeat(40)],
+    });
+    assert.notEqual(wrongRecipient.status, 0);
+    assert.match(wrongRecipient.stderr, /recipient does not match/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('approved PostgreSQL backup verifier rejects a recovery point newer than the incident cutoff', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-approved-backup-cutoff-'));
+  try {
+    const fixture = createApprovedBackupFixture(directory);
+    const manifest = JSON.parse(readFileSync(fixture.manifestPath, 'utf8'));
+    manifest.backupCreatedAtUtc = '2026-10-20T10:00:01Z';
+    writeFileSync(fixture.manifestPath, JSON.stringify(manifest, null, 2) + '\\n', { mode: 0o600 });
+    execFileSync('gpg', [
+      '--batch', '--yes', '--local-user', fixture.signerFingerprint,
+      '--detach-sign', '--output', fixture.signaturePath, fixture.manifestPath,
+    ], { env: { ...process.env, GNUPGHOME: fixture.home } });
+    const result = runApprovedBackupVerifier(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /created after the incident cutoff/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
