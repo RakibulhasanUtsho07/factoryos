@@ -19,6 +19,8 @@ async function bootstrap() {
 
   // Bounded headroom for validated 2 MiB finance imports (base64 + JSON envelope).
   app.use(json({
+    // SCIM endpoints use the registered application/scim+json media type.
+    type: ['application/json', 'application/scim+json'],
     limit: '3mb',
     verify: (request: Request, _response: Response, body: Buffer) => {
       // Signature verification must use the original bytes, not re-serialized JSON.
