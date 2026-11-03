@@ -9,9 +9,10 @@ import type {
 } from './saas-tenant-propagation.adapters';
 
 /**
- * Read-only inventory adapter for immutable SaaS usage and provider-cost ledgers.
- * It intentionally contains no DELETE statement. Until a separately approved
- * archive/purge procedure exists, any expired finance row keeps EXECUTE blocked.
+ * Read-only inventory adapter for immutable SaaS usage, provider-cost and
+ * commercial-billing ledgers. It deliberately has no DELETE implementation.
+ * An expired immutable row remains a verified, explicitly retained residual;
+ * it cannot be silently removed by the general business-data retention path.
  */
 export const POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY =
   'postgresql.finance-usage-ledger.inventory.v1';
@@ -19,17 +20,23 @@ export const POSTGRES_FINANCE_RETENTION_ADAPTER_VERSION = '1.0.0';
 export const POSTGRES_FINANCE_RETENTION_MAX_ROWS = 100000;
 
 export const POSTGRES_FINANCE_RETENTION_RELATIONS = [
-  { table: 'saas_usage_rate_cards', cutoffColumn: 'effective_to', purpose: 'IMMUTABLE_RATE_CARD_HISTORY' },
+  { table: 'saas_usage_rate_cards', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_RATE_CARD_HISTORY' },
   { table: 'saas_usage_events', cutoffColumn: 'occurred_at', purpose: 'IMMUTABLE_USAGE_EVENTS' },
   { table: 'saas_usage_adjustments', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_USAGE_ADJUSTMENTS' },
   { table: 'saas_usage_reconciliations', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_USAGE_RECONCILIATIONS' },
-  { table: 'saas_usage_budgets', cutoffColumn: 'effective_to', purpose: 'IMMUTABLE_BUDGET_POLICY_HISTORY' },
+  { table: 'saas_usage_budgets', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BUDGET_POLICY_HISTORY' },
   { table: 'saas_budget_evaluations', cutoffColumn: 'evaluated_at', purpose: 'IMMUTABLE_BUDGET_EVALUATIONS' },
   { table: 'saas_budget_alerts', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BUDGET_ALERTS' },
   { table: 'saas_budget_alert_acknowledgements', cutoffColumn: 'acknowledged_at', purpose: 'IMMUTABLE_BUDGET_ACKNOWLEDGEMENTS' },
   { table: 'saas_workload_control_events', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_WORKLOAD_CONTROL_HISTORY' },
   { table: 'saas_provider_cost_events', cutoffColumn: 'occurred_at', purpose: 'IMMUTABLE_PROVIDER_COST_EVENTS' },
   { table: 'saas_provider_cost_reconciliations', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_PROVIDER_COST_RECONCILIATIONS' },
+  { table: 'saas_billing_provider_accounts', cutoffColumn: 'created_at', purpose: 'VERSIONED_BILLING_PROVIDER_ACCOUNT' },
+  { table: 'saas_billing_provider_account_events', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BILLING_ACCOUNT_EVENTS' },
+  { table: 'saas_billing_close_runs', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BILLING_CLOSE_RUNS' },
+  { table: 'saas_billing_close_events', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BILLING_CLOSE_EVENTS' },
+  { table: 'saas_billing_provider_webhook_events', cutoffColumn: 'received_at', purpose: 'IMMUTABLE_BILLING_PROVIDER_WEBHOOKS' },
+  { table: 'saas_billing_reconciliation_results', cutoffColumn: 'created_at', purpose: 'IMMUTABLE_BILLING_RECONCILIATION_RESULTS' },
 ] as const;
 
 interface FinanceRelationMetadataRow extends QueryResultRow {
@@ -99,7 +106,7 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
     return {
       plannedRows: inventory.candidateRows,
       deletedRows: '0',
-      residualRows: overBound ? inventory.candidateRows : '0',
+      residualRows: overBound ? '1' : '0',
       tableManifest: {
         inventory,
         executionDisposition: overBound ? 'BLOCKED_INVENTORY_BOUND_EXCEEDED' : 'READ_ONLY_PREVIEW',
@@ -121,7 +128,7 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
     return {
       plannedRows: inventory.candidateRows,
       deletedRows: '0',
-      residualRows: blocked ? inventory.candidateRows : '0',
+      residualRows: blocked ? (candidateRows > 0n ? String(candidateRows) : '1') : '0',
       tableManifest: {
         inventory,
         executionDisposition: overBound
@@ -153,11 +160,15 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
     const previousDigestMatches = previousInventory !== null
       && previousInventory !== undefined
       && digest(previousInventory) === result.manifestDigest;
-    const manifestStillCurrent = verifiedManifestDigest === result.manifestDigest && previousDigestMatches;
-    const currentCandidates = count(current.candidateRows);
-    const residualRows = context.mode === 'EXECUTE' || !manifestStillCurrent
-      ? String(currentCandidates > 0n ? currentCandidates : manifestStillCurrent ? 0n : 1n)
-      : '0';
+    const manifestStillCurrent = current.inventoryComplete
+      && previousDigestMatches
+      && verifiedManifestDigest === result.manifestDigest;
+    const candidates = count(current.candidateRows);
+    const residualRows = !manifestStillCurrent
+      ? '1'
+      : context.mode === 'DRY_RUN'
+        ? '0'
+        : String(candidates);
     return {
       verifiedManifestDigest,
       residualRows,
@@ -195,14 +206,16 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
         continue;
       }
 
+      const metadataSql = [
+        "SELECT c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,",
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname = 'tenant_id' AND a.attnum>0 AND NOT a.attisdropped) AS has_tenant_id,",
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped) AS has_cutoff_column,",
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal AND t.tgenabled <> 'D' AND pg_catalog.pg_get_triggerdef(t.oid) ILIKE '%DELETE%') AS has_delete_guard",
+        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace",
+        "WHERE n.nspname = 'public' AND c.relname=$1 AND c.relkind IN ('r','p')",
+      ].join(' ');
       const metadata = await this.database.query<FinanceRelationMetadataRow>(
-        'SELECT c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced, ' +
-        'EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname=\\'tenant_id\\' AND a.attnum>0 AND NOT a.attisdropped) AS has_tenant_id, ' +
-        'EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped) AS has_cutoff_column, ' +
-        'EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal AND t.tgenabled<>\\'D\\' ' +
-        'AND pg_catalog.pg_get_triggerdef(t.oid) ILIKE \\'%DELETE%\\') AS has_delete_guard ' +
-        'FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace ' +
-        'WHERE n.nspname=\\'public\\' AND c.relname=$1 AND c.relkind IN (\\'r\\',\\'p\\')',
+        metadataSql,
         [relation.table, relation.cutoffColumn],
         { tenantId },
       );
@@ -215,12 +228,15 @@ export class PostgresFinanceRetentionInventoryAdapter implements SaasTenantFinan
       }
 
       const pageLimit = remaining + 1;
+      const countSql = [
+        "SELECT COUNT(*)::text AS candidate_rows FROM (",
+        "SELECT 1 FROM public." + relation.table,
+        "WHERE tenant_id=$1 AND " + relation.cutoffColumn + " < $2::timestamptz",
+        "ORDER BY " + relation.cutoffColumn + ", id LIMIT $3",
+        ") AS bounded_finance_retention_inventory",
+      ].join(' ');
       const countResult = await this.database.query<FinanceCountRow>(
-        'SELECT COUNT(*)::text AS candidate_rows FROM (' +
-        'SELECT 1 FROM public.' + relation.table +
-        ' WHERE tenant_id=$1 AND ' + relation.cutoffColumn + ' < $2::timestamptz' +
-        ' ORDER BY ' + relation.cutoffColumn + ',id LIMIT $3' +
-        ') AS bounded_finance_retention_inventory',
+        countSql,
         [tenantId, context.cutoffAt, pageLimit],
         { tenantId },
       );
