@@ -648,7 +648,7 @@ test('DR release-gate workflow verifies signed approved backup, Environment revi
   assert.match(workflow, /approved_backup_manifest_path/);
   assert.match(workflow, /FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT/);
   assert.match(workflow, /FACTORYOS_BACKUP_SOURCE_MODE=APPROVED_ARTIFACT/);
-  assert.match(workflow, /verify-approved-postgres-backup\.mjs/);
+  assert.match(script, /verify-approved-postgres-backup\.mjs/);
   assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/approvals/);
   assert.match(workflow, /verify-dr-environment-approval\.mjs/);
   assert.match(workflow, /FACTORYOS_DR_SECURE_TMPDIR/);
