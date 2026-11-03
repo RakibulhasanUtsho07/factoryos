@@ -616,6 +616,7 @@ test('finance retention is backed by a registered, bounded, read-only ledger inv
   const module = await readRepoFile('services/api/src/saas/saas.module.ts');
   const contract = await readRepoFile('services/api/test/saas-data-retention-contract.sql');
   const env = await readRepoFile('services/api/.env.example');
+  const database = await readRepoFile('services/api/src/database/database.service.ts');
 
   assert.match(adapter, /POSTGRES_FINANCE_RETENTION_INVENTORY_ADAPTER_KEY/);
   assert.match(adapter, /saas_usage_events/);
@@ -626,6 +627,7 @@ test('finance retention is backed by a registered, bounded, read-only ledger inv
   assert.match(adapter, /pg_get_triggerdef/);
   assert.match(adapter, /p\\.prosrc ILIKE '%RAISE EXCEPTION%'/);
   assert.match(adapter, /isolationLevel: 'REPEATABLE READ', readOnly: true/);
+  assert.match(database, /context\\?\\.readOnly \\? beginStatement \\+ ' READ ONLY' : beginStatement/);
   assert.match(adapter, /destructiveDeletePermitted: false/);
   assert.match(adapter, /BLOCKED_IMMUTABLE_FINANCE_LEDGER/);
   assert.ok(!adapter.includes('DELETE FROM'));
