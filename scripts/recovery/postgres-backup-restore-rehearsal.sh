@@ -371,6 +371,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFAC
   approved_backup_manifest_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.manifestSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup manifest digest"
   approved_backup_signature_sha256="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.signatureSha256)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup signature digest"
   approved_backup_created_at_utc="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.backupCreatedAtUtc)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup creation time"
+  backup_duration_seconds="$(node -e 'const r=require(process.argv[1]); process.stdout.write(String(r.backupDurationSeconds))' "$approved_backup_verification" 2>/dev/null)" || die "could not read signed source backup duration"
   approved_backup_source_database_identity="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.sourceDatabaseIdentity)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup source database identity"
   approved_backup_source_server_version="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.sourceServerVersion)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved source server version"
   approved_backup_recipient_fingerprint="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.recipientFingerprint)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved backup recipient fingerprint"
@@ -381,7 +382,6 @@ if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFAC
   backup_signature_status="VALID_PINNED_SIGNER"
   pg_dump_version="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.pgDumpVersion)' "$approved_backup_verification" 2>/dev/null)" || die "could not read approved pg_dump version"
   server_version="$approved_backup_source_server_version"
-  backup_verification_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
   printf 'Verified signed approved backup artifact SHA-256: %s\\n' "$checksum_sha256"
 else
   current_stage="encrypted_backup"
@@ -404,6 +404,9 @@ gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
 [[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
 pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
 archive_status="READABLE"
+if [[ "$dr_mode" == "RELEASE_GATE" && "$backup_source_mode" == "APPROVED_ARTIFACT" ]]; then
+  backup_verification_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
+fi
 
 current_stage="restore"
 restore_started_epoch="$(epoch_now)"
