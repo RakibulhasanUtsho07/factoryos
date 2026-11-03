@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OtEdgeDurableSpool } from '../src/spool.mjs';
 import { handleMqttDelivery, OpcUaSessionDriver } from '../src/protocol-drivers.mjs';
-import { ProtocolSupervisor, replayOnce } from '../src/index.mjs';
+import { allSecretPaths, ProtocolSupervisor, replayOnce } from '../src/index.mjs';
 import { resolveSecretFilePath, secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
 import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
 import { startModbusTcpSimulator } from './modbus-tcp-simulator.mjs';
@@ -316,6 +316,33 @@ test('secret rotation fingerprint changes on certificate/token rotation without 
   const after = await secretFingerprint([cert, key]);
   assert.notEqual(before, after);
   assert.match(after, /^[a-f0-9]{64}$/);
+});
+
+
+test('optional gateway mTLS client CA participates in credential rotation detection', async (t) => {
+  const { dir } = await fixture(t);
+  const cert = join(dir, 'gateway-cert.pem');
+  const key = join(dir, 'gateway-key.pem');
+  const clientCa = join(dir, 'gateway-client-ca.pem');
+  await writeFile(cert, 'GATEWAY-CERT-V1');
+  await writeFile(key, 'GATEWAY-KEY-V1');
+  await writeFile(clientCa, 'CLIENT-CA-V1');
+
+  const paths = allSecretPaths({
+    security: {
+      serverCertFile: cert,
+      serverKeyFile: key,
+      clientCaFile: clientCa,
+    },
+    mqtt: null,
+    opcua: [],
+  });
+  assert.deepEqual(paths, [cert, key, clientCa]);
+
+  const before = await secretFingerprint(paths);
+  await writeFile(clientCa, 'CLIENT-CA-V2');
+  const after = await secretFingerprint(paths);
+  assert.notEqual(before, after, 'a client-CA update must trigger TLS context rotation');
 });
 
 test('Modbus TCP driver reads registered holding/input registers from a real simulator socket', async (t) => {
