@@ -1,0 +1,50 @@
+name: AWS Backup Copy Job Audit Reconciliation Contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/aws-backup-copy-job-audit-reconciliation.yml"
+      - ".github/workflows/api-ci.yml"
+      - "deploy/aws/aws-backup-copy-job-replay-capture.template.json"
+      - "scripts/audit/aws-backup-copy-job-audit-evidence.mjs"
+      - "scripts/audit/aws-backup-copy-job-audit-evidence.test.mjs"
+      - "scripts/security/preflight-aws-backup-copy-job-replay.mjs"
+      - "scripts/security/start-aws-backup-copy-job-replay.mjs"
+      - "scripts/security/capture-aws-backup-copy-job-replay.mjs"
+      - "scripts/security/export-aws-backup-copy-job-audit-evidence.mjs"
+      - "scripts/security/sign-aws-backup-copy-job-audit-evidence.mjs"
+      - "scripts/security/verify-aws-backup-copy-job-audit-attestation.mjs"
+      - "docs/aws-backup-copy-job-audit-reconciliation.md"
+      - "docs/aws-backup-copy-job-event-retention.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-and-audit-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate replay-capture CloudFormation template
+        run: |
+          python -m pip install --disable-pip-version-check cfn-lint
+          cfn-lint -t deploy/aws/aws-backup-copy-job-replay-capture.template.json
+      - name: Syntax-check bounded replay, read-back, export and owner-signing tools
+        run: |
+          node --check scripts/audit/aws-backup-copy-job-audit-evidence.mjs
+          node --check scripts/audit/aws-backup-copy-job-audit-evidence.test.mjs
+          node --check scripts/security/preflight-aws-backup-copy-job-replay.mjs
+          node --check scripts/security/start-aws-backup-copy-job-replay.mjs
+          node --check scripts/security/capture-aws-backup-copy-job-replay.mjs
+          node --check scripts/security/export-aws-backup-copy-job-audit-evidence.mjs
+          node --check scripts/security/sign-aws-backup-copy-job-audit-evidence.mjs
+          node --check scripts/security/verify-aws-backup-copy-job-audit-attestation.mjs
+      - name: Test AWS Backup audit reconciliation, replay isolation and owner attestation
+        run: node --test scripts/audit/aws-backup-copy-job-audit-evidence.test.mjs
