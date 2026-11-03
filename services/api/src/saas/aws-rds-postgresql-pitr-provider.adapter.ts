@@ -221,6 +221,13 @@ function fail(message: string): never {
   throw new Error('AWS RDS PostgreSQL PITR inventory refused: ' + message);
 }
 
+/** Enforces the hard upper bound before provider work is fanned out by account/region. */
+export function assertAwsRdsPitrScopeBudget(scopeCount: number): void {
+  if (!Number.isSafeInteger(scopeCount) || scopeCount < 0 || scopeCount > MAX_SCOPES) {
+    return fail('AWS account/region scope catalog is outside the supported scope limit');
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1093,7 +1100,7 @@ if (accounts.length < 1 || accounts.length > MAX_ACCOUNTS
         });
       }
     }
-if (scopes.length < 1 || scopes.length > MAX_SCOPES)
+    assertAwsRdsPitrScopeBudget(scopes.length);
     this.addItems(scopes.length);
 
     const backupVaults: AwsBackupVaultRecord[] = [];
