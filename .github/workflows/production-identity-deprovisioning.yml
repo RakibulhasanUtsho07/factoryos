@@ -129,9 +129,6 @@ jobs:
             -o "$RUNNER_TEMP/as133-evidence/artifacts.json"
           jq -e '.artifacts | any(.name == "as133-oidc-deprovision-before" and .expired == false)' \
             "$RUNNER_TEMP/as133-evidence/artifacts.json" >/dev/null || { echo "::error::baseline evidence artifact is missing or expired"; exit 1; }
-          curl --fail --silent --show-error -L \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID_INPUT/artifacts" >/dev/null
           echo "Baseline workflow run provenance verified: $BASELINE_RUN_ID_INPUT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download baseline artifact from verified run
