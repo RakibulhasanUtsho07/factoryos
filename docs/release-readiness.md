@@ -211,3 +211,41 @@ Kubernetes v1.30+ admission policies cover the dedicated read-only evidence PVC/
 The promotion candidate preserves both release lines: main-side migrations 214–218 (tenant export category completeness, derived-scope completeness, inventory-location identity rebind, traceability-settings reconciliation, and external-erasure outcome receipts), followed by dev-side migrations 219–233 (resource manifests/events, legal-hold race fences, backup writer-fence/principal inventory, provider acceptance, signed copy-class coverage and export column contracts). The reconciled manifest contains 240 unique ordered migration paths; no migration is renumbered or dropped.
 
 This is repository-level reconciliation only. Do not treat a passing candidate CI run as approval to apply the migrations to production. The candidate remains unaccepted until manifest validation, PostgreSQL 16 replay of the entire sequence, the full integration suite and exact-head security/traceability workflows pass; production restore, owner review and deployment gates remain separate.
+
+
+## Tenant-wide export and erasure — finance retention inventory
+
+The WP10 closure branch registers a PostgreSQL finance-retention adapter for
+17 SaaS usage, budget, provider-cost and commercial-billing relations. It uses
+bounded tenant-only inventory queries and refuses to scan a relation unless
+catalog evidence shows forced RLS, tenant/cutoff columns and an enabled
+immutable DELETE guard. Its manifest is independently re-read and digest
+checked. DRY_RUN produces a preview; EXECUTE remains non-destructive and
+records BLOCKED with explicit retained residuals if aged immutable finance
+rows exist. The adapter has no DELETE implementation. A finance/legal owner
+must approve an archive destination, legal basis, restore process and purge
+authority before automatic finance retention can be implemented.
+
+Export controls remain explicit: required PostgreSQL category adapters are
+pinned by the migration-owned relation registry and immutable column contract.
+AI_CONTEXT and LEARNING_EVALUATION are bounded optional table maps, not proof
+of complete AI lifecycle artifacts. INTEGRATION_METADATA and FILE_REFERENCES
+have no source adapters and fail closed. The target importer remains
+exact-schema only; cross-version transformations are not implemented.
+
+The external store boundary is also explicit:
+- WMS POD S3 and the application-owned standalone Redis namespace have narrow
+  adapters with independent residual read-back.
+- The S3 BACKUP adapter is registered but activation remains fail-closed until
+  current accepted writer inventory, exclusive policy-controller ownership,
+  real-provider staging, every writer/replication identity and restore/
+  tombstone-replay evidence pass.
+- SEARCH_INDEX, VECTOR_STORE, LEARNING_ARTIFACT, EXTERNAL_PROVIDER and REPLICA
+  remain unresolved because their providers/topologies have not been selected.
+- Unclassified external store discovery must be complete and signed; unknown
+  kinds or incomplete source pagination block propagation.
+
+No production/customer tenant was exported or erased by this code/CI work.
+Issue #284 remains OPEN; AS-137 and NFR-PROD-14 remain PARTIAL until controlled
+staging journeys, zero-residual or approved legal-retention receipts, external
+copy reconciliation and independent owner sign-off are attached.
