@@ -40,6 +40,27 @@ Dispatch `Production Backup Restore and DR Rehearsal` for a **full 40-character 
 
 The production workflow requires a pre-existing approved encrypted `.dump.gpg` recovery-point artifact and its signed JSON manifest plus detached OpenPGP signature. It does not create a fresh `pg_dump` and call that a production backup. The manifest schema is `factoryos.approved-postgresql-backup/v1`; its required fields are `artifactFileName`, `artifactSha256`, `sourceDatabaseIdentity`, `backupCreatedAtUtc`, measured non-negative `backupDurationSeconds`, `backupTool` (must be `pg_dump`), `pgDumpVersion`, `sourceServerVersion`, `encryption` (must be `GPG`), and the full encryption `recipientFingerprint`. The workflow verifies the detached signature against the protected pinned backup-controller fingerprint, the digest against the selected artifact, the source identity against the connected source service, the recipient fingerprint against the recovery key fingerprint, and that the backup was created no later than the incident cutoff. The source service is used to establish the source identity and run the reviewed durable-write watermark query; restoration occurs into a different verified-empty database.
 
+The backup controller creates the manifest after the encrypted artifact is durably published. From the trusted backup-producer host (not the recovery runner), use the measured producer values and full recipient key fingerprint:
+
+~~~sh
+node scripts/recovery/write-approved-postgres-backup-manifest.mjs \
+  --artifact /secure/restricted/backups/factoryos-prod.dump.gpg \
+  --output /secure/restricted/backups/factoryos-prod.manifest.json \
+  --source-database-identity "$SOURCE_DATABASE_IDENTITY" \
+  --backup-created-at-utc "$BACKUP_CREATED_AT_UTC" \
+  --backup-duration-seconds "$BACKUP_DURATION_SECONDS" \
+  --pg-dump-version "$PG_DUMP_VERSION" \
+  --source-server-version "$SOURCE_SERVER_VERSION" \
+  --recipient-fingerprint "$BACKUP_RECIPIENT_FINGERPRINT"
+
+gpg --batch --yes --local-user "$BACKUP_SIGNER_FINGERPRINT" \
+  --detach-sign \
+  --output /secure/restricted/backups/factoryos-prod.manifest.json.sig \
+  /secure/restricted/backups/factoryos-prod.manifest.json
+~~~
+
+BACKUP_DURATION_SECONDS must be measured around approved backup creation; do not substitute the restore rehearsal's artifact-verification duration. The signing key is controlled by the backup-controller/backup-approval authority. Keep its private key on that trusted producer/signing host or HSM and provision only its public key to the recovery runner. Store the encrypted artifact, manifest and detached signature together under the same restricted retention/access controls. The builder writes a create-only manifest and refuses non-regular, group/world-writable or incorrectly named artifacts; the recovery workflow independently verifies the signature and recomputes the artifact digest.
+
 The release-gate helper requires a private runner-owned `tmpfs` directory (not disk-backed `/tmp`) for decrypted archive scratch, verifies GPG decryption and `pg_restore --list` readability, restores using `--exit-on-error --single-transaction`, and removes temporary plaintext on exit. It records the backup producer's duration from the signed manifest separately from current artifact-verification/decryption time and restore/verification duration. The ephemeral PostgreSQL CI workflow retains its synthetic live-source backup path; CI evidence is not accepted as an approved production recovery point. It does not drop/clean an unsuccessful target automatically; quarantine it and follow the incident plan.
 
 ### Candidate migration validation
@@ -108,11 +129,11 @@ Use `--decision FAIL` for a failed attempt and preserve the failure evidence. A 
 The release owner must leave the gate blocked until:
 
 - the exact candidate SHA's applicable API, PostgreSQL, web and dependency-security checks are green;
-- a backup was made on approved restricted storage and its checksum/decryption/archive checks pass;
+- the existing approved recovery-point artifact is accompanied by a detached-signed manifest from the pinned backup-controller key, and the artifact digest, source identity, GPG recipient fingerprint, backup timestamp and producer duration all verify;
 - the target was independently confirmed isolated/empty, and restore completed;
 - candidate migration and failure-recovery checks pass on that restored snapshot;
 - restored-schema smoke, application-role RLS read/write isolation, audit continuity, and candidate API liveness/readiness against the same independently identified restore database all pass;
 - source/restore identities, the exact migration-manifest digest, measured durations, RPO/RTO and unresolved exceptions are recorded;
-- an independent operator sign-off is attached to the evidence digest.
+- an independent GitHub Environment reviewer approval is bound to the workflow run and candidate SHA, and an operator/reviewer sign-off is attached to the technical evidence and approval digests.
 
 CI's ephemeral self-contained GPG + PostgreSQL rehearsal validates the automation with synthetic records. It is additional evidence, not a substitute for the manual workflow against approved recovery infrastructure or for accountable owner sign-off.
