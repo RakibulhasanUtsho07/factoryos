@@ -157,12 +157,7 @@ the TypeScript relation list differs from the database registry. Migration 233
 pins column-level schema manifests; a new or changed column fails export until
 a reviewed contract version is appended and the runtime grant is present.
 
-Schema compatibility currently accepts EXACT/COMPATIBLE flows. A
-TRANSFORM_REQUIRED rule records an opaque mapping reference but the live
-migration transition stays BLOCKED until an actual reviewed transformation
-adapter exists. The reference alone is not a transformation engine. No
-cross-version target import is claimed when row/category/column semantics
-have not been transformed and verified.
+Schema validation accepts an EXACT version pair or a latest ACTIVE COMPATIBLE rule. This validation result does not transform rows: the current PostgreSQL target importer remains exact-schema only and rejects cross-version import even when a COMPATIBLE rule exists. A TRANSFORM_REQUIRED decision remains BLOCKED. Its opaque mapping reference alone is not a transformation engine. No cross-version target import is claimed until a real adapter transforms the row/column/category semantics and proves target counts, digests, recovery and rollback.
 
 SaaS commercial billing provider accounts/events, billing-close records,
 provider webhooks and reconciliation results are classified as protected
