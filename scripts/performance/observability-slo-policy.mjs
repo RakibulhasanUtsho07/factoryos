@@ -212,7 +212,7 @@ export function validateSloPolicy(policy) {
 }
 
 function alertBlocks(rulesText) {
-  const matches = [...rulesText.matchAll(/^      - alert: ([A-Za-z0-9_]+)[ \\t]*$/gm)];
+  const matches = [...rulesText.matchAll(/^      - alert: ([A-Za-z0-9_]+)[ \t]*$/gm)];
   return matches.map((match, index) => ({
     name: match[1],
     text: rulesText.slice(match.index, matches[index + 1]?.index ?? rulesText.length),
@@ -220,7 +220,7 @@ function alertBlocks(rulesText) {
 }
 
 function expressionFor(block) {
-  const lines = block.text.split(/\\r?\\n/);
+  const lines = block.text.split(/\r?\n/);
   const start = lines.findIndex((line) => line.startsWith('        expr:'));
   if (start < 0) return '';
   const first = lines[start].slice('        expr:'.length).trim();
@@ -231,7 +231,7 @@ function expressionFor(block) {
     if (/^        (?:for|labels|annotations):/.test(line)) break;
     expression.push(line);
   }
-  return expression.join('\\n');
+  return expression.join('\n');
 }
 
 function containsNumericThreshold(expression, expected) {
