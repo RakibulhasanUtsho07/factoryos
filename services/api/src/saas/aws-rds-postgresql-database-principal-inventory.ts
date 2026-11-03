@@ -98,6 +98,8 @@ const SQL = {
     " current_setting('transaction_read_only') AS transaction_read_only,",
     ' r.rolcanlogin, r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,',
     " pg_catalog.pg_has_role(current_user, 'pg_monitor', 'MEMBER') AS has_pg_monitor,",
+    " pg_catalog.pg_has_role(current_user, 'rds_iam', 'MEMBER') AS has_rds_iam,",
+    " COALESCE((SELECT bool_or(pg_catalog.pg_has_role(current_user, granted.oid, 'MEMBER') AND granted.rolname NOT IN ('pg_monitor', 'pg_read_all_settings', 'pg_read_all_stats', 'pg_stat_scan_tables', 'rds_iam')) FROM pg_catalog.pg_roles granted WHERE granted.rolname <> current_user), false) AS has_unapproved_role_membership,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_superuser'), false) AS has_rds_superuser,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'rds_replication'), false) AS has_rds_replication,",
     " COALESCE((SELECT pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER') FROM pg_catalog.pg_roles r WHERE r.rolname = 'pg_read_all_data'), false) AS has_pg_read_all_data,",
@@ -539,6 +541,7 @@ async function openReadOnlyClient(
       || session.rolcreaterole !== false || session.rolcreatedb !== false
       || session.rolreplication !== false || session.rolbypassrls !== false
       || session.rolinherit !== true || session.has_pg_monitor !== true
+      || session.has_rds_iam !== true || session.has_unapproved_role_membership !== false
       || session.has_rds_superuser === true || session.has_rds_replication === true
       || session.has_pg_read_all_data === true || session.has_pg_read_server_files === true
       || session.has_pg_write_all_data === true || session.has_pg_write_server_files === true

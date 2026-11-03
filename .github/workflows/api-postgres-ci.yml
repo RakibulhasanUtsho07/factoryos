@@ -98,6 +98,9 @@ jobs:
           node-version: 24
           cache: npm
 
+      # ubuntu-latest can ship a newer pg_dump/pg_restore than the PostgreSQL 16
+      # service. Keep client/server majors aligned so pg_restore emits only PG16
+      # settings (for example, PG18 transaction_timeout is unknown to PG16).
       - name: Install PostgreSQL 16 client matching the service major
         shell: bash
         run: |
@@ -116,7 +119,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
           for tool in pg_dump pg_restore psql; do
-            version="$(/usr/lib/postgresql/16/bin/$tool --version)"
+            version="$("/usr/lib/postgresql/16/bin/$tool" --version)"
             printf '%s\n' "$version"
             grep -Eq '\(PostgreSQL\) 16([.]|$)' <<< "$version"
           done

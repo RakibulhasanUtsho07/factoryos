@@ -41,6 +41,7 @@ function createClientFactory(options: {
   elevatedReader?: boolean;
   elevatedReadOnly?: boolean;
   excessRoleRows?: boolean;
+  unapprovedMembership?: boolean;
 } = {}) {
   const clientOptions: Array<Record<string, unknown>> = [];
   const queries: QueryLog[] = [];
@@ -74,6 +75,8 @@ function createClientFactory(options: {
               rolreplication: false,
               rolbypassrls: false,
               has_pg_monitor: true,
+              has_rds_iam: true,
+              has_unapproved_role_membership: options.unapprovedMembership === true,
               has_rds_superuser: false,
               has_rds_replication: false,
               has_pg_read_all_data: options.elevatedReadOnly === true,
@@ -230,6 +233,16 @@ describe('AWS RDS PostgreSQL database-native principal inventory', () => {
 
   it('rejects a reader with broader read-all-data or server-file access', async () => {
     const mock = createClientFactory({ elevatedReadOnly: true });
+    const result = await captureAwsRdsDatabasePrincipalInventory(
+      [target], credentials, config, mock.factory,
+    );
+    expect(result.coverage_complete).toBe(false);
+    expect(result.blockers).toContain('db-ABCDEFGHIJKLMNOP:DATABASE_CATALOG_ACCESS_DENIED_OR_FAILED');
+    expect(mock.queries.some((query) => query.sql.includes('FROM pg_catalog.pg_roles ORDER BY'))).toBe(false);
+  });
+
+  it('rejects inherited custom or privileged role memberships beyond pg_monitor and rds_iam', async () => {
+    const mock = createClientFactory({ unapprovedMembership: true });
     const result = await captureAwsRdsDatabasePrincipalInventory(
       [target], credentials, config, mock.factory,
     );
