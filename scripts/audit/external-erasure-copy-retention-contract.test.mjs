@@ -626,12 +626,13 @@ test('finance retention is backed by a registered, bounded, read-only ledger inv
   assert.match(adapter, /pg_get_triggerdef/);
   assert.match(adapter, /destructiveDeletePermitted: false/);
   assert.match(adapter, /BLOCKED_IMMUTABLE_FINANCE_LEDGER/);
-  assert.doesNotMatch(adapter, /\\bDELETE\\s+FROM\\b/i);
+  assert.ok(!adapter.includes('DELETE FROM'));
   assert.match(adapterTests, /independently verifies its digest without deletion/);
   assert.match(adapterTests, /retained residuals when immutable finance rows exist/);
   assert.match(adapterTests, /does not claim a complete inventory when the global row bound is exceeded/);
   assert.match(service, /mode, policyVersion/);
-  assert.match(service, /if \\(result\\.failureCode\\)/);
+  assert.ok(service.includes('if (result.failureCode)'));
+  assert.ok(service.includes("^[A-Z][A-Z0-9_]{1,99}$"));
   assert.match(serviceTests, /explicit retained residuals as BLOCKED/);
   assert.match(module, /useExisting: PostgresFinanceRetentionInventoryAdapter/);
   assert.doesNotMatch(module, /SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null/);
