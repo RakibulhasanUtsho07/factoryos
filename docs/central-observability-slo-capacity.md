@@ -115,3 +115,26 @@ For each exact candidate SHA, store a restricted evidence bundle containing:
 - Known constraints, failed stages, anomalies, saturation point and recovery behavior, cleanup results, and owner sign-off.
 
 CI exercises the harness against a fake local HTTP server and verifies dashboard/config contracts. This verifies the tooling but is **not** a multi-tenant staging load result or real alert-delivery evidence. The following operational gates remain pending until completed in the approved environment: collector/backend connectivity and retention, per-instance scraping, database exporter permission/signal correctness, actual alert delivery, sustained soak, saturation/recovery evidence, and owner approval of numeric SLOs.
+
+
+## Machine-checked SLO approval register
+
+The repository now includes a strict validator for the small mapping/scalar format in `deploy/observability/slo-policy.yml`:
+
+```sh
+node scripts/performance/observability-slo-policy.mjs
+```
+
+This default check validates the register and verifies that every alert retains the correct `policy_status: proposed` label and that the 5xx, p95, p99 and outbox-freshness alert thresholds match the explicitly separate `proposal_only_starting_points`. It does **not** approve the SLO. The current repository register must continue to report `OBSERVABILITY_SLO_POLICY=NOT_OWNER_APPROVED`.
+
+A release/operator gate can additionally require owner approval and bind it to the candidate SHA:
+
+```sh
+node scripts/performance/observability-slo-policy.mjs \
+  --require-approved \
+  --candidate-sha "$FACTORYOS_SOAK_CANDIDATE_SHA"
+```
+
+For `APPROVED`, the validator requires a named accountable service owner and approver, an approval/change reference, an ISO-8601 UTC approval time, the exact reviewed 40-hex commit SHA, an explicit measurement window, owner-reviewed representative routes and traffic envelope, and every numeric target. It rejects partially populated targets while status is `NOT_OWNER_APPROVED`; an approved register also requires alert-rule labels and numeric thresholds to be updated consistently. p99 cannot be lower than p95. No numeric values are automatically promoted from the proposal-only block.
+
+This is a configuration-integrity/release guard, not evidence that the service owner actually signed the referenced change or that production telemetry/notifications/load tests passed. Human approval authenticity, real collector/backend connectivity, receiver acknowledgement, per-replica scrape evidence and staging capacity results still require the controlled operational evidence in the sections above.

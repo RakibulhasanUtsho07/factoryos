@@ -183,6 +183,8 @@ jobs:
         run: |
           npm run test:load-smoke:contract
           npm run test:capacity:contract
+          node ../../scripts/performance/observability-slo-policy.mjs
+          node --check ../../scripts/performance/observability-slo-policy.mjs
           npm run test:recovery:contract
           node --test ../../scripts/security/production-security-config.test.mjs
       - name: Lint API
