@@ -7,6 +7,9 @@ describe('AiAgentController', () => {
   const createTaskMock = jest.fn();
   const getTaskMock = jest.fn();
   const cancelTaskMock = jest.fn();
+  const executeStepMock = jest.fn();
+  const resumeTaskStepMock = jest.fn();
+  const verifyTaskMock = jest.fn();
   const createHandoffMock = jest.fn();
   const acceptHandoffMock = jest.fn();
   const rejectHandoffMock = jest.fn();
@@ -15,6 +18,9 @@ describe('AiAgentController', () => {
     createTask: createTaskMock,
     getTask: getTaskMock,
     cancelTask: cancelTaskMock,
+    executeStep: executeStepMock,
+    resumeTaskStep: resumeTaskStepMock,
+    verifyTask: verifyTaskMock,
     createHandoff: createHandoffMock,
     acceptHandoff: acceptHandoffMock,
     rejectHandoff: rejectHandoffMock,
@@ -40,6 +46,9 @@ describe('AiAgentController', () => {
     createTaskMock.mockResolvedValue({ idempotent: false });
     getTaskMock.mockResolvedValue({ task: { id: 'task-1' }, steps: [] });
     cancelTaskMock.mockResolvedValue({ id: 'task-1', state: 'CANCELLED' });
+    executeStepMock.mockResolvedValue({ idempotent: false, task: { id: 'task-1' }, step: { id: 'step-1' } });
+    resumeTaskStepMock.mockResolvedValue({ idempotent: false, task: { id: 'task-1' }, step: { id: 'step-1' } });
+    verifyTaskMock.mockResolvedValue({ id: 'task-1', state: 'COMPLETED' });
     createHandoffMock.mockResolvedValue({ id: 'handoff-1' });
     acceptHandoffMock.mockResolvedValue({ id: 'handoff-1', status: 'ACCEPTED' });
     rejectHandoffMock.mockResolvedValue({ id: 'handoff-1', status: 'REJECTED' });
@@ -90,6 +99,60 @@ describe('AiAgentController', () => {
         ],
       }),
     );
+  });
+
+  it('executes one task step through the authenticated factory scope', async () => {
+    const taskId = '77777777-7777-4777-8777-777777777777';
+    const stepId = '88888888-8888-4888-8888-888888888888';
+
+    await controller.executeStep(request as never, taskId, stepId);
+
+    expect(executeStepMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      taskId,
+      stepId,
+    );
+  });
+
+  it('resumes only the approval-pending step through the authenticated factory scope', async () => {
+    const taskId = '77777777-7777-4777-8777-777777777777';
+    const stepId = '88888888-8888-4888-8888-888888888888';
+
+    await controller.resumeTaskStep(request as never, taskId, stepId);
+
+    expect(resumeTaskStepMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      taskId,
+      stepId,
+    );
+  });
+
+  it('final-verifies a task through the authenticated factory scope', async () => {
+    const taskId = '77777777-7777-4777-8777-777777777777';
+
+    await controller.verifyTask(request as never, taskId);
+
+    expect(verifyTaskMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      taskId,
+    );
+  });
+
+  it('rejects task execution without authenticated factory context', async () => {
+    await expect(
+      controller.executeStep(
+        { factoryos: undefined } as never,
+        '77777777-7777-4777-8777-777777777777',
+        '88888888-8888-4888-8888-888888888888',
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(executeStepMock).not.toHaveBeenCalled();
   });
 
   it('gets a task in the authenticated factory scope', async () => {
