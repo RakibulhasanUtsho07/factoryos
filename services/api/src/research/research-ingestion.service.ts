@@ -14,6 +14,8 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import {
   CompleteResearchExtractionDto,
+  CreateResearchFreshnessPolicyDto,
+  DecideResearchFreshnessPolicyDto,
   DecideResearchExtractionItemDto,
   CreateResearchIngestionJobDto,
   FailResearchIngestionJobDto,
@@ -149,6 +151,250 @@ export class ResearchIngestionService {
         payload: { sourceId, mode, maxAttempts, rightsFingerprint, sourceRevision: Number(source.source_revision) },
       });
       return this.safeJob(row);
+    });
+  }
+
+
+  async createFreshnessPolicy(
+    userId: string, tenantId: string, sourceId: string,
+    dto: CreateResearchFreshnessPolicyDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId);
+    this.uuid(sourceId, 'sourceId');
+    const mode = dto.mode;
+    if (!['METADATA_ONLY', 'FULL_TEXT'].includes(mode)) throw new BadRequestException('Unsupported research freshness ingestion mode');
+    const intervalMinutes = dto.interval_minutes;
+    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 60 || intervalMinutes > 129600) {
+      throw new BadRequestException('interval_minutes must be between 60 and 129600 (90 days)');
+    }
+    const maxAttempts = dto.max_attempts ?? 5;
+    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
+      throw new BadRequestException('max_attempts must be between 1 and 10');
+    }
+    return this.database.transaction({
+      tenantId, userId,
+      advisoryLockKey: 'research-freshness-policy:' + tenantId + ':' + sourceId,
+    }, async (client: PoolClient) => {
+      const source = await this.lockSource(client, tenantId, sourceId);
+      this.assertSourceRights(source, mode);
+      const active = await client.query<DbRow>(
+        `SELECT id::text AS id FROM research_source_freshness_policies
+          WHERE tenant_id=$1 AND source_id=$2 AND status IN ('ACTIVE','PAUSED') FOR UPDATE`,
+        [tenantId, sourceId],
+      );
+      if (active.rows[0]) throw new ConflictException('A current freshness policy already exists; retire it before creating a replacement');
+      const inserted = await client.query<DbRow>(
+        `INSERT INTO research_source_freshness_policies(
+           tenant_id,source_id,mode,interval_minutes,max_attempts,status,next_due_at,created_by,updated_by
+         ) VALUES($1,$2,$3,$4,$5,'ACTIVE',clock_timestamp()+make_interval(mins => $4),$6,$6)
+         RETURNING id::text AS id,tenant_id::text AS tenant_id,source_id::text AS source_id,
+           mode,interval_minutes,max_attempts,status,status_reason,next_due_at::text AS next_due_at,
+           last_attempted_at::text AS last_attempted_at,last_enqueued_at::text AS last_enqueued_at,
+           last_job_id::text AS last_job_id,last_blocked_at::text AS last_blocked_at,
+           last_blocked_code,row_version,created_at::text AS created_at,updated_at::text AS updated_at`,
+        [tenantId, sourceId, mode, intervalMinutes, maxAttempts, userId],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('RESEARCH_FRESHNESS_POLICY_INSERT_FAILED');
+      await this.auditInTransaction(client, {
+        tenantId, actorUserId: userId, action: 'RESEARCH_FRESHNESS_POLICY_CREATED',
+        resourceType: 'RESEARCH_SOURCE_FRESHNESS_POLICY', resourceId: String(row.id),
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { sourceId, mode, intervalMinutes, maxAttempts,
+          sourceRevision: Number(source.source_revision), rightsVersion: Number(source.rights_version) },
+      });
+      return row;
+    });
+  }
+
+  async listFreshnessPolicy(userId: string, tenantId: string, sourceId: string) {
+    this.validateScope(userId, tenantId);
+    this.uuid(sourceId, 'sourceId');
+    const source = await this.database.query(
+      `SELECT id FROM research_sources WHERE id=$1 AND tenant_id=$2 AND namespace='TENANT'`,
+      [sourceId, tenantId], { tenantId, userId },
+    );
+    if (!source.rows[0]) throw new NotFoundException('Tenant research source not found');
+    const result = await this.database.query(
+      `SELECT id::text AS id,source_id::text AS source_id,mode,interval_minutes,max_attempts,
+          status,status_reason,next_due_at::text AS next_due_at,
+          last_attempted_at::text AS last_attempted_at,last_enqueued_at::text AS last_enqueued_at,
+          last_job_id::text AS last_job_id,last_blocked_at::text AS last_blocked_at,last_blocked_code,
+          row_version,created_at::text AS created_at,updated_at::text AS updated_at
+         FROM research_source_freshness_policies
+        WHERE tenant_id=$1 AND source_id=$2
+        ORDER BY created_at DESC,id DESC LIMIT 1`,
+      [tenantId, sourceId], { tenantId, userId },
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async decideFreshnessPolicy(
+    userId: string, tenantId: string, policyId: string,
+    dto: DecideResearchFreshnessPolicyDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId);
+    this.uuid(policyId, 'policyId');
+    const reason = this.text(dto.reason, 'reason', 500);
+    if (reason.length < 8) throw new BadRequestException('Freshness policy decisions require a reason of at least 8 characters');
+    return this.database.transaction({ tenantId, userId }, async (client: PoolClient) => {
+      const selected = await client.query<DbRow>(
+        `SELECT id::text AS id,source_id::text AS source_id,status,row_version
+           FROM research_source_freshness_policies WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+        [policyId, tenantId],
+      );
+      const policy = selected.rows[0];
+      if (!policy) throw new NotFoundException('Research freshness policy not found');
+      const nextStatus = dto.decision === 'PAUSE' ? 'PAUSED' : dto.decision === 'RESUME' ? 'ACTIVE' : 'RETIRED';
+      const allowed = (dto.decision === 'PAUSE' && policy.status === 'ACTIVE')
+        || (dto.decision === 'RESUME' && policy.status === 'PAUSED')
+        || (dto.decision === 'RETIRE' && ['ACTIVE', 'PAUSED'].includes(String(policy.status)));
+      if (!allowed) throw new ConflictException('Invalid research freshness policy lifecycle transition');
+      const updated = await client.query<DbRow>(
+        `UPDATE research_source_freshness_policies
+            SET status=$1,status_reason=$2,updated_by=$3,row_version=row_version+1,
+                next_due_at=CASE WHEN $1='ACTIVE' THEN clock_timestamp() ELSE next_due_at END,
+                updated_at=clock_timestamp()
+          WHERE id=$4 AND tenant_id=$5 AND row_version=$6
+          RETURNING id::text AS id,source_id::text AS source_id,mode,interval_minutes,max_attempts,
+            status,status_reason,next_due_at::text AS next_due_at,row_version,
+            last_attempted_at::text AS last_attempted_at,last_enqueued_at::text AS last_enqueued_at,
+            last_job_id::text AS last_job_id,last_blocked_at::text AS last_blocked_at,last_blocked_code`,
+        [nextStatus, reason, userId, policyId, tenantId, policy.row_version],
+      );
+      if (!updated.rows[0]) throw new ConflictException('Research freshness policy changed concurrently; reload before retrying');
+      await this.auditInTransaction(client, {
+        tenantId, actorUserId: userId, action: 'RESEARCH_FRESHNESS_POLICY_' + dto.decision,
+        resourceType: 'RESEARCH_SOURCE_FRESHNESS_POLICY', resourceId: policyId,
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { sourceId: policy.source_id, previousStatus: policy.status, nextStatus, reason },
+      });
+      return updated.rows[0];
+    });
+  }
+
+  /** Materialize due policies into the durable ingestion queue; this does not run a crawler or model. */
+  async materializeDueFreshnessJobs(
+    userId: string, tenantId: string, limit = 25,
+    requestId: string | null = null, traceId: string | null = null,
+  ) {
+    this.validateScope(userId, tenantId);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('Freshness materialization limit must be between 1 and 100');
+    }
+    return this.database.transaction({
+      tenantId, userId, advisoryLockKey: 'research-freshness-materializer:' + tenantId,
+    }, async (client: PoolClient) => {
+      const due = await client.query<DbRow>(
+        `SELECT p.id::text AS policy_id,p.source_id::text AS source_id,p.mode,
+            p.interval_minutes,p.max_attempts,p.next_due_at::text AS next_due_at,p.row_version
+           FROM research_source_freshness_policies p
+          WHERE p.tenant_id=$1 AND p.status='ACTIVE' AND p.next_due_at<=clock_timestamp()
+            AND NOT EXISTS (
+              SELECT 1 FROM research_ingestion_jobs j
+               WHERE j.tenant_id=p.tenant_id AND j.source_id=p.source_id
+                 AND j.status IN ('QUEUED','RUNNING','PAUSED')
+            )
+          ORDER BY p.next_due_at,p.id LIMIT $2
+          FOR UPDATE OF p SKIP LOCKED`,
+        [tenantId, limit],
+      );
+      const jobs: Array<Record<string, unknown>> = [];
+      let queuedCount = 0, replayedCount = 0, blockedCount = 0;
+      for (const policy of due.rows) {
+        let source: SourceRow;
+        try {
+          source = await this.lockSource(client, tenantId, String(policy.source_id));
+          this.assertSourceRights(source, String(policy.mode));
+        } catch (error) {
+          if (!(error instanceof ForbiddenException)) throw error;
+          await client.query(
+            `UPDATE research_source_freshness_policies
+                SET last_attempted_at=clock_timestamp(),last_blocked_at=clock_timestamp(),
+                    last_blocked_code='SOURCE_RIGHTS_NOT_CURRENT',
+                    next_due_at=clock_timestamp()+make_interval(mins => interval_minutes),
+                    row_version=row_version+1,updated_at=clock_timestamp()
+              WHERE id=$1 AND tenant_id=$2 AND row_version=$3 AND status='ACTIVE'`,
+            [policy.policy_id, tenantId, policy.row_version],
+          );
+          blockedCount += 1;
+          continue;
+        }
+
+        const scheduledFor = new Date(String(policy.next_due_at));
+        if (!Number.isFinite(scheduledFor.getTime())) throw new Error('RESEARCH_FRESHNESS_SCHEDULE_TIMESTAMP_INVALID');
+        const scheduledForIso = scheduledFor.toISOString();
+        const idempotencyKey = 'freshness:' + String(policy.policy_id) + ':' +
+          this.hash({ scheduledFor: scheduledForIso }).slice(0, 32);
+        const sourceSnapshot = this.sourceSnapshot(source);
+        const rightsSnapshot = this.rightsSnapshot(source);
+        const rightsFingerprint = this.hash(rightsSnapshot);
+        const maxAttempts = Number(policy.max_attempts);
+        const mode = String(policy.mode);
+        const requestHash = this.hash({
+          sourceId: String(policy.source_id), mode, maxAttempts,
+          sourceRevision: Number(source.source_revision), rightsVersion: Number(source.rights_version),
+          rightsFingerprint,
+        });
+        const inserted = await client.query<DbRow>(
+          `INSERT INTO research_ingestion_jobs (
+             tenant_id,namespace,source_id,mode,status,stage,progress_percent,attempt_count,max_attempts,
+             idempotency_key,request_hash,source_revision,rights_version,rights_fingerprint,
+             rights_snapshot,source_snapshot,resume_checkpoint,correlation_id,created_by
+           )
+           VALUES ($1,'TENANT',$2,$3,'QUEUED','QUEUED',0,0,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'{}'::jsonb,$12,$13)
+           ON CONFLICT (tenant_id,source_id,idempotency_key) DO NOTHING RETURNING *`,
+          [tenantId, policy.source_id, mode, maxAttempts, idempotencyKey, requestHash,
+            Number(source.source_revision), Number(source.rights_version), rightsFingerprint,
+            JSON.stringify(rightsSnapshot), JSON.stringify(sourceSnapshot),
+            this.correlationId(requestId, traceId), userId],
+        );
+        let job = inserted.rows[0];
+        let replayed = false;
+        if (!job) {
+          const existing = await client.query<DbRow>(
+            `SELECT * FROM research_ingestion_jobs
+              WHERE tenant_id=$1 AND source_id=$2 AND idempotency_key=$3 FOR SHARE`,
+            [tenantId, policy.source_id, idempotencyKey],
+          );
+          job = existing.rows[0];
+          if (!job) throw new Error('RESEARCH_FRESHNESS_IDEMPOTENCY_LOOKUP_FAILED');
+          if (String(job.request_hash) !== requestHash) {
+            throw new ConflictException('Freshness schedule replay conflicts with a different source or rights snapshot');
+          }
+          replayed = true;
+          replayedCount += 1;
+        } else {
+          queuedCount += 1;
+          await this.appendEvent(client, job, {
+            eventType: 'JOB_QUEUED', fromStatus: null, toStatus: 'QUEUED', actorUserId: userId,
+            detail: {
+              mode, sourceRevision: Number(source.source_revision), rightsVersion: Number(source.rights_version),
+              trigger: 'FRESHNESS_SCHEDULE', freshnessPolicyId: String(policy.policy_id), scheduledFor: scheduledForIso,
+            },
+          });
+          await this.auditInTransaction(client, {
+            tenantId, actorUserId: userId, action: 'INGESTION_JOB_FRESHNESS_SCHEDULED',
+            resourceType: 'RESEARCH_INGESTION_JOB', resourceId: String(job.id),
+            correlationId: this.correlationId(requestId, traceId),
+            payload: { sourceId: String(policy.source_id), policyId: String(policy.policy_id),
+              mode, scheduledFor: scheduledForIso, sourceRevision: Number(source.source_revision),
+              rightsVersion: Number(source.rights_version) },
+          });
+        }
+        const cursor = await client.query(
+          `UPDATE research_source_freshness_policies
+              SET last_attempted_at=clock_timestamp(),last_enqueued_at=clock_timestamp(),
+                  last_job_id=$1,last_blocked_at=NULL,last_blocked_code=NULL,
+                  next_due_at=clock_timestamp()+make_interval(mins => interval_minutes),
+                  row_version=row_version+1,updated_at=clock_timestamp()
+            WHERE id=$2 AND tenant_id=$3 AND row_version=$4 AND status='ACTIVE'`,
+          [job.id, policy.policy_id, tenantId, policy.row_version],
+        );
+        if (cursor.rowCount === 0) throw new ConflictException('Research freshness policy changed while its due job was being materialized');
+        jobs.push({ ...this.safeJob(job), idempotentReplay: replayed, freshness_policy_id: policy.policy_id });
+      }
+      return { scanned: due.rows.length, queued_count: queuedCount, replayed_count: replayedCount, blocked_count: blockedCount, jobs };
     });
   }
 

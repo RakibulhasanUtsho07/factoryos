@@ -238,3 +238,41 @@ BEGIN
 
   RAISE NOTICE 'Research rights, resumable ingestion, extraction provenance and tenant-isolation contract passed';
 END $$;
+
+
+-- Freshness scheduling is a queue materializer, not a hosted crawler/extractor.
+DO $$
+DECLARE definition TEXT;
+BEGIN
+  IF to_regclass('public.research_source_freshness_policies') IS NULL THEN
+    RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_TABLE_MISSING';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c WHERE c.oid=to_regclass('public.research_source_freshness_policies')
+      AND c.relrowsecurity AND c.relforcerowsecurity
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE schemaname='public'
+      AND tablename='research_source_freshness_policies'
+      AND policyname='research_source_freshness_policies_tenant_isolation'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_RLS_NOT_FORCED';
+  END IF;
+  IF to_regclass('public.uq_research_freshness_active_source') IS NULL
+     OR to_regclass('public.idx_research_freshness_due_queue') IS NULL THEN
+    RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_INDEXES_MISSING';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t WHERE t.tgrelid='public.research_source_freshness_policies'::regclass
+      AND t.tgname='research_source_freshness_policy_guard' AND NOT t.tgisinternal AND t.tgenabled<>'D'
+  ) THEN RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_TRIGGER_MISSING'; END IF;
+  SELECT pg_get_functiondef('public.factoryos_guard_research_source_freshness_policy()'::regprocedure)
+    INTO definition;
+  IF definition NOT LIKE '%RESEARCH_FRESHNESS_POLICY_CONFIGURATION_IMMUTABLE%'
+     OR definition NOT LIKE '%RESEARCH_FRESHNESS_POLICY_TRANSITION_INVALID%'
+     OR definition NOT LIKE '%RESEARCH_FRESHNESS_POLICY_DELETE_FORBIDDEN%' THEN
+    RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_DATABASE_GUARD_INCOMPLETE';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='234_research_source_freshness_schedules') THEN
+    RAISE EXCEPTION 'RESEARCH_FRESHNESS_POLICY_MIGRATION_NOT_REGISTERED';
+  END IF;
+END $$;
