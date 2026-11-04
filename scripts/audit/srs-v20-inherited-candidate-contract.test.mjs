@@ -4,11 +4,13 @@ import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 
-const envelope = JSON.parse(readFileSync(
-  new URL('../../docs/srs-v20-inherited-occurrence-candidate-ledger.json.gz.b64', import.meta.url), 'utf8'));
-const raw = gunzipSync(Buffer.from(envelope.payload_base64, 'base64'));
-assert.equal(createHash('sha256').update(raw).digest('hex'), envelope.uncompressed_sha256);
-assert.equal(raw.length, envelope.uncompressed_bytes);
+const manifest = JSON.parse(readFileSync(
+  new URL('../../docs/srs-v20-inherited-occurrence-candidate-ledger.payload-manifest.json', import.meta.url), 'utf8'));
+const payload = manifest.payload_parts.map((part) => readFileSync(
+  new URL('../../docs/' + part, import.meta.url), 'utf8').trim()).join('');
+const raw = gunzipSync(Buffer.from(payload, 'base64'));
+assert.equal(createHash('sha256').update(raw).digest('hex'), manifest.uncompressed_sha256);
+assert.equal(raw.length, manifest.uncompressed_bytes);
 const ledger = JSON.parse(raw.toString('utf8'));
 const rows = ledger.rows;
 const kinds = (kind) => rows.filter((row) => row[4] === kind);
@@ -20,7 +22,8 @@ const priorityCounts = (list) => Object.fromEntries(['P0', 'P1', 'P2'].map((prio
   [priority, list.filter((row) => row[6] === priority).length]));
 
 test('snapshot is byte-integrity protected and source-pinned', () => {
-  assert.equal(envelope.encoding, 'gzip+base64');
+  assert.equal(manifest.encoding, 'gzip+base64');
+  assert.equal(manifest.payload_parts.length, 6);
   assert.equal(ledger.source_artifact_sha256,
     '8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42');
   assert.equal(ledger.source_pdf_page_count, 93);
@@ -47,8 +50,8 @@ test('reused IDs remain separate occurrences rather than being deduplicated', ()
 
 test('row snapshot fails closed: no active classification or owner approval inferred', () => {
   assert.ok(rows.every((row) => row.length === 9));
-  assert.ok(normative.every((row) => typeof row[7] === 'string' && /^[0-9a-f]{64}$/.test(row[7])));
-  assert.ok(rows.every((row) => row[7] === null || /^[0-9a-f]{64}$/.test(row[7])));
+  assert.ok(normative.every((row) => typeof row[7] === 'string' && Buffer.from(row[7], 'base64url').length === 32));
+  assert.ok(rows.every((row) => row[7] === null || Buffer.from(row[7], 'base64url').length === 32));
   assert.ok(rows.every((row) => ['TABLE_ROW_CANDIDATE', 'NON_NORMATIVE_CONTEXT_CANDIDATE'].includes(row[8])));
   assert.equal(ledger.scope_claim.inherited_v20_cumulative_requirements, 900);
   assert.equal(ledger.normative_requirement_table_candidate_count, 809);
