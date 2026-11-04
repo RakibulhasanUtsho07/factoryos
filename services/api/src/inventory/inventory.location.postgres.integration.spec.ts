@@ -2923,7 +2923,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const beforeOutputMovementFailure = await readReworkOutputRollbackSnapshot();
     await adminPool.query(`
       CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
-      RETURNS trigger LANGUAGE plpgsql AS $
+      RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT'
           AND NEW.reference_id::text = '${reworkOrder.id}' THEN
@@ -2931,7 +2931,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         END IF;
         RETURN NEW;
       END;
-      $;
+      $$;
     `);
     await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
     await adminPool.query(`
