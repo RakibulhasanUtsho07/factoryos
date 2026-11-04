@@ -29,3 +29,7 @@ Do not update the current priority or remove an ID from the release gate based o
 All 37 IDs remain `OPEN_SOURCE_OWNER_REVIEW`; no source-owner approval or canonical normative priority has been assumed. The machine-readable gate register includes every one as a conservative candidate until classified. That keeps the release gate safe while exposing the actual work needed to reconcile the count.
 
 The relationship between 950 cumulative scope and 899 distinct IDs remains **not numerically reconciled**. Source-owner decisions from this review must be joined to the source-occurrence ledger specified in [scope reconciliation](srs-requirement-scope-reconciliation.md) before this issue can be called closed.
+
+## 2026-11-04 page-level reinspection
+
+The original 37-row diagnostic has now been supplemented by a page-level review of the byte-hash-verified Library PDF. See [the 2026-11-04 page review](srs-priority-exception-source-review-2026-11-04.md) for all IDs, PDF pages, literal context and conservative machine assessments. This is not an owner disposition: every row remains `OPEN_SOURCE_OWNER_REVIEW` until Product/Requirements and Architecture record the canonical occurrence/priority or approved cross-reference/supersession/exclusion decision in the CSV. Track approvals and the 950-row population in [issue #348](https://github.com/RakibulhasanUtsho07/factoryos/issues/348).
