@@ -6,7 +6,9 @@ on:
       - '.github/workflows/srs-revision-lineage-candidate-contract.yml'
       - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.json'
       - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.md'
+      - 'docs/srs-v19-growth-delta-occurrence-ledger.json'
       - 'scripts/audit/srs-revision-lineage-candidate-manifest.test.mjs'
+      - 'scripts/audit/verify-srs-v19-growth-delta-occurrences.py'
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
@@ -29,5 +31,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: Validate v1.9 source verifier syntax
+        run: python -m py_compile scripts/audit/verify-srs-v19-growth-delta-occurrences.py
       - name: Validate candidate source hashes, version conflicts and scope ledger
         run: node --test scripts/audit/srs-revision-lineage-candidate-manifest.test.mjs
