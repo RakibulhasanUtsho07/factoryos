@@ -1,0 +1,33 @@
+name: SRS Revision Lineage Candidate Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/srs-revision-lineage-candidate-contract.yml'
+      - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.json'
+      - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.md'
+      - 'scripts/audit/srs-revision-lineage-candidate-manifest.test.mjs'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - '.github/workflows/srs-revision-lineage-candidate-contract.yml'
+      - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.json'
+      - 'docs/srs-revision-lineage-candidate-manifest-2026-11-04.md'
+      - 'scripts/audit/srs-revision-lineage-candidate-manifest.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-revision-lineage:
+    name: Validate SRS revision lineage and scope arithmetic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate candidate source hashes, version conflicts and scope ledger
+        run: node --test scripts/audit/srs-revision-lineage-candidate-manifest.test.mjs
