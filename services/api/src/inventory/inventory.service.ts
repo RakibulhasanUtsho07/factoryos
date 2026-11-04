@@ -368,17 +368,6 @@ export class InventoryService {
           ON source_order.id = wo.source_order_id
          AND source_order.tenant_id = wo.tenant_id
          AND source_order.factory_id = wo.factory_id
-        LEFT JOIN work_order_material_reservations wmr
-          ON wmr.requirement_id = req.id
-         AND wmr.work_order_id = wo.id
-         AND wmr.tenant_id = wo.tenant_id
-         AND wmr.factory_id = wo.factory_id
-         AND wmr.item_id = req.component_item_id
-        LEFT JOIN inventory_reservations ir
-          ON ir.id = wmr.reservation_id
-         AND ir.tenant_id = wmr.tenant_id
-         AND ir.factory_id = wmr.factory_id
-         AND ir.item_id = req.component_item_id
         LEFT JOIN LATERAL (
           SELECT SUM(COALESCE(ir2.remaining_quantity, 0) + COALESCE(ir2.consumed_quantity, 0))
             AS committed_quantity
