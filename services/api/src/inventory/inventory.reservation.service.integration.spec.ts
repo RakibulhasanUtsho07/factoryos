@@ -184,6 +184,12 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     const inspectionId = randomUUID();
     const qualityHoldId = randomUUID();
     const fixtureKey = randomUUID();
+    const receiptLocationResult = await adminPool.query<{ id: string }>(
+      "SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE' LIMIT 1",
+      [tenantId, factoryId],
+    );
+    const receiptLocationId = receiptLocationResult.rows[0]?.id;
+    if (!receiptLocationId) throw new Error('Factory UNASSIGNED location is missing for the GRN availability fixture');
 
     const mutableTables = [
       'quality_holds',
@@ -258,16 +264,17 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
       await adminPool.query(
         `
         INSERT INTO goods_receipts (
-          id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+          id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
           created_by_user_id, idempotency_key, request_hash, correlation_id, posted_at
         )
-        VALUES ($1, $2, $3, $4, $5, 'POSTED', $6, $7, $8, $9, clock_timestamp())
+        VALUES ($1, $2, $3, $4, $5, $6, 'POSTED', $7, $8, $9, $10, clock_timestamp())
         `,
         [
           goodsReceiptId,
           tenantId,
           factoryId,
           purchaseOrderId,
+          receiptLocationId,
           'GRN-AVAIL-' + fixtureKey.slice(0, 12),
           TEST_USER_ID,
           'grn-availability-' + fixtureKey,
@@ -500,6 +507,8 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     const workOrderId = randomUUID();
     const requirementId = randomUUID();
     const suffix = randomUUID().slice(0, 12);
+    const approverUserId = randomUUID();
+    const approverSuffix = randomUUID().slice(0, 12);
 
     const mutableTables = [
       'work_order_material_requirements',
@@ -513,6 +522,16 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     ];
 
     try {
+      await adminPool.query(
+        `INSERT INTO users (id, external_subject, email, display_name, status)
+         VALUES ($1, $2, $3, 'Availability integration approver', 'ACTIVE')`,
+        [
+          approverUserId,
+          'availability-approver-' + approverSuffix,
+          'availability-approver-' + approverSuffix + '@factoryos.test',
+        ],
+      );
+
       await reservationService.createReservation(
         TEST_USER_ID, tenantId, factoryId, componentItemId, { quantity: 2 },
         'availability-first-wo-' + suffix, randomUUID(), randomUUID(),
@@ -567,7 +586,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
         )
         VALUES ($1, $2, $3, $4, 1, 'APPROVED', CURRENT_DATE, 100,
                 'Availability first-affected work-order fixture', 1, $5, $6,
-                $7, $7, $7, clock_timestamp())
+                $7, $7, $8, clock_timestamp())
         `,
         [
           productVersionId,
@@ -577,6 +596,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
           'product-version-availability-' + suffix,
           'd'.repeat(64),
           TEST_USER_ID,
+          approverUserId,
         ],
       );
 
@@ -679,6 +699,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
         await adminPool.query('DELETE FROM product_definitions WHERE id = $1', [productId]);
         await adminPool.query('DELETE FROM order_lines WHERE id = $1', [orderLineId]);
         await adminPool.query('DELETE FROM orders WHERE id = $1', [orderId]);
+        await adminPool.query('DELETE FROM users WHERE id = $1', [approverUserId]);
       } finally {
         for (const table of mutableTables) {
           await adminPool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER USER');
