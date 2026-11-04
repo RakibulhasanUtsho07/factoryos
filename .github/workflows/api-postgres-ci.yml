@@ -539,6 +539,18 @@ jobs:
           echo "Applying tenant-scoped SCIM credential migration after the shared CI grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/230_scim_tenant_deprovision_credentials.sql
+          echo "Seed pre-existing SCIM column grants to prove the privilege reset removes them"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT SELECT (id, created_at, revoked_at),
+                INSERT (id, created_at),
+                UPDATE (status, token_sha256, issuer, scopes, expires_at)
+          ON TABLE public.scim_provisioning_credentials TO factoryos_app;
+          GRANT SELECT (issuer, scopes, expires_at, created_at, last_used_at, revoked_at),
+                INSERT (id, created_at, last_used_at, revoked_at),
+                UPDATE (tenant_id, issuer, token_sha256, scopes, expires_at, last_used_at)
+          ON TABLE public.scim_provisioning_credentials TO factoryos_scim_provisioner;
+          SQL
           echo "Replacing shared CI table grants with SCIM's reviewed column-level grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 \
