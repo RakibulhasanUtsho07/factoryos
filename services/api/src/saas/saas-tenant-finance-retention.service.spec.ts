@@ -113,7 +113,7 @@ describe('SaasTenantFinanceRetentionService', () => {
       replayed: false,
     });
     expect(adapter.execute).toHaveBeenCalledWith(expect.objectContaining({
-      tenantId: tenant, policyVersion: 1, adapterKey: 'finance.adapter.v1',
+      tenantId: tenant, mode: 'EXECUTE', policyVersion: 1, adapterKey: 'finance.adapter.v1',
       retentionDays: 365, idempotencyKey: 'finance-run-v1',
     }));
     expect(adapter.verify).toHaveBeenCalled();
@@ -122,6 +122,27 @@ describe('SaasTenantFinanceRetentionService', () => {
       expect.objectContaining({ action: 'FINANCE_RETENTION_COMPLETED' }),
     );
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('DELETE FROM public.'))).toBe(false);
+  });
+
+  it('persists a safe adapter failure code and explicit retained residuals as BLOCKED', async () => {
+    service = new SaasTenantFinanceRetentionService(database as never, iam as never, audit as never, adapter as never);
+    adapter.execute.mockResolvedValue({
+      plannedRows: '4', deletedRows: '0', residualRows: '4',
+      tableManifest: { scope: 'FINANCE_USAGE_LEDGER_ONLY', deletionPermitted: false },
+      manifestDigest, adapterReceiptReference: 'provider.finance.execute.1',
+      failureCode: 'FINANCE_LEDGER_IMMUTABLE_REQUIRES_APPROVED_ARCHIVE_PURGE',
+    });
+    adapter.verify.mockResolvedValue({
+      verifiedManifestDigest: manifestDigest, residualRows: '4', verificationReference: 'verify.finance.blocked.1',
+    });
+
+    const result = await service.runPolicy(tenant, executor, 1, input);
+    expect(result.run).toMatchObject({
+      status: 'BLOCKED', plannedRows: '4', deletedRows: '0', residualRows: '4',
+      failureCode: 'FINANCE_LEDGER_IMMUTABLE_REQUIRES_APPROVED_ARCHIVE_PURGE',
+      receiptScope: 'FINANCE_USAGE_LEDGER_ONLY',
+    });
+    expect(adapter.verify).toHaveBeenCalled();
   });
 
   it('blocks finance deletion when a matching business-data legal hold is active', async () => {

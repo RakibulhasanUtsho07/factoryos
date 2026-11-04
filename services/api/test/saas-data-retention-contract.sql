@@ -8,7 +8,26 @@ BEGIN
     'saas_tenant_data_erasure_requests',
     'saas_tenant_data_export_preservation_attestations',
     'saas_tenant_data_retention_runs',
-    'saas_tenant_data_erasure_runs'
+    'saas_tenant_data_erasure_runs',
+    'saas_tenant_finance_retention_policies',
+    'saas_tenant_finance_retention_runs',
+    'saas_usage_rate_cards',
+    'saas_usage_events',
+    'saas_usage_adjustments',
+    'saas_usage_reconciliations',
+    'saas_usage_budgets',
+    'saas_budget_evaluations',
+    'saas_budget_alerts',
+    'saas_budget_alert_acknowledgements',
+    'saas_workload_control_events',
+    'saas_provider_cost_events',
+    'saas_provider_cost_reconciliations',
+    'saas_billing_provider_accounts',
+    'saas_billing_provider_account_events',
+    'saas_billing_close_runs',
+    'saas_billing_close_events',
+    'saas_billing_provider_webhook_events',
+    'saas_billing_reconciliation_results'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c
@@ -61,6 +80,43 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_data_erasure_runs_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'erasure execution receipts must be immutable';
   END IF;
+
+  -- The finance retention inventory adapter is read-only by design. All listed
+  -- usage, budget, provider-cost and commercial-billing tables must retain forced
+  -- tenant RLS and an enabled DELETE guard; no generic erasure may bypass them.
+  FOREACH table_name IN ARRAY ARRAY[
+    'saas_usage_rate_cards',
+    'saas_usage_events',
+    'saas_usage_adjustments',
+    'saas_usage_reconciliations',
+    'saas_usage_budgets',
+    'saas_budget_evaluations',
+    'saas_budget_alerts',
+    'saas_budget_alert_acknowledgements',
+    'saas_workload_control_events',
+    'saas_provider_cost_events',
+    'saas_provider_cost_reconciliations',
+    'saas_billing_provider_accounts',
+    'saas_billing_provider_account_events',
+    'saas_billing_close_runs',
+    'saas_billing_close_events',
+    'saas_billing_provider_webhook_events',
+    'saas_billing_reconciliation_results'
+  ] LOOP
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid
+      WHERE n.nspname='public' AND c.relname=table_name
+        AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+        AND pg_get_triggerdef(t.oid) ILIKE '%DELETE%'
+        AND p.prosrc ILIKE '%RAISE EXCEPTION%'
+    ) THEN
+      RAISE EXCEPTION 'immutable DELETE guard is missing for finance ledger relation %', table_name;
+    END IF;
+  END LOOP;
   IF EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname='chk_saas_retention_run_mode'

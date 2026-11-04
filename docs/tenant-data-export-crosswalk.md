@@ -154,3 +154,14 @@ When adding, removing or moving a table:
 6. Run the crosswalk contract plus the full API PostgreSQL suite on the exact candidate SHA.
 
 A passing crosswalk proves repository-list consistency only. It does not turn a table into an approved legal-retention class, prove provider copies were enumerated, or establish whole-tenant export/erasure. AS-137 / NFR-PROD-14 remain **PARTIAL** until all required local and external categories have their own approved adapters and independently verified release evidence.
+
+
+## Finance ledger export and retention boundary
+
+The existing BUSINESS_DATA adapter exports the reviewed SaaS metering rows listed above (usage events/adjustments/reconciliations, budget evaluations/alerts/acknowledgements, workload-control events, and provider-cost events/reconciliations). The EFFECTIVE_DATED_MASTER_DATA adapter exports the reviewed usage rate-card and budget-policy rows. These mappings are protected by the migration-owned category registry and column-contract gate; they do not cover every SaaS control-plane record.
+
+Commercial billing account configuration, account-version events, billing-close runs/events, provider webhook events and reconciliation results are classified as protected SAAS_CONTROL_PLANE records, not ordinary BUSINESS_DATA. They are deliberately excluded from the generic transfer allowlist. The Finance inventory adapter can count aged rows in these immutable/versioned relations but does not make them exportable or deletable.
+
+The 17-relation finance inventory adapter uses tenant predicates and verifies forced RLS plus an enabled DELETE guard before counting rows. It produces a deterministic manifest and independent digest read-back. EXECUTE is a non-destructive check: if any aged immutable finance rows exist it writes a BLOCKED residual receipt. There is no automatic archive purge. A distinct finance owner must approve the legal basis, archive format, destination, restore process and exact retention disposition before a portable finance-ledger adapter can be added.
+
+The portable export boundary remains unchanged: INTEGRATION_METADATA and FILE_REFERENCES have no source adapter and fail before emitting rows. AI_CONTEXT and LEARNING_EVALUATION are optional, bounded table lists only. Cross-version COMPATIBLE validation does not itself transform rows; the current PostgreSQL target importer is exact-schema only, and TRANSFORM_REQUIRED remains blocked until a real reviewed mapping/transform adapter exists.

@@ -208,6 +208,7 @@ export interface SaasTenantExternalDataPropagationAdapter {
 
 export interface SaasFinanceRetentionContext {
   tenantId: string;
+  mode: 'DRY_RUN' | 'EXECUTE';
   policyVersion: number;
   retentionDays: number;
   cutoffAt: string;
@@ -224,6 +225,8 @@ export interface SaasFinanceRetentionResult {
   tableManifest: Record<string, unknown>;
   manifestDigest: string;
   adapterReceiptReference: string;
+  /** A safe, explicit reason that keeps an otherwise valid run BLOCKED. */
+  failureCode?: string | null;
 }
 
 export interface SaasTenantFinanceRetentionAdapter {

@@ -185,7 +185,7 @@ export class SaasTenantFinanceRetentionService {
     const cutoffAt = cutoffResult.rows[0]?.cutoff_at;
     if (!cutoffAt) throw new ConflictException('Unable to calculate finance retention cutoff');
     const context: SaasFinanceRetentionContext = {
-      tenantId, policyVersion: Number(policy.version), retentionDays: Number(policy.retention_days),
+      tenantId, mode, policyVersion: Number(policy.version), retentionDays: Number(policy.retention_days),
       cutoffAt, legalBasis: policy.legal_basis, adapterKey: policy.finance_adapter_key, idempotencyKey, reason,
     };
 
@@ -201,7 +201,13 @@ export class SaasTenantFinanceRetentionService {
         throw new ConflictException('Finance adapter must return a SHA-256 manifest and an opaque provider receipt reference');
       }
       const verified = await this.adapter.verify(context, result);
-      if (!DIGEST.test(verified.verifiedManifestDigest) || verified.verifiedManifestDigest !== result.manifestDigest
+      if (result.failureCode) {
+        if (!/^[A-Z][A-Z0-9_]{1,99}$/.test(result.failureCode)) {
+          throw new ConflictException('Finance adapter failureCode must be a bounded uppercase code');
+        }
+        status = 'BLOCKED';
+        failureCode = result.failureCode;
+      } else if (!DIGEST.test(verified.verifiedManifestDigest) || verified.verifiedManifestDigest !== result.manifestDigest
         || !OPAQUE.test(verified.verificationReference) || verified.residualRows !== '0' || residualRows !== '0'
         || (mode === 'DRY_RUN' && deletedRows !== '0')
         || (mode === 'EXECUTE' && deletedRows !== plannedRows)) {

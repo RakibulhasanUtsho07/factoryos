@@ -68,3 +68,28 @@ The new Redis runtime is not yet a migration of any previously existing external
 This still does **not** prove whole-tenant provider closure. Search indexes, vector stores, learning artifacts, external providers, replicas and backups lack complete reviewed adapters. Production configuration, secret-manager integration, controlled staging acceptance, backup expiry/immutability and provider-specific retention behavior require evidence.
 
 AS-137/NFR-PROD-14 remain **Partial** until all required store/category targets have approved configured adapters and controlled staging evidence passes. CI uses isolated RustFS and Redis services with synthetic tenant keys, not production credentials or customer objects; no production/customer deletion is claimed.
+
+
+## Finance retention inventory adapter (2026-11-03)
+
+The module now registers a read-only PostgreSQL finance inventory adapter for
+usage, budget, provider-cost and commercial-billing ledgers. Its 17-relation
+allowlist, cutoff anchors, bounded row budget, forced-RLS and immutable DELETE
+guard checks are documented in
+`docs/tenant-wide-export-erasure-gap-closure-20261103.md`. It can preview and
+re-read a deterministic manifest. EXECUTE cannot delete finance rows: aged
+immutable records produce a durable BLOCKED receipt with retained residuals.
+A separate legal/archive owner approval and archive-purge adapter remain
+required for automatic finance retention.
+
+The required external store-kind contract includes OBJECT_STORAGE, CACHE,
+SEARCH_INDEX, VECTOR_STORE, LEARNING_ARTIFACT, EXTERNAL_PROVIDER, REPLICA and
+BACKUP. Only WMS POD S3 and the new tenant Redis namespace currently have
+narrow application adapters; S3 BACKUP is registered but activation remains
+disabled until independent writer/provider acceptance. Search/vector/learning/
+external-provider/replica types are unselected and unconfigured and cannot be
+approved. Their signed coverage disposition must remain UNRESOLVED/BLOCKED
+rather than NOT_APPLICABLE without complete trusted provider inventory.
+
+AS-137 / NFR-PROD-14 remain PARTIAL. Passing CI proves repository contracts
+and synthetic fixtures, not a live production deletion.
