@@ -1,0 +1,29 @@
+name: SRS v2.1 Delta Ledger Contract
+
+on:
+  pull_request:
+    paths:
+      - 'docs/srs-v21-delta-occurrence-ledger.json'
+      - 'scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs'
+      - '.github/workflows/srs-v21-delta-ledger-contract.yml'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'docs/srs-v21-delta-occurrence-ledger.json'
+      - 'scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs'
+      - '.github/workflows/srs-v21-delta-ledger-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: SRS v2.1 delta occurrence ledger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate the hash-pinned delta population
+        run: node --test scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs
