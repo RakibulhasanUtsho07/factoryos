@@ -137,6 +137,7 @@ export default function AiAgentControlCenterPage() {
 
   const [desiredControl, setDesiredControl] = useState<"ENABLED" | "PAUSED" | "RESTRICTED">("ENABLED");
   const [controlReason, setControlReason] = useState("");
+  const [controlScopes, setControlScopes] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
@@ -284,6 +285,10 @@ export default function AiAgentControlCenterPage() {
         const control = asRecord(asRecord(controlResult.value).control);
         const state = valueText(control.status, "ENABLED");
         setDesiredControl(state === "PAUSED" || state === "RESTRICTED" ? state : "ENABLED");
+        const scopes = Array.isArray(control.executionScopes)
+          ? control.executionScopes.filter((scope): scope is string => typeof scope === "string")
+          : [];
+        setControlScopes(scopes.join(", "));
       }
       setDetailsLoading(false);
     });
@@ -328,16 +333,18 @@ export default function AiAgentControlCenterPage() {
       setPageError("Add an operator reason before changing agent operational control.");
       return;
     }
+    const scopes = controlScopes.split(/[\\n,]/).map((scope) => scope.trim()).filter(Boolean);
+    const uniqueScopes = [...new Set(scopes)];
+    if (desiredControl === "RESTRICTED" && uniqueScopes.length === 0) {
+      setPageError("Choose one or more allowed execution scopes, or use PAUSED to stop all execution.");
+      return;
+    }
     setBusyAction("control");
     setPageError("");
     try {
-      const existingControl = asRecord(asRecord(agentControl).control);
-      const scopes = Array.isArray(existingControl.executionScopes)
-        ? existingControl.executionScopes.filter((scope): scope is string => typeof scope === "string")
-        : [];
       await client.setAgentControl(selectedAgentId, {
         status: desiredControl,
-        execution_scopes: scopes,
+        execution_scopes: desiredControl === "RESTRICTED" ? uniqueScopes : [],
         reason: controlReason.trim(),
       });
       setControlReason("");
@@ -595,6 +602,16 @@ export default function AiAgentControlCenterPage() {
                         <input value={controlReason} onChange={(event) => setControlReason(event.target.value)} maxLength={1000} placeholder="Incident, safety or operations reason" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" />
                       </label>
                     </div>
+                    {desiredControl === "RESTRICTED" && (
+                      <label className="mt-3 block text-xs font-semibold text-slate-700">
+                        Allowed execution scopes
+                        <textarea value={controlScopes} onChange={(event) => setControlScopes(event.target.value)} rows={3} placeholder="Enter exact scope identifiers separated by commas" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" />
+                        <span className="mt-1 block font-normal leading-5 text-slate-500">
+                          Baseline: {Array.isArray(selectedAgent?.executionScopes) ? selectedAgent.executionScopes.join(", ") || "No baseline scopes" : "Not loaded"}.
+                          Use only a subset. The API rejects scope widening. Choose PAUSED to stop all execution.
+                        </span>
+                      </label>
+                    )}
                     <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
                       {busyAction === "control" ? "Updating…" : "Record operational control"}
                     </button>
