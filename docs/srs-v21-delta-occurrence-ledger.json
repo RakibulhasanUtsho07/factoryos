@@ -21,7 +21,7 @@
     "rowIndex",
     "normalizedWordingSha256"
   ],
-  "normalization": "Unicode NFC; remove whitespace after a line-wrap hyphen; collapse remaining whitespace to one ASCII space; SHA-256 over UTF-8 normalized source wording.",
+  "normalization": "Unicode NFC; remove only a hyphen immediately followed by a line break and wrapping whitespace; preserve intentional hyphen-space constructions such as 'role- and attribute-based'; collapse remaining whitespace to one ASCII space; SHA-256 over UTF-8 normalized source wording.",
   "extractionMethod": "pdfplumber ID/Requirement/Priority table extraction on source PDF pages 96–99; blank-ID continuation row at page 97 is appended to FR-PROD-12; rendered pages 96–99 were visually inspected.",
   "approvalBoundary": "Machine-extracted source-row index only. The source-of-record/owner approval register remains BLOCKED. No source-owner disposition, named reviewer, requirement PASS, or production acceptance is implied.",
   "rows": [
@@ -95,7 +95,7 @@
       96,
       1,
       10,
-      "63ead2f62c3e49c1ba932c86ab2cffb5c365ad9519cf85d4dfe78f8c9a0e28ac"
+      "d7c75108a3ce821c8b1743d673fdacf01950d8a37157735fcaed5ca9db38b7e8"
     ],
     [
       "FR-PROD-10",
