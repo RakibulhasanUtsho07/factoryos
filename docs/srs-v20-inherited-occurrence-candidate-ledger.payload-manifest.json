@@ -41,14 +41,7 @@
     "FR-IOT-09": 2,
     "FR-IOT-10": 2
   },
-  "unresolved_line_candidate_count": 1,
-  "unresolved_line_candidates": [
-    {
-      "source_pdf_page": 6,
-      "requirement_id_candidate": "FR-AIG-03",
-      "disposition": "UNRESOLVED_TABLE_LOCATOR_REVIEW"
-    }
-  ],
+  "unresolved_line_candidate_count": 0,
   "inherited_scope_claim": {
     "requirements": 900,
     "priorities": {
@@ -58,5 +51,12 @@
     },
     "status": "SOURCE_DECLARED_ARITHMETIC_NOT_ROW_LEVEL_RECONCILIATION"
   },
-  "acceptance_boundary": "Candidate extraction only. The output does not establish the active 900-row inherited baseline, canonical IDs, applicability, supersession, duplicates or source-owner acceptance. No requirement is PASS or owner-approved."
+  "acceptance_boundary": "Candidate extraction only. The output does not establish the active 900-row inherited baseline, canonical IDs, applicability, supersession, duplicates or source-owner acceptance. No requirement is PASS or owner-approved.",
+  "parser_false_positive_review": {
+    "source_pdf_page": 6,
+    "token": "FR-AIG-03",
+    "context_requirement_id": "FR-CBB-19",
+    "finding": "The token occurs in requirement wording as a cross-reference and is not positioned in the ID column; the parser's orphan-line scan is now constrained to known ID-column regions.",
+    "status": "COVERED_BY_SYNTHETIC_REGRESSION"
+  }
 }
