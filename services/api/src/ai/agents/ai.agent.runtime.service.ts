@@ -645,7 +645,35 @@ export class AiAgentRuntimeService {
 
     const result = await this.database.query<AgentTaskRow>(
       `
-      SELECT ${this.taskSelectColumns()}
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        decision_id::text AS decision_id,
+        agent_definition_id::text AS agent_definition_id,
+        parent_trace_id::text AS parent_trace_id,
+        actor_user_id::text AS actor_user_id,
+        goal,
+        state,
+        max_steps,
+        max_retries,
+        max_tool_calls,
+        timeout_ms,
+        deadline_at::text AS deadline_at,
+        retry_count,
+        tool_call_count,
+        completed_step_count,
+        current_step_id::text AS current_step_id,
+        context_version,
+        plan_version,
+        context_hash,
+        cancel_requested_at::text AS cancel_requested_at,
+        failure_code,
+        failure_reason,
+        NULL::text AS idempotency_key,
+        version,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
       FROM agent_tasks
       WHERE tenant_id = $1
         AND factory_id = $2
