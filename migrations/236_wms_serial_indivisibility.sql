@@ -1,5 +1,17 @@
 BEGIN;
 
+-- Hold writers off the exact identity/evidence tables from preflight through
+-- trigger installation; otherwise an invalid legacy-shaped write could race
+-- between the check and the new guards becoming active.
+LOCK TABLE
+  traceability_units,
+  product_genealogy_events,
+  inventory_traceability_location_balances,
+  inventory_reservation_traceability_allocations,
+  inventory_reservation_consumption_traceability_allocations,
+  inventory_location_transfers
+IN SHARE ROW EXCLUSIVE MODE;
+
 -- Do not silently bless legacy fractional or duplicated serial state. If a live
 -- database already contains any such rows, stop the migration and reconcile them
 -- with an audited stock-count/ledger correction before installing the guards.
@@ -27,6 +39,21 @@ BEGIN
    AND u.factory_id=b.factory_id AND u.inventory_item_id=b.item_id
   WHERE u.unit_type='SERIAL'
     AND (b.quantity_on_hand NOT IN (0,1) OR b.quantity_reserved NOT IN (0,1));
+
+  SELECT count(*) INTO v_bad_count
+  FROM (
+    SELECT e.tenant_id, e.factory_id, e.target_unit_id
+    FROM product_genealogy_events e
+    JOIN traceability_units target
+      ON target.id=e.target_unit_id AND target.tenant_id=e.tenant_id
+     AND target.factory_id=e.factory_id
+    WHERE target.unit_type='SERIAL' AND e.relationship_type='SPLIT_INTO'
+    GROUP BY e.tenant_id, e.factory_id, e.target_unit_id
+    HAVING count(*) > 1
+  ) duplicate_serial_split_targets;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % serials have multiple legacy SPLIT_INTO parents requiring audited reconciliation', v_bad_count;
+  END IF;
   IF v_bad_count > 0 THEN
     RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial location balances require audited reconciliation', v_bad_count;
   END IF;
@@ -124,6 +151,7 @@ AS $$
 DECLARE
   v_source_type VARCHAR(24);
   v_target_type VARCHAR(24);
+  v_duplicate_serial_split_target BOOLEAN;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RETURN NEW;
@@ -163,6 +191,20 @@ BEGIN
   IF NEW.relationship_type = 'SPLIT_INTO' AND v_source_type = 'SERIAL' THEN
     RAISE EXCEPTION 'a serial identity cannot be split; split a lot into one-unit serial identities instead'
       USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.relationship_type = 'SPLIT_INTO' AND v_target_type = 'SERIAL' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM product_genealogy_events e
+      WHERE e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
+        AND e.target_unit_id=NEW.target_unit_id
+        AND e.relationship_type='SPLIT_INTO'
+    ) INTO v_duplicate_serial_split_target;
+    IF v_duplicate_serial_split_target THEN
+      RAISE EXCEPTION 'a serial can have only one SPLIT_INTO parent identity'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   IF NEW.relationship_type = 'MERGED_INTO'
