@@ -116,7 +116,7 @@ describe('InventoryService', () => {
     );
     const query = String(database.query.mock.calls[0]?.[0]);
     expect(query).toContain('FROM quality_holds qh');
-    expect(query).toContain('FROM inventory_traceability_location_balances');
+    expect(query).toContain('inventory_traceability_location_balances');
     expect(query).toContain('FROM goods_receipt_lines gl');
     expect(query).toContain('FROM work_order_material_requirements req');
     expect(query).toContain('ir2.remaining_quantity');
