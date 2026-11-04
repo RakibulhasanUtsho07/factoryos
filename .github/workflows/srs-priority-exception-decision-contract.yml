@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: srs-priority-exception-decision-\${{ github.workflow }}-\${{ github.ref }}
+  group: srs-priority-exception-decision-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
