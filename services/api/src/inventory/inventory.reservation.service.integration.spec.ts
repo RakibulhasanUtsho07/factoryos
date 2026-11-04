@@ -5,6 +5,7 @@ import { Pool, type PoolClient } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 import { InventoryLocationService } from './inventory.location.service';
+import { InventoryService } from './inventory.service';
 import { InventoryReservationService } from './inventory.reservation.service';
 
 describe('Inventory WMS reservation and first production work-order PostgreSQL integration', () => {
@@ -15,6 +16,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
   let database: ReturnType<typeof createIntegrationDatabase>;
   let reservationService: InventoryReservationService;
   let locationService: InventoryLocationService;
+  let inventoryService: InventoryService;
   let tenantId: string;
   let factoryId: string;
 
@@ -94,6 +96,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     database = createIntegrationDatabase(appPool);
     reservationService = new InventoryReservationService(database as never, audit);
     locationService = new InventoryLocationService(database as never, audit);
+    inventoryService = new InventoryService(database as never, audit);
   });
 
   afterAll(async () => {
@@ -169,6 +172,197 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
       [itemId],
     );
     expect(state.rows[0]).toEqual({ quantity_reserved: '4.0000', reservation_count: '1' });
+  });
+
+  it('projects allocated, quality-quarantined, and outstanding approved-PO quantities from PostgreSQL', async () => {
+    const itemId = await createItem('10.0000');
+    const supplierId = randomUUID();
+    const purchaseOrderId = randomUUID();
+    const purchaseOrderLineId = randomUUID();
+    const goodsReceiptId = randomUUID();
+    const goodsReceiptLineId = randomUUID();
+    const inspectionId = randomUUID();
+    const qualityHoldId = randomUUID();
+    const fixtureKey = randomUUID();
+
+    const mutableTables = [
+      'quality_holds',
+      'quality_inspections',
+      'goods_receipt_lines',
+      'goods_receipts',
+      'purchase_order_lines',
+      'purchase_orders',
+      'suppliers',
+    ];
+
+    try {
+      await reservationService.createReservation(
+        TEST_USER_ID,
+        tenantId,
+        factoryId,
+        itemId,
+        { quantity: 2, reference_type: 'WMS_TEST' },
+        'availability-allocated-' + fixtureKey,
+        randomUUID(),
+        randomUUID(),
+      );
+
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      await adminPool.query(
+        `
+        INSERT INTO suppliers (id, tenant_id, code, name, status, country_code, currency, created_by_user_id)
+        VALUES ($1, $2, $3, 'Availability projection supplier', 'ACTIVE', 'BD', 'BDT', $4)
+        `,
+        [supplierId, tenantId, 'AVAIL-' + fixtureKey.slice(0, 12), TEST_USER_ID],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO purchase_orders (
+          id, tenant_id, factory_id, supplier_id, po_number, status, order_date,
+          expected_delivery_date, currency, payment_terms_days, created_by_user_id,
+          submitted_by_user_id, submitted_at, approved_by_user_id, approved_at,
+          idempotency_key, request_hash, version
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, 'APPROVED', CURRENT_DATE, CURRENT_DATE + 5,
+          'BDT', 0, $6, $6, clock_timestamp(), $6, clock_timestamp(), $7, $8, 3
+        )
+        `,
+        [
+          purchaseOrderId,
+          tenantId,
+          factoryId,
+          supplierId,
+          'PO-AVAIL-' + fixtureKey.slice(0, 12),
+          TEST_USER_ID,
+          'po-availability-' + fixtureKey,
+          'a'.repeat(64),
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO purchase_order_lines (
+          id, tenant_id, factory_id, purchase_order_id, line_number,
+          inventory_item_id, description, quantity, unit, unit_price
+        )
+        VALUES ($1, $2, $3, $4, 1, $5, 'Expected stock projection fixture', 10, 'PCS', 1)
+        `,
+        [purchaseOrderLineId, tenantId, factoryId, purchaseOrderId, itemId],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO goods_receipts (
+          id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+          created_by_user_id, idempotency_key, request_hash, correlation_id, posted_at
+        )
+        VALUES ($1, $2, $3, $4, $5, 'POSTED', $6, $7, $8, $9, clock_timestamp())
+        `,
+        [
+          goodsReceiptId,
+          tenantId,
+          factoryId,
+          purchaseOrderId,
+          'GRN-AVAIL-' + fixtureKey.slice(0, 12),
+          TEST_USER_ID,
+          'grn-availability-' + fixtureKey,
+          'b'.repeat(64),
+          randomUUID(),
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO goods_receipt_lines (
+          id, tenant_id, factory_id, goods_receipt_id, purchase_order_id,
+          purchase_order_line_id, inventory_item_id, received_quantity,
+          rejected_quantity, rejection_reason
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 5, 1, 'One unit rejected in availability fixture')
+        `,
+        [
+          goodsReceiptLineId,
+          tenantId,
+          factoryId,
+          goodsReceiptId,
+          purchaseOrderId,
+          purchaseOrderLineId,
+          itemId,
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO quality_inspections (
+          id, tenant_id, factory_id, inspection_type, target_type, target_id,
+          inventory_item_id, status, row_version, idempotency_key, request_hash,
+          created_by_user_id, updated_by_user_id, correlation_id
+        )
+        VALUES ($1, $2, $3, 'INVENTORY', 'INVENTORY_ITEM', $4, $4, 'ON_HOLD',
+                1, $5, $6, $7, $7, $8)
+        `,
+        [
+          inspectionId,
+          tenantId,
+          factoryId,
+          itemId,
+          'inspection-availability-' + fixtureKey,
+          'c'.repeat(64),
+          TEST_USER_ID,
+          randomUUID(),
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO quality_holds (
+          id, tenant_id, factory_id, inspection_id, inventory_item_id,
+          status, quarantined_by_quality, reason, created_by_user_id, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, 'ACTIVE', TRUE,
+                'Inventory-wide quality quarantine fixture', $6, $7)
+        `,
+        [qualityHoldId, tenantId, factoryId, inspectionId, itemId, TEST_USER_ID, randomUUID()],
+      );
+
+      const availability = await inventoryService.getAvailabilitySummary(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+      );
+
+      expect(availability).toMatchObject({
+        quantity_on_hand: '10.0000',
+        quantity_reserved: '2.0000',
+        quantity_allocated: '2.0000',
+        quantity_available: '0.0000',
+        quantity_quarantined: '10.0000',
+        quantity_quality_held: '10.0000',
+        quantity_damaged: '0.0000',
+        quantity_expected: '6.0000',
+        first_affected_production_order: null,
+      });
+    } finally {
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+      try {
+        await adminPool.query('DELETE FROM quality_holds WHERE id = $1', [qualityHoldId]);
+        await adminPool.query('DELETE FROM quality_inspections WHERE id = $1', [inspectionId]);
+        await adminPool.query('DELETE FROM goods_receipt_lines WHERE id = $1', [goodsReceiptLineId]);
+        await adminPool.query('DELETE FROM goods_receipts WHERE id = $1', [goodsReceiptId]);
+        await adminPool.query('DELETE FROM purchase_order_lines WHERE id = $1', [purchaseOrderLineId]);
+        await adminPool.query('DELETE FROM purchase_orders WHERE id = $1', [purchaseOrderId]);
+        await adminPool.query('DELETE FROM suppliers WHERE id = $1', [supplierId]);
+      } finally {
+        for (const table of mutableTables) {
+          await adminPool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER USER');
+        }
+      }
+    }
   });
 
   it('replays concurrent duplicate requests and conserves partial/full consumption balances', async () => {
