@@ -1,0 +1,658 @@
+{
+  "schemaVersion": 1,
+  "manifestId": "FOS-SRS-REVISION-LINEAGE-2026-11-04",
+  "preparedAt": "2026-11-04",
+  "status": "CANDIDATE_LINEAGE_AND_SCOPE_ARITHMETIC_ONLY",
+  "sourceOfRecord": {
+    "status": "BLOCKED_SOURCE_OWNER_APPROVAL_PENDING",
+    "controlledDmsPlmReference": null,
+    "productOwnerApprovalReference": null,
+    "architectureApprovalReference": null,
+    "independentlyVerifiedSourceHashes": false,
+    "note": "These are accessible Library candidate copies and their local byte hashes. None is established as the controlled enterprise source-of-record by this manifest."
+  },
+  "unavailablePredecessors": [
+    {
+      "version": "1.1",
+      "availability": "NOT_LOCATED_IN_AVAILABLE_LIBRARY_SEARCH",
+      "expectedRole": "Foundational Factory Brain / manufacturing SRS predecessor",
+      "referencesInLaterCopies": [
+        "v1.3 document control",
+        "v1.4 document control",
+        "v1.5 corrected document control"
+      ],
+      "sha256": null,
+      "pageCount": null,
+      "approvalStatus": "UNKNOWN"
+    },
+    {
+      "version": "1.2",
+      "availability": "NOT_LOCATED_IN_AVAILABLE_LIBRARY_SEARCH",
+      "expectedRole": "Client Business Blueprint update inherited by v1.3",
+      "referencesInLaterCopies": [
+        "v1.3 document control and delta rule",
+        "v1.4 document control",
+        "v1.5 corrected document control"
+      ],
+      "sha256": null,
+      "pageCount": null,
+      "approvalStatus": "UNKNOWN"
+    }
+  ],
+  "sourceCandidates": [
+    {
+      "version": "1.3",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_3_Update.docx",
+      "sha256": "1f8c5c7ed232153e9cf2c6d23c31dd8ee89dd4c9f689b7139b2653d713a31f0d",
+      "sizeBytes": 81286,
+      "pageCount": null,
+      "displayVersion": "1.3",
+      "internalVersion": "1.3 (draft, consolidates v1.2 and extends v1.1)",
+      "approvalStatus": "DRAFT_FOR_PRODUCT_AND_ENGINEERING_REVIEW",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2"
+      ],
+      "notes": [
+        "Sections 2-10 retain v1.2 content; sections 11-21 are new in v1.3.",
+        "Explicitly states all v1.1 and v1.2 requirements remain unless amended or superseded."
+      ]
+    },
+    {
+      "version": "1.4",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_4_Bangladesh_Universal_Manufacturing_SaaS.docx",
+      "sha256": "a01de39f6adeb08365f5ce1f45cb891ae82bc1c99fcdd9159c79379efc46b0d6",
+      "sizeBytes": 112031,
+      "pageCount": null,
+      "displayVersion": "1.4",
+      "internalVersion": "1.4 (draft, Bangladesh Universal Manufacturing Expansion)",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3"
+      ],
+      "notes": [
+        "Sections 24-38 are described as new in v1.4.",
+        "v1.5 corrected source later identifies the v1.4 cumulative scope as 318."
+      ]
+    },
+    {
+      "version": "1.5",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_5_Enterprise_Manufacturing_SaaS_Corrected.docx",
+      "sha256": "e8fc09e6554d2d9024ef28aa9238f5967c6a42131748a8dfa7d16b3500f7592e",
+      "sizeBytes": 126395,
+      "pageCount": null,
+      "displayVersion": "1.5",
+      "internalVersion": "1.5 corrected draft",
+      "approvalStatus": "CORRECTED_DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4"
+      ],
+      "notes": [
+        "Corrected candidate reports 80 functional + 12 non-functional additions, cumulative 410 and priorities P0=109/P1=252/P2=49."
+      ]
+    },
+    {
+      "version": "1.5",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v1_5_Enterprise_Manufacturing_SaaS_Final.pdf",
+      "sha256": "4ba3fa0c55495f11e1e08998e7f2008d226a55ca71a1b69fff42e1db68d1921c",
+      "sizeBytes": 1634857,
+      "pageCount": 46,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v1.5 Enterprise Manufacturing SaaS Expansion",
+        "author": "Rakibul Hasan"
+      },
+      "displayVersion": "1.5",
+      "internalVersion": "1.5 corrected draft",
+      "approvalStatus": "CORRECTED_DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4"
+      ],
+      "notes": [
+        "The PDF is labelled Final in the filename, but its visible source text still calls this a corrected draft; do not infer approval from the filename."
+      ]
+    },
+    {
+      "version": "1.5",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_5_Enterprise_Manufacturing_SaaS.docx",
+      "sha256": "a17fde86ae6b391b481afc74d70cf5176fb45d4f23bfafbf066761a836bd7699",
+      "sizeBytes": 124370,
+      "pageCount": null,
+      "displayVersion": "1.5",
+      "internalVersion": "1.4 (draft, Bangladesh Universal Manufacturing Expansion)",
+      "approvalStatus": "SUPERSEDED_OR_CONFLICTING_DRAFT_CANDIDATE",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4"
+      ],
+      "notes": [
+        "This older copy's document-control block still identifies v1.4 and its scope text reports cumulative priorities P0=109/P1=243/P2=58.",
+        "This conflicts with the corrected v1.5 copy's P0=109/P1=252/P2=49 while both total 410. Retain as a source conflict; do not overwrite the history."
+      ]
+    },
+    {
+      "version": "1.6",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_6_Research_Upgraded_Manufacturing_SaaS.docx",
+      "sha256": "e88a6138792ab6592329599dcdc2f62dac3e4df454e945881f6cf492b553f214",
+      "sizeBytes": 139861,
+      "pageCount": null,
+      "displayVersion": "1.6",
+      "internalVersion": "1.6 research-upgraded draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5"
+      ],
+      "notes": [
+        "Declares 74 functional + 18 non-functional additions, cumulative scope 502 and cumulative priorities P0=126/P1=320/P2=56."
+      ]
+    },
+    {
+      "version": "1.6",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v1_6_Research_Upgraded_Manufacturing_SaaS.pdf",
+      "sha256": "a243db58058daa2e0dee76cdd293d3ea69b13890f56d028967b9a7bfcbfe43b0",
+      "sizeBytes": 1895406,
+      "pageCount": 55,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v1.6 Research Upgraded Manufacturing SaaS",
+        "author": "Rakibul Hasan"
+      },
+      "displayVersion": "1.6",
+      "internalVersion": "1.6 research-upgraded draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5"
+      ],
+      "notes": [
+        "The v1.6 cumulative scope is consistent with 410 + 74 + 18 = 502."
+      ]
+    },
+    {
+      "version": "1.7",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_7_AI_Native_Full_Powered_Manufacturing_SaaS.docx",
+      "sha256": "96284e7c38a01edc6f29a0846c4315b91783425c4ce2add436ce92b23349a2a2",
+      "sizeBytes": 157813,
+      "pageCount": null,
+      "displayVersion": "1.7",
+      "internalVersion": "1.7 AI-native full-powered draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6"
+      ],
+      "notes": [
+        "Declares 132 functional + 24 non-functional additions, cumulative scope 658 and priorities P0=177/P1=419/P2=62."
+      ]
+    },
+    {
+      "version": "1.7",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v1_7_AI_Native_Full_Powered_Manufacturing_SaaS.pdf",
+      "sha256": "8729b5ece1d78e0a99252e6b8a571b5decdbc55c0169f997819fd2d05b7790e0",
+      "sizeBytes": 2311704,
+      "pageCount": 66,
+      "pdfMetadata": {
+        "title": null,
+        "author": null
+      },
+      "displayVersion": "1.7",
+      "internalVersion": "1.7 AI-native full-powered draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6"
+      ],
+      "notes": [
+        "PDF metadata has no title/author fields; visible title and version are retained as the candidate label."
+      ]
+    },
+    {
+      "version": "1.8",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_8_AI_Frontier_Upgrade_Manufacturing_SaaS_FINAL.docx",
+      "sha256": "59f640e7d4d3c4ce1db176d17315c5da2bed825e4623e98b4ae34e3139774533",
+      "sizeBytes": 175193,
+      "pageCount": null,
+      "displayVersion": "1.8",
+      "internalVersion": "1.8 AI frontier upgrade draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7"
+      ],
+      "notes": [
+        "Declares 100 functional + 20 non-functional frontier additions from the 658 v1.7 baseline."
+      ]
+    },
+    {
+      "version": "1.8",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v1_8_AI_Frontier_Upgrade_Manufacturing_SaaS_FINAL.pdf",
+      "sha256": "639e008d4194f0533e30802dbbbd64f0a5e388aaf3518569190b65c323e56976",
+      "sizeBytes": 2651243,
+      "pageCount": 77,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v1.8 AI Frontier Upgrade Manufacturing SaaS",
+        "author": "Rakibul Hasan"
+      },
+      "displayVersion": "1.8",
+      "internalVersion": "1.8 AI frontier upgrade draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7"
+      ],
+      "notes": [
+        "Filename includes FINAL, but document control and visible text classify the source as draft."
+      ]
+    },
+    {
+      "version": "1.9",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v1_9_Client_Business_Growth_Research_Learning_AI.docx",
+      "sha256": "ca0c40c132ff7d14f0b2391fe9809185f2e40458039f855091001a44eb753d8b",
+      "sizeBytes": 186225,
+      "pageCount": null,
+      "displayVersion": "1.9",
+      "internalVersion": "1.8 AI frontier upgrade draft",
+      "approvalStatus": "VERSION_METADATA_CONFLICT_DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8"
+      ],
+      "notes": [
+        "Cover/title identify v1.9 and include the client business-growth/research-learning delta, but document control still says Version 1.8."
+      ]
+    },
+    {
+      "version": "1.9",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v1_9_Client_Business_Growth_Research_Learning_AI.pdf",
+      "sha256": "09f796a867941d4738b07eea5f9169ed2de9351fb7a6111b676bf9342bfbb5a1",
+      "sizeBytes": 2910201,
+      "pageCount": 86,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v1.8 AI Frontier Upgrade Manufacturing SaaS",
+        "author": "Rakibul Hasan"
+      },
+      "displayVersion": "1.9",
+      "internalVersion": "1.8 AI frontier upgrade draft",
+      "approvalStatus": "VERSION_METADATA_CONFLICT_DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8"
+      ],
+      "notes": [
+        "Cover and appended sections identify v1.9, but PDF metadata title and document-control version remain v1.8.",
+        "The content states the v1.8 frontier delta adds 120 to 658 -> 778, then the separate v1.9 client business-growth/research-learning delta adds 92 -> 870; the 92 delta's FR/NFR and priority split is not stated in the reviewed scope paragraph."
+      ]
+    },
+    {
+      "version": "2.0",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v2_0_Clean_AI_Logic_Consolidated_SRS.docx",
+      "sha256": "95d2f00a4ce8b0fbb57f89a4e4f2f5c14232906c52a0dd6584ebd02d025e9ad7",
+      "sizeBytes": 195593,
+      "pageCount": null,
+      "displayVersion": "2.0",
+      "internalVersion": "2.0 clean AI logic & consolidated SRS draft",
+      "approvalStatus": "DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8",
+        "1.9"
+      ],
+      "notes": [
+        "Declares 20 functional + 10 non-functional additions; 870 + 30 = 900; cumulative priorities P0=261/P1=567/P2=72."
+      ]
+    },
+    {
+      "version": "2.0",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v2_0_Clean_AI_Logic_Consolidated_SRS.pdf",
+      "sha256": "8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42",
+      "sizeBytes": 3101816,
+      "pageCount": 93,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v1.8 AI Frontier Upgrade Manufacturing SaaS",
+        "author": "Rakibul Hasan"
+      },
+      "displayVersion": "2.0",
+      "internalVersion": "2.0 clean AI logic & consolidated SRS draft",
+      "approvalStatus": "PDF_METADATA_VERSION_CONFLICT_DRAFT",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8",
+        "1.9"
+      ],
+      "notes": [
+        "Visible title/content identify v2.0 but PDF Title metadata still says v1.8."
+      ]
+    },
+    {
+      "version": "2.1",
+      "format": "DOCX",
+      "fileName": "FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS.docx",
+      "sha256": "b400f68c09310aae5c41a075aa492c20ee529c8cbc3e08bbce5a705ae7ca398a",
+      "sizeBytes": 208120,
+      "pageCount": null,
+      "displayVersion": "2.1 FINAL",
+      "internalVersion": "2.1 final product-ready SaaS",
+      "approvalStatus": "SOURCE_OWNER_APPROVAL_PENDING",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8",
+        "1.9",
+        "2.0"
+      ],
+      "notes": [
+        "The final label does not establish the controlled DMS/PLM record or approval."
+      ]
+    },
+    {
+      "version": "2.1",
+      "format": "PDF",
+      "fileName": "FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(2).pdf",
+      "sha256": "ae3790e0ead5b11f13d4c32c9ab8e944ede7508cbaf0468673e031e48917c959",
+      "sizeBytes": 3352901,
+      "pageCount": 103,
+      "pdfMetadata": {
+        "title": "FactoryOS AI - SRS v2.1 FINAL Product-Ready Manufacturing SaaS",
+        "author": "FactoryOS AI Product Architecture"
+      },
+      "displayVersion": "2.1 FINAL",
+      "internalVersion": "2.1 final product-ready SaaS",
+      "approvalStatus": "SOURCE_OWNER_APPROVAL_PENDING",
+      "availability": "FOUND_IN_LIBRARY",
+      "lineage": [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "1.8",
+        "1.9",
+        "2.0"
+      ],
+      "notes": [
+        "SHA-256 and 103-page count match the existing repository audit source manifest; source-owner/DMS approval is still pending."
+      ]
+    }
+  ],
+  "scopeLedger": [
+    {
+      "revision": "1.4",
+      "startingCumulative": 226,
+      "delta": {
+        "functional": null,
+        "nonFunctional": null,
+        "total": null
+      },
+      "cumulative": 318,
+      "priorityCumulative": null,
+      "claimSource": "v1.5 corrected source says its parent v1.4 scope was 318",
+      "arithmeticStatus": "PARENT_CUMULATIVE_CLAIM_ONLY"
+    },
+    {
+      "revision": "1.5_corrected",
+      "startingCumulative": 318,
+      "delta": {
+        "functional": 80,
+        "nonFunctional": 12,
+        "total": 92
+      },
+      "cumulative": 410,
+      "priorityCumulative": {
+        "P0": 109,
+        "P1": 252,
+        "P2": 49
+      },
+      "arithmeticStatus": "RECONCILES"
+    },
+    {
+      "revision": "1.6",
+      "startingCumulative": 410,
+      "delta": {
+        "functional": 74,
+        "nonFunctional": 18,
+        "total": 92
+      },
+      "cumulative": 502,
+      "priorityDelta": {
+        "P0": 17,
+        "P1": 68,
+        "P2": 7
+      },
+      "priorityCumulative": {
+        "P0": 126,
+        "P1": 320,
+        "P2": 56
+      },
+      "arithmeticStatus": "RECONCILES"
+    },
+    {
+      "revision": "1.7",
+      "startingCumulative": 502,
+      "delta": {
+        "functional": 132,
+        "nonFunctional": 24,
+        "total": 156
+      },
+      "cumulative": 658,
+      "priorityDelta": {
+        "P0": 51,
+        "P1": 99,
+        "P2": 6
+      },
+      "priorityCumulative": {
+        "P0": 177,
+        "P1": 419,
+        "P2": 62
+      },
+      "arithmeticStatus": "RECONCILES"
+    },
+    {
+      "revision": "1.8_frontier",
+      "startingCumulative": 658,
+      "delta": {
+        "functional": 100,
+        "nonFunctional": 20,
+        "total": 120
+      },
+      "cumulative": 778,
+      "priorityDelta": null,
+      "priorityCumulative": null,
+      "arithmeticStatus": "RECONCILES"
+    },
+    {
+      "revision": "1.9_growth_research",
+      "startingCumulative": 778,
+      "delta": {
+        "functional": null,
+        "nonFunctional": null,
+        "total": 92
+      },
+      "cumulative": 870,
+      "priorityDelta": null,
+      "priorityCumulative": null,
+      "arithmeticStatus": "TOTAL_ONLY_BREAKDOWN_NOT_STATED"
+    },
+    {
+      "revision": "2.0",
+      "startingCumulative": 870,
+      "delta": {
+        "functional": 20,
+        "nonFunctional": 10,
+        "total": 30
+      },
+      "cumulative": 900,
+      "priorityDelta": {
+        "P0": 22,
+        "P1": 8,
+        "P2": 0
+      },
+      "priorityCumulative": {
+        "P0": 261,
+        "P1": 567,
+        "P2": 72
+      },
+      "arithmeticStatus": "RECONCILES"
+    },
+    {
+      "revision": "2.1",
+      "startingCumulative": 900,
+      "delta": {
+        "functional": 32,
+        "nonFunctional": 18,
+        "total": 50
+      },
+      "cumulative": 950,
+      "priorityDelta": {
+        "P0": 35,
+        "P1": 15,
+        "P2": 0
+      },
+      "priorityCumulative": {
+        "P0": 296,
+        "P1": 582,
+        "P2": 72
+      },
+      "arithmeticStatus": "RECONCILES"
+    }
+  ],
+  "unresolvedConflicts": [
+    {
+      "id": "SRC-V15-PRIORITY-COUNTS",
+      "severity": "HIGH",
+      "description": "An older v1.5 DOCX states cumulative P0=109/P1=243/P2=58, while the corrected v1.5 DOCX/PDF state P0=109/P1=252/P2=49. Both sum to 410.",
+      "disposition": "PRESERVE_BOTH; Product/Requirements source-owner must confirm the corrected revision."
+    },
+    {
+      "id": "SRC-V19-VERSION-METADATA",
+      "severity": "HIGH",
+      "description": "v1.9 cover/title indicates v1.9, but DOCX document control and PDF Title metadata indicate v1.8.",
+      "disposition": "REQUIRE_DOCUMENT_CONTROL_CORRECTION_OR_SIGNED_REVISION_DECISION."
+    },
+    {
+      "id": "SRC-V20-PDF-METADATA",
+      "severity": "MEDIUM",
+      "description": "v2.0 cover/content indicate v2.0, but PDF Title metadata remains v1.8.",
+      "disposition": "REQUIRE_REGENERATED_PDF_OR_SIGNED_METADATA_EXCEPTION."
+    },
+    {
+      "id": "SRC-V11-V12-BASELINE",
+      "severity": "HIGH",
+      "description": "v1.1 and v1.2 are referenced as inherited normative baselines by v1.3 onwards but were not located in the available Library search.",
+      "disposition": "OBTAIN_CONTROLLED_SOURCE_BYTES; do not substitute v1.3 onward's inherited references."
+    },
+    {
+      "id": "SRC-V19-DELTA-BREAKDOWN",
+      "severity": "MEDIUM",
+      "description": "The v1.9 growth/research delta is stated as 92 requirements but the reviewed scope paragraph does not state its functional/non-functional or priority breakdown.",
+      "disposition": "REQUIRE_REQUIREMENTS_OWNER_BREAKDOWN; preserve 92 as total-only."
+    }
+  ],
+  "reconciliationBoundary": {
+    "scopeArithmeticReconciled": true,
+    "historicalSourceLineageComplete": false,
+    "activeNormativeOccurrenceLedgerComplete": false,
+    "distinctIdCrosswalkApproved": false,
+    "requirementPriorityDistributionFullyReconciled": false,
+    "sourceOwnerApproved": false,
+    "releaseTraceabilityAccepted": false,
+    "activeScopeDenominator": 950,
+    "occurrenceCandidateCountsMustNotBeSubstituted": true,
+    "priorityExceptionSetMustRemainOpen": true,
+    "reason": "This manifest reconciles declared scope arithmetic from candidate revisions and records known source conflicts. v1.1/v1.2 source bytes are not located, candidate revision files remain draft/unapproved, and no 950-row active normative occurrence ledger has been signed."
+  }
+}
