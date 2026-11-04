@@ -26,7 +26,9 @@ import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto'
 import { RetractResearchReleaseDto } from './dto/retract-research-release.dto';
 import {
   CompleteResearchExtractionDto,
+  CreateResearchFreshnessPolicyDto,
   CreateResearchIngestionJobDto,
+  DecideResearchFreshnessPolicyDto,
   DecideResearchExtractionItemDto,
   FailResearchIngestionJobDto,
   PauseResearchIngestionJobDto,
@@ -142,6 +144,55 @@ export class ResearchController {
   ): Promise<unknown> {
     const c = this.context(req);
     return this.ingestion.createJob(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
+  }
+
+
+  @Post('sources/:sourceId/freshness-policy')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  createSourceFreshnessPolicy(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Body() body: CreateResearchFreshnessPolicyDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.createFreshnessPolicy(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
+  }
+
+  @Get('sources/:sourceId/freshness-policy')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listSourceFreshnessPolicy(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listFreshnessPolicy(c.userId, c.tenantId, sourceId);
+  }
+
+  @Post('freshness-policies/:policyId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideSourceFreshnessPolicy(
+    @Req() req: FactoryOsRequest,
+    @Param('policyId', new ParseUUIDPipe()) policyId: string,
+    @Body() body: DecideResearchFreshnessPolicyDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.decideFreshnessPolicy(c.userId, c.tenantId, policyId, body, c.requestId, c.traceId);
+  }
+
+  @Post('freshness-schedules/materialize-due')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  materializeDueFreshnessSchedules(
+    @Req() req: FactoryOsRequest,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.materializeDueFreshnessJobs(
+      c.userId, c.tenantId, rawLimit === undefined ? 25 : Number(rawLimit), c.requestId, c.traceId,
+    );
   }
 
   @Get('ingestion-jobs')
