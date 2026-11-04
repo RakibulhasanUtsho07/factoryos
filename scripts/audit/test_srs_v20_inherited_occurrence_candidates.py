@@ -54,6 +54,24 @@ class SrsV20CandidateExtractorTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["table_kind_candidate"], "AUXILIARY_CATALOGUE_TABLE")
 
+    def test_requirement_cross_reference_is_not_misclassified_as_orphan_row_id(self):
+        page = FakePage([
+            word("ID", 10, 10, bold=True),
+            word("Requirement", 45, 10, bold=True),
+            word("Priority", 300, 10, bold=True),
+            word("FR-CBB-19", 10, 32),
+            word("Process", 45, 32),
+            word("follows", 75, 32),
+            word("FR-AIG-03", 105, 32),
+            word("when", 165, 32),
+            word("prompted", 195, 32),
+            word("P0", 300, 32),
+        ])
+        rows, unresolved, _ = extract_page_candidates(page, 6)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["requirement_id_candidate"], "FR-CBB-19")
+        self.assertEqual(unresolved, [])
+
     def test_repeated_id_occurrences_are_not_deduplicated(self):
         page = FakePage([
             word("ID", 10, 10, bold=True), word("Requirement", 45, 10, bold=True),
