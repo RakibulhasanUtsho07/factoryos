@@ -20,6 +20,7 @@ DECLARE
   v_serial_split_rejected BOOLEAN := FALSE;
   v_serial_merge_source_rejected BOOLEAN := FALSE;
   v_serial_merge_target_rejected BOOLEAN := FALSE;
+  v_duplicate_serial_split_target_rejected BOOLEAN := FALSE;
   v_fractional_location_rejected BOOLEAN := FALSE;
   v_duplicate_serial_location_rejected BOOLEAN := FALSE;
   v_fractional_reserved_location_rejected BOOLEAN := FALSE;
@@ -141,6 +142,22 @@ BEGIN
     jsonb_build_object('source_unit_id', v_lot, 'target_unit_id', v_serial_one,
       'relationship_type', 'SPLIT_INTO', 'quantity', 1, 'unit', 'PCS')
   );
+
+  -- One serial may be created by only one split parent.
+  BEGIN
+    INSERT INTO product_genealogy_events (
+      tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
+      quantity, unit, evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, v_lot, v_serial_one, 'SPLIT_INTO',
+      1, 'PCS', '{}'::jsonb, 'wsi-duplicate-serial-split-parent', repeat('b', 64), v_actor, v_trace
+    );
+  EXCEPTION WHEN check_violation THEN
+    v_duplicate_serial_split_target_rejected := TRUE;
+  END;
+  IF NOT v_duplicate_serial_split_target_rejected THEN
+    RAISE EXCEPTION 'a serial was allowed to receive a second SPLIT_INTO parent';
+  END IF;
 
   -- A serial source cannot represent fractional consumption.
   BEGIN
