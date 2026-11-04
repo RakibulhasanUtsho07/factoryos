@@ -7,7 +7,7 @@ import { DatabaseService } from '../database/database.service';
 import { ResearchIngestionService } from './research-ingestion.service';
 
 type Row = Record<string, any>;
-type QueryResult = { rows: Row[] };
+type QueryResult = { rows: Row[]; rowCount?: number };
 type Query = (sql: string, values?: unknown[]) => Promise<QueryResult>;
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -158,6 +158,84 @@ describe('ResearchIngestionService', () => {
       resourceId: JOB_ID,
       payload: expect.objectContaining({ sourceId: SOURCE_ID, mode: 'METADATA_ONLY' }),
     }));
+  });
+
+  it('creates a source freshness policy only when current rights permit the selected ingestion mode', async () => {
+    const policy = { id: 'a81eb3d0-7d27-4828-bb47-23f16de70001', source_id: SOURCE_ID,
+      mode: 'METADATA_ONLY', interval_minutes: 1440, max_attempts: 3, status: 'ACTIVE' };
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_sources') && sql.includes('FOR SHARE')) return { rows: [approvedSource()] };
+      if (sql.includes('FROM research_source_freshness_policies') && sql.includes('FOR UPDATE')) return { rows: [] };
+      if (sql.includes('INSERT INTO research_source_freshness_policies')) return { rows: [policy] };
+      throw new Error('Unexpected SQL in freshness policy create test: ' + sql);
+    });
+    const result = await service.createFreshnessPolicy(USER_ID, TENANT_ID, SOURCE_ID, {
+      mode: 'METADATA_ONLY', interval_minutes: 1440, max_attempts: 3,
+    }, null, null);
+    expect(result).toMatchObject({ source_id: SOURCE_ID, mode: 'METADATA_ONLY', interval_minutes: 1440, status: 'ACTIVE' });
+    expect(audit.recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      action: 'RESEARCH_FRESHNESS_POLICY_CREATED', resourceType: 'RESEARCH_SOURCE_FRESHNESS_POLICY',
+    }));
+  });
+
+  it('rejects a FULL_TEXT freshness policy when rights do not permit full-text storage', async () => {
+    client.query.mockResolvedValueOnce({ rows: [approvedSource({ full_text_storage_allowed: false })] });
+    await expect(service.createFreshnessPolicy(USER_ID, TENANT_ID, SOURCE_ID, {
+      mode: 'FULL_TEXT', interval_minutes: 1440,
+    }, null, null)).rejects.toThrow('Full-text ingestion requires explicit full-text storage rights');
+    expect(client.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('materializes due freshness work into a rights-snapshotted idempotent ingestion job', async () => {
+    const policyId = 'a81eb3d0-7d27-4828-bb47-23f16de70001';
+    const queued = runningJob({ status: 'QUEUED', stage: 'QUEUED', progress_percent: 0,
+      attempt_count: 0, lease_owner: null, lease_expires_at: null, version: 1,
+      idempotency_key: 'freshness:' + policyId + ':' + 'a'.repeat(32) });
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_source_freshness_policies p')) return { rows: [{
+        policy_id: policyId, source_id: SOURCE_ID, mode: 'METADATA_ONLY',
+        interval_minutes: 1440, max_attempts: 4, next_due_at: '2026-11-02T12:00:00.000Z', row_version: 1,
+      }] };
+      if (sql.includes('FROM research_sources') && sql.includes('FOR SHARE')) return { rows: [approvedSource()] };
+      if (sql.includes('INSERT INTO research_ingestion_jobs')) return { rows: [queued] };
+      if (sql.includes('INSERT INTO research_ingestion_events')) return { rows: [] };
+      if (sql.includes('UPDATE research_source_freshness_policies')) return { rows: [], rowCount: 1 };
+      throw new Error('Unexpected SQL in freshness materialization test: ' + sql);
+    });
+    const result = await service.materializeDueFreshnessJobs(USER_ID, TENANT_ID, 10, null, null);
+    expect(result).toMatchObject({ scanned: 1, queued_count: 1, replayed_count: 0, blocked_count: 0 });
+    expect(result.jobs[0]).toMatchObject({ id: JOB_ID, status: 'QUEUED', source_id: SOURCE_ID, freshness_policy_id: policyId });
+    const insertCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO research_ingestion_jobs'));
+    const values = argumentsAsArray(insertCall?.[1]);
+    expect(values[6]).toBe(1);
+    expect(values[7]).toBe(1);
+    expect(JSON.parse(String(values[9]))).toMatchObject({ rightsVersion: 1, accessStatus: 'APPROVED' });
+    expect(JSON.parse(String(values[10]))).toMatchObject({ sourceRevision: 1, sourceId: SOURCE_ID });
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO research_ingestion_events'),
+      expect.arrayContaining([TENANT_ID, JOB_ID, 'JOB_QUEUED']));
+    expect(audit.recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      action: 'INGESTION_JOB_FRESHNESS_SCHEDULED', resourceId: JOB_ID,
+    }));
+  });
+
+  it('records a rights block and advances the next check without enqueuing protected content', async () => {
+    const policyId = 'a81eb3d0-7d27-4828-bb47-23f16de70001';
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_source_freshness_policies p')) return { rows: [{
+        policy_id: policyId, source_id: SOURCE_ID, mode: 'FULL_TEXT',
+        interval_minutes: 1440, max_attempts: 4, next_due_at: '2026-11-02T12:00:00.000Z', row_version: 1,
+      }] };
+      if (sql.includes('FROM research_sources') && sql.includes('FOR SHARE')) {
+        return { rows: [approvedSource({ full_text_storage_allowed: false })] };
+      }
+      if (sql.includes('UPDATE research_source_freshness_policies')) return { rows: [], rowCount: 1 };
+      throw new Error('Unexpected SQL in freshness rights-block test: ' + sql);
+    });
+    const result = await service.materializeDueFreshnessJobs(USER_ID, TENANT_ID, 10, null, null);
+    expect(result).toMatchObject({ scanned: 1, queued_count: 0, replayed_count: 0, blocked_count: 1, jobs: [] });
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO research_ingestion_jobs'))).toBe(false);
+    const blockedUpdate = client.query.mock.calls.find(([sql]) => String(sql).includes('UPDATE research_source_freshness_policies'));
+    expect(String(blockedUpdate?.[0])).toContain("last_blocked_code='SOURCE_RIGHTS_NOT_CURRENT'");
   });
 
   it('claims only approved, unchanged source revisions and records worker leasing', async () => {
