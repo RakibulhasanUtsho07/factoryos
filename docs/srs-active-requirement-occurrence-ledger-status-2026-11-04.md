@@ -47,3 +47,8 @@ The approved deliverable must contain one record for **each normative occurrence
 6. Rebuild the provisional closure register against the approved source population and current candidate SHA. Populate owner, reviewer, direct code/migration/test/CI references and required staging evidence only when actually verified.
 
 **Decision:** The repository can validate extraction and evidence structure, but it cannot manufacture requirements approval. Keep the current 842-row register `OPEN_NOT_ACCEPTED` until the accountable source owners sign the occurrence ledger and release evidence.
+
+
+## 2026-11-04 v2.1 delta extraction verified
+
+The 50 v2.1 additions in SRS §§130-131 are now indexed as 32 functional + 18 non-functional rows on PDF pages 96-99. The ledger confirms 50 unique IDs and the source-declared new-addition priorities P0=35 / P1=15 / P2=0, with source table locators and normalized wording digests. An offline verifier can re-extract against the exact source PDF hash. This is a bounded extraction improvement only; it does not resolve the inherited 900 v2.0 population or any source-owner approval, and does not change the 842 provisional tracker status.
