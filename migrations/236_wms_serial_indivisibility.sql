@@ -3,7 +3,7 @@ BEGIN;
 -- Do not silently bless legacy fractional or duplicated serial state. If a live
 -- database already contains any such rows, stop the migration and reconcile them
 -- with an audited stock-count/ledger correction before installing the guards.
-DO $
+DO $serial_preflight$
 DECLARE
   v_bad_count BIGINT;
 BEGIN
@@ -29,6 +29,22 @@ BEGIN
     AND (b.quantity_on_hand NOT IN (0,1) OR b.quantity_reserved NOT IN (0,1));
   IF v_bad_count > 0 THEN
     RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial location balances require audited reconciliation', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM (
+    SELECT b.tenant_id, b.factory_id, b.traceability_unit_id
+    FROM inventory_traceability_location_balances b
+    JOIN traceability_units u
+      ON u.id=b.traceability_unit_id AND u.tenant_id=b.tenant_id
+     AND u.factory_id=b.factory_id AND u.inventory_item_id=b.item_id
+    WHERE u.unit_type='SERIAL'
+    GROUP BY b.tenant_id, b.factory_id, b.traceability_unit_id
+    HAVING COALESCE(SUM(b.quantity_on_hand), 0) > 1
+        OR COALESCE(SUM(b.quantity_reserved), 0) > 1
+  ) duplicated_serial_locations;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % serials exceed one unit across location balances and require audited reconciliation', v_bad_count;
   END IF;
 
   SELECT count(*) INTO v_bad_count
@@ -96,7 +112,7 @@ BEGIN
     RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial transfers require audited reconciliation', v_bad_count;
   END IF;
 END;
-$;
+$serial_preflight$;
 
 -- A serial is a physical one-piece identity, not a divisible lot quantity.
 -- Serialize mutations on the identity row so two concurrent locations/reservations
@@ -170,9 +186,11 @@ EXECUTE FUNCTION factoryos_guard_serial_genealogy_indivisibility();
 CREATE OR REPLACE FUNCTION factoryos_guard_serial_location_balance_indivisibility()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $
 DECLARE
   v_unit_type VARCHAR(24);
+  v_other_location_quantity NUMERIC(18,4);
+  v_other_location_reserved NUMERIC(18,4);
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RETURN OLD;
@@ -197,6 +215,22 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
+  SELECT COALESCE(SUM(b.quantity_on_hand), 0),
+         COALESCE(SUM(b.quantity_reserved), 0)
+    INTO v_other_location_quantity, v_other_location_reserved
+  FROM inventory_traceability_location_balances b
+  WHERE b.tenant_id = NEW.tenant_id
+    AND b.factory_id = NEW.factory_id
+    AND b.item_id = NEW.item_id
+    AND b.traceability_unit_id = NEW.traceability_unit_id
+    AND b.id IS DISTINCT FROM NEW.id;
+
+  IF v_other_location_quantity + NEW.quantity_on_hand > 1
+     OR v_other_location_reserved + NEW.quantity_reserved > 1 THEN
+    RAISE EXCEPTION 'a serial identity cannot exist in more than one on-hand or reserved unit across locations'
+      USING ERRCODE = '23514';
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -216,6 +250,7 @@ AS $$
 DECLARE
   v_unit_type VARCHAR(24);
   v_other_active_allocation BOOLEAN;
+  v_prior_consumption BOOLEAN;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RETURN OLD;
@@ -255,6 +290,28 @@ BEGIN
   IF v_other_active_allocation THEN
     RAISE EXCEPTION 'a serial may belong to only one active reservation allocation'
       USING ERRCODE = '23514';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM inventory_reservation_traceability_allocations a
+      WHERE a.tenant_id = NEW.tenant_id
+        AND a.factory_id = NEW.factory_id
+        AND a.traceability_unit_id = NEW.traceability_unit_id
+        AND a.consumed_quantity > 0
+    ) OR EXISTS (
+      SELECT 1
+      FROM inventory_reservation_consumption_traceability_allocations a
+      WHERE a.tenant_id = NEW.tenant_id
+        AND a.factory_id = NEW.factory_id
+        AND a.traceability_unit_id = NEW.traceability_unit_id
+    ) INTO v_prior_consumption;
+
+    IF v_prior_consumption THEN
+      RAISE EXCEPTION 'a consumed serial identity cannot be reserved again'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   RETURN NEW;
