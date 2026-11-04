@@ -366,6 +366,97 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     }
   });
 
+  it('excludes damaged and expired tracked stock from available quantity without double-counting', async () => {
+    const itemId = await createItem('10.0000');
+    const traceabilityUnitId = randomUUID();
+    const fixtureKey = randomUUID();
+    const defaultLocation = await adminPool.query<{ id: string }>(
+      "SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE' LIMIT 1",
+      [tenantId, factoryId],
+    );
+    const locationId = defaultLocation.rows[0]?.id;
+    if (!locationId) throw new Error('Factory UNASSIGNED location is missing for availability fixture');
+
+    const mutableTables = [
+      'inventory_traceability_location_balances',
+      'traceability_units',
+    ];
+
+    try {
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      await adminPool.query(
+        `
+        INSERT INTO traceability_units (
+          id, tenant_id, factory_id, unit_type, product_role, unit_code,
+          barcode_value, inventory_item_id, quantity, unit, expires_at, status,
+          attributes, idempotency_key, request_hash, created_by_user_id,
+          correlation_id
+        )
+        VALUES (
+          $1, $2, $3, 'LOT', 'MATERIAL', $4, $5, $6, 3, 'PCS',
+          CURRENT_DATE - 1, 'ACTIVE', '{"damaged":true}'::jsonb,
+          $7, $8, $9, $10
+        )
+        `,
+        [
+          traceabilityUnitId,
+          tenantId,
+          factoryId,
+          'DAMAGED-EXPIRED-' + fixtureKey.slice(0, 10),
+          'DAMAGED-EXPIRED-BARCODE-' + fixtureKey.slice(0, 10),
+          itemId,
+          'traceability-availability-' + fixtureKey,
+          'f'.repeat(64),
+          TEST_USER_ID,
+          randomUUID(),
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO inventory_traceability_location_balances (
+          tenant_id, factory_id, item_id, traceability_unit_id, location_id,
+          quantity_on_hand, quantity_reserved
+        )
+        VALUES ($1, $2, $3, $4, $5, 3, 0)
+        `,
+        [tenantId, factoryId, itemId, traceabilityUnitId, locationId],
+      );
+
+      const availability = await inventoryService.getAvailabilitySummary(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+      );
+
+      expect(availability).toMatchObject({
+        quantity_on_hand: '10.0000',
+        quantity_allocated: '0.0000',
+        quantity_available: '7.0000',
+        quantity_quarantined: '0.0000',
+        quantity_quality_held: '0.0000',
+        quantity_damaged: '3.0000',
+        quantity_expired: '3.0000',
+      });
+    } finally {
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+      try {
+        await adminPool.query(
+          'DELETE FROM inventory_traceability_location_balances WHERE traceability_unit_id = $1',
+          [traceabilityUnitId],
+        );
+        await adminPool.query('DELETE FROM traceability_units WHERE id = $1', [traceabilityUnitId]);
+      } finally {
+        for (const table of mutableTables) {
+          await adminPool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER USER');
+        }
+      }
+    }
+  });
+
   it('identifies the first scheduled production work order whose material demand exceeds usable stock', async () => {
     const componentItemId = await createItem('10.0000');
     const finishedItemId = await createItem('0.0000');
