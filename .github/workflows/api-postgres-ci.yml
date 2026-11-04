@@ -247,6 +247,9 @@ jobs:
           echo "Rechecking all tenant ownership classifications after the newest governance relations were created"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
+          echo "Replaying late-created tenant relation reconciliation to verify inventory and policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/235_tenant_privacy_inventory_late_relation_reconciliation.sql
 
           echo "Reapplying WMS FEFO/lot allocation migration to verify allocation and partial-issue DDL idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
@@ -658,6 +661,7 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-governance-inventory.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-export-column-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-ownership-review.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-late-relation-reconciliation.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-export-import-dependency-order.sql
 
           # Deterministic two-tenant rows verify that data and audit history survive encrypted restore.
