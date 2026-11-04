@@ -472,7 +472,7 @@
   "scopeLedger": [
     {
       "revision": "1.4",
-      "startingCumulative": 226,
+      "startingCumulative": null,
       "delta": {
         "functional": null,
         "nonFunctional": null,
@@ -481,7 +481,7 @@
       "cumulative": 318,
       "priorityCumulative": null,
       "claimSource": "v1.5 corrected source says its parent v1.4 scope was 318",
-      "arithmeticStatus": "PARENT_CUMULATIVE_CLAIM_ONLY"
+      "arithmeticStatus": "PARENT_BASELINE_NOT_NUMERICALLY_ENUMERATED"
     },
     {
       "revision": "1.5_corrected",
