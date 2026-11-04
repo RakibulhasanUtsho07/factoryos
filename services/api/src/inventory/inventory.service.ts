@@ -257,7 +257,7 @@ export class InventoryService {
             OR upper(COALESCE(tu.attributes->>'condition', '')) = 'DAMAGED'
           ) AS is_damaged,
           (
-            (tu.expires_at IS NOT NULL AND tu.expires_at < CURRENT_DATE)
+            COALESCE(tu.expires_at < CURRENT_DATE, FALSE)
             OR upper(COALESCE(tu.attributes->>'condition', '')) = 'EXPIRED'
           ) AS is_expired
         FROM traceability_units tu
@@ -271,7 +271,7 @@ export class InventoryService {
           AND tu.inventory_item_id = $1
           AND tu.product_role IN ('MATERIAL', 'FINISHED_GOOD')
           AND tlb.quantity_on_hand > 0
-        GROUP BY tu.id, tu.tenant_id, tu.factory_id, tu.status, tu.attributes
+        GROUP BY tu.id, tu.tenant_id, tu.factory_id, tu.status, tu.attributes, tu.expires_at
       ),
       traceability_totals AS (
         SELECT
