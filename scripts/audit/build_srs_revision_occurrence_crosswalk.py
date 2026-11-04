@@ -401,6 +401,7 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         "schema_version": 1,
         "crosswalk_id": result["crosswalk_id"],
         "encoding": "gzip+base64",
+        "payload_file": "srs-revision-occurrence-crosswalk.payload.gz.b64",
         "uncompressed_bytes": len(raw),
         "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
         "compressed_bytes": len(compressed),
