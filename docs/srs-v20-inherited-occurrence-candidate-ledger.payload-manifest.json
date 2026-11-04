@@ -1,11 +1,62 @@
 {
   "schema_version": 1,
-  "encoding": "gzip+base64",
-  "uncompressed_sha256": "9eac16e556bffdaa4a131c148ff4ebfedf254882b9cf02a43ac952bb3e17c0c0",
-  "uncompressed_bytes": 70576,
-  "payload_parts": [
-    "srs-v20-inherited-occurrence-candidate-ledger.payload-01.txt",
-    "srs-v20-inherited-occurrence-candidate-ledger.payload-02.txt",
-    "srs-v20-inherited-occurrence-candidate-ledger.payload-03.txt"
-  ]
+  "ledger_id": "FOS-SRS-V20-INHERITED-CANDIDATE-01",
+  "extractor_version": "1.0.0",
+  "source_filename": "FactoryOS_AI_-_SRS_v2_0_Clean_AI_Logic_Consolidated_SRS.pdf",
+  "source_artifact_sha256": "8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42",
+  "source_pdf_page_count": 93,
+  "row_level_output_committed": false,
+  "row_level_output_policy": "The source PDF is not included in the repository. The full diagnostic ledger is regenerated with the extractor when the exact source PDF is supplied; only this count summary is checked in.",
+  "candidate_occurrence_count": 854,
+  "distinct_id_candidate_count": 812,
+  "normative_requirement_table_candidate_count": 809,
+  "normative_distinct_id_candidate_count": 799,
+  "normative_priority_counts": {
+    "P0": 225,
+    "P1": 527,
+    "P2": 57
+  },
+  "auxiliary_catalogue_candidate_count": 13,
+  "auxiliary_catalogue_priority_counts": {
+    "P0": 2,
+    "P1": 11,
+    "P2": 0
+  },
+  "non_normative_context_candidate_count": 32,
+  "table_kind_candidate_counts": {
+    "AUXILIARY_CATALOGUE_TABLE": 13,
+    "METRIC_OR_DECISION_CROSS_REFERENCE_CANDIDATE": 2,
+    "NORMATIVE_REQUIREMENT_TABLE": 809,
+    "SCOPE_LEDGER_OR_CROSSWALK_CANDIDATE": 30
+  },
+  "repeated_normative_id_candidates": {
+    "FR-IOT-01": 2,
+    "FR-IOT-02": 2,
+    "FR-IOT-03": 2,
+    "FR-IOT-04": 2,
+    "FR-IOT-05": 2,
+    "FR-IOT-06": 2,
+    "FR-IOT-07": 2,
+    "FR-IOT-08": 2,
+    "FR-IOT-09": 2,
+    "FR-IOT-10": 2
+  },
+  "unresolved_line_candidate_count": 1,
+  "unresolved_line_candidates": [
+    {
+      "source_pdf_page": 6,
+      "requirement_id_candidate": "FR-AIG-03",
+      "disposition": "UNRESOLVED_TABLE_LOCATOR_REVIEW"
+    }
+  ],
+  "inherited_scope_claim": {
+    "requirements": 900,
+    "priorities": {
+      "P0": 261,
+      "P1": 567,
+      "P2": 72
+    },
+    "status": "SOURCE_DECLARED_ARITHMETIC_NOT_ROW_LEVEL_RECONCILIATION"
+  },
+  "acceptance_boundary": "Candidate extraction only. The output does not establish the active 900-row inherited baseline, canonical IDs, applicability, supersession, duplicates or source-owner acceptance. No requirement is PASS or owner-approved."
 }
