@@ -428,7 +428,7 @@ export default function AiAgentControlCenterPage() {
             <div className="flex flex-col gap-1">
               <h2 className="text-sm font-bold text-slate-900">Connect to an authenticated FactoryOS API</h2>
               <p className="text-xs leading-5 text-slate-600">
-                Paste a short-lived bearer token and the intended tenant/factory scope. The token is kept only in this page's memory,
+                Paste a short-lived bearer token and the intended tenant/factory scope. The token is kept only in this page&apos;s memory,
                 is not saved to local storage or cookies, and is cleared when you disconnect or close the page.
               </p>
             </div>
