@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify compressed row-level occurrence snapshot
+      - name: Verify source-pinned occurrence census summary
         run: node --test scripts/audit/srs-v20-inherited-candidate-contract.test.mjs
       - name: Run synthetic PDF table extraction regressions
         run: python -m unittest discover -s scripts/audit -p 'test_srs_v20_inherited_occurrence_candidates.py' -v
