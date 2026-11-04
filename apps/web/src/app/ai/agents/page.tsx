@@ -219,9 +219,10 @@ export default function AiAgentControlCenterPage() {
         tenantId,
         factoryId,
       });
+      setAccessToken("");
       setClient(nextClient);
       await refreshWorkspace(nextClient);
-      setMessage("Connection established. Each panel reports its own permission and data status.");
+      setMessage("Session configured. Each panel reports its own endpoint response and permission status.");
     } catch (error) {
       setClient(null);
       setPageError(error instanceof Error ? error.message : "Could not connect to FactoryOS.");
@@ -416,7 +417,7 @@ export default function AiAgentControlCenterPage() {
           <div className="flex flex-wrap items-center gap-2">
             {client ? (
               <>
-                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800">API connected</span>
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800">Session configured</span>
                 <button type="button" onClick={() => void refresh()} disabled={loadingWorkspace} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100 disabled:opacity-50">
                   {loadingWorkspace ? "Refreshing…" : "Refresh"}
                 </button>
