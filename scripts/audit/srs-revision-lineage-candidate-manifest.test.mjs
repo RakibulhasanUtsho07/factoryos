@@ -171,7 +171,7 @@ test('v1.9 growth/research delta ledger contains 92 source-located unique requir
   }, { P0: 0, P1: 0, P2: 0 });
   assert.deepEqual(priorities, { P0: 37, P1: 55, P2: 0 });
   assert.deepEqual(growthLedger.priorityCounts, priorities);
-  assert.equal(growthLedger.acceptanceBoundary.includes('does not establish controlled source-of-record'), true);
+  assert.equal(growthLedger.acceptanceBoundary.includes('Does not establish controlled source-of-record'), true);
 });
 
 test('v1.9 growth delta manifest and occurrence ledger remain bound together', () => {
