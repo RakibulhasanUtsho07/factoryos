@@ -81,10 +81,10 @@ BEGIN
       SELECT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=item.oid AND p.polpermissive)
         INTO has_permissive;
       IF NOT has_permissive THEN
-        EXECUTE format('CREATE POLICY fo_late_privacy_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
+        EXECUTE format('CREATE POLICY fo_privacy_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
           item.relname,using_predicate,check_predicate);
       END IF;
-      EXECUTE format('CREATE POLICY fo_late_privacy_scope_enforce ON public.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
+      EXECUTE format('CREATE POLICY fo_privacy_scope_enforce ON public.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
         item.relname,using_predicate,check_predicate);
       INSERT INTO factoryos_governance.tenant_relation_ownership_reviews (
         schema_name,relation_name,ownership_class,evidence_type,evidence_detail,
@@ -119,10 +119,10 @@ BEGIN
       SELECT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=item.oid AND p.polpermissive)
         INTO has_permissive;
       IF NOT has_permissive THEN
-        EXECUTE format('CREATE POLICY fo_late_ownership_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
+        EXECUTE format('CREATE POLICY fo_tenant_ownership_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
           item.relname,scope_predicate,scope_predicate);
       END IF;
-      EXECUTE format('CREATE POLICY fo_late_ownership_scope_enforce ON public.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
+      EXECUTE format('CREATE POLICY fo_tenant_ownership_scope_enforce ON public.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
         item.relname,scope_predicate,scope_predicate);
       INSERT INTO factoryos_governance.tenant_relation_ownership_reviews (
         schema_name,relation_name,ownership_class,evidence_type,evidence_detail,
@@ -133,7 +133,7 @@ BEGIN
     ELSE
       EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY',item.relname);
       EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY',item.relname);
-      EXECUTE format('CREATE POLICY fo_late_ownership_scope_deny ON public.%I AS RESTRICTIVE FOR ALL USING (FALSE) WITH CHECK (FALSE)',
+      EXECUTE format('CREATE POLICY fo_tenant_ownership_unresolved_deny ON public.%I AS RESTRICTIVE FOR ALL USING (FALSE) WITH CHECK (FALSE)',
         item.relname);
       INSERT INTO factoryos_governance.tenant_relation_ownership_reviews (
         schema_name,relation_name,ownership_class,evidence_type,evidence_detail,
