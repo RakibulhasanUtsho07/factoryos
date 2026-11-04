@@ -242,7 +242,7 @@ export default function AiAgentControlCenterPage() {
     setTaskDetail(null);
     setReadErrors({});
     setPageError("");
-    setMessage("Disconnected. The bearer token was cleared from this page's memory.");
+    setMessage("Disconnected. The bearer token was cleared from this page&apos;s memory.");
   };
 
   const refresh = async () => {
@@ -383,7 +383,6 @@ export default function AiAgentControlCenterPage() {
 
   const activeTasks = tasks.filter((task) => !isTerminalAgentTaskState(valueText(task.state, ""))).length;
   const approvalTasks = tasks.filter((task) => valueText(task.state) === "AWAITING_APPROVAL").length;
-  const completedTasks = tasks.filter((task) => valueText(task.state) === "COMPLETED").length;
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "overview", label: "Overview" },
