@@ -26,13 +26,15 @@ test('normative rows and non-normative contexts remain separate populations', ()
   assert.equal(ledger.table_kind_candidate_counts.METRIC_OR_DECISION_CROSS_REFERENCE_CANDIDATE, 2);
 });
 
-test('reused IDs stay as repeated occurrences and unresolved lines remain explicit', () => {
+test('reused IDs remain separate and the page-six wording cross-reference is not an orphan', () => {
   assert.equal(Object.keys(ledger.repeated_normative_id_candidates).length, 10);
   for (let i = 1; i <= 10; i++) {
     assert.equal(ledger.repeated_normative_id_candidates['FR-IOT-' + String(i).padStart(2, '0')], 2);
   }
-  assert.equal(ledger.unresolved_line_candidate_count, 1);
-  assert.equal(ledger.unresolved_line_candidates[0].requirement_id_candidate, 'FR-AIG-03');
+  assert.equal(ledger.unresolved_line_candidate_count, 0);
+  assert.equal(ledger.parser_false_positive_review.token, 'FR-AIG-03');
+  assert.equal(ledger.parser_false_positive_review.context_requirement_id, 'FR-CBB-19');
+  assert.equal(ledger.parser_false_positive_review.status, 'COVERED_BY_SYNTHETIC_REGRESSION');
 });
 
 test('§140 scope figures are kept separate and do not close the owner gate', () => {
