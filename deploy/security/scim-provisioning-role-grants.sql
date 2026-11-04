@@ -29,6 +29,16 @@
 REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"application_role";
 REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"provisioning_role";
 REVOKE ALL ON TABLE public.tenants FROM :"provisioning_role";
+REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM PUBLIC;
+
+-- PUBLIC column ACLs are separate from the table ACL. Remove any legacy
+-- column-level grants before the restricted role allowlists are installed.
+REVOKE SELECT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       INSERT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       UPDATE (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       REFERENCES (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at)
+ON TABLE public.scim_provisioning_credentials
+FROM PUBLIC;
 
 -- Table-level REVOKE does not remove separately granted column privileges.
 -- Clear every column privilege explicitly so an older broad column grant

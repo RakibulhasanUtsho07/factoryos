@@ -550,6 +550,11 @@ jobs:
                 INSERT (id, created_at, last_used_at, revoked_at),
                 UPDATE (tenant_id, issuer, token_sha256, scopes, expires_at, last_used_at)
           ON TABLE public.scim_provisioning_credentials TO factoryos_scim_provisioner;
+          GRANT SELECT (issuer, token_sha256),
+                INSERT (token_sha256),
+                UPDATE (status),
+                REFERENCES (token_sha256)
+          ON TABLE public.scim_provisioning_credentials TO PUBLIC;
           SQL
           echo "Replacing shared CI table grants with SCIM's reviewed column-level grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
