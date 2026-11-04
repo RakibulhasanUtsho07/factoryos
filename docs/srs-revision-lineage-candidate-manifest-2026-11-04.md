@@ -25,7 +25,7 @@ The original v1.1 and v1.2 source bytes were not located in the available Librar
 | v1.6 | DOCX + 55-page PDF, both pinned | 410 + 74 FR + 18 NFR = 502 | Draft |
 | v1.7 | DOCX + 66-page PDF, both pinned | 502 + 132 FR + 24 NFR = 658 | Draft |
 | v1.8 frontier | DOCX + 77-page PDF, both pinned | 658 + 100 FR + 20 NFR = 778 | Draft; filenames containing “FINAL” do not override the document-control status |
-| v1.9 growth/research | DOCX + 86-page PDF, both pinned | 778 + 92 = 870 | Version metadata conflict: cover says v1.9, document control and PDF title say v1.8 |
+| v1.9 growth/research | DOCX + 86-page PDF, both pinned | 778 + 74 FR + 18 NFR = 870 | 92 source-located rows on PDF pages 75–85; version metadata conflict remains |
 | v2.0 | DOCX + 93-page PDF, both pinned | 870 + 20 FR + 10 NFR = 900 | Draft; PDF Title metadata still says v1.8 |
 | v2.1 | DOCX + 103-page PDF, both pinned | 900 + 32 FR + 18 NFR = 950 | Title says FINAL; controlled source approval remains pending |
 
@@ -41,7 +41,7 @@ v1.5 corrected additions: 80 FR + 12 NFR                 92  -> 410
 v1.6 additions:          74 FR + 18 NFR                  92  -> 502
 v1.7 additions:         132 FR + 24 NFR                 156  -> 658
 v1.8 frontier additions:100 FR + 20 NFR                 120  -> 778
-v1.9 growth/research additions: total only               92  -> 870
+v1.9 growth/research additions: 74 FR + 18 NFR            92  -> 870
 v2.0 additions:          20 FR + 10 NFR                  30  -> 900
 v2.1 additions:          32 FR + 18 NFR                  50  -> 950
 ```
@@ -58,7 +58,7 @@ The v1.4 starting parent count is not inferred here. The corrected v1.5 source s
 | v2.0 | 261 | 567 | 72 | 900 | Cumulative |
 | v2.1 | 296 | 582 | 72 | 950 | §140 cumulative |
 
-The currently reviewed v1.9 growth scope paragraph states a total addition of 92 but does not state its functional/non-functional or priority split. v1.8 and v1.9 intermediate priority buckets therefore remain unclaimed in this manifest.
+The v1.9 growth/research addition has now been independently re-extracted from the byte-pinned 86-page PDF with page/line locators: 74 FR + 18 NFR, priorities P0=37/P1=55/P2=0. The machine-readable occurrence ledger is docs/srs-v19-growth-delta-occurrence-ledger.json. This remains candidate extraction from a draft/version-conflicted PDF, not Product/Requirements acceptance. The cumulative v1.9 priority buckets remain unknown because the reviewed v1.8 cumulative priority baseline is not available.
 
 ## Source conflicts that are preserved
 
@@ -66,7 +66,7 @@ The currently reviewed v1.9 growth scope paragraph states a total addition of 92
 2. **v1.9 version conflict.** The file cover/title and appended growth/research material identify v1.9, while DOCX document control and PDF Title metadata still identify v1.8. Obtain a corrected controlled artifact or signed revision decision.
 3. **v2.0 PDF metadata conflict.** The visible source identifies v2.0, but the PDF Title metadata remains v1.8. Regenerate or record an approved metadata exception.
 4. **v1.1/v1.2 source gap.** v1.3 and later revisions explicitly inherit those versions, but their original bytes were not located in the available Library search. Do not substitute the v1.3 consolidation as proof of the missing normative occurrence populations.
-5. **v1.9 growth delta detail.** The total 92 is recorded; FR/NFR and priority components remain null until Requirements supplies source-backed counts.
+5. **v1.9 growth delta extraction.** The 92 rows and their FR/NFR and priority split are source-located as candidates. The remaining gap is source-owner approval of the version-conflicted v1.9 artifact and occurrence classifications; the cumulative v1.9 priority buckets remain unknown.
 
 ## Why this does not close the occurrence ledger
 
