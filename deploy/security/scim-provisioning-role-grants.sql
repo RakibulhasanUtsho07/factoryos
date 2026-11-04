@@ -23,6 +23,13 @@
   \quit 3
 \endif
 
+-- Replace prior direct grants instead of merely adding narrow grants on top of
+-- broader table-level/default-privilege grants. Inherited memberships still
+-- require the separate effective-role audit at deployment time.
+REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"application_role";
+REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"provisioning_role";
+REVOKE ALL ON TABLE public.tenants FROM :"provisioning_role";
+
 GRANT USAGE ON SCHEMA public TO :"application_role";
 GRANT SELECT (tenant_id, issuer, token_sha256, scopes, status, expires_at),
       UPDATE (last_used_at)
@@ -43,4 +50,4 @@ GRANT UPDATE (status, revoked_at)
 ON TABLE public.scim_provisioning_credentials
 TO :"provisioning_role";
 
-\echo 'SCIM runtime and provisioning column grants applied; verify effective privileges and inherited memberships with postgres-role-audit.sql'
+\echo 'SCIM runtime/provisioning column grants replaced direct prior grants; verify effective privileges and inherited memberships with postgres-role-audit.sql'
