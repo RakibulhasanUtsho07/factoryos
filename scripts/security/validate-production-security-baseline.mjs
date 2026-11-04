@@ -133,7 +133,7 @@ export function validateTemplate(document) {
   expectFalse('identity.dev_auth_enabled');
   expect('identity.oidc.require_mfa', true);
   expectFalse('identity.oidc.verified_tls');
-  expectFalse('identity.scim.repository_implementation_present');
+  expect('identity.scim.repository_implementation_present', true);
   expect('identity.scim.applicability', 'OWNER_DECISION_REQUIRED');
 
   for (const path of [
@@ -320,7 +320,7 @@ export function validateSecurityAttestation(document, expectedSha, now = Date.no
     bool('identity.scim.identity_provider_scim_enabled');
     bool('identity.scim.group_role_mapping_reviewed');
   } else if (scimApplicability === 'NOT_REQUIRED_WITH_APPROVED_ALTERNATIVE') {
-    bool('identity.scim.repository_implementation_present', false);
+    bool('identity.scim.repository_implementation_present', true);
     bool('identity.scim.identity_provider_scim_enabled', false);
   }
   reference('identity.scim.evidence_reference');

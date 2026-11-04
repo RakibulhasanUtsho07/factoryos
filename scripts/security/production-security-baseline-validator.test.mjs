@@ -57,7 +57,7 @@ function validAttestation() {
         idp_mfa_policy_evidence: 'evidence://identity/mfa-policy',
       },
       scim: {
-        repository_implementation_present: false,
+        repository_implementation_present: true,
         applicability: 'NOT_REQUIRED_WITH_APPROVED_ALTERNATIVE',
         identity_provider_scim_enabled: false,
         group_role_mapping_reviewed: false,

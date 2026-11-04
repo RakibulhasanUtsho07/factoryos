@@ -15,6 +15,8 @@ test('production security evidence remains explicitly unapproved until operator 
   assert.match(baseline, /^\s*dev_auth_enabled: false$/m);
   assert.match(baseline, /^\s*require_mfa: true$/m);
   assert.match(baseline, /^\s*applicability: OWNER_DECISION_REQUIRED$/m);
+  assert.match(baseline, /^\s*repository_implementation_present: true$/m);
+  assert.match(await read('services/api/.env.example'), /^SCIM_ENABLED=false$/m);
   assert.match(baseline, /^\s*release_approved: false$/m);
   assert.match(baseline, /^\s*all_high_critical_findings_closed: false$/m);
 });
@@ -67,7 +69,8 @@ test('production review artifacts do not claim an independent reviewer or comple
   const record = await read('docs/production-security-configuration-and-independent-review.md');
   assert.match(record, /PENDING_EXTERNAL_REVIEW/);
   assert.match(record, /Independent review has NOT been performed/);
-  assert.match(record, /SCIM.*not implemented/i);
+  assert.match(record, /SCIM.*deprovision-only/i);
+  assert.match(record, /Independent review has NOT been performed/);
   assert.match(record, /release_approved: false|release approved: no/i);
 });
 
@@ -110,4 +113,69 @@ test('security baseline and egress YAML parse successfully', async () => {
   ]) {
     await prettier.format(await read(path), { parser: 'yaml' });
   }
+});
+
+
+test('SCIM adapter is tenant-scoped, deprovision-only, fail-closed and audited transactionally', async () => {
+  const service = await read('services/api/src/scim/scim.service.ts');
+  const controller = await read('services/api/src/scim/scim.controller.ts');
+  const migration = await read('migrations/230_scim_tenant_deprovision_credentials.sql');
+  assert.match(service, /SCIM_ENABLED/);
+  assert.match(service, /status = 'REMOVED'/);
+  assert.match(service, /recordWithClient\(client/);
+  assert.match(service, /ai\.issuer = \$3/);
+  assert.match(service, /tm\.tenant_id = \$1::uuid/);
+  assert.match(service, /Users:write/);
+  assert.match(controller, /SkipApiResponse/);
+  assert.match(controller, /application\/scim\+json/);
+  const main = await read('services/api/src/main.ts');
+  assert.match(main, /application\/scim\+json/);
+  assert.match(migration, /ENABLE ROW LEVEL SECURITY/);
+  assert.match(migration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(migration, /AS PERMISSIVE/);
+  assert.match(migration, /AS RESTRICTIVE/);
+  assert.match(migration, /REVOKE ALL .* FROM PUBLIC/);
+});
+
+test('OIDC deprovision verifier checks RS256, HTTPS JWKS, MFA and avoids bearer persistence', async () => {
+  const verifier = await read('scripts/security/verify-oidc-deprovisioning.mjs');
+  const tests = await read('scripts/security/verify-oidc-deprovisioning.test.mjs');
+  assert.match(verifier, /verifySignature\('RSA-SHA256'/);
+  assert.match(verifier, /redirect: 'error'/);
+  assert.match(verifier, /mfaVerified: true/);
+  assert.match(verifier, /rawBearerTokenStored: false/);
+  assert.match(tests, /before\/after rehearsal proves tenant-scoped revocation/);
+});
+
+
+test('AS-133 protected staging workflow binds exact deployed SHA, real IdP token and signed before/after evidence', async () => {
+  const workflow = await read('.github/workflows/production-identity-deprovisioning.yml');
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /environment:\s*\n\s*name: production-security-staging/);
+  assert.match(workflow, /actions: read/);
+  assert.match(workflow, /AS133_STAGING_DEPLOYED_SHA/);
+  assert.match(workflow, /AS133_STAGING_BEARER_TOKEN/);
+  assert.match(workflow, /verify-oidc-deprovisioning\.mjs/);
+  assert.match(workflow, /as133-oidc-deprovision-before/);
+  assert.match(workflow, /as133-oidc-deprovision-\$\{\{ inputs\.phase \}\}/);
+  assert.match(workflow, /SCIM_DEPROVISION_EVENT_REFERENCE/);
+  assert.match(workflow, /SCIM_DEPROVISIONED_AT_UTC/);
+  assert.match(workflow, /SCIM_MAX_PROPAGATION_SECONDS/);
+  assert.match(workflow, /It does not prove global IdP logout/);
+  assert.match(workflow, /Never mark AS-133 accepted from this workflow alone/);
+  assert.doesNotMatch(workflow, /environment:\s*\n\s*name: production\s*$/m);
+});
+
+
+test('SCIM provisioning uses transaction-local tenant context and explicit column-scoped grants under forced RLS', async () => {
+  const provisioner = await read('scripts/security/create-scim-provisioning-credential.mjs');
+  const grants = await read('deploy/security/scim-provisioning-role-grants.sql');
+  const migration = await read('migrations/230_scim_tenant_deprovision_credentials.sql');
+  assert.match(provisioner, /client\.query\("SELECT set_config\('app\.tenant_id', \$1, true\)", \[tenantId\]\)/);
+  assert.match(migration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(grants, /UPDATE \(last_used_at\)/);
+  assert.match(grants, /INSERT \(tenant_id, issuer, token_sha256, scopes, status, expires_at\)/);
+  assert.match(grants, /UPDATE \(status, revoked_at\)/);
+  assert.match(grants, /GRANT SELECT \(id, status\)[\s\S]*ON TABLE public\.tenants/);
+  assert.doesNotMatch(grants, /GRANT\s+(?:ALL|BYPASSRLS|TRUNCATE)/i);
 });
