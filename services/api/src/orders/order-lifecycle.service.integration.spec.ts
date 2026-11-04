@@ -1126,6 +1126,7 @@ describe(
           status: 'RESERVED',
           reserved_quantity: '4.0000',
         });
+        expect(reservations.rows[0]?.reference_id).not.toBe(loser.lineId);
 
         const balance = await pool.query<{
           quantity_on_hand: string;
