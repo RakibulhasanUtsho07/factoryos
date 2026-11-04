@@ -83,14 +83,14 @@ The repository now has first-class quality inspections, immutable defect-to-lot/
 
 SRS v2.1 FR-WMS-04 requires serial allocation to preserve the individual physical identity. Migration `236_wms_serial_indivisibility.sql` makes that rule a PostgreSQL invariant, not only an API convention:
 
-- A SERIAL source or target can appear on a genealogy edge only with quantity exactly `1`. A SERIAL cannot be split as a source or collapsed by `MERGED_INTO`.
+- A SERIAL source or target can appear on a genealogy edge only with quantity exactly `1`. A SERIAL cannot be split as a source or collapsed by `MERGED_INTO`; a serial target can have only one `SPLIT_INTO` parent.
 - A LOT may still split into multiple individual SERIAL targets using one-unit `SPLIT_INTO` edges; the source lot's existing cumulative genealogy quantity guard still limits the sum to the lot's registered quantity.
 - A serial's on-hand and reserved location balances are each strictly `0` or `1`, and the sum across **all** locations for that serial cannot exceed one. The serial identity row is locked while those balances change, so concurrent moves cannot claim the same unit at two locations.
 - A SERIAL reservation must be backed by exactly one on-hand unit and one reserved unit in the same location. Only one outstanding allocation is permitted; partial issue and partial release are rejected, consumed serials cannot be allocated again, and consumption evidence must record exactly one unit once.
 - A location transfer carrying a SERIAL must move exactly one unit. Lot-level partial reservations, issues and transfers remain supported.
 - Before installing the guards, migration 236 checks existing genealogy, location, reservation, consumption and transfer rows. Any legacy fractional or duplicated serial state blocks deployment for audited reconciliation rather than being silently accepted.
 
-The migration uses row locks for serial-specific balance, reservation, consumption and transfer writes, and shares the canonical genealogy graph lock before locking genealogy endpoints. Its replay is part of PostgreSQL CI. Runtime acceptance is `services/api/test/wms-serial-indivisibility.sql`, covering rejected fractional genealogy, serial split/merge, fractional stock/reservation/issue/release/transfer paths, duplicate active allocation, duplicate serial quantity across locations, and an accepted lot-to-serial split.
+The migration uses row locks for serial-specific balance, reservation, consumption and transfer writes, and shares the canonical genealogy graph lock before locking genealogy endpoints. Its replay is part of PostgreSQL CI. Runtime acceptance is `services/api/test/wms-serial-indivisibility.sql`, covering rejected fractional genealogy, serial split/merge, fractional stock/reservation/issue/release/transfer paths, duplicate active allocation, duplicate serial quantity across locations, duplicate split parents and an accepted lot-to-serial split.
 
 This closes the database-level serial quantity/cardinality gap. Physical scanner, RFID reader, printer and plant acceptance remain separate hardware/site gates and are not implied by these tests.
 
