@@ -14,6 +14,14 @@ The consolidated fixture includes deterministic concurrent duplicate-delivery ch
 
 The same fixture creates factory-scoped KG and G units, submits and independently approves the exact `1000/1` conversion, receives base-unit G stock, and writes the product BOM as `1 KG` per finished unit. The immutable BOM snapshot retains the approved conversion rule ID/version/factor and resolves to `1000.0000 G`; a three-unit work order therefore reserves and consumes exactly `3000.0000 G`, with that quantity/unit carried through the material lot and consumption genealogy. Finished output remains `3.0000 PCS`. This is an explicit cross-module UoM boundary test, not merely a standalone conversion check.
 
+## Independent order confirmation under shared-stock contention
+
+Authoritative PostgreSQL test: `services/api/src/orders/order-lifecycle.service.integration.spec.ts`, test `serializes independent order confirmations competing for the same shared stock`.
+
+The scenario creates one factory-scoped inventory item with `5.0000 PCS` on hand and two distinct draft sales orders, each demanding `4.0000 PCS` of that same item across two lines (`0.7500` and `3.2500 PCS`). The fixture assigns the lower UUID to the smaller line because the service processes lines by item ID and line UUID; this guarantees the losing order first acquires a partial `0.7500 PCS` reservation before its `3.2500 PCS` line encounters insufficient stock. Their confirmations run concurrently in separate service transactions with distinct trace IDs. Exactly one order must commit as `CONFIRMED`; the other must receive the insufficient-stock conflict and remain `DRAFT` at its original version. Read-back requires exactly the winner's two order-line reservations (`0.7500` and `3.2500 PCS`), aggregate on-hand/reserved values of `5.0000/4.0000 PCS`, only the winner's `INVENTORY.STOCK_RESERVED` outbox events, and exactly one `ORDER.CONFIRMED` outbox event. Both partial reservation and event writes from the losing order must roll back.
+
+This is deliberately different from duplicate-request replay: it validates two independent business transactions contending for the same authoritative stock, including rollback of the losing order transition. It proves the repository PostgreSQL transaction/locking contract covered by CI; it does not certify production lock-wait capacity, peak concurrency or a live factory topology.
+
 ## Consolidated persisted PostgreSQL acceptance
 
 Authoritative integration path: `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`, test `runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy`.
@@ -59,7 +67,7 @@ Overall factory lifecycle remains **PARTIAL** until:
 
 1. API CI, full PostgreSQL integration CI, production dependency/security checks and SRS/HLD/Blueprint traceability pass on the exact current PR head; rerun after every source change.
 2. Independent review confirms no duplicate/conflicting migrations and the cross-UoM conversion snapshot, concurrent replay, incoming-quality HOLD/RELEASE and rollback assertions pass in the consolidated fixture.
-3. Competing independent orders with different idempotency keys are exercised under shared-stock contention in the selected staging topology; duplicate-delivery CI does not prove site concurrency/load acceptance.
+3. Repeat independent-order contention in the approved staging topology under representative connection-pool/load conditions; PostgreSQL CI now proves the distinct-order transaction/rollback contract, not production lock-wait, timeout or site-capacity acceptance.
 4. Lot-and-serial identities are exercised together across receipt, reservations, multi-operation WIP, output, quality and forward/reverse genealogy, including partial consumption, split/merge and mixed-unit conversions at the factory's configured precision.
 5. Actual-cost capture, material/labour/overhead allocation, WIP/finished-goods valuation and downstream accounting/stock valuation reconciliation are integrated with production and signed off by the finance owner. The existing finance workbench is not proof of manufacturing actual-cost posting.
 6. The complete maker-checker cycle-count journey (blind count, independent approval, stale-balance rejection, recount/escalation and reconciliation) is accepted on physical mobile clients with offline queue, cross-device replay and real ledger reconciliation.
