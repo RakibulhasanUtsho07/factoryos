@@ -51,11 +51,21 @@ BEGIN
 
   SELECT EXISTS (
     SELECT 1
-    FROM aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
-    WHERE a.grantee = 0
+    FROM pg_class c
+    CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+    WHERE c.oid = v_table
+      AND a.grantee = 0
       AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER')
-  ) INTO v_has_public_privilege
-  FROM pg_class c WHERE c.oid = v_table;
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_attribute att
+    CROSS JOIN LATERAL aclexplode(att.attacl) a
+    WHERE att.attrelid = v_table
+      AND att.attnum > 0
+      AND NOT att.attisdropped
+      AND a.grantee = 0
+      AND a.privilege_type IN ('SELECT','INSERT','UPDATE','REFERENCES')
+  ) INTO v_has_public_privilege;
   IF v_has_public_privilege THEN
     RAISE EXCEPTION 'PUBLIC must have no privileges on SCIM credentials';
   END IF;
