@@ -1153,6 +1153,26 @@ describe(
         expect(actualReservations).toEqual(expectedReservations);
         expect(actualReservations.some((row) => loser.lineIds.includes(row.reference_id))).toBe(false);
 
+        const reservationEvents = await pool.query<{
+          order_id: string;
+          event_count: number;
+        }>(
+          `
+          SELECT payload #>> '{reservation,order_id}' AS order_id,
+                 COUNT(*)::int AS event_count
+          FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3::uuid
+            AND event_type = 'INVENTORY.STOCK_RESERVED'
+            AND payload #>> '{reservation,order_id}' = ANY($4::text[])
+          GROUP BY payload #>> '{reservation,order_id}'
+          `,
+          [tenantId, factoryId, itemId, [first.orderId, second.orderId]],
+        );
+        expect(reservationEvents.rows).toHaveLength(1);
+        expect(reservationEvents.rows[0]?.order_id).toBe(winner.orderId);
+        expect(reservationEvents.rows[0]?.event_count).toBeGreaterThanOrEqual(2);
+
         const balance = await pool.query<{
           quantity_on_hand: string;
           quantity_reserved: string;
