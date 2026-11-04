@@ -306,8 +306,12 @@ export default function AiAgentControlCenterPage() {
     setDetailsLoading(true);
     try {
       const result = asRecord(await apiClient.getTask(taskId));
+      const task = asRecord(result.task);
+      if (typeof task.id !== "string") {
+        throw new Error("Task detail response is missing its task identifier.");
+      }
       const steps = Array.isArray(result.steps) ? result.steps.map(asRecord) : [];
-      setTaskDetail({ task: asRecord(result.task), steps });
+      setTaskDetail({ task: task as Task, steps });
       setReadErrors((current) => ({ ...current, taskDetail: "" }));
     } catch (error) {
       setTaskDetail(null);
@@ -672,10 +676,10 @@ export default function AiAgentControlCenterPage() {
                                   <StatusPill value={stepStatus} />
                                 </div>
                                 <p className="mt-1 text-xs text-slate-500">{valueText(step.capability)} · {valueText(step.actionType)} · attempt {valueNumber(step.authorizationAttempt)}</p>
-                                {step.nextRetryAt && <p className="mt-1 text-xs text-amber-800">Next retry eligible: {displayDate(step.nextRetryAt)}</p>}
-                                {step.approvalId && <p className="mt-1 break-all font-mono text-[10px] text-slate-500">Approval: {valueText(step.approvalId)}</p>}
-                                {step.executionEvidence && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
-                                {step.error && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
+                                {typeof step.nextRetryAt === "string" && <p className="mt-1 text-xs text-amber-800">Next retry eligible: {displayDate(step.nextRetryAt)}</p>}
+                                {typeof step.approvalId === "string" && <p className="mt-1 break-all font-mono text-[10px] text-slate-500">Approval: {valueText(step.approvalId)}</p>}
+                                {step.executionEvidence !== null && step.executionEvidence !== undefined && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
+                                {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   {canExecute && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
                                   {stepStatus === "AWAITING_APPROVAL" && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
