@@ -8,6 +8,7 @@ import {
   Req,
   UnauthorizedException,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import type { Request } from 'express';
 
@@ -180,6 +181,25 @@ export class AiAgentController {
       context.factoryId,
       context.userId,
       taskId,
+    );
+  }
+
+  @Get('tasks')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listTasks(
+    @Req() request: FactoryOsRequest,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+
+    return this.aiAgentRuntimeService.listTasks(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      limit,
     );
   }
 
