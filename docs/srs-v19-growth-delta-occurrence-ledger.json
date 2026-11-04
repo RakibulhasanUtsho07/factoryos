@@ -1,0 +1,574 @@
+{
+  "schemaVersion": 1,
+  "ledgerId": "FOS-SRS-V19-GROWTH-DELTA-01",
+  "sourceArtifactSha256": "09f796a867941d4738b07eea5f9169ed2de9351fb7a6111b676bf9342bfbb5a1",
+  "sourcePdfPageCount": 86,
+  "scannedPdfPages": [
+    75,
+    85
+  ],
+  "expectedRows": 92,
+  "functionalRows": 74,
+  "nonFunctionalRows": 18,
+  "priorityCounts": {
+    "P0": 37,
+    "P1": 55,
+    "P2": 0
+  },
+  "extractionMethod": "pdfplumber positioned-layout text; anchored table row ID + priority token; normative wording intentionally not copied",
+  "acceptanceBoundary": "Candidate occurrence extraction only. Does not establish controlled source-of-record, active-scope approval, duplicate/supersession classification or Product/Requirements acceptance.",
+  "rows": [
+    {
+      "requirementId": "FR-BMI-01",
+      "priority": "P0",
+      "pdfPage": 75,
+      "textLineOnPage": 30
+    },
+    {
+      "requirementId": "FR-BMI-02",
+      "priority": "P0",
+      "pdfPage": 75,
+      "textLineOnPage": 37
+    },
+    {
+      "requirementId": "FR-BMI-03",
+      "priority": "P0",
+      "pdfPage": 75,
+      "textLineOnPage": 43
+    },
+    {
+      "requirementId": "FR-BMI-04",
+      "priority": "P0",
+      "pdfPage": 75,
+      "textLineOnPage": 47
+    },
+    {
+      "requirementId": "FR-BMI-05",
+      "priority": "P1",
+      "pdfPage": 75,
+      "textLineOnPage": 51
+    },
+    {
+      "requirementId": "FR-BMI-06",
+      "priority": "P1",
+      "pdfPage": 75,
+      "textLineOnPage": 56
+    },
+    {
+      "requirementId": "FR-BMI-07",
+      "priority": "P1",
+      "pdfPage": 75,
+      "textLineOnPage": 61
+    },
+    {
+      "requirementId": "FR-BMI-08",
+      "priority": "P1",
+      "pdfPage": 75,
+      "textLineOnPage": 65
+    },
+    {
+      "requirementId": "FR-BMI-09",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 9
+    },
+    {
+      "requirementId": "FR-BMI-10",
+      "priority": "P0",
+      "pdfPage": 76,
+      "textLineOnPage": 14
+    },
+    {
+      "requirementId": "FR-CLB-01",
+      "priority": "P0",
+      "pdfPage": 76,
+      "textLineOnPage": 26
+    },
+    {
+      "requirementId": "FR-CLB-02",
+      "priority": "P0",
+      "pdfPage": 76,
+      "textLineOnPage": 31
+    },
+    {
+      "requirementId": "FR-CLB-03",
+      "priority": "P0",
+      "pdfPage": 76,
+      "textLineOnPage": 35
+    },
+    {
+      "requirementId": "FR-CLB-04",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 40
+    },
+    {
+      "requirementId": "FR-CLB-05",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 44
+    },
+    {
+      "requirementId": "FR-CLB-06",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 48
+    },
+    {
+      "requirementId": "FR-CLB-07",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 51
+    },
+    {
+      "requirementId": "FR-CLB-08",
+      "priority": "P1",
+      "pdfPage": 76,
+      "textLineOnPage": 56
+    },
+    {
+      "requirementId": "FR-GRO-01",
+      "priority": "P0",
+      "pdfPage": 77,
+      "textLineOnPage": 7
+    },
+    {
+      "requirementId": "FR-GRO-02",
+      "priority": "P0",
+      "pdfPage": 77,
+      "textLineOnPage": 14
+    },
+    {
+      "requirementId": "FR-GRO-03",
+      "priority": "P0",
+      "pdfPage": 77,
+      "textLineOnPage": 19
+    },
+    {
+      "requirementId": "FR-GRO-04",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 24
+    },
+    {
+      "requirementId": "FR-GRO-05",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 28
+    },
+    {
+      "requirementId": "FR-GRO-06",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 32
+    },
+    {
+      "requirementId": "FR-GRO-07",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 37
+    },
+    {
+      "requirementId": "FR-GRO-08",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 41
+    },
+    {
+      "requirementId": "FR-GRO-09",
+      "priority": "P0",
+      "pdfPage": 77,
+      "textLineOnPage": 46
+    },
+    {
+      "requirementId": "FR-GRO-10",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 50
+    },
+    {
+      "requirementId": "FR-GRO-11",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 55
+    },
+    {
+      "requirementId": "FR-GRO-12",
+      "priority": "P1",
+      "pdfPage": 77,
+      "textLineOnPage": 60
+    },
+    {
+      "requirementId": "FR-EXP2-01",
+      "priority": "P0",
+      "pdfPage": 78,
+      "textLineOnPage": 10
+    },
+    {
+      "requirementId": "FR-EXP2-02",
+      "priority": "P0",
+      "pdfPage": 78,
+      "textLineOnPage": 16
+    },
+    {
+      "requirementId": "FR-EXP2-03",
+      "priority": "P0",
+      "pdfPage": 78,
+      "textLineOnPage": 20
+    },
+    {
+      "requirementId": "FR-EXP2-04",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 24
+    },
+    {
+      "requirementId": "FR-EXP2-05",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 28
+    },
+    {
+      "requirementId": "FR-EXP2-06",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 33
+    },
+    {
+      "requirementId": "FR-EXP2-07",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 37
+    },
+    {
+      "requirementId": "FR-EXP2-08",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 41
+    },
+    {
+      "requirementId": "FR-RES-01",
+      "priority": "P0",
+      "pdfPage": 78,
+      "textLineOnPage": 52
+    },
+    {
+      "requirementId": "FR-RES-02",
+      "priority": "P0",
+      "pdfPage": 78,
+      "textLineOnPage": 58
+    },
+    {
+      "requirementId": "FR-RES-03",
+      "priority": "P1",
+      "pdfPage": 78,
+      "textLineOnPage": 63
+    },
+    {
+      "requirementId": "FR-RES-04",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 7
+    },
+    {
+      "requirementId": "FR-RES-05",
+      "priority": "P0",
+      "pdfPage": 79,
+      "textLineOnPage": 11
+    },
+    {
+      "requirementId": "FR-RES-06",
+      "priority": "P0",
+      "pdfPage": 79,
+      "textLineOnPage": 16
+    },
+    {
+      "requirementId": "FR-RES-07",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 20
+    },
+    {
+      "requirementId": "FR-RES-08",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 25
+    },
+    {
+      "requirementId": "FR-RES-09",
+      "priority": "P0",
+      "pdfPage": 79,
+      "textLineOnPage": 29
+    },
+    {
+      "requirementId": "FR-RES-10",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 33
+    },
+    {
+      "requirementId": "FR-RES-11",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 37
+    },
+    {
+      "requirementId": "FR-RES-12",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 41
+    },
+    {
+      "requirementId": "FR-RES-13",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 46
+    },
+    {
+      "requirementId": "FR-RES-14",
+      "priority": "P1",
+      "pdfPage": 79,
+      "textLineOnPage": 51
+    },
+    {
+      "requirementId": "FR-RBT-01",
+      "priority": "P0",
+      "pdfPage": 79,
+      "textLineOnPage": 60
+    },
+    {
+      "requirementId": "FR-RBT-02",
+      "priority": "P0",
+      "pdfPage": 80,
+      "textLineOnPage": 5
+    },
+    {
+      "requirementId": "FR-RBT-03",
+      "priority": "P0",
+      "pdfPage": 80,
+      "textLineOnPage": 10
+    },
+    {
+      "requirementId": "FR-RBT-04",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 14
+    },
+    {
+      "requirementId": "FR-RBT-05",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 19
+    },
+    {
+      "requirementId": "FR-RBT-06",
+      "priority": "P0",
+      "pdfPage": 80,
+      "textLineOnPage": 23
+    },
+    {
+      "requirementId": "FR-RBT-07",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 28
+    },
+    {
+      "requirementId": "FR-RBT-08",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 32
+    },
+    {
+      "requirementId": "FR-GAI-01",
+      "priority": "P0",
+      "pdfPage": 80,
+      "textLineOnPage": 40
+    },
+    {
+      "requirementId": "FR-GAI-02",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 46
+    },
+    {
+      "requirementId": "FR-GAI-03",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 50
+    },
+    {
+      "requirementId": "FR-GAI-04",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 54
+    },
+    {
+      "requirementId": "FR-GAI-05",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 57
+    },
+    {
+      "requirementId": "FR-GAI-06",
+      "priority": "P1",
+      "pdfPage": 80,
+      "textLineOnPage": 64
+    },
+    {
+      "requirementId": "FR-RKB-01",
+      "priority": "P0",
+      "pdfPage": 81,
+      "textLineOnPage": 14
+    },
+    {
+      "requirementId": "FR-RKB-02",
+      "priority": "P0",
+      "pdfPage": 81,
+      "textLineOnPage": 18
+    },
+    {
+      "requirementId": "FR-RKB-03",
+      "priority": "P0",
+      "pdfPage": 81,
+      "textLineOnPage": 22
+    },
+    {
+      "requirementId": "FR-RKB-04",
+      "priority": "P1",
+      "pdfPage": 81,
+      "textLineOnPage": 26
+    },
+    {
+      "requirementId": "FR-RKB-05",
+      "priority": "P1",
+      "pdfPage": 81,
+      "textLineOnPage": 30
+    },
+    {
+      "requirementId": "FR-RKB-06",
+      "priority": "P0",
+      "pdfPage": 81,
+      "textLineOnPage": 35
+    },
+    {
+      "requirementId": "FR-RKB-07",
+      "priority": "P1",
+      "pdfPage": 81,
+      "textLineOnPage": 40
+    },
+    {
+      "requirementId": "FR-RKB-08",
+      "priority": "P1",
+      "pdfPage": 81,
+      "textLineOnPage": 46
+    },
+    {
+      "requirementId": "NFR-GR-01",
+      "priority": "P1",
+      "pdfPage": 84,
+      "textLineOnPage": 25
+    },
+    {
+      "requirementId": "NFR-GR-02",
+      "priority": "P1",
+      "pdfPage": 84,
+      "textLineOnPage": 30
+    },
+    {
+      "requirementId": "NFR-GR-03",
+      "priority": "P1",
+      "pdfPage": 84,
+      "textLineOnPage": 36
+    },
+    {
+      "requirementId": "NFR-GR-04",
+      "priority": "P0",
+      "pdfPage": 84,
+      "textLineOnPage": 40
+    },
+    {
+      "requirementId": "NFR-GR-05",
+      "priority": "P0",
+      "pdfPage": 84,
+      "textLineOnPage": 46
+    },
+    {
+      "requirementId": "NFR-GR-06",
+      "priority": "P1",
+      "pdfPage": 84,
+      "textLineOnPage": 53
+    },
+    {
+      "requirementId": "NFR-GR-07",
+      "priority": "P0",
+      "pdfPage": 84,
+      "textLineOnPage": 59
+    },
+    {
+      "requirementId": "NFR-GR-08",
+      "priority": "P0",
+      "pdfPage": 84,
+      "textLineOnPage": 65
+    },
+    {
+      "requirementId": "NFR-GR-09",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 9
+    },
+    {
+      "requirementId": "NFR-GR-10",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 15
+    },
+    {
+      "requirementId": "NFR-GR-11",
+      "priority": "P0",
+      "pdfPage": 85,
+      "textLineOnPage": 21
+    },
+    {
+      "requirementId": "NFR-GR-12",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 26
+    },
+    {
+      "requirementId": "NFR-GR-13",
+      "priority": "P0",
+      "pdfPage": 85,
+      "textLineOnPage": 32
+    },
+    {
+      "requirementId": "NFR-GR-14",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 39
+    },
+    {
+      "requirementId": "NFR-GR-15",
+      "priority": "P0",
+      "pdfPage": 85,
+      "textLineOnPage": 45
+    },
+    {
+      "requirementId": "NFR-GR-16",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 51
+    },
+    {
+      "requirementId": "NFR-GR-17",
+      "priority": "P1",
+      "pdfPage": 85,
+      "textLineOnPage": 58
+    },
+    {
+      "requirementId": "NFR-GR-18",
+      "priority": "P0",
+      "pdfPage": 85,
+      "textLineOnPage": 64
+    }
+  ]
+}
