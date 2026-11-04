@@ -54,7 +54,7 @@ export default function Home() {
             </div>
           </div>
           <div className="grid gap-5 lg:grid-cols-2">
-            {workspaces.map((workspace, index) => (
+            {workspaces.map((workspace) => (
               <Link
                 key={workspace.href}
                 href={workspace.href}
