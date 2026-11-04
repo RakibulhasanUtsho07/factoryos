@@ -58,7 +58,7 @@ test('declared cumulative scope arithmetic reconciles without inferring unavaila
   assert.equal(v14.startingCumulative, null);
   assert.equal(v14.delta.total, null);
   assert.equal(v14.cumulative, 318);
-  assert.equal(v14.arithmeticStatus, 'PARENT_CUMULATIVE_CLAIM_ONLY');
+  assert.equal(v14.arithmeticStatus, 'PARENT_BASELINE_NOT_NUMERICALLY_ENUMERATED');
 
   const expected = [
     ['1.5_corrected', 318, 92, 410],
