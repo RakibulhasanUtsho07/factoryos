@@ -1,5 +1,103 @@
 BEGIN;
 
+-- Do not silently bless legacy fractional or duplicated serial state. If a live
+-- database already contains any such rows, stop the migration and reconcile them
+-- with an audited stock-count/ledger correction before installing the guards.
+DO $
+DECLARE
+  v_bad_count BIGINT;
+BEGIN
+  SELECT count(*) INTO v_bad_count
+  FROM product_genealogy_events e
+  JOIN traceability_units s
+    ON s.id=e.source_unit_id AND s.tenant_id=e.tenant_id AND s.factory_id=e.factory_id
+  JOIN traceability_units t
+    ON t.id=e.target_unit_id AND t.tenant_id=e.tenant_id AND t.factory_id=e.factory_id
+  WHERE ((s.unit_type='SERIAL' OR t.unit_type='SERIAL') AND e.quantity <> 1)
+     OR (e.relationship_type='SPLIT_INTO' AND s.unit_type='SERIAL')
+     OR (e.relationship_type='MERGED_INTO' AND (s.unit_type='SERIAL' OR t.unit_type='SERIAL'));
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy genealogy edges require audited reconciliation', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM inventory_traceability_location_balances b
+  JOIN traceability_units u
+    ON u.id=b.traceability_unit_id AND u.tenant_id=b.tenant_id
+   AND u.factory_id=b.factory_id AND u.inventory_item_id=b.item_id
+  WHERE u.unit_type='SERIAL'
+    AND (b.quantity_on_hand NOT IN (0,1) OR b.quantity_reserved NOT IN (0,1));
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial location balances require audited reconciliation', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM inventory_reservation_traceability_allocations a
+  JOIN traceability_units u
+    ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id
+   AND u.factory_id=a.factory_id AND u.inventory_item_id=a.item_id
+  WHERE u.unit_type='SERIAL'
+    AND (a.allocated_quantity <> 1
+      OR a.consumed_quantity NOT IN (0,1)
+      OR a.released_quantity NOT IN (0,1)
+      OR a.consumed_quantity + a.released_quantity NOT IN (0,1));
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy partial serial reservation allocations require audited reconciliation', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM (
+    SELECT a.tenant_id, a.factory_id, a.traceability_unit_id
+    FROM inventory_reservation_traceability_allocations a
+    JOIN traceability_units u
+      ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id
+     AND u.factory_id=a.factory_id AND u.inventory_item_id=a.item_id
+    WHERE u.unit_type='SERIAL'
+      AND a.allocated_quantity > a.consumed_quantity + a.released_quantity
+    GROUP BY a.tenant_id, a.factory_id, a.traceability_unit_id
+    HAVING count(*) > 1
+  ) active_serial_allocations;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % serials have multiple active reservation allocations', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM inventory_reservation_consumption_traceability_allocations a
+  JOIN traceability_units u
+    ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id
+   AND u.factory_id=a.factory_id
+  WHERE u.unit_type='SERIAL' AND a.quantity <> 1;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial consumption rows require audited reconciliation', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM (
+    SELECT a.tenant_id, a.factory_id, a.traceability_unit_id
+    FROM inventory_reservation_consumption_traceability_allocations a
+    JOIN traceability_units u
+      ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id
+     AND u.factory_id=a.factory_id
+    WHERE u.unit_type='SERIAL'
+    GROUP BY a.tenant_id, a.factory_id, a.traceability_unit_id
+    HAVING count(*) > 1
+  ) serial_consumptions;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % serials have duplicate consumption evidence', v_bad_count;
+  END IF;
+
+  SELECT count(*) INTO v_bad_count
+  FROM inventory_location_transfers x
+  JOIN traceability_units u
+    ON u.id=x.traceability_unit_id AND u.tenant_id=x.tenant_id
+   AND u.factory_id=x.factory_id AND u.inventory_item_id=x.item_id
+  WHERE u.unit_type='SERIAL' AND x.quantity <> 1;
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION 'serial indivisibility migration blocked: % legacy fractional serial transfers require audited reconciliation', v_bad_count;
+  END IF;
+END;
+$;
+
 -- A serial is a physical one-piece identity, not a divisible lot quantity.
 -- Serialize mutations on the identity row so two concurrent locations/reservations
 -- cannot both claim the same serialized unit.
