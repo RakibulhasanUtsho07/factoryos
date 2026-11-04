@@ -120,6 +120,8 @@ describe('InventoryService', () => {
     expect(query).toContain('FROM goods_receipt_lines gl');
     expect(query).toContain('FROM work_order_material_requirements req');
     expect(query).toContain('ir2.remaining_quantity');
+    expect(query).toContain('tu.expires_at < CURRENT_DATE');
+    expect(query).toContain("'EXPIRED'");
     expect(query).toContain('ORDER BY d.planned_start_date ASC, d.priority ASC');
     expect(query).toContain('AND req.tenant_id = $2');
     expect(query).toContain('AND wo.factory_id = $3');
