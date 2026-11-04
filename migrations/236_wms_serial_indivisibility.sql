@@ -186,7 +186,7 @@ EXECUTE FUNCTION factoryos_guard_serial_genealogy_indivisibility();
 CREATE OR REPLACE FUNCTION factoryos_guard_serial_location_balance_indivisibility()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $serial_balance$
 DECLARE
   v_unit_type VARCHAR(24);
   v_other_location_quantity NUMERIC(18,4);
@@ -233,7 +233,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$;
+$serial_balance$;
 
 DROP TRIGGER IF EXISTS a_inventory_traceability_location_balance_serial_guard
   ON inventory_traceability_location_balances;
