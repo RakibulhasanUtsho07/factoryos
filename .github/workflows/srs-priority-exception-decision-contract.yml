@@ -1,0 +1,43 @@
+name: SRS Priority Exception Owner Decision Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/srs-priority-exception-decision-contract.yml'
+      - 'docs/srs-priority-exception-source-review.csv'
+      - 'docs/srs-priority-exception-source-review.md'
+      - 'docs/srs-priority-exception-source-review-2026-11-04.md'
+      - 'docs/srs-priority-exception-owner-decision-register.csv'
+      - 'docs/srs-priority-exception-owner-decision-register.md'
+      - 'scripts/audit/srs-priority-exception-owner-decision-register.contract.test.mjs'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - '.github/workflows/srs-priority-exception-decision-contract.yml'
+      - 'docs/srs-priority-exception-source-review.csv'
+      - 'docs/srs-priority-exception-source-review.md'
+      - 'docs/srs-priority-exception-source-review-2026-11-04.md'
+      - 'docs/srs-priority-exception-owner-decision-register.csv'
+      - 'docs/srs-priority-exception-owner-decision-register.md'
+      - 'scripts/audit/srs-priority-exception-owner-decision-register.contract.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: srs-priority-exception-decision-\${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-owner-decision-register:
+    name: Validate 37-row source-owner decision evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate source-owner decision register and evidence crosswalk
+        run: node --test scripts/audit/srs-priority-exception-owner-decision-register.contract.test.mjs
