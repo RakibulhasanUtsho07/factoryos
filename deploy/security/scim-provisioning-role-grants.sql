@@ -30,6 +30,26 @@ REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"application_role
 REVOKE ALL ON TABLE public.scim_provisioning_credentials FROM :"provisioning_role";
 REVOKE ALL ON TABLE public.tenants FROM :"provisioning_role";
 
+-- Table-level REVOKE does not remove separately granted column privileges.
+-- Clear every column privilege explicitly so an older broad column grant
+-- cannot survive beneath the new allowlist.
+REVOKE SELECT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       INSERT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       UPDATE (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       REFERENCES (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at)
+ON TABLE public.scim_provisioning_credentials
+FROM :"application_role";
+
+REVOKE SELECT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       INSERT (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       UPDATE (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at),
+       REFERENCES (id, tenant_id, issuer, token_sha256, scopes, status, expires_at, created_at, last_used_at, revoked_at)
+ON TABLE public.scim_provisioning_credentials
+FROM :"provisioning_role";
+
+REVOKE SELECT (id, status)
+ON TABLE public.tenants FROM :"provisioning_role";
+
 GRANT USAGE ON SCHEMA public TO :"application_role";
 GRANT SELECT (tenant_id, issuer, token_sha256, scopes, status, expires_at),
       UPDATE (last_used_at)
