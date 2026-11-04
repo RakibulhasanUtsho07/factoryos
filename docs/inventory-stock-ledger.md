@@ -46,10 +46,11 @@ Order creation accepts an optional `inventory_item_id` on each order line. When 
 - `quantity_quarantined`: on-hand quantity classified as quality quarantine by an active quarantining hold, a quarantined traceability identity, or its explicit quarantine attribute.
 - `quantity_quality_held`: on-hand quantity subject to an active quality hold or held traceability condition. This includes quarantined quantity.
 - `quantity_damaged`: on-hand tracked-lot/serial quantity marked damaged, excluding identities already quality-held so this condition bucket does not double-count them.
+- `quantity_expired`: on-hand tracked-lot/serial quantity whose expiry date has passed or whose traceability condition is explicitly `EXPIRED`; expired quantity is blocked from available stock as required by the WMS transfer/pick guards.
 - `quantity_expected`: outstanding quantities on approved purchase-order lines after accepted quantities from posted goods receipts have been deducted. Draft, submitted, rejected and cancelled POs are not counted as expected supply.
 - `first_affected_production_order`: the earliest scheduled work order whose outstanding material demand crosses the item's available balance. Outstanding demand is calculated from the immutable work-order material requirement less remaining and already-consumed material reservations; order precedence is planned start date, priority, due date, creation time and ID.
 
-The returned condition quantities are operational indicators, not additive stock buckets: allocated stock can also be quality-held/quarantined. `quantity_available` is the unallocated usable quantity. It subtracts the unallocated portion of held/damaged traceable stock and is zero under an item-wide active quality hold. This avoids reporting held stock as pickable while also avoiding subtracting the same already-allocated units twice.
+The returned condition quantities are operational indicators, not additive stock buckets: allocated stock can also be quality-held/quarantined. `quantity_available` is the unallocated usable quantity. It subtracts the unallocated portion of held, damaged and expired traceable stock and is zero under an item-wide active quality hold. This avoids reporting held stock as pickable while also avoiding subtracting the same already-allocated units twice.
 
 The endpoint is additive to the legacy aggregate stock summary and does not alter the versioned `INVENTORY.STOCK.SUMMARY` AI tool contract.
 
