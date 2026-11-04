@@ -2,7 +2,7 @@ name: SRS Revision Occurrence Crosswalk Contract
 
 on:
   pull_request:
-    branches: [rakibul-hasan, dev, main]
+    branches: [rakibul-hasan, dev, main, feat/srs-v20-inherited-occurrence-candidates-20261104]
     paths:
       - '.github/workflows/srs-revision-occurrence-crosswalk-ci.yml'
       - 'docs/srs-revision-occurrence-crosswalk*'
@@ -15,7 +15,7 @@ on:
       - 'scripts/audit/test_srs_v20_inherited_occurrence_candidates.py'
       - 'scripts/audit/test_srs_occurrence_candidate_extractor.py'
   push:
-    branches: [rakibul-hasan, dev, main]
+    branches: [rakibul-hasan, dev, main, feat/srs-v20-inherited-occurrence-candidates-20261104]
     paths:
       - '.github/workflows/srs-revision-occurrence-crosswalk-ci.yml'
       - 'docs/srs-revision-occurrence-crosswalk*'
@@ -35,8 +35,8 @@ jobs:
   crosswalk-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: actions/setup-python@v5
