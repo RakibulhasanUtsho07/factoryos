@@ -141,3 +141,48 @@ test('the manifest does not claim the 950 active occurrence ledger or source-own
   assert.equal(manifest.reconciliationBoundary.reason.includes('v1.1/v1.2'), true);
   assert.equal(Object.hasOwn(manifest, 'approvedActiveOccurrences'), false);
 });
+
+
+test('v1.9 growth/research delta ledger contains 92 source-located unique requirement IDs', () => {
+  assert.equal(growthLedger.ledgerId, 'FOS-SRS-V19-GROWTH-DELTA-01');
+  assert.equal(growthLedger.sourceArtifactSha256,
+    '09f796a867941d4738b07eea5f9169ed2de9351fb7a6111b676bf9342bfbb5a1');
+  assert.equal(growthLedger.sourcePdfPageCount, 86);
+  assert.deepEqual(growthLedger.scannedPdfPages, [75, 85]);
+  assert.equal(growthLedger.rows.length, 92);
+  assert.equal(new Set(growthLedger.rows.map((row) => row.requirementId)).size, 92);
+
+  const functional = growthLedger.rows.filter((row) => row.requirementId.startsWith('FR-'));
+  const nonFunctional = growthLedger.rows.filter((row) => row.requirementId.startsWith('NFR-'));
+  assert.equal(functional.length, 74);
+  assert.equal(nonFunctional.length, 18);
+
+  const priorities = growthLedger.rows.reduce((counts, row) => {
+    assert.ok(['P0', 'P1', 'P2'].includes(row.priority));
+    counts[row.priority] += 1;
+    assert.ok(row.pdfPage >= 75 && row.pdfPage <= 85);
+    assert.ok(Number.isInteger(row.textLineOnPage) && row.textLineOnPage > 0);
+    return counts;
+  }, { P0: 0, P1: 0, P2: 0 });
+  assert.deepEqual(priorities, { P0: 37, P1: 55, P2: 0 });
+  assert.deepEqual(growthLedger.priorityCounts, priorities);
+  assert.equal(growthLedger.acceptanceBoundary.includes('does not establish controlled source-of-record'), true);
+});
+
+test('v1.9 growth delta manifest and occurrence ledger remain bound together', () => {
+  assert.deepEqual(manifest.growthDeltaOccurrenceLedger, {
+    path: 'docs/srs-v19-growth-delta-occurrence-ledger.json',
+    sourceArtifactSha256: growthLedger.sourceArtifactSha256,
+    occurrenceCount: 92,
+    distinctIdCount: 92,
+    functionalRows: 74,
+    nonFunctionalRows: 18,
+    priorityCounts: { P0: 37, P1: 55, P2: 0 },
+    candidateSourcePages: [75, 85],
+    sourceOwnerApproved: false,
+  });
+  const v19 = scopeByRevision.get('1.9_growth_research');
+  assert.deepEqual(v19.delta, { functional: 74, nonFunctional: 18, total: 92 });
+  assert.deepEqual(v19.priorityDelta, { P0: 37, P1: 55, P2: 0 });
+  assert.equal(v19.priorityCumulative, null);
+});
