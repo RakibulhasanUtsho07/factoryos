@@ -234,5 +234,53 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Finance and SaaS metering ledgers must require a separately approved retention workflow';
   END IF;
+
+  -- Late relations created after the original migration-156 inventory are
+  -- explicitly present and blocked from generic export/erasure. Their direct
+  -- tenant_id is isolated by forced RLS; this is not adapter approval.
+  IF EXISTS (
+    SELECT 1
+    FROM (VALUES
+      ('research_source_authenticity_checks'),
+      ('research_source_authenticity_reviews'),
+      ('research_source_documents'),
+      ('research_source_document_content'),
+      ('research_source_document_purges'),
+      ('growth_kpi_source_sync_runs'),
+      ('growth_kpi_source_observations'),
+      ('growth_kpi_source_sync_items'),
+      ('growth_forecast_calibration_policies'),
+      ('ai_agent_live_evaluation_results'),
+      ('ai_artifact_trusted_sources'),
+      ('ai_artifact_registry'),
+      ('ai_artifact_provenance_events'),
+      ('ai_artifact_admission_events'),
+      ('research_source_freshness_policies')
+    ) AS expected(relation_name)
+    LEFT JOIN pg_class c ON c.oid=to_regclass('public.' || expected.relation_name)
+    LEFT JOIN factoryos_governance.tenant_relation_inventory i
+      ON i.schema_name='public' AND i.relation_name=expected.relation_name
+    LEFT JOIN factoryos_governance.tenant_relation_ownership_reviews r
+      ON r.schema_name='public' AND r.relation_name=expected.relation_name
+    WHERE c.oid IS NULL
+      OR i.relation_name IS NULL OR i.scope_model <> 'DIRECT_TENANT_ID'
+      OR i.export_disposition <> 'EXCLUDED'
+      OR i.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+      OR r.relation_name IS NULL OR r.ownership_class <> 'DIRECT_TENANT'
+      OR r.export_disposition <> 'EXCLUDED'
+      OR r.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+      OR r.review_status <> 'VERIFIED'
+      OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
+      OR NOT EXISTS (
+        SELECT 1 FROM pg_policy p
+        WHERE p.polrelid=c.oid AND p.polname='fo_privacy_scope_enforce'
+          AND NOT p.polpermissive
+          AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+          AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+      )
+  ) THEN
+    RAISE EXCEPTION 'Late research/AI/growth relations must have explicit tenant ownership and remain export/erasure blocked';
+  END IF;
+
 END
-$$;
+$;
