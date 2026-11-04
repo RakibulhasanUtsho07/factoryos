@@ -45,6 +45,37 @@ export interface InventoryStockSummary extends QueryResultRow {
   balance_version: string;
 }
 
+export interface InventoryAvailabilitySummary extends QueryResultRow {
+  item_id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  status: 'ACTIVE' | 'DISABLED';
+  quantity_on_hand: string;
+  quantity_reserved: string;
+  quantity_allocated: string;
+  quantity_available: string;
+  quantity_quarantined: string;
+  quantity_quality_held: string;
+  quantity_damaged: string;
+  quantity_expired: string;
+  quantity_status_blocked: string;
+  quantity_expected: string;
+  balance_version: string;
+  first_affected_production_order: {
+    work_order_id: string;
+    work_order_number: string;
+    source_order_id: string;
+    source_order_number: string;
+    status: string;
+    priority: number;
+    planned_start_date: string;
+    due_date: string;
+    outstanding_material_quantity: string;
+    shortfall_quantity: string;
+  } | null;
+}
+
 type InventoryMovementRow = QueryResultRow & {
   id: string;
   tenant_id: string;
@@ -115,6 +146,327 @@ export class InventoryService {
       WHERE i.id = $1
         AND i.tenant_id = $2
         AND i.factory_id = $3
+      LIMIT 1
+      `,
+      [itemId.toLowerCase(), tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Inventory item not found in this factory');
+    return row;
+  }
+
+  /**
+   * Read the SRS FR-WMS-05 inventory availability projection.
+   *
+   * Allocation is the authoritative active reservation balance. Quality-held,
+   * quarantined and damaged quantities are physical-condition indicators and
+   * may overlap allocated stock; quantity_available is calculated from the
+   * unallocated usable balance so blocked stock is never advertised as free.
+   * Expected stock includes only outstanding quantities on approved POs after
+   * accepted quantities on posted GRNs have been deducted.
+   */
+  async getAvailabilitySummary(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+  ): Promise<InventoryAvailabilitySummary> {
+    this.validateScope(userId, tenantId, factoryId);
+    if (!isUUID(itemId)) throw new BadRequestException('itemId must be a valid UUID');
+
+    const result = await this.database.query<InventoryAvailabilitySummary>(
+      `
+      WITH item_balance AS (
+        SELECT i.id::text AS item_id,
+               i.tenant_id::text AS tenant_id,
+               i.factory_id::text AS factory_id,
+               i.sku,
+               i.name,
+               i.unit,
+               i.status,
+               b.quantity_on_hand,
+               b.quantity_reserved,
+               b.version::text AS balance_version
+        FROM inventory_items i
+        INNER JOIN inventory_stock_balances b
+          ON b.item_id = i.id
+         AND b.tenant_id = i.tenant_id
+         AND b.factory_id = i.factory_id
+        WHERE i.id = $1
+          AND i.tenant_id = $2
+          AND i.factory_id = $3
+        LIMIT 1
+      ),
+      item_wide_quality_hold AS (
+        SELECT
+          EXISTS (
+            SELECT 1
+            FROM quality_holds qh
+            WHERE qh.tenant_id = $2
+              AND qh.factory_id = $3
+              AND qh.inventory_item_id = $1
+              AND qh.traceability_unit_id IS NULL
+              AND qh.status = 'ACTIVE'
+          ) AS is_held,
+          EXISTS (
+            SELECT 1
+            FROM quality_holds qh
+            WHERE qh.tenant_id = $2
+              AND qh.factory_id = $3
+              AND qh.inventory_item_id = $1
+              AND qh.traceability_unit_id IS NULL
+              AND qh.status = 'ACTIVE'
+              AND qh.quarantined_by_quality = TRUE
+          ) AS is_quarantined
+      ),
+      traceability_unit_stock AS (
+        SELECT
+          tu.id,
+          SUM(tlb.quantity_on_hand)::numeric(18,4) AS quantity_on_hand,
+          SUM(tlb.quantity_reserved)::numeric(18,4) AS quantity_reserved,
+          (
+            tu.status = 'QUARANTINED'
+            OR tu.attributes @> '{"quarantined":true}'::jsonb
+            OR upper(COALESCE(tu.attributes->>'condition', '')) = 'QUARANTINED'
+            OR EXISTS (
+              SELECT 1
+              FROM quality_holds qh
+              WHERE qh.tenant_id = tu.tenant_id
+                AND qh.factory_id = tu.factory_id
+                AND qh.traceability_unit_id = tu.id
+                AND qh.status = 'ACTIVE'
+                AND qh.quarantined_by_quality = TRUE
+            )
+          ) AS is_quarantined,
+          (
+            tu.status = 'QUARANTINED'
+            OR tu.attributes @> '{"quarantined":true}'::jsonb
+            OR tu.attributes @> '{"held":true}'::jsonb
+            OR upper(COALESCE(tu.attributes->>'condition', '')) IN ('QUARANTINED', 'HELD')
+            OR EXISTS (
+              SELECT 1
+              FROM quality_holds qh
+              WHERE qh.tenant_id = tu.tenant_id
+                AND qh.factory_id = tu.factory_id
+                AND qh.traceability_unit_id = tu.id
+                AND qh.status = 'ACTIVE'
+            )
+          ) AS is_quality_held,
+          (
+            tu.attributes @> '{"damaged":true}'::jsonb
+            OR upper(COALESCE(tu.attributes->>'condition', '')) = 'DAMAGED'
+          ) AS is_damaged,
+          (
+            COALESCE(tu.expires_at < CURRENT_DATE, FALSE)
+            OR upper(COALESCE(tu.attributes->>'condition', '')) = 'EXPIRED'
+          ) AS is_expired,
+          tu.status IN ('RECALLED', 'DISPOSED', 'SHIPPED') AS is_status_blocked
+        FROM traceability_units tu
+        INNER JOIN inventory_traceability_location_balances tlb
+          ON tlb.traceability_unit_id = tu.id
+         AND tlb.tenant_id = tu.tenant_id
+         AND tlb.factory_id = tu.factory_id
+         AND tlb.item_id = tu.inventory_item_id
+        WHERE tu.tenant_id = $2
+          AND tu.factory_id = $3
+          AND tu.inventory_item_id = $1
+          AND tu.product_role IN ('MATERIAL', 'FINISHED_GOOD')
+          AND tlb.quantity_on_hand > 0
+        GROUP BY tu.id, tu.tenant_id, tu.factory_id, tu.status, tu.attributes, tu.expires_at
+      ),
+      traceability_totals AS (
+        SELECT
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_quarantined), 0)::numeric(18,4)
+            AS quantity_quarantined,
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_quality_held), 0)::numeric(18,4)
+            AS quantity_quality_held,
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_damaged), 0)::numeric(18,4)
+            AS quantity_damaged,
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_expired), 0)::numeric(18,4)
+            AS quantity_expired,
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_status_blocked), 0)::numeric(18,4)
+            AS quantity_status_blocked,
+          COALESCE(SUM(GREATEST(quantity_on_hand - quantity_reserved, 0))
+            FILTER (WHERE is_quality_held OR is_damaged OR is_expired OR is_status_blocked), 0)::numeric(18,4)
+            AS blocked_unallocated_quantity
+        FROM traceability_unit_stock
+      ),
+      posted_receipts AS (
+        SELECT
+          gl.tenant_id,
+          gl.factory_id,
+          gl.purchase_order_line_id,
+          SUM(gl.accepted_quantity)::numeric(18,4) AS accepted_quantity
+        FROM goods_receipt_lines gl
+        INNER JOIN goods_receipts gr
+          ON gr.id = gl.goods_receipt_id
+         AND gr.tenant_id = gl.tenant_id
+         AND gr.factory_id = gl.factory_id
+        WHERE gl.tenant_id = $2
+          AND gl.factory_id = $3
+          AND gr.status = 'POSTED'
+        GROUP BY gl.tenant_id, gl.factory_id, gl.purchase_order_line_id
+      ),
+      expected_supply AS (
+        SELECT COALESCE(
+          SUM(GREATEST(pol.quantity - COALESCE(pr.accepted_quantity, 0), 0)),
+          0
+        )::numeric(18,4) AS quantity_expected
+        FROM purchase_order_lines pol
+        INNER JOIN purchase_orders po
+          ON po.id = pol.purchase_order_id
+         AND po.tenant_id = pol.tenant_id
+         AND po.factory_id = pol.factory_id
+        LEFT JOIN posted_receipts pr
+          ON pr.purchase_order_line_id = pol.id
+         AND pr.tenant_id = pol.tenant_id
+         AND pr.factory_id = pol.factory_id
+        WHERE pol.tenant_id = $2
+          AND pol.factory_id = $3
+          AND pol.inventory_item_id = $1
+          AND po.status = 'APPROVED'
+      ),
+      availability AS (
+        SELECT
+          b.*,
+          b.quantity_reserved AS quantity_allocated,
+          CASE WHEN wh.is_quarantined THEN b.quantity_on_hand
+               ELSE tt.quantity_quarantined END::numeric(18,4) AS quantity_quarantined,
+          CASE WHEN wh.is_held THEN b.quantity_on_hand
+               ELSE tt.quantity_quality_held END::numeric(18,4) AS quantity_quality_held,
+          tt.quantity_damaged,
+          tt.quantity_expired,
+          tt.quantity_status_blocked,
+          es.quantity_expected,
+          CASE
+            WHEN b.status <> 'ACTIVE' OR wh.is_held THEN 0::numeric(18,4)
+            ELSE GREATEST(
+              b.quantity_on_hand
+                - b.quantity_reserved
+                - tt.blocked_unallocated_quantity,
+              0
+            )::numeric(18,4)
+          END AS quantity_available
+        FROM item_balance b
+        CROSS JOIN item_wide_quality_hold wh
+        CROSS JOIN traceability_totals tt
+        CROSS JOIN expected_supply es
+      ),
+      work_order_requirement_demand AS (
+        SELECT
+          wo.id,
+          wo.work_order_number,
+          wo.source_order_id,
+          source_order.order_number AS source_order_number,
+          wo.status,
+          wo.priority,
+          wo.planned_start_date,
+          wo.due_date,
+          wo.created_at,
+          SUM(
+            GREATEST(
+              req.required_quantity
+                - COALESCE(ir_committed.committed_quantity, 0),
+              0
+            )
+          )::numeric(18,4) AS outstanding_material_quantity
+        FROM work_order_material_requirements req
+        INNER JOIN work_orders wo
+          ON wo.id = req.work_order_id
+         AND wo.tenant_id = req.tenant_id
+         AND wo.factory_id = req.factory_id
+        INNER JOIN orders source_order
+          ON source_order.id = wo.source_order_id
+         AND source_order.tenant_id = wo.tenant_id
+         AND source_order.factory_id = wo.factory_id
+        LEFT JOIN LATERAL (
+          SELECT SUM(COALESCE(ir2.remaining_quantity, 0) + COALESCE(ir2.consumed_quantity, 0))
+            AS committed_quantity
+          FROM work_order_material_reservations wmr2
+          INNER JOIN inventory_reservations ir2
+            ON ir2.id = wmr2.reservation_id
+           AND ir2.tenant_id = wmr2.tenant_id
+           AND ir2.factory_id = wmr2.factory_id
+           AND ir2.item_id = req.component_item_id
+          WHERE wmr2.requirement_id = req.id
+            AND wmr2.work_order_id = wo.id
+            AND wmr2.tenant_id = wo.tenant_id
+            AND wmr2.factory_id = wo.factory_id
+            AND wmr2.item_id = req.component_item_id
+        ) ir_committed ON TRUE
+        WHERE req.tenant_id = $2
+          AND req.factory_id = $3
+          AND req.component_item_id = $1
+          AND wo.status IN ('DRAFT', 'RELEASED', 'IN_PROGRESS', 'ON_HOLD')
+        GROUP BY wo.id, wo.work_order_number, wo.source_order_id,
+                 source_order.order_number, wo.status, wo.priority,
+                 wo.planned_start_date, wo.due_date, wo.created_at
+        HAVING SUM(
+          GREATEST(
+            req.required_quantity - COALESCE(ir_committed.committed_quantity, 0),
+            0
+          )
+        ) > 0
+      ),
+      prioritized_work_order_demand AS (
+        SELECT
+          d.*,
+          SUM(d.outstanding_material_quantity) OVER (
+            ORDER BY d.planned_start_date ASC, d.priority ASC, d.due_date ASC, d.created_at ASC, d.id ASC
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS cumulative_outstanding_quantity
+        FROM work_order_requirement_demand d
+      ),
+      first_affected_order AS (
+        SELECT
+          p.*,
+          GREATEST(
+            p.outstanding_material_quantity
+              - GREATEST(
+                  a.quantity_available
+                    - (p.cumulative_outstanding_quantity - p.outstanding_material_quantity),
+                  0
+                ),
+            0
+          )::numeric(18,4) AS shortfall_quantity
+        FROM prioritized_work_order_demand p
+        CROSS JOIN availability a
+        WHERE p.cumulative_outstanding_quantity > a.quantity_available
+        ORDER BY p.planned_start_date ASC, p.priority ASC, p.due_date ASC, p.created_at ASC, p.id ASC
+        LIMIT 1
+      )
+      SELECT
+        a.item_id,
+        a.sku,
+        a.name,
+        a.unit,
+        a.status,
+        a.quantity_on_hand::text AS quantity_on_hand,
+        a.quantity_reserved::text AS quantity_reserved,
+        a.quantity_allocated::text AS quantity_allocated,
+        a.quantity_available::text AS quantity_available,
+        a.quantity_quarantined::text AS quantity_quarantined,
+        a.quantity_quality_held::text AS quantity_quality_held,
+        a.quantity_damaged::text AS quantity_damaged,
+        a.quantity_expired::text AS quantity_expired,
+        a.quantity_status_blocked::text AS quantity_status_blocked,
+        a.quantity_expected::text AS quantity_expected,
+        a.balance_version,
+        CASE WHEN fa.id IS NULL THEN NULL ELSE jsonb_build_object(
+          'work_order_id', fa.id::text,
+          'work_order_number', fa.work_order_number,
+          'source_order_id', fa.source_order_id::text,
+          'source_order_number', fa.source_order_number,
+          'status', fa.status,
+          'priority', fa.priority,
+          'planned_start_date', fa.planned_start_date::text,
+          'due_date', fa.due_date::text,
+          'outstanding_material_quantity', fa.outstanding_material_quantity::text,
+          'shortfall_quantity', fa.shortfall_quantity::text
+        ) END AS first_affected_production_order
+      FROM availability a
+      LEFT JOIN first_affected_order fa ON TRUE
       LIMIT 1
       `,
       [itemId.toLowerCase(), tenantId, factoryId],

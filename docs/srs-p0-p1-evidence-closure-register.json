@@ -14951,9 +14951,27 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
+      "directCodeReferences": [
+        {
+          "path": "services/api/src/inventory/inventory.service.ts",
+          "symbol": "InventoryService.getAvailabilitySummary"
+        },
+        {
+          "path": "services/api/src/inventory/inventory.controller.ts",
+          "symbol": "InventoryController.getAvailability"
+        }
+      ],
       "migrationReferences": [],
-      "automatedTestReferences": [],
+      "automatedTestReferences": [
+        {
+          "path": "services/api/src/inventory/inventory.service.spec.ts",
+          "assertion": "FR-WMS-05 availability projection fields, factory-scoped read-only query and first affected work-order response"
+        },
+        {
+          "path": "services/api/src/inventory/inventory.reservation.service.integration.spec.ts",
+          "assertion": "PostgreSQL allocation, item-wide quarantine, approved PO/posted GRN remainder, damaged/expired tracked lot and first affected work-order fixtures"
+        }
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -14961,7 +14979,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Direct service/controller and unit/PostgreSQL test references now exist on the implementation branch. Keep OPEN / NOT_ACCEPTED: exact-head CI, reviewed migration-N/A determination, source-owner priority/scope attestation, named owner/reviewer and site/WMS acceptance evidence are not yet complete.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
