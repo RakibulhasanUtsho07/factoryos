@@ -100,8 +100,20 @@ BEGIN
      OR has_column_privilege(v_app, v_table, 'status', 'UPDATE')
      OR has_column_privilege(v_app, v_table, 'revoked_at', 'UPDATE')
      OR has_column_privilege(v_app, v_table, 'token_sha256', 'UPDATE')
-     OR has_column_privilege(v_app, v_table, 'tenant_id', 'INSERT') THEN
-    RAISE EXCEPTION 'SCIM runtime role has broad table/credential-management privileges';
+     OR has_column_privilege(v_app, v_table, 'tenant_id', 'INSERT')
+     OR has_column_privilege(v_app, v_table, 'id', 'SELECT')
+     OR has_column_privilege(v_app, v_table, 'created_at', 'SELECT')
+     OR has_column_privilege(v_app, v_table, 'revoked_at', 'SELECT')
+     OR has_column_privilege(v_app, v_table, 'id', 'INSERT')
+     OR has_column_privilege(v_app, v_table, 'created_at', 'INSERT')
+     OR has_column_privilege(v_app, v_table, 'id', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'created_at', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'revoked_at', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'issuer', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'scopes', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'expires_at', 'UPDATE')
+     OR has_column_privilege(v_app, v_table, 'created_at', 'REFERENCES') THEN
+    RAISE EXCEPTION 'SCIM runtime role has broad table/credential-management or residual column privileges';
   END IF;
 
   -- Provisioner: only the columns required to locate a tenant, create a hashed
@@ -129,7 +141,23 @@ BEGIN
      OR has_table_privilege(v_provisioner, v_table, 'TRUNCATE')
      OR has_column_privilege(v_provisioner, v_table, 'last_used_at', 'UPDATE')
      OR has_column_privilege(v_provisioner, v_table, 'tenant_id', 'UPDATE')
-     OR has_column_privilege(v_provisioner, v_table, 'token_sha256', 'UPDATE') THEN
+     OR has_column_privilege(v_provisioner, v_table, 'token_sha256', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'issuer', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'scopes', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'expires_at', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'created_at', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'last_used_at', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'revoked_at', 'INSERT')
+     OR has_column_privilege(v_provisioner, v_table, 'last_used_at', 'INSERT')
+     OR has_column_privilege(v_provisioner, v_table, 'id', 'INSERT')
+     OR has_column_privilege(v_provisioner, v_table, 'issuer', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'scopes', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'expires_at', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'created_at', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'last_used_at', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'revoked_at', 'SELECT')
+     OR has_column_privilege(v_provisioner, v_table, 'id', 'UPDATE')
+     OR has_column_privilege(v_provisioner, v_table, 'tenant_id', 'REFERENCES') THEN
     RAISE EXCEPTION 'SCIM provisioning role has privileges beyond its reviewed column allowlist';
   END IF;
 
