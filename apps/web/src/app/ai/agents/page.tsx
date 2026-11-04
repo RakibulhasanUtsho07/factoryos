@@ -333,7 +333,7 @@ export default function AiAgentControlCenterPage() {
       setPageError("Add an operator reason before changing agent operational control.");
       return;
     }
-    const scopes = controlScopes.split(/[\\n,]/).map((scope) => scope.trim()).filter(Boolean);
+    const scopes = controlScopes.split(/[\n,]/).map((scope) => scope.trim()).filter(Boolean);
     const uniqueScopes = [...new Set(scopes)];
     if (desiredControl === "RESTRICTED" && uniqueScopes.length === 0) {
       setPageError("Choose one or more allowed execution scopes, or use PAUSED to stop all execution.");
