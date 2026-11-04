@@ -116,8 +116,8 @@ describe(
 
     const createOrderForSharedInventoryItem = async (
       itemId: string,
-      quantity: number,
-    ): Promise<{ orderId: string; lineId: string }> => {
+      lineQuantities: number[],
+    ): Promise<{ orderId: string; lineIds: string[] }> => {
       const orderNumber = 'COMPETING-ORDER-' + randomUUID();
       const orderResult = await pool.query<{ id: string }>(
         `
@@ -134,28 +134,42 @@ describe(
       if (!orderId) throw new Error('Competing inventory order fixture was not created');
       reservationOrderIds.push(orderId);
 
-      const lineResult = await pool.query<{ id: string }>(
-        `
-        INSERT INTO order_lines (
-          tenant_id, factory_id, order_id, line_number,
-          product_code, product_name, inventory_item_id, quantity, unit
-        )
-        VALUES ($1, $2, $3, 1, $4, $5, $6, $7::numeric, 'PCS')
-        RETURNING id::text AS id
-        `,
-        [
-          tenantId,
-          factoryId,
-          orderId,
-          'COMPETING-SKU-' + randomUUID(),
-          'Competing order shared-stock fixture',
-          itemId,
-          quantity.toFixed(4),
-        ],
-      );
-      const lineId = lineResult.rows[0]?.id;
-      if (!lineId) throw new Error('Competing inventory order line fixture was not created');
-      return { orderId, lineId };
+      // The reservation query orders lines by item ID and then line UUID.
+      // Assign the smaller UUID to the first, smaller quantity so the losing
+      // transaction must roll back a successful partial line reservation.
+      const lineIds = lineQuantities.map(() => randomUUID()).sort();
+      for (let index = 0; index < lineQuantities.length; index += 1) {
+        const quantity = lineQuantities[index];
+        const lineId = lineIds[index];
+        if (quantity === undefined || lineId === undefined) {
+          throw new Error('Competing order line fixture is incomplete');
+        }
+        const lineResult = await pool.query<{ id: string }>(
+          `
+          INSERT INTO order_lines (
+            id, tenant_id, factory_id, order_id, line_number,
+            product_code, product_name, inventory_item_id, quantity, unit
+          )
+          VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::numeric, 'PCS')
+          RETURNING id::text AS id
+          `,
+          [
+            lineId,
+            tenantId,
+            factoryId,
+            orderId,
+            index + 1,
+            'COMPETING-SKU-' + randomUUID(),
+            'Competing order shared-stock fixture',
+            itemId,
+            quantity.toFixed(4),
+          ],
+        );
+        if (lineResult.rows[0]?.id !== lineId) {
+          throw new Error('Competing inventory order line fixture was not persisted');
+        }
+      }
+      return { orderId, lineIds };
     };
 
     beforeAll(async () => {
@@ -1053,8 +1067,8 @@ describe(
           [tenantId, factoryId, itemId],
         );
 
-        const first = await createOrderForSharedInventoryItem(itemId, 4);
-        const second = await createOrderForSharedInventoryItem(itemId, 4);
+        const first = await createOrderForSharedInventoryItem(itemId, [0.75, 3.25]);
+        const second = await createOrderForSharedInventoryItem(itemId, [0.75, 3.25]);
         const attempts = await Promise.allSettled([
           ordersService.transitionOrderStatus(
             TEST_USER_ID, tenantId, first.orderId, 'CONFIRMED', null, randomUUID(), 1,
@@ -1074,7 +1088,7 @@ describe(
           throw new Error('The competing order did not produce an insufficient-stock rejection');
         }
         expect(String(rejection.reason?.message ?? rejection.reason)).toContain(
-          'Insufficient available stock for order line 1',
+          'Insufficient available stock for order line',
         );
 
         const orderStates = await pool.query<{
@@ -1091,16 +1105,18 @@ describe(
           [tenantId, factoryId, [first.orderId, second.orderId]],
         );
         expect(orderStates.rows).toHaveLength(2);
-        const stateById = new Map(orderStates.rows.map((row) => [row.id, row]));
-        expect(stateById.get(winner.orderId)).toMatchObject({
+        const winningOrderState = orderStates.rows.find((row) => row.id === winner.orderId);
+        const losingOrderState = orderStates.rows.find((row) => row.id === loser.orderId);
+        expect(winningOrderState).toMatchObject({
           status: 'CONFIRMED',
           version: '2',
         });
-        expect(stateById.get(loser.orderId)).toMatchObject({
+        expect(losingOrderState).toMatchObject({
           status: 'DRAFT',
           version: '1',
         });
 
+        const allLineIds = [...first.lineIds, ...second.lineIds];
         const reservations = await pool.query<{
           reference_id: string;
           status: string;
@@ -1118,15 +1134,24 @@ describe(
             AND reference_id = ANY($3::uuid[])
           GROUP BY reference_id, status
           `,
-          [tenantId, factoryId, [first.lineId, second.lineId]],
+          [tenantId, factoryId, allLineIds],
         );
-        expect(reservations.rows).toHaveLength(1);
-        expect(reservations.rows[0]).toMatchObject({
-          reference_id: winner.lineId,
-          status: 'RESERVED',
-          reserved_quantity: '4.0000',
-        });
-        expect(reservations.rows[0]?.reference_id).not.toBe(loser.lineId);
+        const actualReservations = reservations.rows
+          .map((row) => ({
+            reference_id: row.reference_id,
+            status: row.status,
+            reserved_quantity: row.reserved_quantity,
+          }))
+          .sort((left, right) => left.reference_id.localeCompare(right.reference_id));
+        const expectedReservations = winner.lineIds
+          .map((lineId, index) => ({
+            reference_id: lineId,
+            status: 'RESERVED',
+            reserved_quantity: index === 0 ? '0.7500' : '3.2500',
+          }))
+          .sort((left, right) => left.reference_id.localeCompare(right.reference_id));
+        expect(actualReservations).toEqual(expectedReservations);
+        expect(actualReservations.some((row) => loser.lineIds.includes(row.reference_id))).toBe(false);
 
         const balance = await pool.query<{
           quantity_on_hand: string;
