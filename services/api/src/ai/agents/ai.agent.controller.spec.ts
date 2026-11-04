@@ -6,6 +6,7 @@ import { AiAgentController } from './ai.agent.controller';
 describe('AiAgentController', () => {
   const createTaskMock = jest.fn();
   const getTaskMock = jest.fn();
+  const listTasksMock = jest.fn();
   const cancelTaskMock = jest.fn();
   const executeStepMock = jest.fn();
   const resumeTaskStepMock = jest.fn();
@@ -17,6 +18,7 @@ describe('AiAgentController', () => {
   const runtime = {
     createTask: createTaskMock,
     getTask: getTaskMock,
+    listTasks: listTasksMock,
     cancelTask: cancelTaskMock,
     executeStep: executeStepMock,
     resumeTaskStep: resumeTaskStepMock,
@@ -45,6 +47,7 @@ describe('AiAgentController', () => {
     jest.clearAllMocks();
     createTaskMock.mockResolvedValue({ idempotent: false });
     getTaskMock.mockResolvedValue({ task: { id: 'task-1' }, steps: [] });
+    listTasksMock.mockResolvedValue({ items: [], limit: 25, count: 0 });
     cancelTaskMock.mockResolvedValue({ id: 'task-1', state: 'CANCELLED' });
     executeStepMock.mockResolvedValue({ idempotent: false, task: { id: 'task-1' }, step: { id: 'step-1' } });
     resumeTaskStepMock.mockResolvedValue({ idempotent: false, task: { id: 'task-1' }, step: { id: 'step-1' } });
@@ -153,6 +156,28 @@ describe('AiAgentController', () => {
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(executeStepMock).not.toHaveBeenCalled();
+  });
+
+  it('lists bounded tasks in the authenticated factory scope', async () => {
+    await controller.listTasks(request as never, '25');
+
+    expect(listTasksMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      25,
+    );
+  });
+
+  it('defaults the task list to fifty items', async () => {
+    await controller.listTasks(request as never);
+
+    expect(listTasksMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      50,
+    );
   });
 
   it('gets a task in the authenticated factory scope', async () => {
