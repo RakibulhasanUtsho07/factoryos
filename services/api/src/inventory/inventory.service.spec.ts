@@ -100,6 +100,7 @@ describe('InventoryService', () => {
       quantity_quality_held: '5.0000',
       quantity_damaged: '2.0000',
       quantity_expired: '1.0000',
+      quantity_status_blocked: '2.0000',
       quantity_expected: '12.0000',
       balance_version: '9',
       first_affected_production_order: firstAffected,
