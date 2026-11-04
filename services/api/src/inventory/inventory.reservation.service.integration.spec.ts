@@ -605,9 +605,11 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
         INSERT INTO product_bom_lines (
           id, tenant_id, factory_id, product_id, product_version_id,
           line_number, component_item_id, quantity_per, unit, wastage_percent,
-          created_by_user_id
+          inventory_base_unit, base_quantity_per, uom_factor_numerator,
+          uom_factor_denominator, uom_rounding_mode, created_by_user_id
         )
-        VALUES ($1, $2, $3, $4, $5, 1, $6, 1, 'PCS', 0, $7)
+        VALUES ($1, $2, $3, $4, $5, 1, $6, 1, 'PCS', 0,
+                'PCS', 1, 1, 1, 'REJECT', $7)
         `,
         [bomLineId, tenantId, factoryId, productId, productVersionId, componentItemId, TEST_USER_ID],
       );
