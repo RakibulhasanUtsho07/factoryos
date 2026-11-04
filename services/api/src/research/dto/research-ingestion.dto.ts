@@ -200,3 +200,30 @@ export class DecideResearchExtractionItemDto {
   @MaxLength(2000)
   reason!: string;
 }
+
+
+export class CreateResearchFreshnessPolicyDto {
+  @IsIn([...RESEARCH_INGESTION_MODES])
+  mode!: (typeof RESEARCH_INGESTION_MODES)[number];
+
+  @IsInt()
+  @Min(60)
+  @Max(129600)
+  interval_minutes!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  max_attempts?: number;
+}
+
+export class DecideResearchFreshnessPolicyDto {
+  @IsIn(['PAUSE', 'RESUME', 'RETIRE'])
+  decision!: 'PAUSE' | 'RESUME' | 'RETIRE';
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason!: string;
+}
