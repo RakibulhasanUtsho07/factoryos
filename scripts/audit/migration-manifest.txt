@@ -245,3 +245,4 @@ migrations/233_tenant_export_column_contract.sql
 migrations/230_scim_tenant_deprovision_credentials.sql
 migrations/234_research_source_freshness_schedules.sql
 migrations/235_tenant_privacy_inventory_late_relation_reconciliation.sql
+migrations/236_wms_serial_indivisibility.sql
