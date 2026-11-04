@@ -55,6 +55,9 @@ describe('AiAgentRuntimeService.listTasks', () => {
       string, unknown[], Record<string, unknown>,
     ];
     expect(sql).toContain('FROM agent_tasks');
+    expect(sql).toContain('NULL::text AS idempotency_key');
+    expect(sql).not.toContain('planner_attestation');
+    expect(sql).not.toContain('request_hash');
     expect(sql).toContain('WHERE tenant_id = $1');
     expect(sql).toContain('AND factory_id = $2');
     expect(sql).toContain('ORDER BY updated_at DESC');
