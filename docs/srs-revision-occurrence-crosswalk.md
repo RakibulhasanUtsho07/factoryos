@@ -38,7 +38,7 @@ The v2.0 PDF remains a conflicted Draft candidate (filename/cover say v2.0, PDF 
 
 ## Reproduction and integrity
 
-The machine-readable payload contains 886 candidate ID crosswalk rows (799 inherited IDs + 50 v2.1 delta IDs + 37 exception IDs), source row locators, candidate priorities and normalized wording hashes. Requirement wording is not copied into this payload. The repository stores the gzip+base64 payload in four ordered text parts. The Node contract joins them, verifies compressed and decompressed SHA-256/byte counts, and checks the population invariants.
+The machine-readable payload contains 886 candidate ID crosswalk rows (799 inherited IDs + 50 v2.1 delta IDs + 37 exception IDs), source row locators, candidate priorities and normalized wording hashes. Requirement wording is not copied into this payload. The complete gzip+base64 row-level payload is included in the downloadable crosswalk ZIP artifact, not committed as a large source file. The repository stores its byte counts and SHA-256 values in the manifest; the Node contract verifies the source populations, lineage counts, and unresolved approval boundaries.
 
 The row schema keeps v2.1 full-PDF candidate locators separate from official v2.1 delta-ledger locators because the two extraction methods use different table-row numbering conventions. The official v2.1 delta cross-check requires matching ID, priority, page and wording hash; its official table/row locator is retained independently.
 
@@ -71,6 +71,6 @@ python scripts/audit/build_srs_revision_occurrence_crosswalk.py \
   --output-manifest /tmp/srs-revision-occurrence-crosswalk.manifest.json
 ```
 
-The PDFs are intentionally not committed. All input extractors reject different source bytes. The builder fails closed if the pinned population counts, 92 priority comparisons, 50-row v2.1 official-delta comparison, 37 exception dispositions, or crosswalk/hash comparison totals change. CI verifies the committed payload; it does not pretend the uncommitted source PDFs were available in a GitHub runner.
+The PDFs are intentionally not committed. All input extractors reject different source bytes. The builder fails closed if the pinned population counts, 92 priority comparisons, 50-row v2.1 official-delta comparison, 37 exception dispositions, or crosswalk/hash comparison totals change. CI verifies the committed source-pinned manifest and contracts; it does not pretend the uncommitted source PDFs or wording-bearing CSV were available in a GitHub runner. The downloadable ZIP contains the full 886-row JSON and compressed payload.
 
 **Acceptance boundary:** Product/Document Control must identify the DMS/PLM source-of-record; Product/Requirements and Architecture must approve §140’s count semantics, reconcile the 900 inherited occurrence count and disposition all 37 exceptions. All release evidence/acceptance gates remain OPEN until those decisions are recorded with immutable references.
