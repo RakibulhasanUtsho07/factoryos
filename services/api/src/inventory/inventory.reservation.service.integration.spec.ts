@@ -366,6 +366,204 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     }
   });
 
+  it('identifies the first scheduled production work order whose material demand exceeds usable stock', async () => {
+    const componentItemId = await createItem('10.0000');
+    const finishedItemId = await createItem('0.0000');
+    const orderId = randomUUID();
+    const orderLineId = randomUUID();
+    const productId = randomUUID();
+    const productVersionId = randomUUID();
+    const bomLineId = randomUUID();
+    const workOrderId = randomUUID();
+    const requirementId = randomUUID();
+    const suffix = randomUUID().slice(0, 12);
+
+    const mutableTables = [
+      'work_order_material_requirements',
+      'work_order_material_reservations',
+      'work_orders',
+      'product_bom_lines',
+      'product_versions',
+      'product_definitions',
+      'order_lines',
+      'orders',
+    ];
+
+    try {
+      await reservationService.createReservation(
+        TEST_USER_ID, tenantId, factoryId, componentItemId, { quantity: 2 },
+        'availability-first-wo-' + suffix, randomUUID(), randomUUID(),
+      );
+
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      await adminPool.query(
+        `
+        INSERT INTO orders (
+          id, tenant_id, factory_id, order_number, status, order_date,
+          currency, created_by_user_id
+        )
+        VALUES ($1, $2, $3, $4, 'DRAFT', CURRENT_DATE, 'BDT', $5)
+        `,
+        [orderId, tenantId, factoryId, 'SO-AVAIL-' + suffix, TEST_USER_ID],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO order_lines (
+          id, tenant_id, factory_id, order_id, line_number, product_code,
+          product_name, inventory_item_id, quantity, unit
+        )
+        VALUES ($1, $2, $3, $4, 1, $5, 'Availability finished product', $6, 12, 'PCS')
+        `,
+        [orderLineId, tenantId, factoryId, orderId, 'FG-AVAIL-' + suffix, finishedItemId],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO product_definitions (
+          id, tenant_id, factory_id, inventory_item_id, product_code,
+          product_name, product_type, base_unit, status, version,
+          created_by_user_id, updated_by_user_id
+        )
+        VALUES ($1, $2, $3, $4, $5, 'Availability finished product',
+                'STANDARD', 'PCS', 'ACTIVE', 1, $6, $6)
+        `,
+        [productId, tenantId, factoryId, finishedItemId, 'PRD-AVAIL-' + suffix, TEST_USER_ID],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO product_versions (
+          id, tenant_id, factory_id, product_id, version_number, state,
+          effective_from, expected_yield_percent, change_summary, row_version,
+          idempotency_key, request_hash, created_by_user_id, updated_by_user_id,
+          approved_by_user_id, approved_at
+        )
+        VALUES ($1, $2, $3, $4, 1, 'APPROVED', CURRENT_DATE, 100,
+                'Availability first-affected work-order fixture', 1, $5, $6,
+                $7, $7, $7, clock_timestamp())
+        `,
+        [
+          productVersionId,
+          tenantId,
+          factoryId,
+          productId,
+          'product-version-availability-' + suffix,
+          'd'.repeat(64),
+          TEST_USER_ID,
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO product_bom_lines (
+          id, tenant_id, factory_id, product_id, product_version_id,
+          line_number, component_item_id, quantity_per, unit, wastage_percent,
+          created_by_user_id
+        )
+        VALUES ($1, $2, $3, $4, $5, 1, $6, 1, 'PCS', 0, $7)
+        `,
+        [bomLineId, tenantId, factoryId, productId, productVersionId, componentItemId, TEST_USER_ID],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO work_orders (
+          id, tenant_id, factory_id, work_order_number, source_order_id,
+          source_order_line_id, product_id, product_version_id, finished_item_id,
+          target_quantity, planned_start_date, due_date, priority, status,
+          row_version, idempotency_key, request_hash, created_by_user_id, updated_by_user_id
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          12, CURRENT_DATE + 2, CURRENT_DATE + 7, 1, 'DRAFT',
+          1, $10, $11, $12, $12
+        )
+        `,
+        [
+          workOrderId,
+          tenantId,
+          factoryId,
+          'WO-AVAIL-' + suffix,
+          orderId,
+          orderLineId,
+          productId,
+          productVersionId,
+          finishedItemId,
+          'work-order-availability-' + suffix,
+          'e'.repeat(64),
+          TEST_USER_ID,
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO work_order_material_requirements (
+          id, tenant_id, factory_id, work_order_id, product_id,
+          product_version_id, bom_line_id, component_item_id, line_number,
+          component_sku, component_name, component_unit, base_quantity_per,
+          expected_yield_percent, wastage_percent, required_quantity
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1,
+                $9, 'Availability component', 'PCS', 1, 100, 0, 12)
+        `,
+        [
+          requirementId,
+          tenantId,
+          factoryId,
+          workOrderId,
+          productId,
+          productVersionId,
+          bomLineId,
+          componentItemId,
+          'WMS-INT-' + suffix,
+        ],
+      );
+
+      const availability = await inventoryService.getAvailabilitySummary(
+        TEST_USER_ID, tenantId, factoryId, componentItemId,
+      );
+
+      expect(availability).toMatchObject({
+        quantity_on_hand: '10.0000',
+        quantity_allocated: '2.0000',
+        quantity_available: '8.0000',
+        quantity_expected: '0.0000',
+        first_affected_production_order: {
+          work_order_id: workOrderId,
+          work_order_number: 'WO-AVAIL-' + suffix,
+          source_order_id: orderId,
+          source_order_number: 'SO-AVAIL-' + suffix,
+          status: 'DRAFT',
+          priority: 1,
+          outstanding_material_quantity: '12.0000',
+          shortfall_quantity: '4.0000',
+        },
+      });
+    } finally {
+      for (const table of mutableTables) {
+        await adminPool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+      try {
+        await adminPool.query('DELETE FROM work_order_material_requirements WHERE id = $1', [requirementId]);
+        await adminPool.query('DELETE FROM work_order_material_reservations WHERE work_order_id = $1', [workOrderId]);
+        await adminPool.query('DELETE FROM work_orders WHERE id = $1', [workOrderId]);
+        await adminPool.query('DELETE FROM product_bom_lines WHERE id = $1', [bomLineId]);
+        await adminPool.query('DELETE FROM product_versions WHERE id = $1', [productVersionId]);
+        await adminPool.query('DELETE FROM product_definitions WHERE id = $1', [productId]);
+        await adminPool.query('DELETE FROM order_lines WHERE id = $1', [orderLineId]);
+        await adminPool.query('DELETE FROM orders WHERE id = $1', [orderId]);
+      } finally {
+        for (const table of mutableTables) {
+          await adminPool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER USER');
+        }
+      }
+    }
+  });
+
   it('replays concurrent duplicate requests and conserves partial/full consumption balances', async () => {
     const itemId = await createItem('10.0000');
     const idempotencyKey = 'wms-duplicate-create-' + randomUUID();
