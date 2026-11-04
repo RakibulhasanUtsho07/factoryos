@@ -50,3 +50,10 @@ Apply a ruleset or branch-protection rule to `main` with these controls:
 - [ ] A test PR confirms direct push is blocked, one independent approval is required, code owner approval works, stale approvals are dismissed, conversations must be resolved and required checks block merge.
 
 **Current decision:** CODEOWNERS is added in this PR; protected-main/ruleset enforcement remains **OPEN / NOT VERIFIED** until an administrator applies settings and the effective policy is re-read. Do not label repository governance complete before that evidence exists.
+
+
+## Post-merge verification — 2026-11-04
+
+The CODEOWNERS/governance documentation change was merged via [PR #351](https://github.com/RakibulhasanUtsho07/factoryos/pull/351) at `main@91dd6a5629562ca8ce01fbc8892a7200d85577c8`. Re-reading GitHub branch metadata after that merge still returns `protected=false`, with required-status enforcement disabled and an empty rulesets collection. The `.github/CODEOWNERS` file is present and assigns the repository maintainer as the provisional default owner; it does not provide independent Product, Architecture, Security, Operations or QA reviewers.
+
+**Current result:** CODEOWNERS file `PRESENT`; protected-main policy `NOT ENABLED`; independent reviewer/team map `NOT COMPLETE`; required CI enforcement `NOT VERIFIED`. The connected GitHub integration exposes branch-protection/ruleset reads but no write operation. An authorized administrator must apply the policy in GitHub repository settings or through an administrative integration, then re-read the effective rule and test a PR. Do not close this item based solely on CODEOWNERS presence.
