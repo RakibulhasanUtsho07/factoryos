@@ -21,6 +21,7 @@ DECLARE
   v_serial_merge_source_rejected BOOLEAN := FALSE;
   v_serial_merge_target_rejected BOOLEAN := FALSE;
   v_fractional_location_rejected BOOLEAN := FALSE;
+  v_duplicate_serial_location_rejected BOOLEAN := FALSE;
   v_fractional_reserved_location_rejected BOOLEAN := FALSE;
   v_fractional_allocation_rejected BOOLEAN := FALSE;
   v_second_active_allocation_rejected BOOLEAN := FALSE;
@@ -213,6 +214,18 @@ BEGIN
   END;
   IF NOT v_fractional_location_rejected THEN
     RAISE EXCEPTION 'fractional serial location on-hand quantity was accepted';
+  END IF;
+
+  BEGIN
+    INSERT INTO inventory_traceability_location_balances (
+      tenant_id, factory_id, item_id, traceability_unit_id, location_id,
+      quantity_on_hand, quantity_reserved
+    ) VALUES (v_tenant, v_factory, v_item, v_serial_one, gen_random_uuid(), 1, 0);
+  EXCEPTION WHEN check_violation THEN
+    v_duplicate_serial_location_rejected := TRUE;
+  END;
+  IF NOT v_duplicate_serial_location_rejected THEN
+    RAISE EXCEPTION 'one serial was allowed to hold one unit in two different locations';
   END IF;
 
   BEGIN
