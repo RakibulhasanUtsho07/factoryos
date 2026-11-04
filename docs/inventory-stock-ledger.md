@@ -38,6 +38,21 @@ The movement payload accepts movement_type, a positive quantity with up to four 
 
 Order creation accepts an optional `inventory_item_id` on each order line. When supplied, the API requires an active item from the order's same tenant/factory and requires its unit to match the line unit (case-insensitive). Legacy/unmapped lines remain valid with a null binding.
 
+## WMS availability projection (SRS v2.1 FR-WMS-05)
+
+**GET `/inventory/items/:itemId/availability`** is a read-only, `inventory.read`-protected, factory-scoped projection. It returns the current item balance together with:
+
+- `quantity_allocated`: authoritative active reservation quantity; it is also returned as `quantity_reserved` for compatibility.
+- `quantity_quarantined`: on-hand quantity classified as quality quarantine by an active quarantining hold, a quarantined traceability identity, or its explicit quarantine attribute.
+- `quantity_quality_held`: on-hand quantity subject to an active quality hold or held traceability condition. This includes quarantined quantity.
+- `quantity_damaged`: on-hand tracked-lot/serial quantity marked damaged, excluding identities already quality-held so this condition bucket does not double-count them.
+- `quantity_expected`: outstanding quantities on approved purchase-order lines after accepted quantities from posted goods receipts have been deducted. Draft, submitted, rejected and cancelled POs are not counted as expected supply.
+- `first_affected_production_order`: the earliest scheduled work order whose outstanding material demand crosses the item's available balance. Outstanding demand is calculated from the immutable work-order material requirement less remaining and already-consumed material reservations; order precedence is planned start date, priority, due date, creation time and ID.
+
+The returned condition quantities are operational indicators, not additive stock buckets: allocated stock can also be quality-held/quarantined. `quantity_available` is the unallocated usable quantity. It subtracts the unallocated portion of held/damaged traceable stock and is zero under an item-wide active quality hold. This avoids reporting held stock as pickable while also avoiding subtracting the same already-allocated units twice.
+
+The endpoint is additive to the legacy aggregate stock summary and does not alter the versioned `INVENTORY.STOCK.SUMMARY` AI tool contract.
+
 ## Data integrity and safety guarantees
 
 Migration 038_inventory_stock_ledger.sql adds three tenant-scoped tables:
