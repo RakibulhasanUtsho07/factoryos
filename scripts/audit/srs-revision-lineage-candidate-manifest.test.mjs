@@ -84,7 +84,7 @@ test('declared cumulative scope arithmetic reconciles without inferring unavaila
 });
 
 test('known functional/non-functional delta components add up where the source states them', () => {
-  for (const revision of ['1.5_corrected', '1.6', '1.7', '1.8_frontier', '2.0', '2.1']) {
+  for (const revision of ['1.5_corrected', '1.6', '1.7', '1.8_frontier', '1.9_growth_research', '2.0', '2.1']) {
     const entry = scopeByRevision.get(revision);
     assert.equal(entry.delta.functional + entry.delta.nonFunctional, entry.delta.total, revision);
   }
@@ -102,7 +102,7 @@ test('priority totals reconcile for the revisions that declare cumulative bucket
     const priority = entry.priorityCumulative;
     assert.equal(priority.P0 + priority.P1 + priority.P2, entry.cumulative, revision);
   }
-  for (const revision of ['1.6', '1.7', '2.0', '2.1']) {
+  for (const revision of ['1.6', '1.7', '1.9_growth_research', '2.0', '2.1']) {
     const entry = scopeByRevision.get(revision);
     const delta = entry.priorityDelta;
     assert.equal(delta.P0 + delta.P1 + delta.P2, entry.delta.total, revision);
