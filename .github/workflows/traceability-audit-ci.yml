@@ -11,6 +11,9 @@ on:
       - 'docs/audit-source-baseline-manifest.md'
       - 'docs/srs-source-of-record-and-approval-register.md'
       - 'docs/srs-requirement-scope-reconciliation.md'
+      - 'docs/srs-v21-delta-occurrence-ledger.json'
+      - 'docs/srs-v21-delta-occurrence-ledger.md'
+      - 'scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs'
       - 'docs/srs-p0-p1-evidence-closure-register.md'
       - 'docs/srs-p0-p1-evidence-closure-register.json'
       - 'docs/srs-p0-p1-evidence-closure.csv'
@@ -68,3 +71,5 @@ jobs:
         run: node --check scripts/audit/validate-srs-audit.mjs
       - name: Validate source IDs, priorities, acceptance scenarios and manifest
         run: node scripts/audit/validate-srs-audit.mjs
+      - name: Validate the exact v2.1 delta row population
+        run: node --test scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs
