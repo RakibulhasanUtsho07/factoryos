@@ -143,3 +143,7 @@ This ledger may be marked **RECONCILED** only when all items below have evidence
 - [ ] Product, Architecture, Engineering, Security and Operations approve the final release evidence set.
 
 Until then the correct decision is `NOT READY FOR FORMAL TRACEABILITY SIGN-OFF`. A passing extraction validator proves consistency of the audit artifacts, not that the product has passed every requirement.
+
+## 6. 2026-11-04 verification supplement
+
+The SRS PDF was re-hashed on 2026-11-04; its SHA-256 still matches the source baseline manifest. All 37 priority/source exception IDs have now been re-scanned page-by-page and their observed contexts recorded in [the supplemental source review](srs-priority-exception-source-review-2026-11-04.md). A layout-preserving text-extraction diagnostic and the limitations preventing an authoritative 950-occurrence count are documented in [the occurrence-ledger status note](srs-active-requirement-occurrence-ledger-status-2026-11-04.md). This improves the evidence available for manual adjudication but does not resolve source authority, active v2.1 scope or requirement priority. Product/Requirements and Architecture approvals remain required under [issue #348](https://github.com/RakibulhasanUtsho07/factoryos/issues/348).
