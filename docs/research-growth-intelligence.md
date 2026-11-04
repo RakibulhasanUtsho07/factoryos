@@ -209,6 +209,22 @@ Calibration is observational and read-only: it does not train, refit, choose or 
 
 The API permission catalog defines `research.read/write/review/ingest` and `growth.read/write/review`. Migration `134_research_ingestion_provenance.sql` registers the distinct `research.ingest` worker permission but does not automatically grant it to production roles. Assign `research.write` to source registrars, `research.review` to rights reviewers, `research.read` to consumers, and `research.ingest` only to the trusted worker identity permitted to claim jobs and persist extraction output. Production role grants remain explicit; the local development seed does not imply that a production role has this worker permission.
 
+
+## Research source freshness scheduling — repository slice
+
+Migration `234_research_source_freshness_schedules.sql` adds one tenant-scoped freshness policy per current source. A policy pins `METADATA_ONLY` or rights-permitted `FULL_TEXT`, a 60-minute to 90-day interval and bounded retry count. It has reasoned PAUSE/RESUME/RETIRE transitions; configuration fields are database-immutable after creation, so changing cadence requires retiring and replacing the policy.
+
+The trusted worker calls:
+
+- `POST /research/sources/:sourceId/freshness-policy` (`research.write`) to configure a schedule after current source-rights checks.
+- `GET /research/sources/:sourceId/freshness-policy` (`research.read`) to inspect its due cursor and last outcome.
+- `POST /research/freshness-policies/:policyId/decision` (`research.review`) to pause/resume/retire with a reason.
+- `POST /research/freshness-schedules/materialize-due` (`research.ingest`) to materialize at most 100 due policies into the existing ingestion queue.
+
+Materialization is tenant-scoped, idempotent per policy/due window, takes a policy row lock with `SKIP LOCKED`, skips sources that already have queued/running/paused work, freezes the current source and rights snapshots, and rechecks rights immediately before job insertion. If access/license/full-text rights are no longer sufficient, no ingestion job is created; a stable blocked code is stored and the next check is deferred by one policy interval. Existing source-change/rights-change checks and the worker lease still apply when the queue consumer claims the job.
+
+**Boundary:** this is a scheduler-to-queue contract, not a crawler, PDF/OCR parser, embedding index, LLM extraction provider or hosted cron deployment. A separately deployed scheduler must call the tenant-scoped materialization endpoint, and a separately deployed least-privilege `research.ingest` worker must claim and execute durable jobs. The freshness cursor advances when a job is queued, not when external content has been fetched; operators must inspect job status/events and provider freshness before treating a source as refreshed. No source is marked fresh merely because a schedule ran.
+
 ## Explicit remaining gaps before claiming full SRS completion
 
 The backend supplies rights-gated resumable ingestion, durable leases/checkpoints/retries, Crossref/Europe PMC identity adapters, restricted customer text-file upload/storage, server-computed content fingerprints, duplicate-candidate discovery, extraction review, metadata citation validation, source-driven release withdrawal and explicit reviewer release retraction. It still does **not** run a hosted publisher crawler, fetch arbitrary source URLs, parse/OCR PDFs, or launch an LLM/extraction provider; a deployed worker must claim jobs and submit extraction output. Extraction inputs not taken from the document-content endpoint remain worker-attested.
