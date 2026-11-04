@@ -1,0 +1,57 @@
+name: SRS Revision Occurrence Crosswalk Contract
+
+on:
+  pull_request:
+    branches: [rakibul-hasan, dev, main]
+    paths:
+      - '.github/workflows/srs-revision-occurrence-crosswalk-ci.yml'
+      - 'docs/srs-revision-occurrence-crosswalk*'
+      - 'docs/srs-v19-growth-delta-occurrence-ledger.json'
+      - 'docs/srs-priority-exception-owner-decision-register.csv'
+      - 'scripts/audit/build_srs_revision_occurrence_crosswalk.py'
+      - 'scripts/audit/srs-revision-occurrence-crosswalk-contract.test.mjs'
+      - 'scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/extract_srs_requirement_occurrence_candidates.py'
+      - 'scripts/audit/test_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/test_srs_occurrence_candidate_extractor.py'
+  push:
+    branches: [rakibul-hasan, dev, main]
+    paths:
+      - '.github/workflows/srs-revision-occurrence-crosswalk-ci.yml'
+      - 'docs/srs-revision-occurrence-crosswalk*'
+      - 'docs/srs-v19-growth-delta-occurrence-ledger.json'
+      - 'docs/srs-priority-exception-owner-decision-register.csv'
+      - 'scripts/audit/build_srs_revision_occurrence_crosswalk.py'
+      - 'scripts/audit/srs-revision-occurrence-crosswalk-contract.test.mjs'
+      - 'scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/extract_srs_requirement_occurrence_candidates.py'
+      - 'scripts/audit/test_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/test_srs_occurrence_candidate_extractor.py'
+
+permissions:
+  contents: read
+
+jobs:
+  crosswalk-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify compressed cross-version crosswalk and lineage invariants
+        run: node --test scripts/audit/srs-revision-occurrence-crosswalk-contract.test.mjs
+      - name: Test v2.0 and v2.1 candidate extractors
+        run: |
+          python -m unittest discover -s scripts/audit -p 'test_srs_v20_inherited_occurrence_candidates.py' -v
+          python -m unittest discover -s scripts/audit -p 'test_srs_occurrence_candidate_extractor.py' -v
+      - name: Compile revision crosswalk builder and source verifiers
+        run: |
+          python -m py_compile scripts/audit/build_srs_revision_occurrence_crosswalk.py
+          python -m py_compile scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py
+          python -m py_compile scripts/audit/extract_srs_requirement_occurrence_candidates.py
+          python -m py_compile scripts/audit/verify-srs-v19-growth-delta-occurrences.py
+          python -m py_compile scripts/audit/verify-srs-v21-delta-occurrence-ledger.py
