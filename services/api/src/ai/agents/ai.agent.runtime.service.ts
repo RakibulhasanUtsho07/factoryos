@@ -624,6 +624,42 @@ export class AiAgentRuntimeService {
     };
   }
 
+  async listTasks(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    limit = 50,
+  ): Promise<{ items: AiAgentTask[]; limit: number; count: number }> {
+    this.validateScope(tenantId, factoryId, actorUserId);
+
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit must be an integer between 1 and 100');
+    }
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.business.read',
+      factoryId,
+    );
+
+    const result = await this.database.query<AgentTaskRow>(
+      `
+      SELECT ${this.taskSelectColumns()}
+      FROM agent_tasks
+      WHERE tenant_id = $1
+        AND factory_id = $2
+      ORDER BY updated_at DESC, created_at DESC, id DESC
+      LIMIT $3
+      `,
+      [tenantId, factoryId, limit],
+      { tenantId, userId: actorUserId },
+    );
+
+    const items = result.rows.map((row) => this.mapTask(row));
+    return { items, limit, count: items.length };
+  }
+
   async transitionState(
     tenantId: string,
     factoryId: string,
