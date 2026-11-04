@@ -147,3 +147,10 @@ Until then the correct decision is `NOT READY FOR FORMAL TRACEABILITY SIGN-OFF`.
 ## 6. 2026-11-04 verification supplement
 
 The SRS PDF was re-hashed on 2026-11-04; its SHA-256 still matches the source baseline manifest. All 37 priority/source exception IDs have now been re-scanned page-by-page and their observed contexts recorded in [the supplemental source review](srs-priority-exception-source-review-2026-11-04.md). A layout-preserving text-extraction diagnostic and the limitations preventing an authoritative 950-occurrence count are documented in [the occurrence-ledger status note](srs-active-requirement-occurrence-ledger-status-2026-11-04.md). This improves the evidence available for manual adjudication but does not resolve source authority, active v2.1 scope or requirement priority. Product/Requirements and Architecture approvals remain required under [issue #348](https://github.com/RakibulhasanUtsho07/factoryos/issues/348).
+
+
+## 7. 2026-11-04 v2.1 delta row extraction supplement
+
+The 50 rows explicitly added by v2.1 are now indexed separately in [the hash-pinned v2.1 delta occurrence ledger](srs-v21-delta-occurrence-ledger.json). The source tables are SRS PDF pages 96-99 (§130-§131): FR-PROD-01…FR-PROD-32 and NFR-PROD-01…NFR-PROD-18. The extracted population is 50/50 unique IDs with P0=35, P1=15 and P2=0, matching §140's v2.1 addition totals. Each row stores its PDF page/table/row locator and normalized wording SHA-256; the reproducible verifier is scripts/audit/verify-srs-v21-delta-occurrence-ledger.py. The rendered pages were visually checked, including the page-spanning continuations for FR-PROD-12 and FR-PROD-25.
+
+This closes the machine-extraction/indexing slice for the 50 v2.1 additions only. The ledger leaves occurrenceClass unresolved and carries no source-owner approval. The inherited v2.0 900-row occurrence population, exact 950 cumulative reconciliation, 37 inherited/source exceptions and controlled source-of-record approval remain open. Do not change the 842-row provisional closure tracker or any requirement PASS state from this supplement.
