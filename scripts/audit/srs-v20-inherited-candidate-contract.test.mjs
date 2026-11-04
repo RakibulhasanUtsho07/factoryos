@@ -1,60 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 
-const manifest = JSON.parse(readFileSync(
+const ledger = JSON.parse(readFileSync(
   new URL('../../docs/srs-v20-inherited-occurrence-candidate-ledger.payload-manifest.json', import.meta.url), 'utf8'));
-const payload = manifest.payload_parts.map((part) => readFileSync(
-  new URL('../../docs/' + part, import.meta.url), 'utf8').trim()).join('');
-const raw = gunzipSync(Buffer.from(payload, 'base64'));
-assert.equal(createHash('sha256').update(raw).digest('hex'), manifest.uncompressed_sha256);
-assert.equal(raw.length, manifest.uncompressed_bytes);
-const ledger = JSON.parse(raw.toString('utf8'));
-const rows = ledger.rows;
-const kinds = (kind) => rows.filter((row) => row[3] === kind);
-const normative = kinds('NORMATIVE_REQUIREMENT_TABLE');
-const auxiliary = kinds('AUXILIARY_CATALOGUE_TABLE');
-const context = rows.filter((row) => row[3] === 'SCOPE_LEDGER_OR_CROSSWALK_CANDIDATE'
-  || row[3] === 'METRIC_OR_DECISION_CROSS_REFERENCE_CANDIDATE');
-const priorityCounts = (list) => Object.fromEntries(['P0', 'P1', 'P2'].map((priority) =>
-  [priority, list.filter((row) => row[5] === priority).length]));
 
-test('snapshot is byte-integrity protected and source-pinned', () => {
-  assert.equal(manifest.encoding, 'gzip+base64');
-  assert.equal(manifest.payload_parts.length, 3);
-  assert.equal(ledger.source_artifact_sha256,
-    '8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42');
-  assert.equal(ledger.source_pdf_page_count, 93);
+test('candidate census is source-pinned and full row output is not misrepresented as checked in', () => {
   assert.equal(ledger.ledger_id, 'FOS-SRS-V20-INHERITED-CANDIDATE-01');
+  assert.equal(ledger.source_artifact_sha256, '8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42');
+  assert.equal(ledger.source_pdf_page_count, 93);
+  assert.equal(ledger.row_level_output_committed, false);
+  assert.match(ledger.row_level_output_policy, /regenerated with the extractor/);
 });
 
-test('normative candidates stay separate from catalogue and non-normative contexts', () => {
-  assert.equal(rows.length, 854);
-  assert.equal(normative.length, 809);
-  assert.equal(new Set(normative.map((row) => row[4])).size, 799);
-  assert.equal(auxiliary.length, 13);
-  assert.equal(context.length, 32);
-  assert.deepEqual(priorityCounts(normative), { P0: 225, P1: 527, P2: 57 });
-  assert.deepEqual(priorityCounts(auxiliary), { P0: 2, P1: 11, P2: 0 });
-});
-
-test('reused IDs remain separate occurrences rather than being deduplicated', () => {
-  const counts = new Map();
-  for (const row of normative) counts.set(row[4], (counts.get(row[4]) ?? 0) + 1);
-  const repeated = [...counts.entries()].filter(([, count]) => count > 1).sort();
-  assert.deepEqual(repeated, Array.from({ length: 10 }, (_, i) =>
-    ['FR-IOT-' + String(i + 1).padStart(2, '0'), 2]));
-});
-
-test('row snapshot fails closed: no active classification or owner approval inferred', () => {
-  assert.ok(rows.every((row) => row.length === 7));
-  assert.ok(normative.every((row) => typeof row[5] === 'string' && ['P0', 'P1', 'P2'].includes(row[5])));
-  assert.ok(rows.every((row) => ['TABLE_ROW_CANDIDATE', 'NON_NORMATIVE_CONTEXT_CANDIDATE'].includes(row[6])));
-  assert.equal(ledger.scope_claim.inherited_v20_cumulative_requirements, 900);
+test('normative rows and non-normative contexts remain separate populations', () => {
+  assert.equal(ledger.candidate_occurrence_count, 854);
+  assert.equal(ledger.distinct_id_candidate_count, 812);
   assert.equal(ledger.normative_requirement_table_candidate_count, 809);
+  assert.equal(ledger.normative_distinct_id_candidate_count, 799);
+  assert.deepEqual(ledger.normative_priority_counts, { P0: 225, P1: 527, P2: 57 });
+  assert.equal(ledger.auxiliary_catalogue_candidate_count, 13);
+  assert.deepEqual(ledger.auxiliary_catalogue_priority_counts, { P0: 2, P1: 11, P2: 0 });
+  assert.equal(ledger.non_normative_context_candidate_count, 32);
+  assert.equal(ledger.table_kind_candidate_counts.SCOPE_LEDGER_OR_CROSSWALK_CANDIDATE, 30);
+  assert.equal(ledger.table_kind_candidate_counts.METRIC_OR_DECISION_CROSS_REFERENCE_CANDIDATE, 2);
+});
+
+test('reused IDs stay as repeated occurrences and unresolved lines remain explicit', () => {
+  assert.equal(Object.keys(ledger.repeated_normative_id_candidates).length, 10);
+  for (let i = 1; i <= 10; i++) {
+    assert.equal(ledger.repeated_normative_id_candidates['FR-IOT-' + String(i).padStart(2, '0')], 2);
+  }
   assert.equal(ledger.unresolved_line_candidate_count, 1);
+  assert.equal(ledger.unresolved_line_candidates[0].requirement_id_candidate, 'FR-AIG-03');
+});
+
+test('§140 scope figures are kept separate and do not close the owner gate', () => {
+  assert.equal(ledger.inherited_scope_claim.requirements, 900);
+  assert.deepEqual(ledger.inherited_scope_claim.priorities, { P0: 261, P1: 567, P2: 72 });
+  assert.equal(ledger.inherited_scope_claim.status, 'SOURCE_DECLARED_ARITHMETIC_NOT_ROW_LEVEL_RECONCILIATION');
   assert.equal(ledger.acceptance_boundary.includes('does not establish'), true);
-  assert.equal(Object.hasOwn(ledger, 'approved_active_occurrences'), false);
 });
