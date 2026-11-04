@@ -1,7 +1,7 @@
 # SRS / HLD / Blueprint Source-of-Record and Approval Register
 
 **Register ID:** FOS-TRACE-SOURCE-01  
-**Prepared:** 2026-10-20  
+**Prepared:** 2026-11-04 (byte re-verification)  
 **Record status:** `BLOCKED — source-owner confirmation and controlled approval evidence pending`  
 **Applies to:** FactoryOS AI SRS v2.1 Final, HLD/LLD v1.0, and Engineering Implementation Blueprint v1.0.
 
@@ -15,9 +15,9 @@ The original PDFs are not included in the repository because the current audit o
 
 | Source ID | Required source/version | Inspected filename | Source date | Pages | SHA-256 in manifest | Approval result |
 |---|---|---|---|---:|---|---|
-| FOS-SRS-001 | SRS v2.1 Final Product-Ready Manufacturing SaaS | `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(8).pdf` | 2026-10-02 | 103 | `ae3790e0ead5b11f13d4c32c9ab8e944ede7508cbaf0468673e031e48917c959` | PENDING |
-| HLD-LLD-001 | System Architecture & Technical Design HLD/LLD v1.0 | `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(3).pdf` | 2026-10-02 | 25 | `fd75c8a794d78537713d3bbf7eb129b57ceb96cf5f4a7c07cf789b979528509e` | PENDING |
-| FOS-BLUEPRINT-001 | Engineering Implementation Blueprint v1.0, based on SRS v2.1 Final + HLD/LLD v1.0 | `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(8).pdf` | 2026-10-02 | 31 | `e8a42cf663177afb8275f269b94213d5943b78b1e33a30e845abcf2a243ba08d` | PENDING |
+| FOS-SRS-001 | SRS v2.1 Final Product-Ready Manufacturing SaaS | `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(10).pdf` | 2026-10-02 | 103 | `ae3790e0ead5b11f13d4c32c9ab8e944ede7508cbaf0468673e031e48917c959` | PENDING |
+| HLD-LLD-001 | System Architecture & Technical Design HLD/LLD v1.0 | `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(4).pdf` | 2026-10-02 | 25 | `fd75c8a794d78537713d3bbf7eb129b57ceb96cf5f4a7c07cf789b979528509e` | PENDING |
+| FOS-BLUEPRINT-001 | Engineering Implementation Blueprint v1.0, based on SRS v2.1 Final + HLD/LLD v1.0 | `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(20261103-055605).pdf` | 2026-10-02 | 31 | `e8a42cf663177afb8275f269b94213d5943b78b1e33a30e845abcf2a243ba08d` | PENDING |
 
 The hashes above are copied from the raw-byte SHA-256 computation recorded in the source manifest. Before approval, a source owner must independently compare the archived source bytes and their digests to that manifest. A re-saved/re-exported PDF is a different byte-level artifact even if its visible text is unchanged.
 
@@ -82,3 +82,8 @@ The merged baseline commit `7b4a28419f6682480d10ee5f64ed5172bf809fad` is a repos
 - [Final provisional traceability audit](final-srs-hld-blueprint-traceability-audit.md)
 
 **Current decision:** The exact inspected source copies are identified; controlled source-of-record, source-owner approval, scope reconciliation sign-off, and direct per-requirement acceptance evidence remain open. This register intentionally does not convert those missing approvals into an assumed PASS.
+
+
+## 2026-11-04 byte re-verification addendum
+
+The latest available Library filenames are SRS `(10)`, HLD `(4)` and Blueprint `(20261103-055605)`. Raw-byte SHA-256 was recomputed for all three. Each matches the corresponding digest in `docs/audit-source-baseline-manifest.md`; no source-byte change was detected. This confirms repeatability of the inspected artifacts only. It does not supply a controlled DMS/PLM URI, document-control status, approver identity, signed decision or source-owner approval. Those fields remain `PENDING` and this register remains `BLOCKED`.
