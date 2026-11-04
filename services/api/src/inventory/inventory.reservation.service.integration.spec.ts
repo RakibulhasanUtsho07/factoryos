@@ -342,6 +342,7 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
         quantity_quarantined: '10.0000',
         quantity_quality_held: '10.0000',
         quantity_damaged: '0.0000',
+        quantity_expired: '0.0000',
         quantity_expected: '6.0000',
         first_affected_production_order: null,
       });
