@@ -526,6 +526,7 @@ jobs:
           CREATE ROLE factoryos LOGIN PASSWORD 'ci-admin-only' SUPERUSER CREATEDB CREATEROLE;
           CREATE ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE factoryos_monitoring NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE factoryos_scim_provisioner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT NOBYPASSRLS;
           GRANT CONNECT ON DATABASE factoryos_test TO factoryos_app;
           GRANT USAGE ON SCHEMA public TO factoryos_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO factoryos_app;
@@ -534,6 +535,21 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
+
+          echo "Applying tenant-scoped SCIM credential migration after the shared CI grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/230_scim_tenant_deprovision_credentials.sql
+          echo "Replacing shared CI table grants with SCIM's reviewed column-level grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 \
+            -v application_role=factoryos_app \
+            -v provisioning_role=factoryos_scim_provisioner \
+            -f deploy/security/scim-provisioning-role-grants.sql
+          echo "Replaying SCIM migration and proving forced RLS plus least-privilege grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/230_scim_tenant_deprovision_credentials.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/scim-provisioning-credential-contract.sql
 
           echo "Reapplying tenant export completeness and derived-scope guards after runtime role creation"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
