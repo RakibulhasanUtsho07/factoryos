@@ -100,6 +100,21 @@ The API and database enforce domain/source-of-record rules. The external ERP rem
 - Export filenames derive from the payload hash; the provider idempotency key is tied to tenant/factory/connector, file, format and hash. Receipt hashes and provider echo must agree.
 - The existing API exposes import/export receipt queries and reconciliation review routes. Every deployment should alert on ACKNOWLEDGEMENT_PENDING, repeated provider 4xx/5xx failures, validation rejection spikes, stale connector freshness, and open finance mismatches.
 
+### Bounded retry and explicit degraded behavior (repository contract)
+
+The shared pinned HTTPS JSON client is wrapped in a bounded retry policy for both Business Central and Vault requests:
+
+- At most **three total attempts** per HTTP operation, with 100 ms then 250 ms backoff.
+- Retry only transport reset/refusal/unreachable/transient DNS/timeout failures and HTTP 408, 425, 429, 500, 502, 503 or 504.
+- GET requests are replay-safe. POST is retried only when the caller supplies the same deterministic `Idempotency-Key`; the exact request body/key are reused for each attempt.
+- Permanent 4xx, redirects, invalid JSON/content type, TLS/allowlist/host validation failures and unkeyed POST requests are not retried. Retry exhaustion propagates a sanitized transport error; it never fabricates a success.
+- Business Central acknowledgement requires a JSON response with `accepted: true`. A 2xx response with `accepted: false`, missing acknowledgement, or malformed response is not success.
+- If import facts have committed but provider acknowledgement remains unavailable after bounded retries, FinanceService returns `ACKNOWLEDGEMENT_PENDING` with the immutable import receipt. Re-running the same import operation reuses the payload-bound import receipt and deterministic acknowledgement key; it must not insert the facts a second time.
+- Vault tokens are resolved from the mounted short-lived Agent token on each provider operation (not cached in the adapter). Token rotation therefore takes effect on the next request, subject to the mounted agent refresh.
+- SFTP command batches are **not blindly retried** after an ambiguous command result. The service returns an explicit unavailable/pending state; a subsequent operation must pass the existing host-key, source-payload digest, archive-target digest and upload read-back checks before accepting a replay. This avoids repeating an uncertain remote rename/remove/write as an unconditional side effect.
+
+These are repository-level deterministic contracts. They do not prove a live provider outage, actual DNS/TLS/SSH handshake, remote idempotency implementation or production alert delivery. A staging operator must still capture the real fault/recovery sequence described in the staging checklist below.
+
 ## 6. SFTP status
 
 The repository registers OpenSshFinanceSftpTransport as FINANCE_SFTP_TRANSPORT. It uses the OpenSSH client tools (ssh-keyscan and sftp), requires FINANCE_SFTP_ALLOWED_HOSTS plus FINANCE_SFTP_ALLOWED_IPS, resolves the connector host against the exact allowlists and pins a vetted address for the transfer. It compares the observed SSH public-key fingerprint to the connector’s canonical SHA256 pin before opening an SFTP session, then uses StrictHostKeyChecking=yes, a temporary known_hosts file containing only the pinned key, public-key authentication, and a Vault-resolved sftp_private_key_pem. Temporary key material is written under a mode-0700 temporary directory with a mode-0600 key file and removed after the operation. Export uses a content-derived temporary remote file, rename, and read-back digest verification; replay of an existing final file is accepted only if its exact digest matches. Import archives to configured-root child folders named processed or quarantine and binds archive replay to the source payload SHA-256; provision these folders before enabling polling. Install openssh-client in the API runtime image. Automated tests mock the process runner and prove adapter contract behavior, but they do not verify a real SSH handshake or remote server. A staging host, actual public-key fingerprint, secret-manager key reference, egress rules and provider permissions still require deployment approval and staged fault-injection evidence.
