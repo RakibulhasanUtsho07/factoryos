@@ -293,6 +293,21 @@ BEGIN
   END IF;
 
   IF TG_OP = 'INSERT' THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM inventory_traceability_location_balances b
+      WHERE b.tenant_id = NEW.tenant_id
+        AND b.factory_id = NEW.factory_id
+        AND b.item_id = NEW.item_id
+        AND b.traceability_unit_id = NEW.traceability_unit_id
+        AND b.location_id = NEW.location_id
+        AND b.quantity_on_hand = 1
+        AND b.quantity_reserved = 1
+    ) THEN
+      RAISE EXCEPTION 'a serial reservation must be backed by one physical unit reserved in the same location'
+        USING ERRCODE = '23514';
+    END IF;
+
     SELECT EXISTS (
       SELECT 1
       FROM inventory_reservation_traceability_allocations a
