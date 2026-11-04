@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  BoundedRetryFinanceJsonHttpClient,
   isFinancePublicAddress,
   MicrosoftDynamics365BusinessCentralFinanceAdapter,
   PinnedFinanceJsonHttpClient,
@@ -169,6 +170,32 @@ describe('Microsoft Dynamics 365 Business Central Finance Exchange v1 contract',
       .rejects.toThrow('FINANCE_ERP_REFERENCE_INVALID');
   });
 
+
+
+  it('retries a lost Business Central acknowledgement with the same idempotency key and requires accepted=true', async () => {
+    const { adapter, http } = makeAdapter();
+    const acknowledgement = {
+      ...inputContext,
+      endpoint_url: 'https://erp.example.com',
+      secret_reference: 'vault://factoryos/prod/business-central',
+      configuration: PROVIDER_CONFIGURATION,
+      source_batch_ref: 'batch-ack-recovery-01',
+      provider_reference: 'bc-record-ack-recovery-01',
+      payload_sha256: 'c'.repeat(64),
+      disposition: 'PROCESSED' as const,
+    };
+    http.responses.push(new Error('FINANCE_ERP_PROVIDER_HTTP_503'), { accepted: true });
+
+    await adapter.acknowledge(acknowledgement);
+    expect(http.requests).toHaveLength(2);
+    expect(http.requests[0].idempotencyKey).toBe(http.requests[1].idempotencyKey);
+    expect(http.requests[0].body).toEqual(http.requests[1].body);
+
+    http.responses.push({ accepted: false });
+    await expect(adapter.acknowledge(acknowledgement))
+      .rejects.toThrow('FINANCE_BUSINESS_CENTRAL_ACKNOWLEDGEMENT_NOT_CONFIRMED');
+  });
+
   it('uploads exports with a content-derived key and rejects acknowledgement mismatches', async () => {
     const { adapter, http } = makeAdapter();
     const content = Buffer.from('external_fact_id,amount\nAP-1,99.50\n', 'utf8');
@@ -217,5 +244,95 @@ describe('Microsoft Dynamics 365 Business Central Finance Exchange v1 contract',
       secret_reference: 'vault://finance/bc',
       configuration: PROVIDER_CONFIGURATION,
     })).rejects.toThrow('FINANCE_BUSINESS_CENTRAL_ENDPOINT_INVALID');
+  });
+});
+
+
+describe('bounded finance provider retry policy', () => {
+  const request = {
+    url: 'https://erp.example.com/api/factoryos/finance/v1.0/test',
+    method: 'GET' as const,
+    bearerToken: 'test-provider-token',
+  };
+
+  it('retries transient GET failures at most twice before a successful third attempt', async () => {
+    const seen: FinanceJsonHttpRequest[] = [];
+    const waits: number[] = [];
+    const delegate: FinanceJsonHttpClient = {
+      async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+        seen.push(input);
+        if (seen.length < 3) throw new Error('FINANCE_ERP_PROVIDER_HTTP_503');
+        return { value: [] } as T;
+      },
+    };
+    const client = new BoundedRetryFinanceJsonHttpClient(delegate, async (milliseconds) => {
+      waits.push(milliseconds);
+    });
+
+    await expect(client.request(request)).resolves.toEqual({ value: [] });
+    expect(seen).toHaveLength(3);
+    expect(waits).toEqual([100, 250]);
+    expect(seen.every((input) => input.url === request.url && input.method === 'GET')).toBe(true);
+  });
+
+  it('retries POST only when a stable idempotency key is supplied', async () => {
+    const keyedCalls: FinanceJsonHttpRequest[] = [];
+    const keyedDelegate: FinanceJsonHttpClient = {
+      async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+        keyedCalls.push(input);
+        if (keyedCalls.length === 1) {
+          const error = new Error('simulated connection reset') as Error & { code: string };
+          error.code = 'ECONNRESET';
+          throw error;
+        }
+        return { accepted: true } as T;
+      },
+    };
+    const waits: number[] = [];
+    const keyedClient = new BoundedRetryFinanceJsonHttpClient(keyedDelegate, async (ms) => { waits.push(ms); });
+    await expect(keyedClient.request({
+      ...request, method: 'POST', idempotencyKey: 'stable-batch-ack-key', body: { accepted: true },
+    })).resolves.toEqual({ accepted: true });
+    expect(keyedCalls).toHaveLength(2);
+    expect(keyedCalls.map((input) => input.idempotencyKey)).toEqual([
+      'stable-batch-ack-key', 'stable-batch-ack-key',
+    ]);
+    expect(waits).toEqual([100]);
+
+    const unkeyedCalls: FinanceJsonHttpRequest[] = [];
+    const unkeyedDelegate: FinanceJsonHttpClient = {
+      async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+        unkeyedCalls.push(input);
+        throw new Error('FINANCE_ERP_PROVIDER_HTTP_503');
+      },
+    };
+    const unkeyedClient = new BoundedRetryFinanceJsonHttpClient(unkeyedDelegate, async () => undefined);
+    await expect(unkeyedClient.request({ ...request, method: 'POST', body: { mutation: true } }))
+      .rejects.toThrow('FINANCE_ERP_PROVIDER_HTTP_503');
+    expect(unkeyedCalls).toHaveLength(1);
+  });
+
+  it('does not retry permanent 4xx or redirects and propagates bounded exhaustion', async () => {
+    const permanentCalls: FinanceJsonHttpRequest[] = [];
+    const permanentDelegate: FinanceJsonHttpClient = {
+      async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+        permanentCalls.push(input);
+        throw new Error('FINANCE_ERP_PROVIDER_HTTP_400');
+      },
+    };
+    const permanentClient = new BoundedRetryFinanceJsonHttpClient(permanentDelegate, async () => undefined);
+    await expect(permanentClient.request(request)).rejects.toThrow('FINANCE_ERP_PROVIDER_HTTP_400');
+    expect(permanentCalls).toHaveLength(1);
+
+    const exhaustedCalls: FinanceJsonHttpRequest[] = [];
+    const exhaustedDelegate: FinanceJsonHttpClient = {
+      async request<T>(input: FinanceJsonHttpRequest): Promise<T> {
+        exhaustedCalls.push(input);
+        throw new Error('FINANCE_ERP_PROVIDER_HTTP_503');
+      },
+    };
+    const exhaustedClient = new BoundedRetryFinanceJsonHttpClient(exhaustedDelegate, async () => undefined);
+    await expect(exhaustedClient.request(request)).rejects.toThrow('FINANCE_ERP_PROVIDER_HTTP_503');
+    expect(exhaustedCalls).toHaveLength(3);
   });
 });
