@@ -1,0 +1,40 @@
+name: SRS v2.0 Inherited Occurrence Candidate Contract
+
+on:
+  pull_request:
+    branches: [rakibul-hasan, dev, main]
+    paths:
+      - '.github/workflows/srs-v20-inherited-occurrence-candidate-contract.yml'
+      - 'docs/srs-v20-inherited-occurrence-candidate-ledger*'
+      - 'scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/srs-v20-inherited-candidate-contract.test.mjs'
+      - 'scripts/audit/test_srs_v20_inherited_occurrence_candidates.py'
+  push:
+    branches: [rakibul-hasan, dev, main]
+    paths:
+      - '.github/workflows/srs-v20-inherited-occurrence-candidate-contract.yml'
+      - 'docs/srs-v20-inherited-occurrence-candidate-ledger*'
+      - 'scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py'
+      - 'scripts/audit/srs-v20-inherited-candidate-contract.test.mjs'
+      - 'scripts/audit/test_srs_v20_inherited_occurrence_candidates.py'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify compressed row-level occurrence snapshot
+        run: node --test scripts/audit/srs-v20-inherited-candidate-contract.test.mjs
+      - name: Run synthetic PDF table extraction regressions
+        run: python -m unittest discover -s scripts/audit -p 'test_srs_v20_inherited_occurrence_candidates.py' -v
+      - name: Compile source extractor
+        run: python -m py_compile scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py
