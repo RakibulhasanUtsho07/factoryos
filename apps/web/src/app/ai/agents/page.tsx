@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   canExecuteAgentStep,
   createAiAgentControlCenterClient,
@@ -82,8 +82,8 @@ function Panel({
   className = "",
 }: {
   title: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
   className?: string;
 }) {
   return (
@@ -196,13 +196,13 @@ export default function AiAgentControlCenterPage() {
         ? current
         : nextAgents[0]?.id ?? ""
     ));
+    const nextTasks = tasksResult.status === "fulfilled"
+      ? asItems(tasksResult.value).filter((item) => typeof item.id === "string") as Task[]
+      : [];
     setSelectedTaskId((current) => (
-      current && tasksResult.status === "fulfilled" &&
-      asItems(tasksResult.value).some((task) => task.id === current)
+      current && nextTasks.some((task) => task.id === current)
         ? current
-        : tasksResult.status === "fulfilled"
-          ? valueText(asItems(tasksResult.value)[0]?.id, "")
-          : ""
+        : nextTasks[0]?.id ?? ""
     ));
     setLoadingWorkspace(false);
   }, []);
