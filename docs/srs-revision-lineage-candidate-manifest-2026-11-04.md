@@ -54,11 +54,12 @@ The v1.4 starting parent count is not inferred here. The corrected v1.5 source s
 |---|---:|---:|---:|---:|---|
 | v1.5 corrected | 109 | 252 | 49 | 410 | Corrected copy |
 | v1.6 | 126 | 320 | 56 | 502 | Cumulative |
+| v1.9 growth/research delta | 37 | 55 | 0 | 92 | New-row candidate extraction; not cumulative v1.9 priority buckets |
 | v1.7 | 177 | 419 | 62 | 658 | Cumulative |
 | v2.0 | 261 | 567 | 72 | 900 | Cumulative |
 | v2.1 | 296 | 582 | 72 | 950 | §140 cumulative |
 
-The v1.9 growth/research addition has now been independently re-extracted from the byte-pinned 86-page PDF with page/line locators: 74 FR + 18 NFR, priorities P0=37/P1=55/P2=0. The machine-readable occurrence ledger is docs/srs-v19-growth-delta-occurrence-ledger.json. This remains candidate extraction from a draft/version-conflicted PDF, not Product/Requirements acceptance. The cumulative v1.9 priority buckets remain unknown because the reviewed v1.8 cumulative priority baseline is not available.
+The v1.9 growth/research addition has now been independently re-extracted from the byte-pinned 86-page PDF with page/line locators: 74 FR + 18 NFR, priorities P0=37/P1=55/P2=0. The machine-readable occurrence ledger is docs/srs-v19-growth-delta-occurrence-ledger.json; scripts/audit/verify-srs-v19-growth-delta-occurrences.py reproduces the extraction against the exact PDF bytes. This remains candidate extraction from a draft/version-conflicted PDF, not Product/Requirements acceptance. The cumulative v1.9 priority buckets remain unknown because the reviewed v1.8 cumulative priority baseline is not available.
 
 ## Source conflicts that are preserved
 
