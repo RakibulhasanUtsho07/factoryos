@@ -100,7 +100,13 @@
       ],
       "notes": [
         "Corrected candidate reports 80 functional + 12 non-functional additions, cumulative 410 and priorities P0=109/P1=252/P2=49."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 109,
+        "P1": 252,
+        "P2": 49,
+        "claimKind": "CORRECTED_V1_5_COPY"
+      }
     },
     {
       "version": "1.5",
@@ -125,7 +131,13 @@
       ],
       "notes": [
         "The PDF is labelled Final in the filename, but its visible source text still calls this a corrected draft; do not infer approval from the filename."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 109,
+        "P1": 252,
+        "P2": 49,
+        "claimKind": "CORRECTED_V1_5_COPY"
+      }
     },
     {
       "version": "1.5",
@@ -147,7 +159,13 @@
       "notes": [
         "This older copy's document-control block still identifies v1.4 and its scope text reports cumulative priorities P0=109/P1=243/P2=58.",
         "This conflicts with the corrected v1.5 copy's P0=109/P1=252/P2=49 while both total 410. Retain as a source conflict; do not overwrite the history."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 109,
+        "P1": 243,
+        "P2": 58,
+        "claimKind": "OLDER_CONFLICTING_COPY"
+      }
     },
     {
       "version": "1.6",
@@ -169,7 +187,13 @@
       ],
       "notes": [
         "Declares 74 functional + 18 non-functional additions, cumulative scope 502 and cumulative priorities P0=126/P1=320/P2=56."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 126,
+        "P1": 320,
+        "P2": 56,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "1.6",
@@ -195,7 +219,13 @@
       ],
       "notes": [
         "The v1.6 cumulative scope is consistent with 410 + 74 + 18 = 502."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 126,
+        "P1": 320,
+        "P2": 56,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "1.7",
@@ -218,7 +248,13 @@
       ],
       "notes": [
         "Declares 132 functional + 24 non-functional additions, cumulative scope 658 and priorities P0=177/P1=419/P2=62."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 177,
+        "P1": 419,
+        "P2": 62,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "1.7",
@@ -245,7 +281,13 @@
       ],
       "notes": [
         "PDF metadata has no title/author fields; visible title and version are retained as the candidate label."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 177,
+        "P1": 419,
+        "P2": 62,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "1.8",
@@ -378,7 +420,13 @@
       ],
       "notes": [
         "Declares 20 functional + 10 non-functional additions; 870 + 30 = 900; cumulative priorities P0=261/P1=567/P2=72."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 261,
+        "P1": 567,
+        "P2": 72,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "2.0",
@@ -408,7 +456,13 @@
       ],
       "notes": [
         "Visible title/content identify v2.0 but PDF Title metadata still says v1.8."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 261,
+        "P1": 567,
+        "P2": 72,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "2.1",
@@ -435,7 +489,13 @@
       ],
       "notes": [
         "The final label does not establish the controlled DMS/PLM record or approval."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 296,
+        "P1": 582,
+        "P2": 72,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     },
     {
       "version": "2.1",
@@ -466,7 +526,13 @@
       ],
       "notes": [
         "SHA-256 and 103-page count match the existing repository audit source manifest; source-owner/DMS approval is still pending."
-      ]
+      ],
+      "priorityClaim": {
+        "P0": 296,
+        "P1": 582,
+        "P2": 72,
+        "claimKind": "CUMULATIVE_SCOPE_CLAIM"
+      }
     }
   ],
   "scopeLedger": [
