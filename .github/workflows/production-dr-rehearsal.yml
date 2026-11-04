@@ -21,7 +21,15 @@ on:
         type: boolean
         default: false
       backup_output_path:
-        description: Absolute path in approved restricted storage for the encrypted .dump.gpg artifact
+        description: Absolute path to an existing approved encrypted PostgreSQL .dump.gpg recovery-point artifact in restricted storage
+        required: true
+        type: string
+      approved_backup_manifest_path:
+        description: Absolute path to the signed approved-backup manifest JSON in restricted storage
+        required: true
+        type: string
+      approved_backup_signature_path:
+        description: Absolute path to the detached OpenPGP signature for the manifest
         required: true
         type: string
       evidence_output_path:
@@ -29,7 +37,7 @@ on:
         required: true
         type: string
       gpg_recipient:
-        description: Approved GPG recipient fingerprint or UID already provisioned on the recovery runner
+        description: Exact 40- or 64-character GPG encryption recipient key fingerprint already provisioned on the recovery runner
         required: true
         type: string
       candidate_migration_manifest:
@@ -49,7 +57,7 @@ on:
         required: true
         type: string
       approver:
-        description: Independent release/data owner identity
+        description: GitHub login of the independent reviewer who approves this Environment deployment
         required: true
         type: string
       targets_approved:
@@ -70,6 +78,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: production-dr-rehearsal-${{ inputs.restore_service }}
@@ -77,7 +86,7 @@ concurrency:
 
 jobs:
   rehearsal:
-    name: Encrypted backup and isolated restore
+    name: Approved encrypted backup and isolated restore
     runs-on: [self-hosted, linux, dr-isolated]
     environment: production-dr-rehearsal
     timeout-minutes: 120
@@ -87,7 +96,11 @@ jobs:
       RESTORE_SERVICE_INPUT: ${{ inputs.restore_service }}
       EMPTY_TARGET_CONFIRMED_INPUT: ${{ inputs.confirm_empty_restore_target }}
       BACKUP_OUTPUT_INPUT: ${{ inputs.backup_output_path }}
+      APPROVED_BACKUP_MANIFEST_INPUT: ${{ inputs.approved_backup_manifest_path }}
+      APPROVED_BACKUP_SIGNATURE_INPUT: ${{ inputs.approved_backup_signature_path }}
+      BACKUP_SIGNER_FINGERPRINT: ${{ vars.FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT }}
       EVIDENCE_OUTPUT_INPUT: ${{ inputs.evidence_output_path }}
+      APPROVAL_EVIDENCE_INPUT: ${{ inputs.evidence_output_path }}.approval.json
       GPG_RECIPIENT_INPUT: ${{ inputs.gpg_recipient }}
       CANDIDATE_MANIFEST_INPUT: ${{ inputs.candidate_migration_manifest }}
       WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }}
@@ -126,6 +139,7 @@ jobs:
           PGSERVICEFILE: ${{ vars.FACTORYOS_DR_PGSERVICEFILE_PATH }}
           PGPASSFILE: ${{ vars.FACTORYOS_DR_PGPASSFILE_PATH }}
           GNUPGHOME: ${{ vars.FACTORYOS_DR_GNUPGHOME_PATH }}
+          DR_SECURE_TMPDIR: ${{ vars.FACTORYOS_DR_SECURE_TMPDIR }}
           RESTORE_APPLICATION_DATABASE_URL: ${{ secrets.FACTORYOS_DR_APPLICATION_DATABASE_URL }}
         shell: bash
         run: |
@@ -137,18 +151,30 @@ jobs:
           [[ "$(stat -c '%a' "$PGSERVICEFILE")" == "600" || "$(stat -c '%a' "$PGSERVICEFILE")" == "400" ]] || { echo "::error::PGSERVICEFILE permissions must be 0600 or 0400"; exit 1; }
           [[ "$(stat -c '%a' "$PGPASSFILE")" == "600" || "$(stat -c '%a' "$PGPASSFILE")" == "400" ]] || { echo "::error::PGPASSFILE permissions must be 0600 or 0400"; exit 1; }
           [[ -n "$GNUPGHOME" && -d "$GNUPGHOME" && -r "$GNUPGHOME" ]] || { echo "::error::GNUPGHOME must point to the approved recovery keyring on this runner"; exit 1; }
+          [[ -n "$DR_SECURE_TMPDIR" && -d "$DR_SECURE_TMPDIR" && ! -L "$DR_SECURE_TMPDIR" ]] || { echo "::error::FACTORYOS_DR_SECURE_TMPDIR must be an existing private runner directory"; exit 1; }
+          DR_SECURE_TMPDIR="$(readlink -f -- "$DR_SECURE_TMPDIR")"
+          [[ "$(findmnt -n -o FSTYPE --target "$DR_SECURE_TMPDIR")" == "tmpfs" ]] || { echo "::error::DR plaintext scratch must be backed by tmpfs"; exit 1; }
+          [[ "$(stat -c '%u' -- "$DR_SECURE_TMPDIR")" == "$(id -u)" ]] || { echo "::error::DR tmpfs scratch must be owned by the runner identity"; exit 1; }
+          tmp_mode="$(stat -c '%a' -- "$DR_SECURE_TMPDIR")"
+          (( (8#$tmp_mode & 0077) == 0 && (8#$tmp_mode & 0300) == 0300 )) || { echo "::error::DR tmpfs scratch must be private to the runner identity"; exit 1; }
           [[ -n "$RESTORE_APPLICATION_DATABASE_URL" ]] || { echo "::error::configure the protected FACTORYOS_DR_APPLICATION_DATABASE_URL environment secret for the restored target application role"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ && "$RESTORE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || { echo "::error::service names contain unsupported characters"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" != "$RESTORE_SERVICE_INPUT" ]] || { echo "::error::source and restore service names must differ"; exit 1; }
           [[ "$EMPTY_TARGET_CONFIRMED_INPUT" == "true" ]] || { echo "::error::operator must explicitly confirm that restore target is isolated, disposable and empty"; exit 1; }
           grep -Fxq "[$SOURCE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::source service is not configured"; exit 1; }
           grep -Fxq "[$RESTORE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::restore service is not configured"; exit 1; }
-          [[ "$BACKUP_OUTPUT_INPUT" == /* && "$EVIDENCE_OUTPUT_INPUT" == /* ]] || { echo "::error::backup/evidence output paths must be absolute"; exit 1; }
-          [[ -d "$(dirname "$BACKUP_OUTPUT_INPUT")" && -w "$(dirname "$BACKUP_OUTPUT_INPUT")" ]] || { echo "::error::backup directory must exist on approved restricted storage"; exit 1; }
+          [[ "$BACKUP_OUTPUT_INPUT" == /* && "$APPROVED_BACKUP_MANIFEST_INPUT" == /* && "$APPROVED_BACKUP_SIGNATURE_INPUT" == /* && "$EVIDENCE_OUTPUT_INPUT" == /* ]] || { echo "::error::approved backup, manifest, signature and evidence paths must be absolute"; exit 1; }
+          [[ "$BACKUP_OUTPUT_INPUT" == *.dump.gpg ]] || { echo "::error::approved backup artifact must end in .dump.gpg"; exit 1; }
+          for approved_file in "$BACKUP_OUTPUT_INPUT" "$APPROVED_BACKUP_MANIFEST_INPUT" "$APPROVED_BACKUP_SIGNATURE_INPUT"; do
+            [[ -f "$approved_file" && ! -L "$approved_file" && -r "$approved_file" && -s "$approved_file" ]] || { echo "::error::approved backup, manifest and signature must be existing readable regular files"; exit 1; }
+            file_mode="$(stat -c '%a' -- "$approved_file")"
+            (( (8#$file_mode & 0022) == 0 )) || { echo "::error::approved backup, manifest and signature must not be group/world writable"; exit 1; }
+          done
+          [[ "$BACKUP_SIGNER_FINGERPRINT" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ ]] || { echo "::error::configure the pinned FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT"; exit 1; }
+          [[ "$GPG_RECIPIENT_INPUT" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ ]] || { echo "::error::gpg_recipient must be the exact encryption key fingerprint"; exit 1; }
           [[ -d "$(dirname "$EVIDENCE_OUTPUT_INPUT")" && -w "$(dirname "$EVIDENCE_OUTPUT_INPUT")" ]] || { echo "::error::evidence directory must exist on approved protected storage"; exit 1; }
-          [[ ! -e "$BACKUP_OUTPUT_INPUT" && ! -L "$BACKUP_OUTPUT_INPUT" ]] || { echo "::error::backup output already exists"; exit 1; }
-          [[ ! -e "$BACKUP_OUTPUT_INPUT.sha256" && ! -L "$BACKUP_OUTPUT_INPUT.sha256" ]] || { echo "::error::backup checksum output already exists"; exit 1; }
           [[ ! -e "$EVIDENCE_OUTPUT_INPUT" && ! -L "$EVIDENCE_OUTPUT_INPUT" ]] || { echo "::error::evidence output already exists"; exit 1; }
+          [[ ! -e "$APPROVAL_EVIDENCE_INPUT" && ! -L "$APPROVAL_EVIDENCE_INPUT" ]] || { echo "::error::approval evidence output already exists"; exit 1; }
           [[ -f "$CANDIDATE_MANIFEST_INPUT" && -f "$WATERMARK_SQL_INPUT" && -f "$SMOKE_SQL_INPUT" ]] || { echo "::error::candidate manifest, watermark SQL and smoke SQL must exist at the candidate SHA"; exit 1; }
           [[ "$ERASURE_REPLAY_SQL_INPUT" == /* && -f "$ERASURE_REPLAY_SQL_INPUT" && -r "$ERASURE_REPLAY_SQL_INPUT" && ! -L "$ERASURE_REPLAY_SQL_INPUT" ]] || { echo "::error::erasure replay SQL path must be an absolute readable regular file on the protected runner"; exit 1; }
           [[ "$ERASURE_VERIFY_SQL_INPUT" == /* && -f "$ERASURE_VERIFY_SQL_INPUT" && -r "$ERASURE_VERIFY_SQL_INPUT" && ! -L "$ERASURE_VERIFY_SQL_INPUT" ]] || { echo "::error::independent erasure verification SQL path must be an absolute readable regular file on the protected runner"; exit 1; }
@@ -163,14 +189,48 @@ jobs:
             [[ "$RPO_TARGET_INPUT" =~ ^[0-9]+$ && "$RTO_TARGET_INPUT" =~ ^[0-9]+$ ]] || { echo "::error::approved RPO/RTO targets must be provided in seconds"; exit 1; }
           fi
           gpg --quiet --list-keys "$GPG_RECIPIENT_INPUT" >/dev/null 2>&1 || { echo "::error::approved GPG recipient key is not present on the recovery runner"; exit 1; }
+          gpg --quiet --list-secret-keys "$GPG_RECIPIENT_INPUT" >/dev/null 2>&1 || { echo "::error::approved backup decryption private key is not present on the recovery runner"; exit 1; }
+          gpg --quiet --list-keys "$BACKUP_SIGNER_FINGERPRINT" >/dev/null 2>&1 || { echo "::error::pinned backup-controller signing public key is not present on the recovery runner"; exit 1; }
           printf 'candidate_sha=%s\n' "$CANDIDATE_SHA_INPUT"
           printf 'libpq_source_service=CONFIGURED\nlibpq_restore_service=CONFIGURED\nprotected_gpg_recipient=CONFIGURED\n'
+
+      - name: Verify authenticated GitHub Environment reviewer approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DR_SECURE_TMPDIR: ${{ vars.FACTORYOS_DR_SECURE_TMPDIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          approval_history="$(mktemp "$DR_SECURE_TMPDIR/workflow-approvals.XXXXXX")"
+          chmod 600 "$approval_history"
+          trap 'rm -f -- "$approval_history"' EXIT
+          api_base="${GITHUB_API_URL:-https://api.github.com}"
+          curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "$api_base/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" \
+            --output "$approval_history"
+          node scripts/recovery/verify-dr-environment-approval.mjs \
+            --approvals-json "$approval_history" \
+            --output "$APPROVAL_EVIDENCE_INPUT" \
+            --environment production-dr-rehearsal \
+            --approver "$APPROVER_INPUT" \
+            --operator "$OPERATOR_INPUT" \
+            --candidate-sha "$CANDIDATE_SHA_INPUT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --targets-approved "$TARGETS_APPROVED_INPUT" \
+            --rpo-target-seconds "$RPO_TARGET_INPUT" \
+            --rto-target-seconds "$RTO_TARGET_INPUT"
 
       - name: Execute encrypted backup, restore, migration recovery and verification
         env:
           PGSERVICEFILE: ${{ vars.FACTORYOS_DR_PGSERVICEFILE_PATH }}
           PGPASSFILE: ${{ vars.FACTORYOS_DR_PGPASSFILE_PATH }}
           GNUPGHOME: ${{ vars.FACTORYOS_DR_GNUPGHOME_PATH }}
+          FACTORYOS_DR_SECURE_TMPDIR: ${{ vars.FACTORYOS_DR_SECURE_TMPDIR }}
+          FACTORYOS_DR_ENVIRONMENT: production-dr-rehearsal
           RESTORE_APPLICATION_DATABASE_URL: ${{ secrets.FACTORYOS_DR_APPLICATION_DATABASE_URL }}
         shell: bash
         run: |
@@ -181,6 +241,10 @@ jobs:
           PGPASSFILE="$PGPASSFILE" \
           GNUPGHOME="$GNUPGHOME" \
           FACTORYOS_DR_MODE=RELEASE_GATE \
+          FACTORYOS_BACKUP_SOURCE_MODE=APPROVED_ARTIFACT \
+          FACTORYOS_APPROVED_BACKUP_MANIFEST="$APPROVED_BACKUP_MANIFEST_INPUT" \
+          FACTORYOS_APPROVED_BACKUP_SIGNATURE="$APPROVED_BACKUP_SIGNATURE_INPUT" \
+          FACTORYOS_APPROVED_BACKUP_SIGNER_FINGERPRINT="$BACKUP_SIGNER_FINGERPRINT" \
           FACTORYOS_BACKUP_PGSERVICE="$SOURCE_SERVICE_INPUT" \
           FACTORYOS_RESTORE_PGSERVICE="$RESTORE_SERVICE_INPUT" \
           FACTORYOS_BACKUP_OUTPUT="$BACKUP_OUTPUT_INPUT" \
@@ -211,7 +275,8 @@ jobs:
           set -euo pipefail
           if [[ -f "$EVIDENCE_OUTPUT_INPUT" ]]; then
             sha256sum "$EVIDENCE_OUTPUT_INPUT"
-            echo "Rehearsal evidence was written to the protected path configured by the operator."
+            [[ ! -f "$APPROVAL_EVIDENCE_INPUT" ]] || sha256sum "$APPROVAL_EVIDENCE_INPUT"
+            echo "Rehearsal and authenticated approval evidence were written to protected storage."
           else
             echo "::warning::No complete evidence receipt was written; inspect the failing step and preserve the encrypted backup."
           fi

@@ -48,7 +48,7 @@ test('backup rehearsal refuses an unencrypted archive output extension', () => {
     FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE: 'I_HAVE_VERIFIED_EMPTY',
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /backup output must end in \.dump\.gpg/);
+  assert.match(result.stderr, /backup artifact must end in \.dump\.gpg/);
 });
 
 test('backup rehearsal requires explicit empty-target operator confirmation', () => {

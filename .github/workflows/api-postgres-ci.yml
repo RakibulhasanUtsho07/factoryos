@@ -668,8 +668,15 @@ jobs:
           recovery_home="$(mktemp -d)"
           recovery_backup_dir="$RUNNER_TEMP/dr-backups"
           recovery_evidence_dir="$RUNNER_TEMP/dr-evidence"
+          recovery_secure_tmpdir="$RUNNER_TEMP/factoryos-dr-tmpfs"
           mkdir -m 700 -p "$recovery_backup_dir" "$recovery_evidence_dir"
           chmod 700 "$recovery_home"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 700 "$recovery_secure_tmpdir"
+          sudo mount -t tmpfs -o size=2g,nosuid,nodev,noexec,mode=0700,uid="$(id -u)",gid="$(id -g)" tmpfs "$recovery_secure_tmpdir"
+          trap 'sudo umount "$recovery_secure_tmpdir"; sudo rmdir "$recovery_secure_tmpdir"' EXIT
+          [[ "$(findmnt -n -o FSTYPE --target "$recovery_secure_tmpdir")" == "tmpfs" ]]
+          [[ "$(stat -c '%u' -- "$recovery_secure_tmpdir")" == "$(id -u)" ]]
+          [[ "$(stat -c '%a' -- "$recovery_secure_tmpdir")" == "700" ]]
           export GNUPGHOME="$recovery_home"
           cat > "$RUNNER_TEMP/factoryos-ci-recovery-key.params" <<'GPG'
           Key-Type: RSA
@@ -717,6 +724,7 @@ jobs:
             -c 'GRANT CONNECT ON DATABASE factoryos_recovery_restore_test_ci TO factoryos_app'
           PGSERVICEFILE="$RUNNER_TEMP/factoryos-recovery.pg_service.conf" \
           GNUPGHOME="$GNUPGHOME" \
+          FACTORYOS_DR_SECURE_TMPDIR="$recovery_secure_tmpdir" \
           FACTORYOS_DR_MODE=RELEASE_GATE \
           FACTORYOS_MIGRATION_MANIFEST_MODE=IDEMPOTENT_REPLAY \
           FACTORYOS_DR_APPLICATION_DATABASE_URL="postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_recovery_restore_test_ci" \
@@ -910,13 +918,17 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
+          node --check scripts/recovery/verify-approved-postgres-backup.mjs
+          node --check scripts/recovery/verify-approved-postgres-backup.test.mjs
+          node --check scripts/recovery/write-approved-postgres-backup-manifest.mjs
+          node --check scripts/recovery/write-approved-postgres-backup-manifest.test.mjs
+          node --check scripts/recovery/verify-dr-environment-approval.mjs
           node --check scripts/recovery/application-restore-smoke.mjs
           node --check scripts/recovery/write-rehearsal-evidence.mjs
           node --check scripts/recovery/record-dr-operator-signoff.mjs
           node --check scripts/recovery/rehearsal-evidence.test.mjs
       - name: Run recovery contract tests
-        run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
-
+        run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/verify-approved-postgres-backup.test.mjs scripts/recovery/write-approved-postgres-backup-manifest.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
       - name: Validate production security configuration and harness syntax
         run: |
           node --check scripts/security/production-security-config.test.mjs

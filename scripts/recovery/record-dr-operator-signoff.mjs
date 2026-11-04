@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 function fail(message) {
@@ -40,6 +40,56 @@ try {
 }
 if (evidence.schema !== 'factoryos.disaster-recovery-rehearsal/v1') fail('unsupported evidence schema');
 
+let approvalEvidencePath = null;
+let approvalEvidenceSha256 = null;
+let approvalEvidence = null;
+if (args.decision === 'PASS') {
+  if (!args['approval-evidence']?.trim()) fail('PASS sign-off requires --approval-evidence from the authenticated GitHub Environment approval step');
+  approvalEvidencePath = resolve(args['approval-evidence']);
+  const approvalStat = await lstat(approvalEvidencePath).catch(() => fail('GitHub Environment approval evidence is missing or unreadable'));
+  if (!approvalStat.isFile() || approvalStat.isSymbolicLink() || (approvalStat.mode & 0o022) !== 0) {
+    fail('GitHub Environment approval evidence must be a protected regular file, not a symlink');
+  }
+  const approvalBytes = await readFile(approvalEvidencePath).catch(() => fail('GitHub Environment approval evidence could not be read'));
+  approvalEvidenceSha256 = createHash('sha256').update(approvalBytes).digest('hex');
+  try {
+    approvalEvidence = JSON.parse(approvalBytes.toString('utf8'));
+  } catch {
+    fail('GitHub Environment approval evidence is not valid JSON');
+  }
+  const workflowRunId = evidence.workflow?.runId;
+  const repository = evidence.workflow?.repository;
+  const expectedApprovalUrl = typeof repository === 'string' && Number.isSafeInteger(workflowRunId)
+    ? `https://api.github.com/repos/${repository}/actions/runs/${workflowRunId}/approvals`
+    : null;
+  const approvalIdentityMatches = typeof approvalEvidence.approvedBy === 'string'
+    && approvalEvidence.approvedBy.toLowerCase() === args.approver.trim().toLowerCase();
+  const operatorIdentityMatches = typeof approvalEvidence.operator === 'string'
+    && approvalEvidence.operator.toLowerCase() === args.operator.trim().toLowerCase()
+    && typeof evidence.workflow?.actor === 'string'
+    && evidence.workflow.actor.toLowerCase() === args.operator.trim().toLowerCase();
+  const targetApprovalMatches = approvalEvidence.targetApproval?.approved === (evidence.measured?.approvedTargets === true)
+    && (evidence.measured?.approvedTargets !== true
+      || (approvalEvidence.targetApproval?.rpoSeconds === evidence.measured?.approvedRpoTargetSeconds
+        && approvalEvidence.targetApproval?.rtoSeconds === evidence.measured?.approvedRtoTargetSeconds));
+  const approvalChecks = [
+    ['approval attestation schema', approvalEvidence.schema === 'factoryos.dr-environment-approval/v1'],
+    ['approval attestation source', approvalEvidence.source === 'GITHUB_ACTIONS_WORKFLOW_RUN_APPROVALS_API'],
+    ['approval repository matches the evidence', approvalEvidence.repository === repository && typeof repository === 'string'],
+    ['approval workflow run matches the evidence', approvalEvidence.workflowRunId === workflowRunId && Number.isSafeInteger(workflowRunId) && workflowRunId > 0],
+    ['approval history URL is canonical for this run', approvalEvidence.approvalHistoryUrl === expectedApprovalUrl],
+    ['approval history digest', /^[a-f0-9]{64}$/.test(approvalEvidence.approvalHistorySha256 ?? '')],
+    ['approval environment', approvalEvidence.environment === 'production-dr-rehearsal' && evidence.workflow?.environment === 'production-dr-rehearsal'],
+    ['approval candidate matches the evidence', approvalEvidence.candidateSha === evidence.candidate?.commitSha],
+    ['actual GitHub reviewer matches the named approver', approvalIdentityMatches],
+    ['actual GitHub operator matches the evidence', operatorIdentityMatches],
+    ['approval is independent of the operator', approvalIdentityMatches && operatorIdentityMatches && approvalEvidence.approvedBy.toLowerCase() !== approvalEvidence.operator.toLowerCase()],
+    ['RPO/RTO owner approval matches measured targets', targetApprovalMatches],
+  ];
+  const failedApprovalChecks = approvalChecks.filter(([, ok]) => !ok).map(([name]) => name);
+  if (failedApprovalChecks.length) fail('PASS sign-off requires verified GitHub Environment approval evidence for: ' + failedApprovalChecks.join(', '));
+}
+
 function utcEpochSeconds(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return null;
   const milliseconds = Date.parse(value);
@@ -55,6 +105,7 @@ if (args.decision === 'PASS') {
   const sourceWatermark = utcEpochSeconds(evidence.timestamps?.sourceWatermarkUtc);
   const restoredWatermark = utcEpochSeconds(evidence.timestamps?.restoredWatermarkUtc);
   const eventAt = utcEpochSeconds(evidence.timestamps?.simulatedIncidentAtUtc);
+  const approvedBackupCreatedAt = utcEpochSeconds(evidence.backup?.approvedBackupCreatedAtUtc);
   const erasureLedgerWatermark = utcEpochSeconds(evidence.verification?.erasureReplayLedgerWatermarkUtc);
   const erasureLedgerWatermarkMs = Date.parse(evidence.verification?.erasureReplayLedgerWatermarkUtc ?? '');
   const eventAtMs = Date.parse(evidence.timestamps?.simulatedIncidentAtUtc ?? '');
@@ -68,6 +119,9 @@ if (args.decision === 'PASS') {
     && !candidateManifestPath.split('/').includes('..');
 
   const checks = [
+    ['GitHub Environment reviewer approval evidence', approvalEvidence !== null],
+    ['workflow actor and named operator', evidence.workflow?.actor?.toLowerCase() === args.operator.trim().toLowerCase()],
+    ['named reviewer and evidence approver', evidence.operatorSignoff?.approver?.toLowerCase() === args.approver.trim().toLowerCase()],
     ['status', evidence.status === 'TECHNICAL_PASS'],
     ['exact candidate commit SHA', typeof evidence.candidate?.commitSha === 'string' && /^[a-f0-9]{40}$/.test(evidence.candidate.commitSha)],
     ['relative candidate migration manifest path', manifestPathIsSafe],
@@ -77,7 +131,20 @@ if (args.decision === 'PASS') {
     ['non-negative measured RPO', Number.isSafeInteger(evidence.measured?.observedRpoSeconds) && evidence.measured.observedRpoSeconds >= 0],
     ['RPO matches event cutoff and restored watermark', eventAt !== null && restoredWatermark !== null && restoredWatermark <= eventAt && evidence.measured?.observedRpoSeconds === eventAt - restoredWatermark],
     ['non-negative measured RTO', Number.isSafeInteger(evidence.measured?.observedRtoSeconds) && evidence.measured.observedRtoSeconds >= 0],
+    ['measured approved backup creation duration', Number.isSafeInteger(evidence.measured?.backupDurationSeconds) && evidence.measured.backupDurationSeconds >= 0],
+    ['measured backup artifact verification duration', Number.isSafeInteger(evidence.measured?.backupArtifactVerificationDurationSeconds) && evidence.measured.backupArtifactVerificationDurationSeconds >= 0],
+    ['measured restore and verification duration', Number.isSafeInteger(evidence.measured?.restoreAndVerificationDurationSeconds) && evidence.measured.restoreAndVerificationDurationSeconds >= 0],
     ['encrypted backup', evidence.backup?.encryption === 'ENCRYPTED_GPG'],
+    ['approved backup artifact source', evidence.backup?.sourceMode === 'APPROVED_ARTIFACT'],
+    ['approved backup manifest path', typeof evidence.backup?.approvedManifestPath === 'string' && evidence.backup.approvedManifestPath.startsWith('/')],
+    ['approved backup manifest digest', /^[a-f0-9]{64}$/.test(evidence.backup?.approvedManifestSha256 ?? '')],
+    ['approved backup detached signature path', typeof evidence.backup?.approvedSignaturePath === 'string' && evidence.backup.approvedSignaturePath.startsWith('/')],
+    ['approved backup detached signature digest', /^[a-f0-9]{64}$/.test(evidence.backup?.approvedSignatureSha256 ?? '')],
+    ['approved backup signature from pinned signer', evidence.backup?.signatureVerification === 'VALID_PINNED_SIGNER' && /^[A-F0-9]{40}([A-F0-9]{24})?$/.test(evidence.backup?.approvedSignerFingerprint ?? '')],
+    ['approved backup source identity', evidence.backup?.approvedBackupSourceDatabaseIdentity === evidence.databases?.sourceIdentity],
+    ['approved backup creation time precedes incident', approvedBackupCreatedAt !== null && eventAt !== null && approvedBackupCreatedAt <= eventAt],
+    ['approved backup encryption recipient fingerprint', /^[A-F0-9]{40}([A-F0-9]{24})?$/.test(evidence.backup?.approvedBackupRecipientFingerprint ?? '')],
+    ['approved backup source PostgreSQL version', typeof evidence.backup?.approvedBackupSourceServerVersion === 'string' && evidence.backup.approvedBackupSourceServerVersion.trim().length > 0],
     ['checksum', evidence.backup?.checksumVerified === true && /^[a-f0-9]{64}$/.test(evidence.backup?.sha256 ?? '')],
     ['archive readability', evidence.backup?.archiveReadability === 'READABLE'],
     ['restore', evidence.verification?.restoreStatus === 'PASS'],
@@ -132,6 +199,16 @@ const signoff = {
   observedRpoSeconds: evidence.measured?.observedRpoSeconds ?? null,
   observedRtoSeconds: evidence.measured?.observedRtoSeconds ?? null,
   targetAssessment: evidence.measured?.targetAssessment ?? 'UNKNOWN',
+  approvalEvidencePath,
+  approvalEvidenceSha256,
+  githubEnvironmentApproval: approvalEvidence ? {
+    environment: approvalEvidence.environment,
+    workflowRunId: approvalEvidence.workflowRunId,
+    approvedBy: approvalEvidence.approvedBy,
+    approvalHistoryUrl: approvalEvidence.approvalHistoryUrl,
+    approvalHistorySha256: approvalEvidence.approvalHistorySha256,
+    targetApproval: approvalEvidence.targetApproval,
+  } : null,
 };
 await writeFile(output, JSON.stringify(signoff, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
   .catch((error) => fail(error.code === 'EEXIST' ? 'sign-off receipt already exists; never overwrite approval evidence' : 'could not write sign-off receipt'));

@@ -23,6 +23,13 @@ const checksumPath = artifactPath ? artifactPath + '.sha256' : null;
 const receipt = {
   schema: 'factoryos.disaster-recovery-rehearsal/v1',
   runId: randomUUID(),
+  workflow: {
+    repository: required('GITHUB_REPOSITORY'),
+    runId: numberOrNull('GITHUB_RUN_ID'),
+    runAttempt: numberOrNull('GITHUB_RUN_ATTEMPT'),
+    actor: required('GITHUB_ACTOR'),
+    environment: required('FACTORYOS_DR_ENVIRONMENT'),
+  },
   candidate: {
     commitSha: required('FACTORYOS_CANDIDATE_SHA') ?? required('GITHUB_SHA'),
     migrationManifestPath: candidateManifestPath,
@@ -49,7 +56,18 @@ const receipt = {
   },
   backup: {
     encryptedArtifactPath: artifactPath,
-    checksumPath,
+    checksumPath: required('FACTORYOS_DR_BACKUP_SOURCE_MODE') === 'APPROVED_ARTIFACT' ? null : checksumPath,
+    sourceMode: required('FACTORYOS_DR_BACKUP_SOURCE_MODE') ?? 'LIVE_SOURCE_DUMP',
+    approvedManifestPath: required('FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_PATH'),
+    approvedManifestSha256: required('FACTORYOS_DR_APPROVED_BACKUP_MANIFEST_SHA256'),
+    approvedSignaturePath: required('FACTORYOS_DR_APPROVED_BACKUP_SIGNATURE_PATH'),
+    approvedSignatureSha256: required('FACTORYOS_DR_APPROVED_BACKUP_SIGNATURE_SHA256'),
+    approvedSignerFingerprint: required('FACTORYOS_DR_APPROVED_BACKUP_SIGNER_FINGERPRINT'),
+    approvedBackupCreatedAtUtc: required('FACTORYOS_DR_APPROVED_BACKUP_CREATED_AT_UTC'),
+    approvedBackupSourceDatabaseIdentity: required('FACTORYOS_DR_APPROVED_BACKUP_SOURCE_DATABASE_IDENTITY'),
+    approvedBackupSourceServerVersion: required('FACTORYOS_DR_APPROVED_BACKUP_SOURCE_SERVER_VERSION'),
+    approvedBackupRecipientFingerprint: required('FACTORYOS_DR_APPROVED_BACKUP_RECIPIENT_FINGERPRINT'),
+    signatureVerification: required('FACTORYOS_DR_BACKUP_SIGNATURE_STATUS') ?? 'NOT_RUN',
     sha256: required('FACTORYOS_DR_BACKUP_SHA256'),
     checksumVerified: bool('FACTORYOS_DR_CHECKSUM_VERIFIED'),
     encryption: required('FACTORYOS_DR_ENCRYPTION_STATUS') ?? 'NOT_RUN',
@@ -81,6 +99,7 @@ const receipt = {
   },
   measured: {
     backupDurationSeconds: numberOrNull('FACTORYOS_DR_BACKUP_DURATION_SECONDS'),
+    backupArtifactVerificationDurationSeconds: numberOrNull('FACTORYOS_DR_BACKUP_VERIFICATION_DURATION_SECONDS'),
     restoreAndVerificationDurationSeconds: numberOrNull('FACTORYOS_DR_RESTORE_DURATION_SECONDS'),
     observedRpoSeconds: numberOrNull('FACTORYOS_DR_OBSERVED_RPO_SECONDS'),
     observedRtoSeconds: numberOrNull('FACTORYOS_DR_OBSERVED_RTO_SECONDS'),

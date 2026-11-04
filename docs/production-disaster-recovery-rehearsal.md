@@ -26,17 +26,42 @@ The manual workflow is `.github/workflows/production-dr-rehearsal.yml`. It is de
 Before enabling the workflow:
 
 1. Provision an isolated recovery runner with PostgreSQL client tools, GnuPG, Bash, Node.js 24, core shell utilities, and access to approved restricted backup/evidence storage. Restrict outbound network access to the approved source/restore database, storage endpoint, GitHub Actions/check-out endpoints and the approved package registry needed to install/build the exact candidate; do not permit general data-plane access.
-2. Configure protected runner variables `FACTORYOS_DR_PGSERVICEFILE_PATH`, `FACTORYOS_DR_PGPASSFILE_PATH`, and `FACTORYOS_DR_GNUPGHOME_PATH`. The service and pass files must be runner-local, readable only by the runner identity (mode `0600` or `0400`); the GPG keyring must contain the approved recovery recipient/key. Do not commit their contents.
+2. Configure protected runner variables `FACTORYOS_DR_PGSERVICEFILE_PATH`, `FACTORYOS_DR_PGPASSFILE_PATH`, `FACTORYOS_DR_GNUPGHOME_PATH`, `FACTORYOS_DR_SECURE_TMPDIR`, and `FACTORYOS_DR_BACKUP_SIGNER_FINGERPRINT`. The service and pass files must be runner-local, readable only by the runner identity (mode `0600` or `0400`); the GPG keyring must contain the approved backup decryption private key, the pinned backup-controller signing public key, and the encryption recipient public key. Pin the full independent backup-controller signing-key fingerprint in the protected variable. `FACTORYOS_DR_SECURE_TMPDIR` must be a pre-created directory on a `tmpfs` mount, owned by the runner identity, mode `0700` (no group/other access). The workflow and release-gate helper verify filesystem type, ownership and permissions before opening database connections; the decrypted custom-format archive and temporary verification files stay on this directory. Do not use persistent `/tmp` or workspace storage for plaintext backup material, and do not commit protected runner configuration.
 3. Configure the protected environment secret `FACTORYOS_DR_APPLICATION_DATABASE_URL` with a low-privilege application-role URL for the **restore target**, never production. After SQL smoke, the helper compares this connection's database name/server address/port with the admin restore service identity, builds/runs the exact candidate API, and probes `/api/health/live` and `/api/health/ready`. The database role must be able to connect and query `SELECT 1`; the helper supplies a temporary random JWT secret, disables the outbox dispatcher, prints no URL, and never issues a token.
-4. Configure the `production-dr-rehearsal` GitHub Environment with required reviewers/approval rules and restrict who may start the workflow. The operator identity is bound to the GitHub dispatcher; the approver name must match the independently recorded environment/change approval. The environment approval audit event is the authoritative approval record.
+4. Configure the `production-dr-rehearsal` GitHub Environment with required reviewers/approval rules, enable prevention of self-review, and restrict who may start the workflow. The `approver` input must be the reviewer's GitHub login (not a display name). After the Environment gate releases the job, the workflow queries the current workflow-run approvals API using a short-lived `GITHUB_TOKEN` with `actions: read`. `scripts/recovery/verify-dr-environment-approval.mjs` requires an actual `approved` decision for this exact Environment/run by the named reviewer, rejects the workflow operator as reviewer, and writes a create-only approval attestation bound to the candidate SHA and run ID. The approval-history URL and SHA-256 of the exact API response are included for independent audit. A typed `approver` input alone is never accepted as proof.
+
+   When `targets_approved=true`, the reviewer must include this exact standalone line in the GitHub Environment approval comment, using the exact owner-approved seconds supplied to the run: `FACTORYOS_DR_TARGETS_APPROVED:rpo=300;rto=3600` (replace the example numbers with the approved values). This binds review to those target numbers. Otherwise leave `targets_approved=false`; HLD reference values remain non-contractual.
 5. Create separate libpq source and restore service entries. Verify the restore entry points to a disposable isolated database, not production and not another tenant/customer. The workflow requires a separate service name; the script independently compares database name, server address and port, and refuses a non-empty user schema. A different service label alone is not proof of isolation.
 6. Use a reviewed read-only smoke SQL file that checks schema readiness and representative application state; proves tenant-specific reads and a denied cross-tenant write using the application role/RLS; and verifies that audit events created before backup remain after restore. The release gate separately launches the candidate API and validates liveness/readiness against the restored target through the protected application URL. Use a reviewed durable-write watermark query that returns exactly one UTC RFC 3339 timestamp. Do not use `NOW()` alone as a watermark—it measures the query time, not the last durable business write.
 
 ## 2. Run the production workflow
 
-Dispatch `Production Backup Restore and DR Rehearsal` for a **full 40-character candidate SHA**. Supply preconfigured source and isolated restore service names, absolute encrypted-backup and evidence paths on the approved runner, the approved GPG recipient, the candidate's ordered pending migration-manifest path, reviewed watermark SQL and smoke SQL paths, and a UTC incident/cutoff timestamp. Explicitly confirm the restore target is isolated, disposable and empty.
+Dispatch `Production Backup Restore and DR Rehearsal` for a **full 40-character candidate SHA**. Supply preconfigured source and isolated restore service names; absolute paths to the existing approved encrypted backup artifact, signed manifest, detached signature and evidence receipt on restricted storage; the exact GPG decryption-recipient fingerprint; the candidate's ordered pending migration-manifest path; reviewed watermark SQL and smoke SQL paths; and a UTC incident/cutoff timestamp. The backup-controller signer fingerprint is a protected Environment variable, not a user input. Explicitly confirm the restore target is isolated, disposable and empty.
 
-The script rejects missing configuration, identical source/target identities, non-empty targets, plaintext-style output extensions, overwritten backup/evidence paths, malformed or duplicate migration entries, and invalid timestamps. It requires a built candidate API and protected low-privilege application DB URL before starting in release-gate mode. It creates a mode-restricted temporary directory, encrypts a custom-format `pg_dump` through GPG, computes and verifies the SHA-256 checksum, decrypts the archive only into the private temporary directory to check archive readability, restores using `--exit-on-error --single-transaction`, and retains logs while removing temporary plaintext on exit. It does not drop/clean an unsuccessful target automatically; quarantine it and follow the incident plan.
+The production workflow requires a pre-existing approved encrypted `.dump.gpg` recovery-point artifact and its signed JSON manifest plus detached OpenPGP signature. It does not create a fresh `pg_dump` and call that a production backup. The manifest schema is `factoryos.approved-postgresql-backup/v1`; its required fields are `artifactFileName`, `artifactSha256`, `sourceDatabaseIdentity`, `backupCreatedAtUtc`, measured non-negative `backupDurationSeconds`, `backupTool` (must be `pg_dump`), `pgDumpVersion`, `sourceServerVersion`, `encryption` (must be `GPG`), and the full encryption `recipientFingerprint`. The workflow verifies the detached signature against the protected pinned backup-controller fingerprint, the digest against the selected artifact, the source identity against the connected source service, the recipient fingerprint against the recovery key fingerprint, and that the backup was created no later than the incident cutoff. The source service is used to establish the source identity and run the reviewed durable-write watermark query; restoration occurs into a different verified-empty database.
+
+The backup controller creates the manifest after the encrypted artifact is durably published. From the trusted backup-producer host (not the recovery runner), use the measured producer values and full recipient key fingerprint:
+
+~~~sh
+node scripts/recovery/write-approved-postgres-backup-manifest.mjs \
+  --artifact /secure/restricted/backups/factoryos-prod.dump.gpg \
+  --output /secure/restricted/backups/factoryos-prod.manifest.json \
+  --source-database-identity "$SOURCE_DATABASE_IDENTITY" \
+  --backup-created-at-utc "$BACKUP_CREATED_AT_UTC" \
+  --backup-duration-seconds "$BACKUP_DURATION_SECONDS" \
+  --pg-dump-version "$PG_DUMP_VERSION" \
+  --source-server-version "$SOURCE_SERVER_VERSION" \
+  --recipient-fingerprint "$BACKUP_RECIPIENT_FINGERPRINT"
+
+gpg --batch --yes --local-user "$BACKUP_SIGNER_FINGERPRINT" \
+  --detach-sign \
+  --output /secure/restricted/backups/factoryos-prod.manifest.json.sig \
+  /secure/restricted/backups/factoryos-prod.manifest.json
+~~~
+
+BACKUP_DURATION_SECONDS must be measured around approved backup creation; do not substitute the restore rehearsal's artifact-verification duration. The signing key is controlled by the backup-controller/backup-approval authority. Keep its private key on that trusted producer/signing host or HSM and provision only its public key to the recovery runner. Store the encrypted artifact, manifest and detached signature together under the same restricted retention/access controls. The builder writes a create-only manifest and refuses non-regular, group/world-writable or incorrectly named artifacts; the recovery workflow independently verifies the signature and recomputes the artifact digest.
+
+The release-gate helper requires a private runner-owned `tmpfs` directory (not disk-backed `/tmp`) for decrypted archive scratch, verifies GPG decryption and `pg_restore --list` readability, restores using `--exit-on-error --single-transaction`, and removes temporary plaintext on exit. It records the backup producer's duration from the signed manifest separately from current artifact-verification/decryption time and restore/verification duration. The ephemeral PostgreSQL CI workflow retains its synthetic live-source backup path; CI evidence is not accepted as an approved production recovery point. It does not drop/clean an unsuccessful target automatically; quarantine it and follow the incident plan.
 
 ### Candidate migration validation
 
@@ -76,38 +101,39 @@ This is a restore-time database reconciliation hook, not a PostgreSQL WAL/PITR e
 
 ## 3. RPO and RTO are measurements first
 
-The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the explicit incident/cutoff time and the restored durable-write watermark. Observed RTO is measured from that same incident/cutoff epoch until candidate migrations, failed-transaction recovery, restored-schema/RLS/audit checks, and candidate API readiness have all completed. The helper also reports restore-and-verification-only duration separately. The supplied cutoff must not be in the future. A probe query that returns only the wall clock is not an acceptable business watermark.
+The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the explicit incident/cutoff time and the restored durable-write watermark. Observed RTO is measured from that same incident/cutoff epoch until candidate migrations, failed-transaction recovery, restored-schema/RLS/audit checks, and candidate API readiness have all completed. The helper reports the signed manifest's historical backup duration, current backup-artifact verification/decryption duration, and restore-and-verification-only duration separately. The supplied cutoff must not be in the future. A probe query that returns only the wall clock is not an acceptable business watermark.
 
 The HLD suggestion of **RPO ≤ 300 seconds (5 minutes)** and **RTO ≤ 3,600 seconds (60 minutes)** is an illustrative baseline only. These values are **not contractual** unless the accountable service/data owner explicitly approves the objective for the applicable system and recovery class. Leave target approval disabled unless that written approval exists. When approved targets are supplied, the release-gate script fails if observed values exceed them. Document source backup cadence, WAL/PITR coverage, transaction loss semantics and the exact recovery start/stop events that were used for the measurement.
 
 ## 4. Evidence receipt and operator sign-off
 
-In `RELEASE_GATE` mode, the helper writes a create-only JSON technical receipt at `FACTORYOS_RECOVERY_EVIDENCE_JSON` on both success and failure when the destination is available. The receipt binds the candidate SHA, migration-manifest digest/count/status, source/restore identities, encrypted archive checksum, test statuses, timestamps, measured RPO/RTO and target assessment. Existing receipts are never overwritten. A technically failed or interrupted run must stay `TECHNICAL_FAIL`; do not convert it to success manually.
+In `RELEASE_GATE` mode, the helper writes a create-only JSON technical receipt at `FACTORYOS_RECOVERY_EVIDENCE_JSON` on both success and failure when the destination is available. The receipt binds the candidate SHA, workflow repository/run/actor/Environment, migration-manifest digest/count/status, source/restore identities, encrypted recovery artifact checksum, signed backup manifest and signature digests, pinned signer/recipient fingerprints, backup creation time, test statuses, timestamps, measured RPO/RTO and target assessment. The workflow separately writes `<evidence_output_path>.approval.json` from the actual GitHub workflow-run approvals API response; it binds the approved reviewer, operator, candidate SHA, run ID, Environment, approval-history URL and response digest. Existing receipts are never overwritten. A technically failed or interrupted run must stay `TECHNICAL_FAIL`; do not convert it to success manually.
 
 After reviewing the evidence and environment approval, create a separate sign-off record. From the candidate checkout, run:
 
 ~~~sh
 node scripts/recovery/record-dr-operator-signoff.mjs \
   --evidence /secure/restricted/dr-evidence/rehearsal-receipt.json \
+  --approval-evidence /secure/restricted/dr-evidence/rehearsal-receipt.json.approval.json \
   --decision PASS \
-  --operator "operator identity" \
-  --approver "independent approver identity" \
-  --notes "Restore, migration, smoke, isolation, audit and recovery metrics reviewed." \
+  --operator "operator GitHub login" \
+  --approver "independent reviewer GitHub login" \
+  --notes "Restore, migration, smoke, isolation, audit, actual Environment approval and recovery metrics reviewed." \
   --reference "approved change/incident reference"
 ~~~
 
-Use `--decision FAIL` for a failed attempt and preserve the failure evidence. A `PASS` decision is rejected unless encryption, checksum, archive readability, restoration, candidate migration, failed-transaction recovery, application smoke, tenant isolation, audit continuity and numeric RPO/RTO evidence all pass. The sign-off file is create-only, records the evidence SHA-256 and must be retained alongside the environment approval event. Do not use the rehearsal's automatically populated placeholder identities as human approval.
+Use `--decision FAIL` for a failed attempt and preserve the failure evidence. A `PASS` decision is rejected unless encryption, checksum, archive readability, restoration, candidate migration, failed-transaction recovery, application smoke, tenant isolation, audit continuity and numeric RPO/RTO evidence all pass. It also requires the approval attestation to match the actual GitHub reviewer, Environment, workflow run, repository, candidate SHA, operator and approver. When targets are approved, the attested target values must match the measured evidence. The sign-off file is create-only, records both the technical receipt SHA-256 and approval-attestation SHA-256, and must be retained alongside the authoritative GitHub Environment approval history. The URL/digest make the original API approval history independently auditable; they are not a cryptographic signature on the GitHub API response.
 
 ## 5. Acceptance decision
 
 The release owner must leave the gate blocked until:
 
 - the exact candidate SHA's applicable API, PostgreSQL, web and dependency-security checks are green;
-- a backup was made on approved restricted storage and its checksum/decryption/archive checks pass;
+- the existing approved recovery-point artifact is accompanied by a detached-signed manifest from the pinned backup-controller key, and the artifact digest, source identity, GPG recipient fingerprint, backup timestamp and producer duration all verify;
 - the target was independently confirmed isolated/empty, and restore completed;
 - candidate migration and failure-recovery checks pass on that restored snapshot;
 - restored-schema smoke, application-role RLS read/write isolation, audit continuity, and candidate API liveness/readiness against the same independently identified restore database all pass;
 - source/restore identities, the exact migration-manifest digest, measured durations, RPO/RTO and unresolved exceptions are recorded;
-- an independent operator sign-off is attached to the evidence digest.
+- an independent GitHub Environment reviewer approval is bound to the workflow run and candidate SHA, and an operator/reviewer sign-off is attached to the technical evidence and approval digests.
 
 CI's ephemeral self-contained GPG + PostgreSQL rehearsal validates the automation with synthetic records. It is additional evidence, not a substitute for the manual workflow against approved recovery infrastructure or for accountable owner sign-off.
