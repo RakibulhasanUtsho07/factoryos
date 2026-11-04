@@ -73,6 +73,65 @@ describe('InventoryService', () => {
     expect(query).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:inventory_|public\.inventory_)/i);
   });
 
+  it('returns the FR-WMS-05 availability, quality, expected-supply and first-production-order projection', async () => {
+    const firstAffected = {
+      work_order_id: randomUUID(),
+      work_order_number: 'WO-2026-0042',
+      source_order_id: randomUUID(),
+      source_order_number: 'SO-2026-0118',
+      status: 'RELEASED',
+      priority: 1,
+      planned_start_date: '2026-11-05',
+      due_date: '2026-11-08',
+      outstanding_material_quantity: '6.0000',
+      shortfall_quantity: '2.0000',
+    };
+    const availability = {
+      item_id: ITEM_ID,
+      sku: 'FABRIC-01',
+      name: 'Cotton Fabric',
+      unit: 'M',
+      status: 'ACTIVE',
+      quantity_on_hand: '20.0000',
+      quantity_reserved: '7.0000',
+      quantity_allocated: '7.0000',
+      quantity_available: '8.0000',
+      quantity_quarantined: '3.0000',
+      quantity_quality_held: '5.0000',
+      quantity_damaged: '2.0000',
+      quantity_expected: '12.0000',
+      balance_version: '9',
+      first_affected_production_order: firstAffected,
+    };
+    database.query.mockResolvedValueOnce({ rows: [availability] } as QueryResponse);
+
+    const result = await service.getAvailabilitySummary(USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID);
+
+    expect(result).toEqual(availability);
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM inventory_items i'),
+      [ITEM_ID, TENANT_ID, FACTORY_ID],
+      { tenantId: TENANT_ID, userId: USER_ID },
+    );
+    const query = String(database.query.mock.calls[0]?.[0]);
+    expect(query).toContain('FROM quality_holds qh');
+    expect(query).toContain('FROM inventory_traceability_location_balances');
+    expect(query).toContain('FROM goods_receipt_lines gl');
+    expect(query).toContain('FROM work_order_material_requirements req');
+    expect(query).toContain('ir2.remaining_quantity');
+    expect(query).toContain('ORDER BY d.planned_start_date ASC, d.priority ASC');
+    expect(query).toContain('AND req.tenant_id = $2');
+    expect(query).toContain('AND wo.factory_id = $3');
+    expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
+  });
+
+  it('rejects an invalid availability item identifier before querying PostgreSQL', async () => {
+    await expect(service.getAvailabilitySummary(USER_ID, TENANT_ID, FACTORY_ID, 'not-a-uuid'))
+      .rejects.toMatchObject({ status: 400 });
+    expect(database.query).not.toHaveBeenCalled();
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('does not return stock when the item is outside the requested factory scope', async () => {
     database.query.mockResolvedValueOnce({ rows: [] } as QueryResponse);
 
