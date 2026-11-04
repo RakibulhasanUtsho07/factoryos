@@ -6,6 +6,10 @@ const manifest = JSON.parse(await readFile(
   new URL('../../docs/srs-revision-lineage-candidate-manifest-2026-11-04.json', import.meta.url),
   'utf8',
 ));
+const growthLedger = JSON.parse(await readFile(
+  new URL('../../docs/srs-v19-growth-delta-occurrence-ledger.json', import.meta.url),
+  'utf8',
+));
 
 const sourceByFile = new Map(manifest.sourceCandidates.map((source) => [source.fileName, source]));
 const scopeByRevision = new Map(manifest.scopeLedger.map((entry) => [entry.revision, entry]));
@@ -85,10 +89,11 @@ test('known functional/non-functional delta components add up where the source s
     assert.equal(entry.delta.functional + entry.delta.nonFunctional, entry.delta.total, revision);
   }
   const v19 = scopeByRevision.get('1.9_growth_research');
-  assert.equal(v19.delta.functional, null);
-  assert.equal(v19.delta.nonFunctional, null);
+  assert.equal(v19.delta.functional, 74);
+  assert.equal(v19.delta.nonFunctional, 18);
   assert.equal(v19.delta.total, 92);
-  assert.equal(v19.arithmeticStatus, 'TOTAL_ONLY_BREAKDOWN_NOT_STATED');
+  assert.deepEqual(v19.priorityDelta, { P0: 37, P1: 55, P2: 0 });
+  assert.equal(v19.arithmeticStatus, 'RECONCILES_FROM_SOURCE_LOCATED_CANDIDATE_ROWS');
 });
 
 test('priority totals reconcile for the revisions that declare cumulative buckets', () => {
