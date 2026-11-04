@@ -366,9 +366,10 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     }
   });
 
-  it('excludes damaged and expired tracked stock from available quantity without double-counting', async () => {
+  it('excludes damaged, expired and non-active tracked stock from availability without double-counting', async () => {
     const itemId = await createItem('10.0000');
-    const traceabilityUnitId = randomUUID();
+    const damagedExpiredUnitId = randomUUID();
+    const recalledUnitId = randomUUID();
     const fixtureKey = randomUUID();
     const defaultLocation = await adminPool.query<{ id: string }>(
       "SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE' LIMIT 1",
@@ -402,14 +403,41 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
         )
         `,
         [
-          traceabilityUnitId,
+          damagedExpiredUnitId,
           tenantId,
           factoryId,
           'DAMAGED-EXPIRED-' + fixtureKey.slice(0, 10),
           'DAMAGED-EXPIRED-BARCODE-' + fixtureKey.slice(0, 10),
           itemId,
-          'traceability-availability-' + fixtureKey,
+          'traceability-damaged-expired-' + fixtureKey,
           'f'.repeat(64),
+          TEST_USER_ID,
+          randomUUID(),
+        ],
+      );
+
+      await adminPool.query(
+        `
+        INSERT INTO traceability_units (
+          id, tenant_id, factory_id, unit_type, product_role, unit_code,
+          barcode_value, inventory_item_id, quantity, unit, status,
+          attributes, idempotency_key, request_hash, created_by_user_id,
+          correlation_id
+        )
+        VALUES (
+          $1, $2, $3, 'LOT', 'MATERIAL', $4, $5, $6, 2, 'PCS',
+          'RECALLED', '{}'::jsonb, $7, $8, $9, $10
+        )
+        `,
+        [
+          recalledUnitId,
+          tenantId,
+          factoryId,
+          'RECALLED-' + fixtureKey.slice(0, 10),
+          'RECALLED-BARCODE-' + fixtureKey.slice(0, 10),
+          itemId,
+          'traceability-recalled-' + fixtureKey,
+          'a'.repeat(64),
           TEST_USER_ID,
           randomUUID(),
         ],
@@ -421,9 +449,9 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
           tenant_id, factory_id, item_id, traceability_unit_id, location_id,
           quantity_on_hand, quantity_reserved
         )
-        VALUES ($1, $2, $3, $4, $5, 3, 0)
+        VALUES ($1, $2, $3, $4, $5, 3, 0), ($1, $2, $3, $6, $5, 2, 0)
         `,
-        [tenantId, factoryId, itemId, traceabilityUnitId, locationId],
+        [tenantId, factoryId, itemId, damagedExpiredUnitId, locationId, recalledUnitId],
       );
 
       const availability = await inventoryService.getAvailabilitySummary(
@@ -433,11 +461,12 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
       expect(availability).toMatchObject({
         quantity_on_hand: '10.0000',
         quantity_allocated: '0.0000',
-        quantity_available: '7.0000',
+        quantity_available: '5.0000',
         quantity_quarantined: '0.0000',
         quantity_quality_held: '0.0000',
         quantity_damaged: '3.0000',
         quantity_expired: '3.0000',
+        quantity_status_blocked: '2.0000',
       });
     } finally {
       for (const table of mutableTables) {
@@ -445,10 +474,13 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
       }
       try {
         await adminPool.query(
-          'DELETE FROM inventory_traceability_location_balances WHERE traceability_unit_id = $1',
-          [traceabilityUnitId],
+          'DELETE FROM inventory_traceability_location_balances WHERE traceability_unit_id = ANY($1::uuid[])',
+          [[damagedExpiredUnitId, recalledUnitId]],
         );
-        await adminPool.query('DELETE FROM traceability_units WHERE id = $1', [traceabilityUnitId]);
+        await adminPool.query(
+          'DELETE FROM traceability_units WHERE id = ANY($1::uuid[])',
+          [[damagedExpiredUnitId, recalledUnitId]],
+        );
       } finally {
         for (const table of mutableTables) {
           await adminPool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER USER');
