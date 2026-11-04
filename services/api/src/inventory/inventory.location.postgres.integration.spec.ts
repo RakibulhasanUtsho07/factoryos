@@ -2868,6 +2868,94 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
     };
 
+    // Exercise an earlier failure boundary as well: verification updates
+    // the rework/stock state before the corresponding inventory movement is
+    // inserted. A failure at that movement must roll back the entire transaction.
+    // Scope the trigger to this fixture's rework order so concurrent PostgreSQL
+    // suites and other tenant fixtures cannot be affected.
+    const readReworkOutputRollbackSnapshot = () => adminPool.query(
+      `SELECT
+        (SELECT count(*)::int FROM quality_rework_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND rework_order_id::text=$3::text) AS rework_event_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND aggregate_type='QUALITY_REWORK'
+            AND aggregate_id::text=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
+        (SELECT count(*)::int FROM quality_audit_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
+            AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
+        (SELECT quantity_on_hand::text FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity,
+        (SELECT version::int FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_version,
+        (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text
+          FROM inventory_traceability_location_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND item_id::text=$4::text AND traceability_unit_id::text=$6::text) AS recovered_traceability_quantity,
+        (SELECT count(*)::int FROM inventory_movements
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text) AS rework_output_movement_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND event_type='INVENTORY.STOCK_RECEIVED'
+            AND payload->>'quality_rework_order_id'=$3::text) AS rework_inventory_outbox_count,
+        (SELECT count(*)::int FROM product_genealogy_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND source_unit_id::text=$5::text AND target_unit_id::text=$6::text
+            AND relationship_type='REWORKED_INTO'
+            AND idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_count,
+        (SELECT count(*)::int FROM audit_events a
+          JOIN product_genealogy_events e ON e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          JOIN product_genealogy_events e ON e.tenant_id=o.tenant_id AND e.factory_id=o.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id],
+    );
+    const beforeOutputMovementFailure = await readReworkOutputRollbackSnapshot();
+    await adminPool.query(`
+      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
+      RETURNS trigger LANGUAGE plpgsql AS $
+      BEGIN
+        IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT'
+          AND NEW.reference_id::text = '${reworkOrder.id}' THEN
+          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_OUTPUT_FAILURE';
+        END IF;
+        RETURN NEW;
+      END;
+      $;
+    `);
+    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+    await adminPool.query(`
+      CREATE TRIGGER zz_test_fail_quality_rework_output
+      BEFORE INSERT ON inventory_movements
+      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_output()
+    `);
+    try {
+      await expect(qualityService.transitionReworkOrder(
+        qualityVerifierContext, reworkOrder.id, verificationPayload as never,
+        'factory-e2e-quality-rework-verify-output-failure-' + suffix,
+      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_OUTPUT_FAILURE/i);
+    } finally {
+      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_output()');
+    }
+    const afterOutputMovementFailure = await readReworkOutputRollbackSnapshot();
+    expect(afterOutputMovementFailure.rows[0]).toEqual(beforeOutputMovementFailure.rows[0]);
+    const reworkAfterOutputMovementFailure = await qualityService.getReworkOrder(qualityContext, reworkOrder.id);
+    expect(reworkAfterOutputMovementFailure).toMatchObject({
+      status: 'COMPLETED',
+      row_version: Number(reworkOrder.row_version),
+    });
+
     // Inject a database failure at the final DEFECT_RESOLVED outbox write,
     // after stock, movement, lot balance, quality and genealogy evidence, and
     // the defect row/event/audit have all been attempted in this transaction.
