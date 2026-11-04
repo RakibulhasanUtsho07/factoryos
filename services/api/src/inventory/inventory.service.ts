@@ -281,7 +281,7 @@ export class InventoryService {
             AS quantity_quarantined,
           COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_quality_held), 0)::numeric(18,4)
             AS quantity_quality_held,
-          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_damaged AND NOT is_quality_held), 0)::numeric(18,4)
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_damaged), 0)::numeric(18,4)
             AS quantity_damaged,
           COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_expired), 0)::numeric(18,4)
             AS quantity_expired,
@@ -335,8 +335,7 @@ export class InventoryService {
                ELSE tt.quantity_quarantined END::numeric(18,4) AS quantity_quarantined,
           CASE WHEN wh.is_held THEN b.quantity_on_hand
                ELSE tt.quantity_quality_held END::numeric(18,4) AS quantity_quality_held,
-          CASE WHEN wh.is_held THEN 0::numeric(18,4)
-               ELSE tt.quantity_damaged END::numeric(18,4) AS quantity_damaged,
+          tt.quantity_damaged,
           tt.quantity_expired,
           tt.quantity_status_blocked,
           es.quantity_expected,
