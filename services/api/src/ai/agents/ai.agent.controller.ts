@@ -111,6 +111,78 @@ export class AiAgentController {
     );
   }
 
+  /**
+   * Advance one persisted, dependency-checked task step through the governed
+   * authorization and Tool Gateway boundary. The service re-checks policy,
+   * approval, signed planner provenance for writes, idempotency and deadlines.
+   */
+  @Post('tasks/:id/steps/:stepId/execute')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.execute')
+  @RequireFactoryScope()
+  async executeStep(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) taskId: string,
+    @Param('stepId', new ParseUUIDPipe()) stepId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.executeStep(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      taskId,
+      stepId,
+    );
+  }
+
+  /**
+   * Resume only a persisted approval-pending step. executeStep re-runs the
+   * live authorization checks and rejects a revoked, expired or mismatched
+   * approval before crossing the executor boundary.
+   */
+  @Post('tasks/:id/steps/:stepId/resume')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.execute')
+  @RequireFactoryScope()
+  async resumeTaskStep(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) taskId: string,
+    @Param('stepId', new ParseUUIDPipe()) stepId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.resumeTaskStep(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      taskId,
+      stepId,
+    );
+  }
+
+  /**
+   * Finalize a task only after every persisted step is SUCCEEDED. The service
+   * independently checks cancellation, deadline and the complete step ledger.
+   */
+  @Post('tasks/:id/verify')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.execute')
+  @RequireFactoryScope()
+  async verifyTask(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) taskId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.verifyTask(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      taskId,
+    );
+  }
+
   @Get('tasks/:id')
   @UseGuards(PermissionGuard)
   @RequirePermission('ai.business.read')
