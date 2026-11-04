@@ -79,6 +79,21 @@ The production-report-to-output-lot slice deliberately does not backfill histori
 
 The repository now has first-class quality inspections, immutable defect-to-lot/serial/order/work-order/operation/production-report/GRN links, verified CAPA actions and controlled rework tasks. A rework output is recorded as a new traceability identity tied to the originating defect; existing genealogy edges are not fabricated through a quarantined source. A complete ERP sales-order/customer-master integration remains separate work. Client QR and Code 128 SVG, browser print payload, IndexedDB offline queue and a Web Serial EPC reader workbench have been added with client/API contract coverage; Data Matrix/GS1-128 generation, camera decode, proprietary RFID reader protocols, physical printer/scanner acceptance and target RFID reader HIL remain open. See docs/wms-rfid-hardware-acceptance.md. Digital shipment POD upload and stored-byte digest verification are implemented as described above. The bounded carton/pallet-to-shipment backend flow is described above. Migration 160 binds material lot/serial stock to physical bins and reservations, resolves factory/sector/material FIFO/FEFO/LOT/SERIAL policy, excludes invalid or held identities at reservation and issue time, and records idempotent partial issues without changing genealogy edges. Recording defect/rework links never posts stock; inventory balances remain owned by the existing inventory ledger and order reservation transactions. The WMS allocation regression is in `services/api/test/inventory-wms-allocation.sql`; live concurrent-reservation and first-production-order evidence still depends on passing the full PostgreSQL CI run.
 
+## Serial indivisibility and lot-to-serial split (migration 236)
+
+SRS v2.1 FR-WMS-04 requires serial allocation to preserve the individual physical identity. Migration `236_wms_serial_indivisibility.sql` makes that rule a PostgreSQL invariant, not only an API convention:
+
+- A SERIAL source or target can appear on a genealogy edge only with quantity exactly `1`. A SERIAL cannot be split as a source or collapsed by `MERGED_INTO`.
+- A LOT may still split into multiple individual SERIAL targets using one-unit `SPLIT_INTO` edges; the source lot's existing cumulative genealogy quantity guard still limits the sum to the lot's registered quantity.
+- A serial's on-hand and reserved location balances are each strictly `0` or `1`, and the sum across **all** locations for that serial cannot exceed one. The serial identity row is locked while those balances change, so concurrent moves cannot claim the same unit at two locations.
+- A SERIAL reservation must be backed by exactly one on-hand unit and one reserved unit in the same location. Only one outstanding allocation is permitted; partial issue and partial release are rejected, consumed serials cannot be allocated again, and consumption evidence must record exactly one unit once.
+- A location transfer carrying a SERIAL must move exactly one unit. Lot-level partial reservations, issues and transfers remain supported.
+- Before installing the guards, migration 236 checks existing genealogy, location, reservation, consumption and transfer rows. Any legacy fractional or duplicated serial state blocks deployment for audited reconciliation rather than being silently accepted.
+
+The migration uses row locks for serial-specific balance, reservation, consumption and transfer writes, and shares the canonical genealogy graph lock before locking genealogy endpoints. Its replay is part of PostgreSQL CI. Runtime acceptance is `services/api/test/wms-serial-indivisibility.sql`, covering rejected fractional genealogy, serial split/merge, fractional stock/reservation/issue/release/transfer paths, duplicate active allocation, duplicate serial quantity across locations, and an accepted lot-to-serial split.
+
+This closes the database-level serial quantity/cardinality gap. Physical scanner, RFID reader, printer and plant acceptance remain separate hardware/site gates and are not implied by these tests.
+
 ## Verification
 
 Migration: `074_lot_serial_product_genealogy.sql`. PostgreSQL regression: `services/api/test/traceability.sql`, plus accepted-GRN lot registration coverage in `services/api/test/goods-receipt.sql`. API input regression: `services/api/src/inventory/traceability.service.spec.ts`.
