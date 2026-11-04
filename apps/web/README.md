@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FactoryOS Web
 
-## Getting Started
+FactoryOS Web is the Next.js workspace frontend for manufacturing operations.
 
-First, run the development server:
+## Workspaces
+
+- `/` — FactoryOS workspace landing page.
+- `/ai/agents` — governed AI Agent Control Center.
+- `/wms` — warehouse mobile acceptance workbench.
+
+## Requirements
+
+- Node.js 24
+- npm 11 (the repository root npm workspace and lockfile are authoritative)
+
+Install and run from the repository root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm ci
+npm --workspace apps/web run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The frontend runs at `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## AI Agent Control Center
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open `/ai/agents`. Enter the API origin (origin only), authenticated tenant UUID, factory UUID and a short-lived bearer access token. The token is held only in the page's memory and cleared when you disconnect or close the page; it is never saved to local storage, cookies, or URLs. The browser sends `Authorization: Bearer`, `X-Tenant-Id` and `X-Factory-Id`; user identity is resolved by the API from the verified JWT. Non-local APIs must use HTTPS. Browser requests omit cookies and use `cache: no-store`.
 
-## Learn More
+The backend must have the AI routes and `GET /api/v1/ai/tasks?limit=1..100` deployed. Use an authenticated principal with the appropriate `ai.business.read`, `ai.agents.read`, `ai.agents.control` and `ai.actions.*` permissions. A section may return 403 when the selected principal lacks the permission; the console reports the section error rather than presenting it as an empty successful result.
 
-To learn more about Next.js, take a look at the following resources:
+The UI reads agent definitions and controls, evaluation reports, recent tasks/steps, workflow drafts and templates. Explicit operator actions include operational control changes, task cancellation, executing a due pending step, resuming an approval-pending step and final task verification. Every write remains subject to API IAM, policy, approval, planner-attestation, tool-entitlement, idempotency, deadline and execution-reconciliation gates.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Optionally set `NEXT_PUBLIC_FACTORYOS_API_URL` to prefill the API origin. Do not put access tokens or other secrets in `NEXT_PUBLIC_*` variables.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Verification
 
-## Deploy on Vercel
+From the repository root:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm --workspace apps/web run test
+npm --workspace apps/web run lint
+npm --workspace apps/web run build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The AI console is the first operator UI slice, not full AI Quality Gate acceptance. Live planner/context integration, durable worker, side-effectful manufacturing executors, observed-outcome→learning→release, compensation/canary/rollback workflows, browser role/isolation/accessibility acceptance and provider staging evidence remain open. See [the implementation and acceptance note](../../docs/ai-agent-control-center-implementation-2026-11-04.md) and issue #336.
+
+## Warehouse workbench
+
+The existing WMS workbench has its own authenticated API origin/token flow for local acceptance, offline stock queue, traceability labels and scanner resolution. Physical devices and warehouse staging acceptance remain separate from browser-only CI.
