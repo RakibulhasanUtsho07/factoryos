@@ -624,14 +624,18 @@
       "revision": "1.9_growth_research",
       "startingCumulative": 778,
       "delta": {
-        "functional": null,
-        "nonFunctional": null,
+        "functional": 74,
+        "nonFunctional": 18,
         "total": 92
       },
       "cumulative": 870,
-      "priorityDelta": null,
+      "priorityDelta": {
+        "P0": 37,
+        "P1": 55,
+        "P2": 0
+      },
       "priorityCumulative": null,
-      "arithmeticStatus": "TOTAL_ONLY_BREAKDOWN_NOT_STATED"
+      "arithmeticStatus": "RECONCILES_FROM_SOURCE_LOCATED_CANDIDATE_ROWS"
     },
     {
       "revision": "2.0",
@@ -700,12 +704,6 @@
       "severity": "HIGH",
       "description": "v1.1 and v1.2 are referenced as inherited normative baselines by v1.3 onwards but were not located in the available Library search.",
       "disposition": "OBTAIN_CONTROLLED_SOURCE_BYTES; do not substitute v1.3 onward's inherited references."
-    },
-    {
-      "id": "SRC-V19-DELTA-BREAKDOWN",
-      "severity": "MEDIUM",
-      "description": "The v1.9 growth/research delta is stated as 92 requirements but the reviewed scope paragraph does not state its functional/non-functional or priority breakdown.",
-      "disposition": "REQUIRE_REQUIREMENTS_OWNER_BREAKDOWN; preserve 92 as total-only."
     }
   ],
   "reconciliationBoundary": {
@@ -720,5 +718,31 @@
     "occurrenceCandidateCountsMustNotBeSubstituted": true,
     "priorityExceptionSetMustRemainOpen": true,
     "reason": "This manifest reconciles declared scope arithmetic from candidate revisions and records known source conflicts. v1.1/v1.2 source bytes are not located, candidate revision files remain draft/unapproved, and no 950-row active normative occurrence ledger has been signed."
-  }
+  },
+  "growthDeltaOccurrenceLedger": {
+    "path": "docs/srs-v19-growth-delta-occurrence-ledger.json",
+    "sourceArtifactSha256": "09f796a867941d4738b07eea5f9169ed2de9351fb7a6111b676bf9342bfbb5a1",
+    "occurrenceCount": 92,
+    "distinctIdCount": 92,
+    "functionalRows": 74,
+    "nonFunctionalRows": 18,
+    "priorityCounts": {
+      "P0": 37,
+      "P1": 55,
+      "P2": 0
+    },
+    "candidateSourcePages": [
+      75,
+      85
+    ],
+    "sourceOwnerApproved": false
+  },
+  "resolvedCandidateFindings": [
+    {
+      "id": "SRC-V19-DELTA-BREAKDOWN",
+      "status": "CANDIDATE_EXTRACTION_RECONCILED_PENDING_SOURCE_OWNER_APPROVAL",
+      "description": "PDF pages 75-85 contain 92 unique positioned table rows: 74 FR, 18 NFR, P0=37/P1=55/P2=0. Each row has an ID, priority and page/text-line locator in docs/srs-v19-growth-delta-occurrence-ledger.json.",
+      "disposition": "Treat as reproducible candidate extraction only; Requirements/Product must approve the source revision and occurrence classifications before active-scope credit."
+    }
+  ]
 }
