@@ -58,6 +58,7 @@ export interface InventoryAvailabilitySummary extends QueryResultRow {
   quantity_quarantined: string;
   quantity_quality_held: string;
   quantity_damaged: string;
+  quantity_expired: string;
   quantity_expected: string;
   balance_version: string;
   first_affected_production_order: {
@@ -254,7 +255,11 @@ export class InventoryService {
           (
             tu.attributes @> '{"damaged":true}'::jsonb
             OR upper(COALESCE(tu.attributes->>'condition', '')) = 'DAMAGED'
-          ) AS is_damaged
+          ) AS is_damaged,
+          (
+            (tu.expires_at IS NOT NULL AND tu.expires_at < CURRENT_DATE)
+            OR upper(COALESCE(tu.attributes->>'condition', '')) = 'EXPIRED'
+          ) AS is_expired
         FROM traceability_units tu
         INNER JOIN inventory_traceability_location_balances tlb
           ON tlb.traceability_unit_id = tu.id
@@ -274,10 +279,12 @@ export class InventoryService {
             AS quantity_quarantined,
           COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_quality_held), 0)::numeric(18,4)
             AS quantity_quality_held,
-          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_damaged AND NOT is_quality_held), 0)::numeric(18,4)
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_damaged), 0)::numeric(18,4)
             AS quantity_damaged,
+          COALESCE(SUM(quantity_on_hand) FILTER (WHERE is_expired), 0)::numeric(18,4)
+            AS quantity_expired,
           COALESCE(SUM(GREATEST(quantity_on_hand - quantity_reserved, 0))
-            FILTER (WHERE is_quality_held OR is_damaged), 0)::numeric(18,4)
+            FILTER (WHERE is_quality_held OR is_damaged OR is_expired), 0)::numeric(18,4)
             AS blocked_unallocated_quantity
         FROM traceability_unit_stock
       ),
@@ -324,8 +331,8 @@ export class InventoryService {
                ELSE tt.quantity_quarantined END::numeric(18,4) AS quantity_quarantined,
           CASE WHEN wh.is_held THEN b.quantity_on_hand
                ELSE tt.quantity_quality_held END::numeric(18,4) AS quantity_quality_held,
-          CASE WHEN wh.is_held THEN 0::numeric(18,4)
-               ELSE tt.quantity_damaged END::numeric(18,4) AS quantity_damaged,
+          tt.quantity_damaged,
+          tt.quantity_expired,
           es.quantity_expected,
           CASE
             WHEN wh.is_held THEN 0::numeric(18,4)
@@ -437,6 +444,7 @@ export class InventoryService {
         a.quantity_quarantined::text AS quantity_quarantined,
         a.quantity_quality_held::text AS quantity_quality_held,
         a.quantity_damaged::text AS quantity_damaged,
+        a.quantity_expired::text AS quantity_expired,
         a.quantity_expected::text AS quantity_expected,
         a.balance_version,
         CASE WHEN fa.id IS NULL THEN NULL ELSE jsonb_build_object(
