@@ -15,6 +15,12 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- Match the canonical genealogy guard's graph lock before taking unit locks;
+  -- this preserves one lock order for direct SQL and API-originated writes.
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    NEW.tenant_id::text || ':' || NEW.factory_id::text || ':product-genealogy-graph', 0
+  ));
+
   SELECT unit_type INTO v_source_type
   FROM traceability_units
   WHERE id = NEW.source_unit_id
