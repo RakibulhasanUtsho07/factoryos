@@ -191,11 +191,28 @@ def extract_page_candidates(
                 "source_owner_decision_ref": None,
             })
 
-    mapped_ids = {(row["requirement_id_candidate"], page_number) for row in occurrences}
+    mapped_ids = {
+        (row["requirement_id_candidate"], page_number) for row in occurrences
+    }
+    # Only flag ID tokens positioned in a known table's ID column. Requirement
+    # wording commonly contains IDs as cross-references; treating those as
+    # missing table-row anchors creates false orphan candidates.
+    id_column_regions = [
+        (float(schema["id_x"]) - 10, float(schema["middle_x"]) - 3)
+        for schema in schemas
+    ]
+    if not id_column_regions and prior_schema:
+        id_column_regions = [
+            (float(prior_schema["id_x"]) - 10, float(prior_schema["middle_x"]) - 3)
+        ]
     unresolved_lines: list[dict[str, Any]] = []
     for line in lines:
         ordered = sorted(line, key=lambda item: float(item["x0"]))
-        ids = [word for word in ordered if REQUIREMENT_ID.fullmatch(str(word["text"]))]
+        ids = [
+            word for word in ordered
+            if REQUIREMENT_ID.fullmatch(str(word["text"]))
+            and any(low <= float(word["x0"]) < high for low, high in id_column_regions)
+        ]
         priority_words = [word for word in ordered if str(word["text"]) in PRIORITIES]
         if ids and priority_words:
             for anchor in ids:
