@@ -1,16 +1,16 @@
 # FactoryOS SRS/HLD/Blueprint Audit Source Manifest
 
-**Audit ID:** AUD-43-FINAL  
-**Prepared:** 2026-10-20  
+**Audit ID:** AUD-43-FINAL / 2026-11-04 byte re-verification  
+**Prepared:** 2026-11-04  
 **Purpose:** Pin the exact source artifacts inspected for the Round 43 traceability audit. The original PDFs remain in the user's ChatGPT Library; this repository manifest is not a replacement for storing controlled source artifacts in the organization's approved document repository.
 
 ## Source artifacts and SHA-256 checksums
 
 | Artifact | Source identifier / revision | Date in source | Pages | Exact Library filename | SHA-256 |
 |---|---|---:|---:|---|---|
-| Software Requirements Specification | FOS-SRS-001; v2.1 Final Product-Ready | 2026-10-02 | 103 | `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(8).pdf` | `ae3790e0ead5b11f13d4c32c9ab8e944ede7508cbaf0468673e031e48917c959` |
-| System Architecture & Technical Design | HLD/LLD v1.0 | 2026-10-02 | 25 | `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(3).pdf` | `fd75c8a794d78537713d3bbf7eb129b57ceb96cf5f4a7c07cf789b979528509e` |
-| Engineering Implementation Blueprint | Blueprint v1.0; source baseline SRS v2.1 FINAL + HLD/LLD v1.0 | 2026-10-02 | 31 | `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(8).pdf` | `e8a42cf663177afb8275f269b94213d5943b78b1e33a30e845abcf2a243ba08d` |
+| Software Requirements Specification | FOS-SRS-001; v2.1 Final Product-Ready | 2026-10-02 | 103 | `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(10).pdf` | `ae3790e0ead5b11f13d4c32c9ab8e944ede7508cbaf0468673e031e48917c959` |
+| System Architecture & Technical Design | HLD/LLD v1.0 | 2026-10-02 | 25 | `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(4).pdf` | `fd75c8a794d78537713d3bbf7eb129b57ceb96cf5f4a7c07cf789b979528509e` |
+| Engineering Implementation Blueprint | Blueprint v1.0; source baseline SRS v2.1 FINAL + HLD/LLD v1.0 | 2026-10-02 | 31 | `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(20261103-055605).pdf` | `e8a42cf663177afb8275f269b94213d5943b78b1e33a30e845abcf2a243ba08d` |
 
 ## Verification method and scope
 
@@ -25,3 +25,8 @@ The SRS v2.1 final scope ledger (§140) declares 950 cumulative requirements (P0
 ## Requirement closure evidence
 
 The [P0/P1 row-level evidence and gap ledger](srs-p0-p1-evidence-closure.csv) and [machine-readable closure-state register](srs-p0-p1-evidence-closure-register.json) bind source rows to repository-level evidence pointers and unresolved acceptance needs. They are generated/audited against this hash-pinned source baseline; neither substitutes for source-owner approval or release acceptance.
+
+
+## 2026-11-04 byte re-verification
+
+The currently supplied Library copies were re-materialized and SHA-256 checked on 2026-11-04. The SRS `(10)`, HLD `(4)` and Blueprint `(20261103-055605)` filenames resolve to the same exact bytes and hashes recorded above; filename/upload-version changes did not change the inspected source artifacts. The DMS/PLM source-of-record and formal Product/Architecture approval remain `PENDING`.
