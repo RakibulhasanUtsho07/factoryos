@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "encoding": "gzip+base64",
+  "uncompressed_sha256": "72e16a770f17fcc056fcbbeb9101a01f66dc82aabc27208748591dcf37a12331",
+  "uncompressed_bytes": 113297,
+  "payload_parts": [
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-01.txt",
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-02.txt",
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-03.txt",
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-04.txt",
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-05.txt",
+    "srs-v20-inherited-occurrence-candidate-ledger.payload-06.txt"
+  ]
+}
