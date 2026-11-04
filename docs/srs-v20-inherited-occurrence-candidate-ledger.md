@@ -13,7 +13,7 @@ The source-hash-pinned, layout-preserving extractor produced **809 normative req
 
 The parser kept other table-like contexts separate: 13 auxiliary agent-catalogue rows (P0=2, P1=11), 30 scope/crosswalk candidates and 2 metric/decision cross-reference candidates. One standalone ID/priority line (\`FR-AIG-03\`, PDF page 6) did not receive a stable table-row locator and is retained as an unresolved locator-review candidate. It is not silently inserted into the normative total.
 
-The checked-in snapshot is stored as a gzip+base64 envelope to keep repository text payloads compact. Its uncompressed JSON contains the row-level locator, ID candidate, priority candidate, normalized wording SHA-256 and extraction status. It intentionally contains no raw requirement wording. The companion Node contract verifies the envelope digest and population invariants; the Python extractor can regenerate the uncompressed JSON from the operator-supplied source PDF.
+The checked-in snapshot is stored as a gzip+base64 payload split into six text parts, with a small payload manifest containing part order, uncompressed byte count and SHA-256. Its uncompressed JSON contains the row-level locator, ID candidate, priority candidate, normalized wording SHA-256 (32-byte digest encoded as unpadded base64url) and extraction status. It intentionally contains no raw requirement wording. The companion Node contract joins the parts, verifies the decompressed digest and population invariants; the Python extractor can regenerate the uncompressed JSON from the operator-supplied source PDF.
 
 ## Comparison with the §140 scope claim
 
@@ -30,7 +30,7 @@ python scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py \\
   --output /tmp/srs-v20-inherited-occurrence-candidates.json
 \`\`\`
 
-The extractor rejects a different SHA-256 or page count. The source PDF is intentionally not committed. The row snapshot envelope can be decoded using gzip after base64 decoding; the uncompressed digest is recorded in the envelope itself.
+The extractor rejects a different SHA-256 or page count. The source PDF is intentionally not committed. Join the six payload parts in the order recorded by \`docs/srs-v20-inherited-occurrence-candidate-ledger.payload-manifest.json\`, base64-decode the result, then gzip-decompress it. The manifest records the uncompressed SHA-256 and byte count.
 
 ## Acceptance boundary
 
