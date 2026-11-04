@@ -5,36 +5,36 @@ DO $$
 DECLARE
   invalid_relations text;
 BEGIN
-  WITH expected(relation_name, expected_category) AS (
+  WITH expected(relation_name, expected_category, expected_erasure_disposition) AS (
     VALUES
-      ('research_source_authenticity_checks','AI_CONTEXT'),
-      ('research_source_authenticity_reviews','AI_CONTEXT'),
-      ('research_source_documents','AI_CONTEXT'),
-      ('research_source_document_content','AI_CONTEXT'),
-      ('research_source_document_purges','AI_CONTEXT'),
-      ('growth_kpi_source_sync_runs','AI_CONTEXT'),
-      ('growth_kpi_source_observations','AI_CONTEXT'),
-      ('growth_kpi_source_sync_items','AI_CONTEXT'),
-      ('growth_forecast_calibration_policies','AI_CONTEXT'),
-      ('ai_agent_live_evaluation_results','AI_CONTEXT'),
-      ('ai_artifact_trusted_sources','AI_CONTEXT'),
-      ('ai_artifact_registry','AI_CONTEXT'),
-      ('ai_artifact_provenance_events','AI_CONTEXT'),
-      ('ai_artifact_admission_events','AI_CONTEXT'),
-      ('research_source_freshness_policies','AI_CONTEXT'),
-      ('saas_tenant_external_data_targets','SAAS_CONTROL_PLANE'),
-      ('saas_tenant_external_propagation_runs','SAAS_CONTROL_PLANE'),
-      ('saas_tenant_external_propagation_receipts','SAAS_CONTROL_PLANE'),
-      ('saas_tenant_finance_retention_policies','SAAS_CONTROL_PLANE'),
-      ('saas_tenant_finance_retention_runs','SAAS_CONTROL_PLANE'),
-      ('saas_billing_provider_accounts','SAAS_CONTROL_PLANE'),
-      ('saas_billing_provider_account_events','SAAS_CONTROL_PLANE'),
-      ('saas_billing_close_runs','SAAS_CONTROL_PLANE'),
-      ('saas_billing_close_events','SAAS_CONTROL_PLANE'),
-      ('saas_billing_provider_webhook_events','SAAS_CONTROL_PLANE'),
-      ('saas_billing_reconciliation_results','SAAS_CONTROL_PLANE'),
-      ('saas_physical_provisioning_runs','SAAS_CONTROL_PLANE'),
-      ('saas_physical_provisioning_events','SAAS_CONTROL_PLANE')
+      ('research_source_authenticity_checks','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('research_source_authenticity_reviews','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('research_source_documents','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('research_source_document_content','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('research_source_document_purges','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('growth_kpi_source_sync_runs','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('growth_kpi_source_observations','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('growth_kpi_source_sync_items','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('growth_forecast_calibration_policies','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('ai_agent_live_evaluation_results','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('ai_artifact_trusted_sources','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('ai_artifact_registry','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('ai_artifact_provenance_events','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('ai_artifact_admission_events','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('research_source_freshness_policies','AI_CONTEXT','BLOCKED_UNREVIEWED'),
+      ('saas_tenant_external_data_targets','SAAS_CONTROL_PLANE','PROTECTED'),
+      ('saas_tenant_external_propagation_runs','SAAS_CONTROL_PLANE','PROTECTED'),
+      ('saas_tenant_external_propagation_receipts','SAAS_CONTROL_PLANE','PROTECTED'),
+      ('saas_tenant_finance_retention_policies','SAAS_CONTROL_PLANE','PROTECTED'),
+      ('saas_tenant_finance_retention_runs','SAAS_CONTROL_PLANE','PROTECTED'),
+      ('saas_billing_provider_accounts','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_billing_provider_account_events','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_billing_close_runs','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_billing_close_events','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_billing_provider_webhook_events','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_billing_reconciliation_results','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_physical_provisioning_runs','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW'),
+      ('saas_physical_provisioning_events','SAAS_CONTROL_PLANE','BLOCKED_FINANCE_REVIEW')
   )
   SELECT string_agg(e.relation_name, ', ' ORDER BY e.relation_name)
     INTO invalid_relations
@@ -55,11 +55,11 @@ BEGIN
     OR i.scope_model <> 'DIRECT_TENANT_ID'
     OR i.data_category <> e.expected_category
     OR i.export_disposition <> 'EXCLUDED'
-    OR i.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+    OR i.erasure_disposition <> e.expected_erasure_disposition
     OR r.ownership_class <> 'DIRECT_TENANT'
     OR r.review_status <> 'VERIFIED'
     OR r.export_disposition <> 'EXCLUDED'
-    OR r.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+    OR r.erasure_disposition <> e.expected_erasure_disposition
     OR NOT EXISTS (
       SELECT 1 FROM pg_catalog.pg_policy p
       WHERE p.polrelid=c.oid AND p.polname='fo_privacy_scope_enforce'
