@@ -124,7 +124,7 @@ describe('InventoryService', () => {
     expect(query).toContain('tu.expires_at < CURRENT_DATE');
     expect(query).toContain("'EXPIRED'");
     expect(query).toContain('ORDER BY d.planned_start_date ASC, d.priority ASC');
-    expect(query).toContain('AND req.tenant_id = $2');
+    expect(query).toMatch(/req\\.tenant_id\\s*=\\s*\\$2/);
     expect(query).toContain('AND wo.factory_id = $3');
     expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
   });
