@@ -1655,7 +1655,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
         (result): result is PromiseRejectedResult => result.status === 'rejected',
       );
       expect(String(rejected?.reason?.message ?? rejected?.reason))
-        .toContain('Insufficient eligible FEFO lot/serial stock');
+        .toContain('Insufficient eligible ' + scenario.expectedPolicy + ' lot/serial stock');
 
       const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
         `SELECT id::text AS id, quantity::text AS quantity, status
