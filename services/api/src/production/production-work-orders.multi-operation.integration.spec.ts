@@ -328,7 +328,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         );
         await client.query('DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[])', [tenantId, factoryId, workOrderIds]);
         await client.query(
-          'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
+          'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
           [tenantId, factoryId, inventoryItemIds],
         );
         await client.query('DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])', [tenantId, factoryId, inventoryItemIds]);
@@ -378,7 +378,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
           [tenantId, factoryId, inventoryItemIds],
         );
         await client.query(
-          'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
+          'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
           [tenantId, factoryId, inventoryItemIds],
         );
         await client.query('DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])', [tenantId, factoryId, inventoryItemIds]);
@@ -706,15 +706,15 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
               AND g.tenant_id=wo.tenant_id AND g.factory_id=wo.factory_id
               AND g.relationship_type='CONSUMED_INTO'
               AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION'
-              AND g.evidence->>'production_report_id'=$8
-              AND g.evidence->>'production_output_posting_id'=$5) AS genealogy_count,
+              AND g.evidence->>'production_report_id'=$8::text
+              AND g.evidence->>'production_output_posting_id'=$5::text) AS genealogy_count,
           (SELECT COALESCE(sum(g.quantity),0)::text FROM product_genealogy_events g
             WHERE g.source_unit_id=$6 AND g.target_unit_id=$7
               AND g.tenant_id=wo.tenant_id AND g.factory_id=wo.factory_id
               AND g.relationship_type='CONSUMED_INTO'
               AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION'
-              AND g.evidence->>'production_report_id'=$8
-              AND g.evidence->>'production_output_posting_id'=$5) AS genealogy_quantity
+              AND g.evidence->>'production_report_id'=$8::text
+              AND g.evidence->>'production_output_posting_id'=$5::text) AS genealogy_quantity
        FROM work_orders wo
        JOIN work_order_material_reservations mr
          ON mr.work_order_id=wo.id AND mr.tenant_id=wo.tenant_id AND mr.factory_id=wo.factory_id
