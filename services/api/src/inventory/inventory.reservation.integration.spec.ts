@@ -440,17 +440,16 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
          allocation_policy, require_traceability, created_by_user_id, updated_by_user_id
        )
        VALUES
-         ($1,$2,'FACTORY',NULL,NULL,'FEFO',TRUE,$4,$4),
          ($1,$2,'SECTOR','TEXTILE',NULL,'FEFO',TRUE,$4,$4),
          ($1,$2,'MATERIAL',NULL,$3,'FIFO',TRUE,$4,$4)`,
       [tenantId, factoryId, itemId, TEST_USER_ID],
     );
 
     const databaseDateResult = await adminPool.query<{ current_date: string }>(
-      'SELECT CURRENT_DATE::text AS current_date',
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
     );
     const databaseCurrentDate = databaseDateResult.rows[0]?.current_date;
-    if (!databaseCurrentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(databaseCurrentDate)) {
+    if (!databaseCurrentDate) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FIFO expiry fixtures');
     }
     const expiryFromDatabaseDate = (offsetDays: number): string => {
@@ -486,6 +485,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       expiryFromDatabaseDate(90),
       'wms-fifo-first-' + randomUUID(),
     );
+    await adminPool.query('SELECT pg_sleep(0.02)');
     const secondReceivedLotId = await createLot(
       'LOT-FIFO-RECEIVED-SECOND-' + randomUUID().slice(0, 6),
       expiryFromDatabaseDate(30),
@@ -713,7 +713,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     locationIds.push(warehouse.id, bin.id);
 
-    const dateResult = await adminPool.query<{ current_date: string }>('SELECT CURRENT_DATE::text AS current_date');
+    const dateResult = await adminPool.query<{ current_date: string }>(
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
+    );
     const currentDate = dateResult.rows[0]?.current_date;
     if (!currentDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate)) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FIFO lot fixtures');
@@ -836,8 +838,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        JOIN traceability_units tu ON tu.id=tlb.traceability_unit_id
        WHERE tlb.tenant_id=$1 AND tlb.factory_id=$2 AND tlb.item_id=$3
          AND tlb.traceability_unit_id = ANY($4::uuid[])
+         AND tlb.location_id=$5
        ORDER BY tu.unit_code`,
-      [tenantId, factoryId, itemId, [olderLotId, newerLotId]],
+      [tenantId, factoryId, itemId, [olderLotId, newerLotId], bin.id],
     );
     expect(lotBalances.rows).toHaveLength(2);
     expect(lotBalances.rows.every((row) =>
