@@ -91,12 +91,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const unassignedId = defaultLocation.rows[0]?.id;
     if (!unassignedId) throw new Error('Factory UNASSIGNED location is missing');
 
-    // Establish the physical aggregate at UNASSIGNED before registering its lot identity.
-    // Migration 160 seeds the matching identity balance only from real, untracked stock.
-    await adminPool.query(
-      "INSERT INTO inventory_location_balances (tenant_id, factory_id, item_id, location_id, quantity_on_hand, quantity_reserved) VALUES ($1, $2, $3, $4, 10, 0)",
-      [tenantId, factoryId, componentItemId, unassignedId],
-    );
+    // The inventory_stock_balances INSERT already seeds this UNASSIGNED location
+    // through migration 064. Migration 160 then binds the registered lot identity
+    // to that real location quantity; this fixture must not manufacture a second balance.
     return { unassignedId, binId };
   };
 
