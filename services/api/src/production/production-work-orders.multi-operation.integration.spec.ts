@@ -626,10 +626,14 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       reserved_quantity: string;
       material_on_hand: string;
       material_reserved: string;
+      material_bin_on_hand: string;
+      material_bin_reserved: string;
       material_lot_on_hand: string;
       material_lot_reserved: string;
       finished_on_hand: string;
+      report_count: string;
       output_count: string;
+      output_quantity: string;
       consumption_count: string;
       consumed_quantity: string;
       consumption_allocation_count: string;
@@ -641,12 +645,20 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
           ir.quantity::text AS reserved_quantity,
           material_balance.quantity_on_hand::text AS material_on_hand,
           material_balance.quantity_reserved::text AS material_reserved,
+          material_bin_balance.quantity_on_hand::text AS material_bin_on_hand,
+          material_bin_balance.quantity_reserved::text AS material_bin_reserved,
           material_lot_balance.quantity_on_hand::text AS material_lot_on_hand,
           material_lot_balance.quantity_reserved::text AS material_lot_reserved,
           finished_balance.quantity_on_hand::text AS finished_on_hand,
+          (SELECT count(*)::text FROM order_production_reports r
+            WHERE r.work_order_id=wo.id AND r.tenant_id=wo.tenant_id AND r.factory_id=wo.factory_id
+              AND r.id=$8) AS report_count,
           (SELECT count(*)::text FROM production_output_postings p
             WHERE p.work_order_id=wo.id AND p.tenant_id=wo.tenant_id AND p.factory_id=wo.factory_id
               AND p.id=$5) AS output_count,
+          (SELECT COALESCE(sum(p.good_quantity),0)::text FROM production_output_postings p
+            WHERE p.work_order_id=wo.id AND p.tenant_id=wo.tenant_id AND p.factory_id=wo.factory_id
+              AND p.id=$5) AS output_quantity,
           (SELECT count(*)::text FROM inventory_reservation_consumptions c
             WHERE c.reservation_id=ir.id AND c.tenant_id=wo.tenant_id AND c.factory_id=wo.factory_id) AS consumption_count,
           (SELECT COALESCE(sum(a.quantity),0)::text FROM inventory_reservation_consumption_traceability_allocations a
@@ -678,6 +690,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
          ON ir.id=mr.reservation_id AND ir.tenant_id=mr.tenant_id AND ir.factory_id=mr.factory_id
        JOIN inventory_stock_balances material_balance
          ON material_balance.item_id=$2 AND material_balance.tenant_id=wo.tenant_id AND material_balance.factory_id=wo.factory_id
+       JOIN inventory_location_balances material_bin_balance
+         ON material_bin_balance.item_id=$2 AND material_bin_balance.location_id=$3
+           AND material_bin_balance.tenant_id=wo.tenant_id AND material_bin_balance.factory_id=wo.factory_id
        JOIN inventory_traceability_location_balances material_lot_balance
          ON material_lot_balance.item_id=$2 AND material_lot_balance.traceability_unit_id=$6
            AND material_lot_balance.location_id=$3
@@ -703,10 +718,14 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       reserved_quantity: '3.0000',
       material_on_hand: '7.0000',
       material_reserved: '0.0000',
+      material_bin_on_hand: '7.0000',
+      material_bin_reserved: '0.0000',
       material_lot_on_hand: '7.0000',
       material_lot_reserved: '0.0000',
       finished_on_hand: '3.0000',
+      report_count: '1',
       output_count: '1',
+      output_quantity: '3.0000',
       consumption_count: '1',
       consumed_quantity: '3.0000',
       consumption_allocation_count: '1',
