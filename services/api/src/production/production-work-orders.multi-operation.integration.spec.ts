@@ -227,6 +227,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     if (!adminPool) return;
     const mutableTables = [
       'product_genealogy_events',
+      'production_output_postings',
+      'order_production_reports',
       'traceability_units',
       'inventory_traceability_location_balances',
       'inventory_material_allocation_policies',
@@ -255,6 +257,85 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       await client.query('BEGIN');
       for (const table of mutableTables) {
         await client.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      const reportRows = workOrderIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM order_production_reports WHERE work_order_id = ANY($1::uuid[])',
+          [workOrderIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const reportIds = reportRows.rows.map((row) => row.id);
+
+      const traceabilityRows = inventoryItemIds.length > 0 || reportIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND (inventory_item_id = ANY($3::uuid[]) OR production_report_id = ANY($4::uuid[]))',
+          [tenantId, factoryId, inventoryItemIds, reportIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const traceabilityIds = traceabilityRows.rows.map((row) => row.id);
+
+      const genealogyRows = traceabilityIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, traceabilityIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const genealogyIds = genealogyRows.rows.map((row) => row.id);
+
+      if (traceabilityIds.length > 0) {
+        await client.query(
+          'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, traceabilityIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_reservation_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+      }
+
+      if (workOrderIds.length > 0) {
+        await client.query(
+          'DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[])',
+          [tenantId, factoryId, workOrderIds],
+        );
+      }
+
+      if (inventoryItemIds.length > 0) {
+        await client.query(
+          'DELETE FROM inventory_location_transfers WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, inventoryItemIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, inventoryItemIds],
+        );
+      }
+
+      if (traceabilityIds.length > 0) {
+        await client.query(
+          'DELETE FROM audit_events WHERE tenant_id=$1 AND factory_id=$2 AND ((resource_type=\'TRACEABILITY_UNIT\' AND resource_id = ANY($3::uuid[])) OR (resource_type=\'PRODUCT_GENEALOGY_EVENT\' AND resource_id = ANY($4::uuid[])))',
+          [tenantId, factoryId, traceabilityIds, genealogyIds],
+        );
+        await client.query(
+          'DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_id = ANY($3::uuid[])',
+          [tenantId, factoryId, [...traceabilityIds, ...genealogyIds]],
+        );
+        await client.query(
+          'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+      }
+
+      if (reportIds.length > 0) {
+        await client.query(
+          'DELETE FROM order_production_reports WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, reportIds],
+        );
       }
 
       if (workOrderIds.length > 0) {
@@ -290,38 +371,6 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       }
 
       if (inventoryItemIds.length > 0) {
-        const traceabilityRows = await client.query<{ id: string }>(
-          'SELECT id::text AS id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id = ANY($3::uuid[])',
-          [tenantId, factoryId, inventoryItemIds],
-        );
-        const traceabilityIds = traceabilityRows.rows.map((row) => row.id);
-        if (traceabilityIds.length > 0) {
-          const genealogyRows = await client.query<{ id: string }>(
-            'SELECT id::text AS id FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
-            [tenantId, factoryId, traceabilityIds],
-          );
-          const genealogyIds = genealogyRows.rows.map((row) => row.id);
-          await client.query(
-            'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
-            [tenantId, factoryId, traceabilityIds],
-          );
-          await client.query(
-            "DELETE FROM audit_events WHERE tenant_id=$1 AND factory_id=$2 AND ((resource_type='TRACEABILITY_UNIT' AND resource_id = ANY($3::uuid[])) OR (resource_type='PRODUCT_GENEALOGY_EVENT' AND resource_id = ANY($4::uuid[])))",
-            [tenantId, factoryId, traceabilityIds, genealogyIds],
-          );
-          await client.query(
-            'DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_id = ANY($3::uuid[])',
-            [tenantId, factoryId, [...traceabilityIds, ...genealogyIds]],
-          );
-        }
-        await client.query(
-          'DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
-          [tenantId, factoryId, inventoryItemIds],
-        );
-        await client.query(
-          'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id = ANY($3::uuid[])',
-          [tenantId, factoryId, inventoryItemIds],
-        );
         await client.query(
           'DELETE FROM inventory_material_allocation_policies WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id = ANY($3::uuid[])',
           [tenantId, factoryId, inventoryItemIds],
@@ -329,7 +378,6 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($3::uuid[]))', [tenantId, factoryId, inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_traceability_allocations WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
-        await client.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM outbox_events WHERE aggregate_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
@@ -371,8 +419,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
-    } finally {
-      client.release();
+    }
       if (appPool) await appPool.end();
       await adminPool.end();
     }
