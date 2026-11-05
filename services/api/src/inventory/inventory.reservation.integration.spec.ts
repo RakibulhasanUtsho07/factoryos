@@ -7,6 +7,8 @@ import { CreateInventoryReservationDto } from './dto/create-inventory-reservatio
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
 import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
+import { GoodsReceiptService } from '../procurement/goods-receipt.service';
+import { ProcurementService } from '../procurement/procurement.service';
 import { TraceabilityService } from './traceability.service';
 
 describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () => {
@@ -17,12 +19,18 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   let service!: InventoryReservationService;
   let locationService!: InventoryLocationService;
   let traceabilityService!: TraceabilityService;
+  let procurementService!: ProcurementService;
+  let goodsReceiptService!: GoodsReceiptService;
   let integrationDatabase!: ReturnType<typeof createIntegrationDatabase>;
   let tenantId!: string;
   let factoryId!: string;
   const itemIds: string[] = [];
   const locationIds: string[] = [];
   const sectorCodes: string[] = [];
+  const supplierIds: string[] = [];
+  const purchaseOrderIds: string[] = [];
+  const goodsReceiptIds: string[] = [];
+  const approverIds: string[] = [];
 
   const createItem = async (quantityOnHand: string): Promise<string> => {
     const created = await adminPool.query<{ id: string }>(
@@ -83,11 +91,13 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     service = new InventoryReservationService(integrationDatabase as never, audit);
     locationService = new InventoryLocationService(integrationDatabase as never, audit);
     traceabilityService = new TraceabilityService(integrationDatabase as never);
+    procurementService = new ProcurementService(integrationDatabase as never);
+    goodsReceiptService = new GoodsReceiptService(integrationDatabase as never);
   });
 
   afterAll(async () => {
     try {
-      if (adminPool && itemIds.length > 0) {
+      if (adminPool && (itemIds.length > 0 || supplierIds.length > 0 || purchaseOrderIds.length > 0 || goodsReceiptIds.length > 0 || approverIds.length > 0)) {
         // Test-only cleanup bypasses append-only/lifecycle triggers after all assertions.
         const triggerTables = [
           'inventory_reservation_consumption_traceability_allocations',
@@ -103,6 +113,13 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           'inventory_location_balances',
           'inventory_stock_balances',
           'inventory_locations',
+          'goods_receipt_lines',
+          'goods_receipts',
+          'purchase_order_status_history',
+          'purchase_order_lines',
+          'purchase_orders',
+          'suppliers',
+          'audit_events',
         ];
         for (const table of triggerTables) {
           await adminPool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
@@ -112,13 +129,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
             `
             DELETE FROM outbox_events
             WHERE aggregate_id = ANY($1::uuid[])
+               OR aggregate_id = ANY($2::uuid[])
                OR aggregate_id IN (
                  SELECT id FROM inventory_reservations WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])
                )
             `,
-            [itemIds],
+            [itemIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds]],
           );
           await adminPool.query(
             'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[]))',
@@ -135,6 +153,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
             [itemIds],
           );
           await adminPool.query('DELETE FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query('DELETE FROM goods_receipt_lines WHERE goods_receipt_id = ANY($1::uuid[])', [goodsReceiptIds]);
+          await adminPool.query('DELETE FROM goods_receipts WHERE id = ANY($1::uuid[])', [goodsReceiptIds]);
+          await adminPool.query('DELETE FROM purchase_order_status_history WHERE purchase_order_id = ANY($1::uuid[])', [purchaseOrderIds]);
+          await adminPool.query('DELETE FROM purchase_order_lines WHERE purchase_order_id = ANY($1::uuid[])', [purchaseOrderIds]);
+          await adminPool.query('DELETE FROM purchase_orders WHERE id = ANY($1::uuid[])', [purchaseOrderIds]);
+          await adminPool.query('DELETE FROM suppliers WHERE id = ANY($1::uuid[])', [supplierIds]);
+          await adminPool.query('DELETE FROM audit_events WHERE actor_user_id = ANY($1::uuid[]) OR resource_id = ANY($2::uuid[])', [approverIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds]]);
+          if (approverIds.length > 0) await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [approverIds]);
           await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           if (sectorCodes.length > 0) {
             await adminPool.query(
@@ -789,6 +815,269 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        FROM inventory_stock_balances s
        JOIN inventory_location_balances b
          ON b.tenant_id=s.tenant_id AND b.factory_id=s.factory_id AND b.item_id=s.item_id
+       WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4`,
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(reconciled.rows[0]).toEqual({
+      stock_on_hand: '6.0000', stock_reserved: '4.0000',
+      bin_on_hand: '6.0000', bin_reserved: '4.0000',
+    });
+  });
+
+  it('uses actual posted-GRN time ahead of received_at and identity creation order for equal-expiry FEFO lots under contention', async () => {
+    const itemId = await createItem('0.0000');
+    const approverId = randomUUID();
+    await adminPool.query('INSERT INTO users (id, display_name) VALUES ($1, $2)', [
+      approverId, 'FEFO posted-GRN integration approver',
+    ]);
+    approverIds.push(approverId);
+
+    const supplier = await procurementService.createSupplier(
+      TEST_USER_ID, tenantId,
+      { code: 'WMS-FEFO-GRN-SUP-' + randomUUID().slice(0, 8), name: 'FEFO posted-GRN supplier', country_code: 'BD', currency: 'BDT' } as never,
+      null, null,
+    );
+    supplierIds.push(supplier.id);
+    const po = await procurementService.createPurchaseOrder(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        supplier_id: supplier.id,
+        po_number: 'WMS-FEFO-GRN-PO-' + randomUUID().slice(0, 8),
+        currency: 'BDT',
+        lines: [{
+          line_number: 1, inventory_item_id: itemId,
+          description: 'FEFO posted-GRN timestamp material',
+          quantity: 6, unit: 'PCS', unit_price: 1,
+        }],
+      } as never,
+      'wms-fefo-grn-po-' + randomUUID(), null, null,
+    );
+    purchaseOrderIds.push(po.id);
+    await procurementService.transitionPurchaseOrder(
+      TEST_USER_ID, tenantId, factoryId, po.id,
+      'SUBMITTED', 1, 'Submit FEFO GRN fixture PO', null, null,
+    );
+    const approved = await procurementService.transitionPurchaseOrder(
+      approverId, tenantId, factoryId, po.id,
+      'APPROVED', 2, 'Approve FEFO GRN fixture PO', null, null,
+    );
+    expect(approved.status).toBe('APPROVED');
+
+    const poLine = await adminPool.query<{ id: string }>(
+      'SELECT id::text AS id FROM purchase_order_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id=$3 AND line_number=1',
+      [tenantId, factoryId, po.id],
+    );
+    const poLineId = poLine.rows[0]?.id;
+    if (!poLineId) throw new Error('FEFO GRN fixture PO line missing');
+
+    // First posted GRN has later received_at. posted_at alone should still
+    // rank its LOT ahead of the second receipt.
+    const clock = await adminPool.query<{ now: string }>('SELECT clock_timestamp()::text AS now');
+    const now = clock.rows[0]?.now;
+    if (!now) throw new Error('PostgreSQL clock_timestamp unavailable');
+    const firstReceivedAt = new Date(new Date(now).getTime() - 60 * 60 * 1000).toISOString();
+    const secondReceivedAt = new Date(new Date(now).getTime() - 2 * 60 * 60 * 1000).toISOString();
+    const postGrn = (receivedAt: string, label: string) => goodsReceiptService.postGoodsReceipt(
+      TEST_USER_ID, tenantId, factoryId, po.id,
+      {
+        received_at: receivedAt,
+        supplier_delivery_reference: 'FEFO-GRN-' + label + '-' + randomUUID().slice(0, 6),
+        notes: 'Real GRN-backed FEFO receipt-time precedence integration fixture',
+        lines: [{ purchase_order_line_id: poLineId, received_quantity: 3, rejected_quantity: 0 }],
+      } as never,
+      'wms-fefo-grn-' + label + '-' + randomUUID(), null, randomUUID(),
+    );
+
+    const firstReceipt = await postGrn(firstReceivedAt, 'FIRST-POSTED');
+    goodsReceiptIds.push(firstReceipt.id);
+    await adminPool.query('SELECT pg_sleep(0.05)');
+    const secondReceipt = await postGrn(secondReceivedAt, 'SECOND-POSTED');
+    goodsReceiptIds.push(secondReceipt.id);
+    expect(firstReceipt.status).toBe('POSTED');
+    expect(secondReceipt.status).toBe('POSTED');
+    const firstLineId = firstReceipt.lines[0]?.id;
+    const secondLineId = secondReceipt.lines[0]?.id;
+    if (!firstLineId || !secondLineId) throw new Error('Posted GRN line identity missing');
+    expect(firstReceipt.lines[0]?.accepted_quantity).toBe('3.0000');
+    expect(secondReceipt.lines[0]?.accepted_quantity).toBe('3.0000');
+
+    const receipts = await adminPool.query<{
+      id: string; status: string; line_id: string; accepted_quantity: string;
+      received_at: string; posted_at: string; location_id: string; location_type: string;
+    }>(
+      `SELECT gr.id::text AS id, gr.status, gl.id::text AS line_id,
+              gl.accepted_quantity::text AS accepted_quantity,
+              gr.received_at::text AS received_at, gr.posted_at::text AS posted_at,
+              gr.location_id::text AS location_id, l.location_type
+       FROM goods_receipts gr
+       JOIN goods_receipt_lines gl ON gl.goods_receipt_id=gr.id
+         AND gl.tenant_id=gr.tenant_id AND gl.factory_id=gr.factory_id
+       JOIN inventory_locations l ON l.id=gr.location_id
+         AND l.tenant_id=gr.tenant_id AND l.factory_id=gr.factory_id
+       WHERE gr.tenant_id=$1 AND gr.factory_id=$2 AND gr.id=ANY($3::uuid[])
+       ORDER BY gr.posted_at, gr.id`,
+      [tenantId, factoryId, [firstReceipt.id, secondReceipt.id]],
+    );
+    expect(receipts.rows).toHaveLength(2);
+    expect(receipts.rows.map(row => row.id)).toEqual([firstReceipt.id, secondReceipt.id]);
+    expect(receipts.rows.map(row => row.status)).toEqual(['POSTED', 'POSTED']);
+    expect(receipts.rows.map(row => row.line_id)).toEqual([firstLineId, secondLineId]);
+    expect(receipts.rows.every(row => row.accepted_quantity === '3.0000')).toBe(true);
+    expect(receipts.rows[0]?.location_type).toBe('VIRTUAL');
+    expect(new Date(receipts.rows[0]!.posted_at).getTime()).toBeLessThan(new Date(receipts.rows[1]!.posted_at).getTime());
+    expect(new Date(receipts.rows[0]!.received_at).getTime()).toBeGreaterThan(new Date(receipts.rows[1]!.received_at).getTime());
+    const unassignedLocationId = receipts.rows[0]?.location_id;
+    if (!unassignedLocationId || receipts.rows[1]?.location_id !== unassignedLocationId) {
+      throw new Error('Both GRNs must post into the same factory UNASSIGNED bucket');
+    }
+
+    const dateResult = await adminPool.query<{ current_date: string }>("SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date");
+    const currentDate = dateResult.rows[0]?.current_date;
+    if (!currentDate) throw new Error('PostgreSQL CURRENT_DATE unavailable');
+    const expiry = new Date(currentDate + 'T00:00:00.000Z');
+    expiry.setUTCDate(expiry.getUTCDate() + 60);
+    const sharedExpiry = expiry.toISOString().slice(0, 10);
+
+    const createLot = async (label: string, lineId: string): Promise<string> => {
+      const code = 'LOT-FEFO-POSTED-GRN-' + label + '-' + randomUUID().slice(0, 6);
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, factoryId,
+        {
+          unit_type: 'LOT', product_role: 'MATERIAL',
+          unit_code: code, barcode_value: 'BAR-' + code,
+          inventory_item_id: itemId, goods_receipt_line_id: lineId,
+          quantity: 3, unit: 'PCS', expires_at: sharedExpiry, attributes: {},
+        } as never,
+        'wms-fefo-posted-grn-' + label + '-' + randomUUID(), randomUUID(), randomUUID(),
+      );
+      if (!unit.id) throw new Error('GRN-linked FEFO lot was not created');
+      return unit.id;
+    };
+
+    // Create the second GRN identity first. A sort on received_at or created_at
+    // would incorrectly select this LOT before the first-posted GRN LOT.
+    const secondPostedLotId = await createLot('SECOND-POSTED', secondLineId);
+    await adminPool.query('SELECT pg_sleep(0.05)');
+    const firstPostedLotId = await createLot('FIRST-POSTED', firstLineId);
+    const provenance = await adminPool.query<{
+      id: string; expiry: string; identity_created_at: string; receipt_status: string;
+      received_at: string; posted_at: string; accepted_quantity: string; effective_receipt_at: string;
+    }>(
+      `SELECT tu.id::text AS id, tu.expires_at::text AS expiry,
+              tu.created_at::text AS identity_created_at, gr.status AS receipt_status,
+              gr.received_at::text AS received_at, gr.posted_at::text AS posted_at,
+              gl.accepted_quantity::text AS accepted_quantity,
+              COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS effective_receipt_at
+       FROM traceability_units tu
+       JOIN goods_receipt_lines gl ON gl.id=tu.goods_receipt_line_id
+         AND gl.tenant_id=tu.tenant_id AND gl.factory_id=tu.factory_id
+       JOIN goods_receipts gr ON gr.id=gl.goods_receipt_id
+         AND gr.tenant_id=gl.tenant_id AND gr.factory_id=gl.factory_id
+       WHERE tu.tenant_id=$1 AND tu.factory_id=$2 AND tu.id=ANY($3::uuid[])
+       ORDER BY COALESCE(gr.posted_at, gr.received_at, tu.created_at), lower(tu.unit_code), tu.id`,
+      [tenantId, factoryId, [firstPostedLotId, secondPostedLotId]],
+    );
+    expect(provenance.rows).toHaveLength(2);
+    expect(provenance.rows.map(row => row.id)).toEqual([firstPostedLotId, secondPostedLotId]);
+    expect(provenance.rows.every(row => row.receipt_status === 'POSTED' && row.accepted_quantity === '3.0000')).toBe(true);
+    expect(provenance.rows[0]?.expiry).toBe(provenance.rows[1]?.expiry);
+    expect(new Date(provenance.rows[0]!.posted_at).getTime()).toBeLessThan(new Date(provenance.rows[1]!.posted_at).getTime());
+    expect(new Date(provenance.rows[0]!.received_at).getTime()).toBeGreaterThan(new Date(provenance.rows[1]!.received_at).getTime());
+    expect(new Date(provenance.rows[0]!.identity_created_at).getTime()).toBeGreaterThan(new Date(provenance.rows[1]!.identity_created_at).getTime());
+    expect(new Date(provenance.rows[0]!.effective_receipt_at).getTime()).toBeLessThan(new Date(provenance.rows[1]!.effective_receipt_at).getTime());
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-GRN-WH-' + randomUUID().slice(0, 8), name: 'FEFO posted-GRN warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-GRN-BIN-' + randomUUID().slice(0, 8), name: 'FEFO posted-GRN competing-demand bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+    await adminPool.query(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+         require_traceability, created_by_user_id, updated_by_user_id
+       ) VALUES ($1,$2,'MATERIAL',$3,'FEFO',TRUE,$4,$4)`,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: unassignedLocationId, destination_location_id: bin.id,
+        traceability_unit_id: firstPostedLotId, quantity: 3 } as never,
+      'wms-fefo-grn-putaway-first-' + randomUUID(), null, randomUUID(),
+    );
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: unassignedLocationId, destination_location_id: bin.id,
+        traceability_unit_id: secondPostedLotId, quantity: 3 } as never,
+      'wms-fefo-grn-putaway-second-' + randomUUID(), null, randomUUID(),
+    );
+
+    const reserve = (key: string) => service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
+      key, null, randomUUID(),
+    );
+    const competing = await Promise.allSettled([
+      reserve('wms-fefo-grn-competitor-a-' + randomUUID()),
+      reserve('wms-fefo-grn-competitor-b-' + randomUUID()),
+    ]);
+    expect(competing.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(competing.filter(result => result.status === 'rejected')).toHaveLength(1);
+    const rejected = competing.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(String(rejected?.reason?.message ?? rejected?.reason)).toContain('Insufficient eligible FEFO lot/serial stock');
+
+    const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
+      `SELECT id::text AS id, quantity::text AS quantity, status
+       FROM inventory_reservations WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+       ORDER BY created_at, id`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(reservations.rows).toHaveLength(1);
+    expect(reservations.rows[0]).toMatchObject({ quantity: '4.0000', status: 'RESERVED' });
+    const allocations = await adminPool.query<{
+      traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
+    }>(
+      `SELECT traceability_unit_id::text AS traceability_unit_id, allocation_sequence,
+              allocated_quantity::text AS allocated_quantity
+       FROM inventory_reservation_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND reservation_id=$4
+       ORDER BY allocation_sequence`,
+      [tenantId, factoryId, itemId, reservations.rows[0]!.id],
+    );
+    expect(allocations.rows).toEqual([
+      { traceability_unit_id: firstPostedLotId, allocation_sequence: 1, allocated_quantity: '3.0000' },
+      { traceability_unit_id: secondPostedLotId, allocation_sequence: 2, allocated_quantity: '1.0000' },
+    ]);
+
+    const lotBalances = await adminPool.query<{
+      unit_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT traceability_unit_id::text AS unit_id,
+              quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(lotBalances.rows).toHaveLength(2);
+    expect(lotBalances.rows).toEqual(expect.arrayContaining([
+      { unit_id: firstPostedLotId, quantity_on_hand: '3.0000', quantity_reserved: '3.0000' },
+      { unit_id: secondPostedLotId, quantity_on_hand: '3.0000', quantity_reserved: '1.0000' },
+    ]));
+    const reconciled = await adminPool.query<{
+      stock_on_hand: string; stock_reserved: string; bin_on_hand: string; bin_reserved: string;
+    }>(
+      `SELECT s.quantity_on_hand::text AS stock_on_hand, s.quantity_reserved::text AS stock_reserved,
+              b.quantity_on_hand::text AS bin_on_hand, b.quantity_reserved::text AS bin_reserved
+       FROM inventory_stock_balances s
+       JOIN inventory_location_balances b ON b.tenant_id=s.tenant_id
+         AND b.factory_id=s.factory_id AND b.item_id=s.item_id
        WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4`,
       [tenantId, factoryId, itemId, bin.id],
     );
