@@ -14935,22 +14935,30 @@
         "services/api/src/production/production-work-orders.service.ts"
       ],
       "migrationReferences": [
+        "migrations/198_production_output_lot_genealogy.sql",
+        "migrations/199_wms_work_order_genealogy_consumption_guard.sql",
         "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
         "migrations/236_wms_serial_indivisibility.sql"
       ],
       "automatedTestReferences": [
+        "services/api/test/production-output-lot-genealogy.sql",
+        "services/api/test/work-order-genealogy-consumption-guard.sql",
         "services/api/test/inventory-wms-allocation.sql",
         "services/api/test/wms-serial-indivisibility.sql",
         "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts"
       ],
-      "ciRunUrls": [],
+      "ciRunUrls": [
+        "https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/41981968309",
+        "https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/41981968349",
+        "https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/41981968362"
+      ],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
       "reviewer": null,
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Material-first, then sector, factory and traceability policy resolution; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility; migration 236 whole-unit serial constraints and PostgreSQL SQL regressions. A dedicated three-step PostgreSQL integration test exercises work-order creation/release with actual BOM reservation, operation predecessor gating, next-step WIP transfer, WIP conservation, optimistic row versions and same-key replay. It deliberately stops before final output posting, raw-material consumption and completed lot/serial genealogy. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, named owner and independent reviewer, live FIFO/FEFO evidence, representative sector/provider/site fixtures, physical device/HIL, and end-to-end manufacturing split/merge plus output genealogy acceptance.",
+      "closureNote": "Material-first, then sector, factory and traceability policy resolution; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility; migration 236 whole-unit serial constraints and PostgreSQL SQL regressions. A dedicated three-step PostgreSQL fixture now carries an inventory-linked MATERIAL LOT through BOM reservation, predecessor gating, immediate-next WIP transfer, WIP conservation, optimistic row versions and same-key transfer replay, then posts final-operation output, verifies output replay, zeros WIP, completes the final operation and work order, consumes the exact lot allocation, and checks aggregate/bin/lot stock conservation plus the source-lot-to-finished-good genealogy edge. Migrations 198/199 provide the output-identity and deferred material-consumption genealogy database guards. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, named owner and independent reviewer, live FIFO/FEFO evidence under competing demand, representative sector/provider/site fixtures, physical device/HIL, the complete tracked SERIAL manufacturing route, and actual LOT/SERIAL split/merge acceptance. Technical verification for candidate code SHA f62877da219464741e4d6451f8209de5e9f29c7b passed on 2026-11-05: API CI, the full PostgreSQL unit/integration suite (including the three-operation tracked-LOT output/genealogy test), and SRS/HLD/Blueprint traceability. Exact CI links are recorded in ciRunUrls. This is repository technical evidence only; it does not change the OPEN / NOT_ACCEPTED disposition or substitute for owner/reviewer sign-off and the remaining live, site, device, SERIAL and split/merge acceptance.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
