@@ -483,4 +483,159 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       status: 'CONSUMED', remaining_quantity: '0.0000', consumed_quantity: '5.0000',
     });
   });
+
+  it('allocates concurrent FIFO reservations to successive oldest-received lots without double-claiming a lot', async () => {
+    const itemId = await createItem('6.0000');
+    const defaultResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FIFO-WH-' + randomUUID().slice(0, 8), name: 'FIFO concurrency warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FIFO-BIN-' + randomUUID().slice(0, 8), name: 'FIFO concurrency bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    const dateResult = await adminPool.query<{ current_date: string }>('SELECT CURRENT_DATE::text AS current_date');
+    const currentDate = dateResult.rows[0]?.current_date;
+    if (!currentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(currentDate)) {
+      throw new Error('PostgreSQL CURRENT_DATE is unavailable for FIFO lot fixtures');
+    }
+    const futureExpiry = new Date(currentDate + 'T00:00:00.000Z');
+    futureExpiry.setUTCDate(futureExpiry.getUTCDate() + 90);
+    const expiry = futureExpiry.toISOString().slice(0, 10);
+
+    const createLot = async (label: string, key: string): Promise<string> => {
+      const unitCode = 'LOT-FIFO-' + label + '-' + randomUUID().slice(0, 6);
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, factoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: unitCode,
+          barcode_value: 'BAR-' + unitCode,
+          inventory_item_id: itemId,
+          quantity: 3,
+          unit: 'PCS',
+          external_reference: 'SUPPLIER-' + unitCode,
+          expires_at: expiry,
+          attributes: {},
+        } as never,
+        key, randomUUID(), randomUUID(),
+      );
+      if (!unit.id) throw new Error('FIFO traceability lot fixture was not created');
+      return unit.id;
+    };
+
+    const olderLotId = await createLot('OLDER', 'wms-fifo-older-' + randomUUID());
+    // Keep receipt timestamps distinct so the test proves receipt ordering, not the
+    // final unit-code/location/id tie-breakers.
+    await adminPool.query('SELECT pg_sleep(0.02)');
+    const newerLotId = await createLot('NEWER', 'wms-fifo-newer-' + randomUUID());
+
+    await adminPool.query(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+         require_traceability, created_by_user_id, updated_by_user_id
+       ) VALUES ($1,$2,'MATERIAL',$3,'FIFO',TRUE,$4,$4)`,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: bin.id, traceability_unit_id: olderLotId, quantity: 3 } as never,
+      'wms-fifo-putaway-older-' + randomUUID(), null, randomUUID(),
+    );
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: bin.id, traceability_unit_id: newerLotId, quantity: 3 } as never,
+      'wms-fifo-putaway-newer-' + randomUUID(), null, randomUUID(),
+    );
+
+    const createCompetingReservation = (key: string) => service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 3, location_id: bin.id } as CreateInventoryReservationDto,
+      key, null, randomUUID(),
+    );
+    const concurrent = await Promise.all([
+      createCompetingReservation('wms-fifo-demand-a-' + randomUUID()),
+      createCompetingReservation('wms-fifo-demand-b-' + randomUUID()),
+    ]);
+    expect(concurrent).toHaveLength(2);
+    expect(concurrent.every((reservation) => reservation.status === 'RESERVED')).toBe(true);
+
+    const persisted = await adminPool.query<{
+      reservation_id: string; quantity: string; unit_code: string;
+      allocated_quantity: string; received_at: string; created_at: string;
+    }>(
+      `
+      SELECT r.id::text AS reservation_id, r.quantity::text AS quantity,
+             tu.unit_code, a.allocated_quantity::text AS allocated_quantity,
+             COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
+             r.created_at::text AS created_at
+      FROM inventory_reservations r
+      JOIN inventory_reservation_traceability_allocations a
+        ON a.reservation_id=r.id AND a.tenant_id=r.tenant_id AND a.factory_id=r.factory_id
+      JOIN traceability_units tu
+        ON tu.id=a.traceability_unit_id AND tu.tenant_id=a.tenant_id AND tu.factory_id=a.factory_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id=tu.goods_receipt_id AND gr.tenant_id=tu.tenant_id AND gr.factory_id=tu.factory_id
+      WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.item_id=$3
+        AND r.id = ANY($4::uuid[])
+      ORDER BY r.created_at, r.id, a.allocation_sequence
+      `,
+      [tenantId, factoryId, itemId, concurrent.map((reservation) => reservation.id)],
+    );
+    expect(persisted.rows).toHaveLength(2);
+    expect(persisted.rows.map((row) => row.quantity)).toEqual(['3.0000', '3.0000']);
+    expect(persisted.rows.map((row) => row.allocated_quantity)).toEqual(['3.0000', '3.0000']);
+    expect(persisted.rows[0]?.unit_code).toContain('LOT-FIFO-OLDER');
+    expect(persisted.rows[1]?.unit_code).toContain('LOT-FIFO-NEWER');
+    expect(new Date(persisted.rows[0]!.received_at).getTime())
+      .toBeLessThan(new Date(persisted.rows[1]!.received_at).getTime());
+
+    const aggregate = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text, quantity_reserved::text
+       FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(aggregate.rows[0]).toMatchObject({ quantity_on_hand: '6.0000', quantity_reserved: '6.0000' });
+
+    const binBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text, quantity_reserved::text
+       FROM inventory_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(binBalance.rows[0]).toMatchObject({ quantity_on_hand: '6.0000', quantity_reserved: '6.0000' });
+
+    const lotBalances = await adminPool.query<{
+      unit_code: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT tu.unit_code, tlb.quantity_on_hand::text, tlb.quantity_reserved::text
+       FROM inventory_traceability_location_balances tlb
+       JOIN traceability_units tu ON tu.id=tlb.traceability_unit_id
+       WHERE tlb.tenant_id=$1 AND tlb.factory_id=$2 AND tlb.item_id=$3
+         AND tlb.traceability_unit_id = ANY($4::uuid[])
+       ORDER BY tu.unit_code`,
+      [tenantId, factoryId, itemId, [olderLotId, newerLotId]],
+    );
+    expect(lotBalances.rows).toHaveLength(2);
+    expect(lotBalances.rows.every((row) =>
+      row.quantity_on_hand === '3.0000' && row.quantity_reserved === '3.0000',
+    )).toBe(true);
+  });
+
 });
