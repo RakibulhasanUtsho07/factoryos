@@ -623,6 +623,181 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     });
   });
 
+  it('uses the effective receipt timestamp as the FEFO tie-break for equal-expiry lots under competing reservations', async () => {
+    const itemId = await createItem('6.0000');
+    const defaultResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-TIE-WH-' + randomUUID().slice(0, 8), name: 'FEFO tie-break warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-TIE-BIN-' + randomUUID().slice(0, 8), name: 'FEFO tie-break competing-demand bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    await adminPool.query(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+         require_traceability, created_by_user_id, updated_by_user_id
+       )
+       VALUES ($1,$2,'MATERIAL',$3,'FEFO',TRUE,$4,$4)`,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+
+    const databaseDateResult = await adminPool.query<{ current_date: string }>(
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
+    );
+    const databaseCurrentDate = databaseDateResult.rows[0]?.current_date;
+    if (!databaseCurrentDate) throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO tie-break fixtures');
+    const date = new Date(databaseCurrentDate + 'T00:00:00.000Z');
+    date.setUTCDate(date.getUTCDate() + 60);
+    const sharedExpiry = date.toISOString().slice(0, 10);
+
+    const createLot = async (label: string): Promise<string> => {
+      const unitCode = 'LOT-FEFO-EQUAL-EXPIRY-' + label + '-' + randomUUID().slice(0, 6);
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, factoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: unitCode,
+          barcode_value: 'BAR-' + unitCode,
+          inventory_item_id: itemId,
+          quantity: 3,
+          unit: 'PCS',
+          external_reference: 'SUPPLIER-' + unitCode,
+          expires_at: sharedExpiry,
+          attributes: {},
+        } as never,
+        'wms-fefo-equal-expiry-' + label + '-' + randomUUID(), randomUUID(), randomUUID(),
+      );
+      if (!unit.id) throw new Error('FEFO equal-expiry traceability lot fixture was not created');
+      return unit.id;
+    };
+
+    // With no GRN-line association, the allocator's documented receipt-time
+    // fallback is traceability_units.created_at. Separate commits establish an
+    // unambiguous order while both identities retain the exact same expiry.
+    const firstReceivedLotId = await createLot('FIRST-RECEIVED');
+    await adminPool.query('SELECT pg_sleep(0.04)');
+    const secondReceivedLotId = await createLot('SECOND-RECEIVED');
+    const receivedOrder = await adminPool.query<{
+      id: string; unit_code: string; expires_at: string; received_at: string;
+    }>(
+      `SELECT tu.id::text AS id, tu.unit_code, tu.expires_at::text AS expires_at,
+              COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at
+       FROM traceability_units tu
+       LEFT JOIN goods_receipts gr
+         ON gr.id=tu.goods_receipt_id AND gr.tenant_id=tu.tenant_id AND gr.factory_id=tu.factory_id
+       WHERE tu.tenant_id=$1 AND tu.factory_id=$2 AND tu.id=ANY($3::uuid[])
+       ORDER BY COALESCE(gr.posted_at, gr.received_at, tu.created_at), lower(tu.unit_code), tu.id`,
+      [tenantId, factoryId, [firstReceivedLotId, secondReceivedLotId]],
+    );
+    expect(receivedOrder.rows.map((row) => row.id)).toEqual([firstReceivedLotId, secondReceivedLotId]);
+    expect(receivedOrder.rows[0]?.expires_at).toBe(receivedOrder.rows[1]?.expires_at);
+    expect(new Date(receivedOrder.rows[0]!.received_at).getTime())
+      .toBeLessThan(new Date(receivedOrder.rows[1]!.received_at).getTime());
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: bin.id, traceability_unit_id: firstReceivedLotId, quantity: 3 } as never,
+      'wms-fefo-tie-putaway-first-' + randomUUID(), null, randomUUID(),
+    );
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: bin.id, traceability_unit_id: secondReceivedLotId, quantity: 3 } as never,
+      'wms-fefo-tie-putaway-second-' + randomUUID(), null, randomUUID(),
+    );
+
+    const reserve = (key: string) => service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
+      key, null, randomUUID(),
+    );
+    const competing = await Promise.allSettled([
+      reserve('wms-fefo-tie-competitor-a-' + randomUUID()),
+      reserve('wms-fefo-tie-competitor-b-' + randomUUID()),
+    ]);
+    expect(competing.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(competing.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const rejected = competing.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(String(rejected?.reason?.message ?? rejected?.reason))
+      .toContain('Insufficient eligible FEFO lot/serial stock');
+
+    const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
+      `SELECT id::text AS id, quantity::text AS quantity, status
+       FROM inventory_reservations
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+       ORDER BY created_at, id`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(reservations.rows).toHaveLength(1);
+    expect(reservations.rows[0]).toMatchObject({ quantity: '4.0000', status: 'RESERVED' });
+
+    const allocations = await adminPool.query<{
+      traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
+    }>(
+      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+              a.allocation_sequence, a.allocated_quantity::text AS allocated_quantity
+       FROM inventory_reservation_traceability_allocations a
+       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
+         AND a.reservation_id=$4
+       ORDER BY a.allocation_sequence`,
+      [tenantId, factoryId, itemId, reservations.rows[0]!.id],
+    );
+    expect(allocations.rows).toEqual([
+      { traceability_unit_id: firstReceivedLotId, allocation_sequence: 1, allocated_quantity: '3.0000' },
+      { traceability_unit_id: secondReceivedLotId, allocation_sequence: 2, allocated_quantity: '1.0000' },
+    ]);
+
+    const lotBalances = await adminPool.query<{
+      unit_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT traceability_unit_id::text AS unit_id,
+              quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4
+       ORDER BY traceability_unit_id`,
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(lotBalances.rows).toHaveLength(2);
+    expect(lotBalances.rows).toEqual(expect.arrayContaining([
+      { unit_id: firstReceivedLotId, quantity_on_hand: '3.0000', quantity_reserved: '3.0000' },
+      { unit_id: secondReceivedLotId, quantity_on_hand: '3.0000', quantity_reserved: '1.0000' },
+    ]));
+
+    const reconciled = await adminPool.query<{
+      stock_on_hand: string; stock_reserved: string; bin_on_hand: string; bin_reserved: string;
+    }>(
+      `SELECT s.quantity_on_hand::text AS stock_on_hand,
+              s.quantity_reserved::text AS stock_reserved,
+              b.quantity_on_hand::text AS bin_on_hand,
+              b.quantity_reserved::text AS bin_reserved
+       FROM inventory_stock_balances s
+       JOIN inventory_location_balances b
+         ON b.tenant_id=s.tenant_id AND b.factory_id=s.factory_id AND b.item_id=s.item_id
+       WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4`,
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(reconciled.rows[0]).toEqual({
+      stock_on_hand: '6.0000', stock_reserved: '4.0000',
+      bin_on_hand: '6.0000', bin_reserved: '4.0000',
+    });
+  });
+
   it('replays duplicate create and partial-issue keys without duplicating reservations or movements', async () => {
     const itemId = await createItem('6.0000');
     const reservationKey = 'wms-duplicate-reserve-' + randomUUID();
