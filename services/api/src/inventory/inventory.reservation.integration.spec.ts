@@ -508,7 +508,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
     const dateResult = await adminPool.query<{ current_date: string }>('SELECT CURRENT_DATE::text AS current_date');
     const currentDate = dateResult.rows[0]?.current_date;
-    if (!currentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(currentDate)) {
+    if (!currentDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate)) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FIFO lot fixtures');
     }
     const futureExpiry = new Date(currentDate + 'T00:00:00.000Z');
