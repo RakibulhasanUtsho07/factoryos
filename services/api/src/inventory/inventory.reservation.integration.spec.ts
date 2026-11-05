@@ -132,13 +132,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
             DELETE FROM outbox_events
             WHERE aggregate_id = ANY($1::uuid[])
                OR aggregate_id = ANY($2::uuid[])
+               OR aggregate_id = ANY($3::uuid[])
                OR aggregate_id IN (
                  SELECT id FROM inventory_reservations WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])
                )
             `,
-            [itemIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds]],
+            [itemIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds], locationIds],
           );
           await adminPool.query(
             'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[]))',
