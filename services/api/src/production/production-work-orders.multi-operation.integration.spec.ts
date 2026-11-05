@@ -299,6 +299,22 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
           await client.query('DELETE FROM inventory_reservations WHERE id = ANY($1::uuid[])', [reservationIds]);
         }
         await client.query(
+          `DELETE FROM outbox_events
+           WHERE aggregate_type='PRODUCT_GENEALOGY_EVENT'
+             AND aggregate_id IN (
+               SELECT id FROM product_genealogy_events
+               WHERE tenant_id=$1 AND factory_id=$2
+                 AND (source_unit_id IN (
+                   SELECT id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2
+                     AND inventory_item_id = ANY($3::uuid[])
+                 ) OR target_unit_id IN (
+                   SELECT id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2
+                     AND inventory_item_id = ANY($3::uuid[])
+                 ))
+             )`,
+          [tenantId, factoryId, inventoryItemIds],
+        );
+        await client.query(
           `DELETE FROM product_genealogy_events
            WHERE tenant_id=$1 AND factory_id=$2
              AND (source_unit_id IN (
@@ -333,6 +349,22 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($3::uuid[]))', [tenantId, factoryId, inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_traceability_allocations WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE aggregate_type='PRODUCT_GENEALOGY_EVENT'
+             AND aggregate_id IN (
+               SELECT id FROM product_genealogy_events
+               WHERE tenant_id=$1 AND factory_id=$2
+                 AND (source_unit_id IN (
+                   SELECT id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2
+                     AND inventory_item_id = ANY($3::uuid[])
+                 ) OR target_unit_id IN (
+                   SELECT id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2
+                     AND inventory_item_id = ANY($3::uuid[])
+                 ))
+             )`,
+          [tenantId, factoryId, inventoryItemIds],
+        );
         await client.query(
           `DELETE FROM product_genealogy_events
            WHERE tenant_id=$1 AND factory_id=$2
@@ -404,7 +436,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     }
   });
 
-  it('routes one work order through three operations with conserved WIP, next-step transfer and row-versioned events', async () => {
+  it('completes a three-operation work order with tracked LOT output, conserved WIP and material genealogy', async () => {
     const finishedItemId = await createItem('Three-step finished good', '0.0000');
     const componentItemId = await createItem('Three-step BOM component', '10.0000');
     const componentBinId = await createComponentBin(componentItemId);
