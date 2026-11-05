@@ -14931,7 +14931,8 @@
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
       "directCodeReferences": [
         "services/api/src/inventory/inventory.reservation.service.ts",
-        "services/api/src/inventory/traceability.service.ts"
+        "services/api/src/inventory/traceability.service.ts",
+        "services/api/src/production/production-work-orders.service.ts"
       ],
       "migrationReferences": [
         "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
@@ -14939,7 +14940,8 @@
       ],
       "automatedTestReferences": [
         "services/api/test/inventory-wms-allocation.sql",
-        "services/api/test/wms-serial-indivisibility.sql"
+        "services/api/test/wms-serial-indivisibility.sql",
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts"
       ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
@@ -14948,7 +14950,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "The reservation service resolves material, sector, factory and traceability allocation policy; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility are enforced in the allocation plan. Migration 236 adds serial-only database cardinality and writer guards; migration 160 provides the WMS traceability balance/reservation foundation. SQL regression tests cover allocation and serialized-stock indivisibility. This evidence is implementation-level only: FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, approved owner/reviewer, representative multi-operation manufacturing acceptance, live site/device/provider evidence and FIFO/FEFO operational proof.",
+      "closureNote": "Material-first, then sector, factory and traceability policy resolution; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility; migration 236 whole-unit serial constraints and PostgreSQL SQL regressions. A dedicated three-step PostgreSQL integration test exercises work-order creation/release with actual BOM reservation, operation predecessor gating, next-step WIP transfer, WIP conservation, optimistic row versions and same-key replay. It deliberately stops before final output posting, raw-material consumption and completed lot/serial genealogy. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, named owner and independent reviewer, live FIFO/FEFO evidence, representative sector/provider/site fixtures, physical device/HIL, and end-to-end manufacturing split/merge plus output genealogy acceptance.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
