@@ -407,7 +407,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(consumptionEvidence.rows[0]).toMatchObject({ issue_count: '3', issued_quantity: '4.0000' });
   });
 
-  it('applies material FIFO ahead of sector/factory FEFO and serializes competing lot reservations', async () => {
+  it('applies material FIFO ahead of sector FEFO and serializes competing lot reservations', async () => {
     const itemId = await createItem('6.0000');
     const defaultResult = await adminPool.query<{ id: string }>(
       `SELECT id::text AS id FROM inventory_locations
@@ -433,7 +433,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "UPDATE inventory_items SET sector_code='TEXTILE' WHERE tenant_id=$1 AND factory_id=$2 AND id=$3",
       [tenantId, factoryId, itemId],
     );
-    // The more-specific material policy must win over both broader FEFO policies.
+    // The more-specific material policy must win over the sector-level FEFO policy.
     await adminPool.query(
       `INSERT INTO inventory_material_allocation_policies (
          tenant_id, factory_id, policy_scope, sector_code, inventory_item_id,
