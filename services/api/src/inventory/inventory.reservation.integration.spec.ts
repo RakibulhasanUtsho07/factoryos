@@ -162,7 +162,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           await adminPool.query('DELETE FROM purchase_order_lines WHERE purchase_order_id = ANY($1::uuid[])', [purchaseOrderIds]);
           await adminPool.query('DELETE FROM purchase_orders WHERE id = ANY($1::uuid[])', [purchaseOrderIds]);
           await adminPool.query('DELETE FROM suppliers WHERE id = ANY($1::uuid[])', [supplierIds]);
-          await adminPool.query('DELETE FROM audit_events WHERE actor_user_id = ANY($1::uuid[]) OR resource_id = ANY($2::uuid[])', [approverIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds]]);
+          await adminPool.query('DELETE FROM audit_events WHERE actor_user_id = ANY($1::uuid[]) OR resource_id = ANY($2::uuid[]) OR factory_id = ANY($3::uuid[]) OR resource_id = ANY($4::uuid[])', [approverIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds], factoryIds, locationIds]);
           if (approverIds.length > 0) await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [approverIds]);
           await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           if (sectorCodes.length > 0) {
