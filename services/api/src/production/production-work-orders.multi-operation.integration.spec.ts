@@ -65,7 +65,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     return itemId;
   };
 
-  const createComponentBin = async (componentItemId: string): Promise<{ unassignedId: string; binId: string }> => {
+  const createComponentBin = async (): Promise<{ unassignedId: string; binId: string }> => {
     const suffix = randomUUID().slice(0, 8);
     const warehouse = await adminPool.query<{ id: string }>(
       "INSERT INTO inventory_locations (tenant_id, factory_id, location_code, name, location_type, putaway_enabled, picking_enabled, created_by_user_id) VALUES ($1, $2, $3, $4, 'WAREHOUSE', FALSE, FALSE, $5) RETURNING id::text AS id",
@@ -429,7 +429,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   it('routes one work order through three operations with conserved WIP, next-step transfer and row-versioned events', async () => {
     const finishedItemId = await createItem('Three-step finished good', '0.0000');
     const componentItemId = await createItem('Three-step BOM component', '10.0000');
-    const componentLocations = await createComponentBin(componentItemId);
+    const componentLocations = await createComponentBin();
     const materialLot = await traceabilityService.createUnit(
       TEST_USER_ID,
       tenantId,
@@ -645,7 +645,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
 
     await sendOperationEvent(draft.id, finalOperation.id, { command: 'WIP_REPORTED', quantity: 0 }, 'wo-multi-final-wip-clear-' + randomUUID());
     await sendOperationEvent(draft.id, finalOperation.id, { command: 'COMPLETE' }, 'wo-multi-complete-final-operation-' + randomUUID());
-    let finalState = await readState(draft.id);
+    const finalState = await readState(draft.id);
     expect(finalState.operations.map((operation) => operation.status)).toEqual(['COMPLETED', 'COMPLETED', 'COMPLETED']);
     expect(finalState.operations.map((operation) => operation.wip_quantity)).toEqual(['0.0000', '0.0000', '0.0000']);
 
