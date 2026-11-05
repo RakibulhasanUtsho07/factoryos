@@ -94,6 +94,10 @@ The migration uses row locks for serial-specific balance, reservation, consumpti
 
 This closes the database-level serial quantity/cardinality gap. Physical scanner, RFID reader, printer and plant acceptance remain separate hardware/site gates and are not implied by these tests.
 
+## Work-order material-to-output lot genealogy integration evidence
+
+`services/api/src/production/production-work-orders.multi-operation.integration.spec.ts` now exercises one complete three-operation work-order scenario against PostgreSQL. A registered material LOT is put away with an explicit traceability identity into a BIN, the material-level LOT policy forces the BOM reservation to retain that identity, and final output reporting creates one finished-good receipt and report-linked finished-good LOT. Completing the work order consumes the material reservation and persists one `CONSUMED_INTO` edge from the material LOT to the finished-good LOT in the same completion transaction. The fixture verifies receipt/output idempotent replay, the consumed reservation, one genealogy edge with the exact consumed quantity, and both aggregate and tracked location balances (material 10 to 7, finished good 0 to 3). The fixture does not yet cover SERIAL-controlled production consumption across multiple output batches, a production lot/serial split/merge event lifecycle, multiple competing material lots, live FEFO ordering at a real site, or physical device/HIL acceptance.
+
 ## Verification
 
 Migration: `074_lot_serial_product_genealogy.sql`. PostgreSQL regression: `services/api/test/traceability.sql`, plus accepted-GRN lot registration coverage in `services/api/test/goods-receipt.sql`. API input regression: `services/api/src/inventory/traceability.service.spec.ts`.
