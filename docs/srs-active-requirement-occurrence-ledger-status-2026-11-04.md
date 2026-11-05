@@ -52,3 +52,20 @@ The approved deliverable must contain one record for **each normative occurrence
 ## 2026-11-04 v2.1 delta extraction verified
 
 The 50 v2.1 additions in SRS §§130-131 are now indexed as 32 functional + 18 non-functional rows on PDF pages 96-99. The ledger confirms 50 unique IDs and the source-declared new-addition priorities P0=35 / P1=15 / P2=0, with source table locators and normalized wording digests. An offline verifier can re-extract against the exact source PDF hash. This is a bounded extraction improvement only; it does not resolve the inherited 900 v2.0 population or any source-owner approval, and does not change the 842 provisional tracker status.
+
+
+## 2026-11-04 v2.0 inherited-scope table extraction diagnostic
+
+The inherited v2.0 PDF candidate was re-examined using the source-hash-pinned extractor in \`scripts/audit/extract_srs_v20_inherited_occurrence_candidates.py\`.
+
+- Candidate filename: \`FactoryOS_AI_-_SRS_v2_0_Clean_AI_Logic_Consolidated_SRS.pdf\`
+- SHA-256: \`8f905b3cd7dfb8b5fff3df98ba5496427b844de6a592c619ac7ab002db7fec42\`
+- 93 pages; the PDF Title metadata still identifies v1.8 and the document carries a Draft footer, so it is not established as the approved v2.0 source-of-record.
+- 809 normative requirement-table row candidates across 799 distinct IDs; extracted priority-token counts P0=225, P1=527, P2=57.
+- FR-IOT-01 through FR-IOT-10 each occur twice in the normative candidate tables; occurrences remain distinct.
+- 13 auxiliary agent-catalogue rows, 30 scope/crosswalk candidates and 2 metric/decision cross-reference candidates were kept outside the normative row count.
+- One unlocated ID/priority line (\`FR-AIG-03\`, PDF page 6) remains an explicit locator-review candidate.
+
+SRS v2.1 §140 declares an inherited v2.0 population of 900 with P0=261 / P1=567 / P2=72. The 809 table-positioned candidate count and the 91-row arithmetic difference are not a proven row-level reconciliation, not a missing-requirement count, and not implementation-gap evidence. The source populations remain non-equivalent until the controlled revision and count semantics are approved.
+
+The extractor can regenerate full occurrence locators and per-row normalized wording SHA-256 when the exact source PDF is supplied. The source PDF is not committed; the repository stores the count summary in \`docs/srs-v20-inherited-occurrence-candidate-ledger.payload-manifest.json\`, not a claim that all generated row data is committed. Every classification remains unresolved; this does not alter the 842-row provisional closure register, approve priorities, close any of the 37 owner exceptions or mark any requirement PASS.
