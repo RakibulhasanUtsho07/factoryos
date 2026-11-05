@@ -419,7 +419,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
-    }
+    } finally {
+      client.release();
       if (appPool) await appPool.end();
       await adminPool.end();
     }
