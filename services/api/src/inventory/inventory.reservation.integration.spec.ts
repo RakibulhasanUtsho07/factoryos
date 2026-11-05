@@ -26,6 +26,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   let factoryId!: string;
   const itemIds: string[] = [];
   const locationIds: string[] = [];
+  const factoryIds: string[] = [];
+  const policyIds: string[] = [];
   const sectorCodes: string[] = [];
   const supplierIds: string[] = [];
   const purchaseOrderIds: string[] = [];
@@ -97,7 +99,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
   afterAll(async () => {
     try {
-      if (adminPool && (itemIds.length > 0 || supplierIds.length > 0 || purchaseOrderIds.length > 0 || goodsReceiptIds.length > 0 || approverIds.length > 0)) {
+      if (adminPool && (itemIds.length > 0 || supplierIds.length > 0 || purchaseOrderIds.length > 0 || goodsReceiptIds.length > 0 || approverIds.length > 0 || factoryIds.length > 0 || policyIds.length > 0)) {
         // Test-only cleanup bypasses append-only/lifecycle triggers after all assertions.
         const triggerTables = [
           'inventory_reservation_consumption_traceability_allocations',
@@ -168,12 +170,19 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
               [tenantId, factoryId, sectorCodes.map((code) => code.toLowerCase())],
             );
           }
+          if (policyIds.length > 0) {
+            await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE id = ANY($1::uuid[])', [policyIds]);
+          }
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
           if (locationIds.length > 0) {
             await adminPool.query("DELETE FROM inventory_locations WHERE id = ANY($1::uuid[]) AND location_type = 'BIN'", [locationIds]);
             await adminPool.query("DELETE FROM inventory_locations WHERE id = ANY($1::uuid[]) AND location_type IN ('WAREHOUSE','STAGING')", [locationIds]);
+            await adminPool.query("DELETE FROM inventory_locations WHERE id = ANY($1::uuid[]) AND location_type = 'VIRTUAL'", [locationIds]);
+          }
+          if (factoryIds.length > 0) {
+            await adminPool.query('DELETE FROM factories WHERE id = ANY($1::uuid[])', [factoryIds]);
           }
         } finally {
           for (const table of triggerTables.reverse()) {
@@ -1320,5 +1329,455 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       row.quantity_on_hand === '3.0000' && row.quantity_reserved === '3.0000',
     )).toBe(true);
   });
+
+
+  it('enforces FEFO/FIFO policy per factory and sector across supplier-backed posted GRNs under competing demand', async () => {
+    const approverId = randomUUID();
+    await adminPool.query('INSERT INTO users (id, display_name) VALUES ($1, $2)', [
+      approverId, 'WP02 provider-site acceptance approver',
+    ]);
+    approverIds.push(approverId);
+
+    const createSite = async (label: string): Promise<{ id: string; unassignedLocationId: string }> => {
+      const created = await adminPool.query<{ id: string }>(
+        `INSERT INTO factories (tenant_id, code, name, status)
+         VALUES ($1,$2,$3,'ACTIVE') RETURNING id::text AS id`,
+        [tenantId, 'WP02-SITE-' + label + '-' + randomUUID().slice(0, 8), 'WP02 representative site ' + label],
+      );
+      const id = created.rows[0]?.id;
+      if (!id) throw new Error('WP02 representative factory was not created');
+      factoryIds.push(id);
+      const location = await adminPool.query<{ id: string }>(
+        `SELECT id::text AS id FROM inventory_locations
+         WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+        [tenantId, id],
+      );
+      const unassignedLocationId = location.rows[0]?.id;
+      if (!unassignedLocationId) throw new Error('WP02 site default UNASSIGNED location was not seeded');
+      locationIds.push(unassignedLocationId);
+      return { id, unassignedLocationId };
+    };
+
+    const siteA = await createSite('A');
+    const siteB = await createSite('B');
+
+    const createPolicy = async (
+      targetFactoryId: string,
+      scope: 'FACTORY' | 'SECTOR',
+      allocationPolicy: 'FIFO' | 'FEFO',
+      sectorCode: string | null = null,
+    ) => {
+      const result = await adminPool.query<{ id: string }>(
+        `INSERT INTO inventory_material_allocation_policies (
+           tenant_id, factory_id, policy_scope, sector_code, inventory_item_id,
+           allocation_policy, require_traceability, created_by_user_id, updated_by_user_id
+         ) VALUES ($1,$2,$3,$4,NULL,$5,TRUE,$6,$6)
+         RETURNING id::text AS id`,
+        [tenantId, targetFactoryId, scope, sectorCode, allocationPolicy, TEST_USER_ID],
+      );
+      const id = result.rows[0]?.id;
+      if (!id) throw new Error('WP02 site allocation policy was not created');
+      policyIds.push(id);
+    };
+
+    // Site A defaults to FEFO; its APPAREL sector overrides that policy with FIFO.
+    // Site B uses FIFO for the same FOOD sector code used at Site A.
+    await createPolicy(siteA.id, 'FACTORY', 'FEFO');
+    await createPolicy(siteA.id, 'SECTOR', 'FIFO', 'APPAREL');
+    await createPolicy(siteB.id, 'FACTORY', 'FIFO');
+
+    const supplierA = await procurementService.createSupplier(
+      TEST_USER_ID, tenantId,
+      {
+        code: 'WP02-SOURCE-A-' + randomUUID().slice(0, 8),
+        name: 'WP02 Supplier Source A ' + randomUUID().slice(0, 6),
+        country_code: 'BD', currency: 'BDT',
+      } as never,
+      null, null,
+    );
+    supplierIds.push(supplierA.id);
+    const supplierB = await procurementService.createSupplier(
+      TEST_USER_ID, tenantId,
+      {
+        code: 'WP02-SOURCE-B-' + randomUUID().slice(0, 8),
+        name: 'WP02 Supplier Source B ' + randomUUID().slice(0, 6),
+        country_code: 'BD', currency: 'BDT',
+      } as never,
+      null, null,
+    );
+    supplierIds.push(supplierB.id);
+
+    const createItemAtSite = async (targetFactoryId: string, sectorCode: string): Promise<string> => {
+      const result = await adminPool.query<{ id: string }>(
+        `INSERT INTO inventory_items (
+           tenant_id, factory_id, sku, name, unit, sector_code, created_by_user_id
+         ) VALUES ($1,$2,$3,$4,'PCS',$5,$6)
+         RETURNING id::text AS id`,
+        [
+          tenantId, targetFactoryId, 'WP02-PROVIDER-SITE-' + randomUUID().slice(0, 10),
+          'WP02 provider/site FEFO acceptance material', sectorCode, TEST_USER_ID,
+        ],
+      );
+      const itemId = result.rows[0]?.id;
+      if (!itemId) throw new Error('WP02 site allocation item was not created');
+      itemIds.push(itemId);
+      await adminPool.query(
+        `INSERT INTO inventory_stock_balances (
+           tenant_id, factory_id, item_id, quantity_on_hand, quantity_reserved
+         ) VALUES ($1,$2,$3,0,0)`,
+        [tenantId, targetFactoryId, itemId],
+      );
+      return itemId;
+    };
+
+    const createBin = async (targetFactoryId: string, label: string): Promise<string> => {
+      const warehouse = await locationService.createLocation(
+        TEST_USER_ID, tenantId, targetFactoryId,
+        {
+          location_code: 'WP02-' + label + '-WH-' + randomUUID().slice(0, 8),
+          name: 'WP02 representative warehouse ' + label,
+          location_type: 'WAREHOUSE',
+        } as never,
+        null, randomUUID(),
+      );
+      const bin = await locationService.createLocation(
+        TEST_USER_ID, tenantId, targetFactoryId,
+        {
+          location_code: 'WP02-' + label + '-BIN-' + randomUUID().slice(0, 8),
+          name: 'WP02 representative picking bin ' + label,
+          location_type: 'BIN',
+          parent_location_id: warehouse.id,
+        } as never,
+        null, randomUUID(),
+      );
+      locationIds.push(warehouse.id, bin.id);
+      return bin.id;
+    };
+    const siteABinId = await createBin(siteA.id, 'SITE-A');
+    const siteBBinId = await createBin(siteB.id, 'SITE-B');
+
+    const dateResult = await adminPool.query<{ current_date: string }>(
+      `SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date`,
+    );
+    const databaseDate = dateResult.rows[0]?.current_date;
+    if (!databaseDate) throw new Error('PostgreSQL CURRENT_DATE unavailable for WP02 fixture');
+    const expiryAt = (offsetDays: number): string => {
+      const date = new Date(databaseDate + 'T00:00:00.000Z');
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    };
+    const laterExpiry = expiryAt(60);
+    const earlierExpiry = expiryAt(30);
+
+    const createSupplierBackedLot = async (
+      label: string,
+      targetFactoryId: string,
+      itemId: string,
+      supplierId: string,
+      expiresAt: string,
+    ): Promise<{ lotId: string; receiptId: string; supplierId: string; expiry: string }> => {
+      const po = await procurementService.createPurchaseOrder(
+        TEST_USER_ID, tenantId, targetFactoryId,
+        {
+          supplier_id: supplierId,
+          po_number: 'WP02-PROVIDER-SITE-PO-' + randomUUID().slice(0, 8),
+          currency: 'BDT',
+          lines: [{
+            line_number: 1,
+            inventory_item_id: itemId,
+            description: 'Supplier-originated representative FEFO/FIFO material',
+            quantity: 3,
+            unit: 'PCS',
+            unit_price: 1,
+          }],
+        } as never,
+        'wp02-provider-site-po-' + randomUUID(), null, randomUUID(),
+      );
+      purchaseOrderIds.push(po.id);
+      await procurementService.transitionPurchaseOrder(
+        TEST_USER_ID, tenantId, targetFactoryId, po.id,
+        'SUBMITTED', 1, 'Submit representative provider/site FEFO/FIFO PO', null, randomUUID(),
+      );
+      const approved = await procurementService.transitionPurchaseOrder(
+        approverId, tenantId, targetFactoryId, po.id,
+        'APPROVED', 2, 'Independent approval for representative provider/site FEFO/FIFO PO', null, randomUUID(),
+      );
+      expect(approved.status).toBe('APPROVED');
+
+      const poLine = await adminPool.query<{ id: string }>(
+        `SELECT id::text AS id FROM purchase_order_lines
+         WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id=$3 AND line_number=1`,
+        [tenantId, targetFactoryId, po.id],
+      );
+      const poLineId = poLine.rows[0]?.id;
+      if (!poLineId) throw new Error('WP02 representative supplier PO line missing');
+
+      const receipt = await goodsReceiptService.postGoodsReceipt(
+        TEST_USER_ID, tenantId, targetFactoryId, po.id,
+        {
+          supplier_delivery_reference: 'WP02-SITE-DELIVERY-' + label + '-' + randomUUID().slice(0, 6),
+          notes: 'Supplier-backed representative multi-site allocation evidence',
+          lines: [{ purchase_order_line_id: poLineId, received_quantity: 3, rejected_quantity: 0 }],
+        } as never,
+        'wp02-provider-site-grn-' + randomUUID(), null, randomUUID(),
+      );
+      goodsReceiptIds.push(receipt.id);
+      expect(receipt.status).toBe('POSTED');
+      expect(receipt.lines[0]?.accepted_quantity).toBe('3.0000');
+      const lineId = receipt.lines[0]?.id;
+      if (!lineId) throw new Error('WP02 supplier-backed GRN line missing');
+
+      const unitCode = 'LOT-WP02-' + label + '-' + randomUUID().slice(0, 8);
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, targetFactoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: unitCode,
+          barcode_value: 'BAR-' + unitCode,
+          inventory_item_id: itemId,
+          goods_receipt_line_id: lineId,
+          quantity: 3,
+          unit: 'PCS',
+          expires_at: expiresAt,
+          attributes: {},
+        } as never,
+        'wp02-provider-site-lot-' + randomUUID(), randomUUID(), randomUUID(),
+      );
+      if (!unit.id) throw new Error('WP02 supplier-backed material LOT was not created');
+      return { lotId: unit.id, receiptId: receipt.id, supplierId, expiry: expiresAt };
+    };
+
+    const scenarios = [
+      {
+        label: 'SITE-A-FOOD-FACTORY-FEFO',
+        factoryId: siteA.id,
+        unassignedLocationId: siteA.unassignedLocationId,
+        binId: siteABinId,
+        sectorCode: 'FOOD',
+        expectedPolicy: 'FEFO' as const,
+      },
+      {
+        label: 'SITE-A-APPAREL-SECTOR-FIFO',
+        factoryId: siteA.id,
+        unassignedLocationId: siteA.unassignedLocationId,
+        binId: siteABinId,
+        sectorCode: 'APPAREL',
+        expectedPolicy: 'FIFO' as const,
+      },
+      {
+        label: 'SITE-B-FOOD-FACTORY-FIFO',
+        factoryId: siteB.id,
+        unassignedLocationId: siteB.unassignedLocationId,
+        binId: siteBBinId,
+        sectorCode: 'FOOD',
+        expectedPolicy: 'FIFO' as const,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const itemId = await createItemAtSite(scenario.factoryId, scenario.sectorCode);
+      // The first source posts first but expires later. The second source posts
+      // later but expires sooner: FEFO and FIFO must therefore choose opposite lots.
+      const firstPostedLot = await createSupplierBackedLot(
+        scenario.label + '-FIRST-POSTED', scenario.factoryId, itemId, supplierA.id, laterExpiry,
+      );
+      await adminPool.query('SELECT pg_sleep(0.05)');
+      const secondPostedLot = await createSupplierBackedLot(
+        scenario.label + '-SECOND-POSTED', scenario.factoryId, itemId, supplierB.id, earlierExpiry,
+      );
+
+      const receiptProvenance = await adminPool.query<{
+        id: string;
+        status: string;
+        factory_id: string;
+        supplier_id: string;
+        supplier_name: string;
+        posted_at: string;
+        received_at: string;
+        accepted_quantity: string;
+      }>(
+        `SELECT gr.id::text AS id, gr.status, gr.factory_id::text AS factory_id,
+                po.supplier_id::text AS supplier_id, s.name AS supplier_name,
+                gr.posted_at::text AS posted_at, gr.received_at::text AS received_at,
+                gl.accepted_quantity::text AS accepted_quantity
+         FROM goods_receipts gr
+         JOIN purchase_orders po ON po.id=gr.purchase_order_id
+           AND po.tenant_id=gr.tenant_id AND po.factory_id=gr.factory_id
+         JOIN suppliers s ON s.id=po.supplier_id AND s.tenant_id=po.tenant_id
+         JOIN goods_receipt_lines gl ON gl.goods_receipt_id=gr.id
+           AND gl.tenant_id=gr.tenant_id AND gl.factory_id=gr.factory_id
+         WHERE gr.tenant_id=$1 AND gr.factory_id=$2
+           AND gr.id=ANY($3::uuid[])
+         ORDER BY gr.posted_at, gr.id`,
+        [tenantId, scenario.factoryId, [firstPostedLot.receiptId, secondPostedLot.receiptId]],
+      );
+      expect(receiptProvenance.rows).toHaveLength(2);
+      expect(receiptProvenance.rows.map((row) => row.id)).toEqual([
+        firstPostedLot.receiptId, secondPostedLot.receiptId,
+      ]);
+      expect(receiptProvenance.rows.every((row) =>
+        row.status === 'POSTED' && row.factory_id === scenario.factoryId && row.accepted_quantity === '3.0000',
+      )).toBe(true);
+      expect(receiptProvenance.rows.map((row) => row.supplier_id)).toEqual([supplierA.id, supplierB.id]);
+      expect(new Date(receiptProvenance.rows[0]!.posted_at).getTime())
+        .toBeLessThan(new Date(receiptProvenance.rows[1]!.posted_at).getTime());
+
+      for (const lot of [firstPostedLot, secondPostedLot]) {
+        await locationService.transferStock(
+          TEST_USER_ID, tenantId, scenario.factoryId, itemId,
+          {
+            movement_purpose: 'PUT_AWAY',
+            source_location_id: scenario.unassignedLocationId,
+            destination_location_id: scenario.binId,
+            traceability_unit_id: lot.lotId,
+            quantity: 3,
+          } as never,
+          'wp02-provider-site-putaway-' + randomUUID(), null, randomUUID(),
+        );
+      }
+
+      const expectedLotOrder = scenario.expectedPolicy === 'FEFO'
+        ? [secondPostedLot, firstPostedLot]
+        : [firstPostedLot, secondPostedLot];
+      const reserve = (key: string) => service.createReservation(
+        TEST_USER_ID, tenantId, scenario.factoryId, itemId,
+        { quantity: 4, location_id: scenario.binId } as CreateInventoryReservationDto,
+        key, null, randomUUID(),
+      );
+      const competing = await Promise.allSettled([
+        reserve('wp02-provider-site-contender-a-' + randomUUID()),
+        reserve('wp02-provider-site-contender-b-' + randomUUID()),
+      ]);
+      expect(competing.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(competing.filter((result) => result.status === 'rejected')).toHaveLength(1);
+      const rejected = competing.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      expect(String(rejected?.reason?.message ?? rejected?.reason))
+        .toContain('Insufficient eligible FEFO lot/serial stock');
+
+      const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
+        `SELECT id::text AS id, quantity::text AS quantity, status
+         FROM inventory_reservations
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         ORDER BY created_at, id`,
+        [tenantId, scenario.factoryId, itemId],
+      );
+      expect(reservations.rows).toHaveLength(1);
+      expect(reservations.rows[0]).toMatchObject({ quantity: '4.0000', status: 'RESERVED' });
+
+      const allocations = await adminPool.query<{
+        traceability_unit_id: string;
+        allocation_sequence: number;
+        allocated_quantity: string;
+        supplier_id: string;
+        supplier_name: string;
+        receipt_status: string;
+        posted_at: string;
+        expires_at: string;
+        accepted_quantity: string;
+      }>(
+        `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+                a.allocation_sequence, a.allocated_quantity::text AS allocated_quantity,
+                s.id::text AS supplier_id, s.name AS supplier_name,
+                gr.status AS receipt_status, gr.posted_at::text AS posted_at,
+                tu.expires_at::text AS expires_at,
+                gl.accepted_quantity::text AS accepted_quantity
+         FROM inventory_reservation_traceability_allocations a
+         JOIN traceability_units tu ON tu.id=a.traceability_unit_id
+           AND tu.tenant_id=a.tenant_id AND tu.factory_id=a.factory_id
+         JOIN goods_receipt_lines gl ON gl.id=tu.goods_receipt_line_id
+           AND gl.tenant_id=tu.tenant_id AND gl.factory_id=tu.factory_id
+         JOIN goods_receipts gr ON gr.id=gl.goods_receipt_id
+           AND gr.tenant_id=gl.tenant_id AND gr.factory_id=gl.factory_id
+         JOIN purchase_orders po ON po.id=gr.purchase_order_id
+           AND po.tenant_id=gr.tenant_id AND po.factory_id=gr.factory_id
+         JOIN suppliers s ON s.id=po.supplier_id AND s.tenant_id=po.tenant_id
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
+           AND a.reservation_id=$4
+         ORDER BY a.allocation_sequence`,
+        [tenantId, scenario.factoryId, itemId, reservations.rows[0]!.id],
+      );
+      expect(allocations.rows).toHaveLength(2);
+      expect(allocations.rows.map((row) => row.traceability_unit_id))
+        .toEqual(expectedLotOrder.map((lot) => lot.lotId));
+      expect(allocations.rows.map((row) => row.allocated_quantity)).toEqual(['3.0000', '1.0000']);
+      expect(allocations.rows.map((row) => row.supplier_id)).toEqual(
+        expectedLotOrder.map((lot) => lot.supplierId),
+      );
+      expect(allocations.rows.every((row) =>
+        row.receipt_status === 'POSTED' && row.accepted_quantity === '3.0000',
+      )).toBe(true);
+      expect(allocations.rows.map((row) => row.expires_at)).toEqual(
+        expectedLotOrder.map((lot) => lot.expiry),
+      );
+
+      const effectivePolicy = await adminPool.query<{ allocation_policy: string }>(
+        `SELECT COALESCE(
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='FACTORY'),
+           'FIFO'
+         ) AS allocation_policy
+         FROM inventory_items i
+         WHERE i.tenant_id=$1 AND i.factory_id=$2 AND i.id=$3`,
+        [tenantId, scenario.factoryId, itemId],
+      );
+      expect(effectivePolicy.rows[0]?.allocation_policy).toBe(scenario.expectedPolicy);
+
+      const lotBalances = await adminPool.query<{
+        unit_id: string;
+        quantity_on_hand: string;
+        quantity_reserved: string;
+      }>(
+        `SELECT traceability_unit_id::text AS unit_id,
+                quantity_on_hand::text AS quantity_on_hand,
+                quantity_reserved::text AS quantity_reserved
+         FROM inventory_traceability_location_balances
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
+        [tenantId, scenario.factoryId, itemId, scenario.binId],
+      );
+      expect(lotBalances.rows).toHaveLength(2);
+      const balancesByLot = new Map(lotBalances.rows.map((row) => [row.unit_id, row]));
+      expect(balancesByLot.get(expectedLotOrder[0]!.lotId)).toMatchObject({
+        quantity_on_hand: '3.0000', quantity_reserved: '3.0000',
+      });
+      expect(balancesByLot.get(expectedLotOrder[1]!.lotId)).toMatchObject({
+        quantity_on_hand: '3.0000', quantity_reserved: '1.0000',
+      });
+
+      const reconciled = await adminPool.query<{
+        stock_on_hand: string;
+        stock_reserved: string;
+        bin_on_hand: string;
+        bin_reserved: string;
+      }>(
+        `SELECT s.quantity_on_hand::text AS stock_on_hand,
+                s.quantity_reserved::text AS stock_reserved,
+                b.quantity_on_hand::text AS bin_on_hand,
+                b.quantity_reserved::text AS bin_reserved
+         FROM inventory_stock_balances s
+         JOIN inventory_location_balances b ON b.tenant_id=s.tenant_id
+           AND b.factory_id=s.factory_id AND b.item_id=s.item_id
+         WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3
+           AND b.location_id=$4`,
+        [tenantId, scenario.factoryId, itemId, scenario.binId],
+      );
+      expect(reconciled.rows).toEqual([{
+        stock_on_hand: '6.0000',
+        stock_reserved: '4.0000',
+        bin_on_hand: '6.0000',
+        bin_reserved: '4.0000',
+      }]);
+    }
+  }, 30000);
+
 
 });
