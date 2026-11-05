@@ -653,17 +653,39 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     expect(completed.status).toBe('COMPLETED');
 
-    const completionEvidence = await adminPool.query<{ genealogy_count: string; consumption_count: string }>(
+    const completionEvidence = await adminPool.query<{
+      genealogy_count: string;
+      consumption_count: string;
+      allocated_quantity: string;
+      consumed_quantity: string;
+      traced_consumption_quantity: string;
+    }>(
       `SELECT
          (SELECT count(*)::text FROM product_genealogy_events e
           WHERE e.source_unit_id = $2
             AND e.target_unit_id = ANY(ARRAY[$3::uuid, $4::uuid])) AS genealogy_count,
          (SELECT count(*)::text FROM inventory_reservation_consumptions c
           JOIN inventory_reservations r ON r.id = c.reservation_id AND r.tenant_id = c.tenant_id AND r.factory_id = c.factory_id
-          WHERE r.reference_type='WORK_ORDER_MATERIAL' AND r.reference_id=$1) AS consumption_count`,
+          WHERE r.reference_type='WORK_ORDER_MATERIAL' AND r.reference_id=$1) AS consumption_count,
+         (SELECT COALESCE(SUM(a.allocated_quantity), 0)::text FROM inventory_reservation_traceability_allocations a
+          JOIN inventory_reservations r ON r.id = a.reservation_id AND r.tenant_id = a.tenant_id AND r.factory_id = a.factory_id
+          WHERE r.reference_type='WORK_ORDER_MATERIAL' AND r.reference_id=$1) AS allocated_quantity,
+         (SELECT COALESCE(SUM(a.consumed_quantity), 0)::text FROM inventory_reservation_traceability_allocations a
+          JOIN inventory_reservations r ON r.id = a.reservation_id AND r.tenant_id = a.tenant_id AND r.factory_id = a.factory_id
+          WHERE r.reference_type='WORK_ORDER_MATERIAL' AND r.reference_id=$1) AS consumed_quantity,
+         (SELECT COALESCE(SUM(ca.quantity), 0)::text FROM inventory_reservation_consumption_traceability_allocations ca
+          JOIN inventory_reservation_consumptions c ON c.id = ca.consumption_id AND c.tenant_id = ca.tenant_id AND c.factory_id = ca.factory_id
+          JOIN inventory_reservations r ON r.id = c.reservation_id AND r.tenant_id = c.tenant_id AND r.factory_id = c.factory_id
+          WHERE r.reference_type='WORK_ORDER_MATERIAL' AND r.reference_id=$1) AS traced_consumption_quantity`,
       [draft.id, sourceMaterialLotId, output.finished_good_traceability_unit_id, output.scrap_traceability_unit_id],
     );
-    expect(completionEvidence.rows[0]).toEqual({ genealogy_count: '2', consumption_count: '1' });
+    expect(completionEvidence.rows[0]).toEqual({
+      genealogy_count: '2',
+      consumption_count: '1',
+      allocated_quantity: '3.0000',
+      consumed_quantity: '3.0000',
+      traced_consumption_quantity: '3.0000',
+    });
 
     const genealogy = await adminPool.query<{
       relationship_type: string;
