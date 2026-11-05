@@ -342,9 +342,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
             'DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])',
             [inventoryItemIds],
           );
-          await client.query('DELETE FROM traceability_units WHERE id = ANY($1::uuid[])', [trackedUnitIds]);
         }
-        await client.query('DELETE FROM order_production_reports WHERE work_order_id = ANY($1::uuid[])', [workOrderIds]);
 
         const reservationRows = await client.query<{ id: string }>(
           "SELECT id::text AS id FROM inventory_reservations WHERE reference_type='WORK_ORDER_MATERIAL' AND reference_id = ANY($1::uuid[])",
@@ -370,6 +368,10 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
           );
           await client.query('DELETE FROM inventory_reservations WHERE id = ANY($1::uuid[])', [reservationIds]);
         }
+        if (trackedUnitIds.length > 0) {
+          await client.query('DELETE FROM traceability_units WHERE id = ANY($1::uuid[])', [trackedUnitIds]);
+        }
+        await client.query('DELETE FROM order_production_reports WHERE work_order_id = ANY($1::uuid[])', [workOrderIds]);
         await client.query('DELETE FROM work_order_events WHERE work_order_id = ANY($1::uuid[])', [workOrderIds]);
         await client.query('DELETE FROM work_order_operations WHERE work_order_id = ANY($1::uuid[])', [workOrderIds]);
         await client.query('DELETE FROM work_order_material_reservations WHERE work_order_id = ANY($1::uuid[])', [workOrderIds]);
