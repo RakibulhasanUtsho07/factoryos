@@ -14932,11 +14932,15 @@
       "directCodeReferences": [
         "services/api/src/inventory/inventory.reservation.service.ts",
         "services/api/src/inventory/traceability.service.ts",
-        "services/api/src/production/production-work-orders.service.ts"
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/inventory/inventory.location.service.ts"
       ],
       "migrationReferences": [
         "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
-        "migrations/236_wms_serial_indivisibility.sql"
+        "migrations/236_wms_serial_indivisibility.sql",
+        "migrations/091_production_output_inventory_posting.sql",
+        "migrations/198_production_output_lot_genealogy.sql",
+        "migrations/199_wms_work_order_genealogy_consumption_guard.sql"
       ],
       "automatedTestReferences": [
         "services/api/test/inventory-wms-allocation.sql",
@@ -14950,7 +14954,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Material-first, then sector, factory and traceability policy resolution; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility; migration 236 whole-unit serial constraints and PostgreSQL SQL regressions. A dedicated three-step PostgreSQL integration test exercises work-order creation/release with actual BOM reservation, operation predecessor gating, next-step WIP transfer, WIP conservation, optimistic row versions and same-key replay. It deliberately stops before final output posting, raw-material consumption and completed lot/serial genealogy. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, named owner and independent reviewer, live FIFO/FEFO evidence, representative sector/provider/site fixtures, physical device/HIL, and end-to-end manufacturing split/merge plus output genealogy acceptance.",
+      "closureNote": "Material/sector policy precedence and FIFO/FEFO/LOT/SERIAL candidate guards; migration 236 serial indivisibility; PostgreSQL SQL regressions. The three-step production integration scenario registers a MATERIAL LOT and identity-preserving put-away, reserves 3 of 10 units to a work order, moves WIP through the three operation route, posts 2 good plus 1 scrap from the final operation, verifies same-key output replay, completes the work order (consuming the material LOT reservation) and checks 2 source→output genealogy edges: CONSUMED_INTO quantity 2 and PROCESSED_INTO quantity 1. It also asserts allocated/consumed/traced quantities and aggregate/bin/lot balances. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending true lot split/merge commands, serial-controlled manufacturing input/output acceptance, live FIFO/FEFO sequence evidence, representative multi-sector/provider/site coverage, physical device/HIL, named owner and independent reviewer.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
