@@ -14932,7 +14932,8 @@
       "directCodeReferences": [
         "services/api/src/inventory/inventory.reservation.service.ts",
         "services/api/src/inventory/traceability.service.ts",
-        "services/api/src/production/production-work-orders.service.ts"
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/inventory/inventory.location.service.ts"
       ],
       "migrationReferences": [
         "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
@@ -14950,7 +14951,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Material-first, then sector, factory and traceability policy resolution; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility; migration 236 whole-unit serial constraints and PostgreSQL SQL regressions. A dedicated three-step PostgreSQL integration test exercises work-order creation/release with actual BOM reservation, operation predecessor gating, next-step WIP transfer, WIP conservation, optimistic row versions and same-key replay. It deliberately stops before final output posting, raw-material consumption and completed lot/serial genealogy. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, named owner and independent reviewer, live FIFO/FEFO evidence, representative sector/provider/site fixtures, physical device/HIL, and end-to-end manufacturing split/merge plus output genealogy acceptance.",
+      "closureNote": "Evidence now includes material-first/sector/factory policy resolution, FIFO/FEFO/LOT/SERIAL candidate guards and migration 236 serial indivisibility. The three-step PostgreSQL work-order fixture registers a material LOT, moves it to a tracked picking bin, reserves it through the BOM, advances three persisted operations with WIP conservation and idempotent transfer replay, posts the final finished-good receipt, replays it without a duplicate receipt, consumes the reservation during work-order completion, and verifies one material-LOT-to-finished-good-LOT CONSUMED_INTO genealogy edge with 10-to-7 material and 0-to-3 finished-good aggregate/tracked balances. FR-WMS-04 remains OPEN / NOT_ACCEPTED pending serial-controlled manufacturing genealogy across output batches, physical split/merge lifecycle, live FIFO/FEFO sequence evidence, representative multi-sector/provider/site fixtures, real device/HIL acceptance, and named owner plus independent reviewer.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
