@@ -14929,9 +14929,18 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/inventory/inventory.reservation.service.ts",
+        "services/api/src/inventory/traceability.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
+        "migrations/236_wms_serial_indivisibility.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/test/inventory-wms-allocation.sql",
+        "services/api/test/wms-serial-indivisibility.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -14939,7 +14948,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "The reservation service resolves material, sector, factory and traceability allocation policy; FIFO/FEFO candidate ordering and LOT/SERIAL eligibility are enforced in the allocation plan. Migration 236 adds serial-only database cardinality and writer guards; migration 160 provides the WMS traceability balance/reservation foundation. SQL regression tests cover allocation and serialized-stock indivisibility. This evidence is implementation-level only: FR-WMS-04 remains OPEN / NOT_ACCEPTED pending exact-head CI, approved owner/reviewer, representative multi-operation manufacturing acceptance, live site/device/provider evidence and FIFO/FEFO operational proof.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
