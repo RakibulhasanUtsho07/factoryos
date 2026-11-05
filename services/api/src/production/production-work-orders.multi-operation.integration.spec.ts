@@ -6,6 +6,7 @@ import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 import { InventoryLocationService } from '../inventory/inventory.location.service';
 import { InventoryReservationService } from '../inventory/inventory.reservation.service';
+import { TraceabilityService } from '../inventory/traceability.service';
 import { ProductionWorkOrdersService } from './production-work-orders.service';
 
 const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -32,6 +33,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   let appPool: Pool;
   let service: ProductionWorkOrdersService;
   let locationService: InventoryLocationService;
+  let traceabilityService: TraceabilityService;
   let tenantId: string;
   let factoryId: string;
   let approverUserId: string;
@@ -63,7 +65,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     return itemId;
   };
 
-  const createComponentBin = async (componentItemId: string): Promise<void> => {
+  const createComponentBin = async (): Promise<{ unassignedId: string; binId: string }> => {
     const suffix = randomUUID().slice(0, 8);
     const warehouse = await adminPool.query<{ id: string }>(
       "INSERT INTO inventory_locations (tenant_id, factory_id, location_code, name, location_type, putaway_enabled, picking_enabled, created_by_user_id) VALUES ($1, $2, $3, $4, 'WAREHOUSE', FALSE, FALSE, $5) RETURNING id::text AS id",
@@ -88,21 +90,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const unassignedId = defaultLocation.rows[0]?.id;
     if (!unassignedId) throw new Error('Factory UNASSIGNED location is missing');
 
-    await locationService.transferStock(
-      TEST_USER_ID,
-      tenantId,
-      factoryId,
-      componentItemId,
-      {
-        movement_purpose: 'PUT_AWAY',
-        source_location_id: unassignedId,
-        destination_location_id: binId,
-        quantity: 10,
-      },
-      'wo-multi-putaway-' + randomUUID(),
-      randomUUID(),
-      randomUUID(),
-    );
+    return { unassignedId, binId };
   };
 
   const createProductRevisionAndRouting = async (
@@ -231,12 +219,20 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const database = createIntegrationDatabase(appPool);
     const inventory = new InventoryReservationService(database as never, audit);
     locationService = new InventoryLocationService(database as never, audit);
+    traceabilityService = new TraceabilityService(database as never);
     service = new ProductionWorkOrdersService(database as never, audit, inventory);
   });
 
   afterAll(async () => {
     if (!adminPool) return;
     const mutableTables = [
+      'product_genealogy_events',
+      'production_output_postings',
+      'order_production_reports',
+      'traceability_units',
+      'inventory_traceability_location_balances',
+      'inventory_material_allocation_policies',
+      'audit_events',
       'work_order_events',
       'work_order_operations',
       'work_order_material_reservations',
@@ -261,6 +257,85 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       await client.query('BEGIN');
       for (const table of mutableTables) {
         await client.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      const reportRows = workOrderIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM order_production_reports WHERE work_order_id = ANY($1::uuid[])',
+          [workOrderIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const reportIds = reportRows.rows.map((row) => row.id);
+
+      const traceabilityRows = inventoryItemIds.length > 0 || reportIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND (inventory_item_id = ANY($3::uuid[]) OR production_report_id = ANY($4::uuid[]))',
+          [tenantId, factoryId, inventoryItemIds, reportIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const traceabilityIds = traceabilityRows.rows.map((row) => row.id);
+
+      const genealogyRows = traceabilityIds.length > 0
+        ? await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, traceabilityIds],
+        )
+        : { rows: [] as Array<{ id: string }> };
+      const genealogyIds = genealogyRows.rows.map((row) => row.id);
+
+      if (traceabilityIds.length > 0) {
+        await client.query(
+          'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND (source_unit_id = ANY($3::uuid[]) OR target_unit_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, traceabilityIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_reservation_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+      }
+
+      if (workOrderIds.length > 0) {
+        await client.query(
+          'DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[])',
+          [tenantId, factoryId, workOrderIds],
+        );
+      }
+
+      if (inventoryItemIds.length > 0) {
+        await client.query(
+          'DELETE FROM inventory_location_transfers WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, inventoryItemIds],
+        );
+        await client.query(
+          'DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, inventoryItemIds],
+        );
+      }
+
+      if (traceabilityIds.length > 0) {
+        await client.query(
+          'DELETE FROM audit_events WHERE tenant_id=$1 AND factory_id=$2 AND ((resource_type=\'TRACEABILITY_UNIT\' AND resource_id = ANY($3::uuid[])) OR (resource_type=\'PRODUCT_GENEALOGY_EVENT\' AND resource_id = ANY($4::uuid[])))',
+          [tenantId, factoryId, traceabilityIds, genealogyIds],
+        );
+        await client.query(
+          'DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_id = ANY($3::uuid[])',
+          [tenantId, factoryId, [...traceabilityIds, ...genealogyIds]],
+        );
+        await client.query(
+          'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, traceabilityIds],
+        );
+      }
+
+      if (reportIds.length > 0) {
+        await client.query(
+          'DELETE FROM order_production_reports WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, reportIds],
+        );
       }
 
       if (workOrderIds.length > 0) {
@@ -296,10 +371,13 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       }
 
       if (inventoryItemIds.length > 0) {
+        await client.query(
+          'DELETE FROM inventory_material_allocation_policies WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, inventoryItemIds],
+        );
         await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($3::uuid[]))', [tenantId, factoryId, inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_traceability_allocations WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
-        await client.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM outbox_events WHERE aggregate_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
@@ -351,7 +429,44 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   it('routes one work order through three operations with conserved WIP, next-step transfer and row-versioned events', async () => {
     const finishedItemId = await createItem('Three-step finished good', '0.0000');
     const componentItemId = await createItem('Three-step BOM component', '10.0000');
-    await createComponentBin(componentItemId);
+    const componentLocations = await createComponentBin();
+    const materialLot = await traceabilityService.createUnit(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'MATERIAL',
+        unit_code: 'WO-MULTI-MATERIAL-' + randomUUID().slice(0, 12),
+        inventory_item_id: componentItemId,
+        quantity: 10,
+        unit: 'PCS',
+        attributes: { fixture: 'three-step-production-output-genealogy', accepted: true },
+      },
+      'wo-multi-material-lot-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    await locationService.transferStock(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      componentItemId,
+      {
+        movement_purpose: 'PUT_AWAY',
+        source_location_id: componentLocations.unassignedId,
+        destination_location_id: componentLocations.binId,
+        traceability_unit_id: materialLot.id,
+        quantity: 10,
+      },
+      'wo-multi-putaway-lot-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    await adminPool.query(
+      "INSERT INTO inventory_material_allocation_policies (tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy, require_traceability, created_by_user_id, updated_by_user_id) VALUES ($1, $2, 'MATERIAL', $3, 'LOT', TRUE, $4, $4)",
+      [tenantId, factoryId, componentItemId, TEST_USER_ID],
+    );
     await createProductRevisionAndRouting(finishedItemId, componentItemId);
 
     const orderResult = await adminPool.query<{ id: string; line_id: string }>(
@@ -489,6 +604,110 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(state.status).toBe('IN_PROGRESS');
     expect(state.operations.map((operation) => operation.status)).toEqual(['COMPLETED', 'COMPLETED', 'IN_PROGRESS']);
     expect(state.operations.map((operation) => operation.wip_quantity)).toEqual(['0.0000', '0.0000', '3.0000']);
+
+    const outputState = await readState(draft.id);
+    const finalOperation = outputState.operations[2];
+    if (!finalOperation) throw new Error('Final production operation snapshot is missing');
+    const outputRequest = {
+      operation_id: finalOperation.id,
+      expected_work_order_version: outputState.row_version,
+      expected_operation_version: finalOperation.row_version,
+      good_quantity: TARGET_QUANTITY,
+      scrap_quantity: 0,
+    };
+    const outputKey = 'wo-multi-output-' + randomUUID();
+    const output = await service.reportOutput(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      draft.id,
+      outputRequest,
+      outputKey,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(output.replayed).toBe(false);
+    expect(output.finished_good_traceability_unit_id).toBeTruthy();
+    expect(output.finished_good_movement_id).toBeTruthy();
+    const outputReplay = await service.reportOutput(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      draft.id,
+      outputRequest,
+      outputKey,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(outputReplay.replayed).toBe(true);
+    expect(outputReplay.finished_good_traceability_unit_id).toBe(output.finished_good_traceability_unit_id);
+    expect(outputReplay.finished_good_movement_id).toBe(output.finished_good_movement_id);
+
+    await sendOperationEvent(draft.id, finalOperation.id, { command: 'WIP_REPORTED', quantity: 0 }, 'wo-multi-final-wip-clear-' + randomUUID());
+    await sendOperationEvent(draft.id, finalOperation.id, { command: 'COMPLETE' }, 'wo-multi-complete-final-operation-' + randomUUID());
+    const finalState = await readState(draft.id);
+    expect(finalState.operations.map((operation) => operation.status)).toEqual(['COMPLETED', 'COMPLETED', 'COMPLETED']);
+    expect(finalState.operations.map((operation) => operation.wip_quantity)).toEqual(['0.0000', '0.0000', '0.0000']);
+
+    const completed = await service.transitionWorkOrder(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      draft.id,
+      'COMPLETE',
+      { expected_version: finalState.row_version },
+      'wo-multi-complete-work-order-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(completed.status).toBe('COMPLETED');
+
+    const reconciliation = await adminPool.query<{
+      work_order_status: string;
+      material_on_hand: string;
+      finished_on_hand: string;
+      material_reserved: string;
+      material_lot_on_hand: string;
+      material_lot_reserved: string;
+      finished_lot_on_hand: string;
+      reservation_status: string;
+      genealogy_count: string;
+      genealogy_quantity: string;
+      finished_lot_count: string;
+      receipt_count: string;
+    }>(
+      `SELECT
+        wo.status AS work_order_status,
+        (SELECT quantity_on_hand::text FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3) AS material_on_hand,
+        (SELECT quantity_on_hand::text FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS finished_on_hand,
+        (SELECT quantity_reserved::text FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3) AS material_reserved,
+        (SELECT quantity_on_hand::text FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$5 AND location_id=$6) AS material_lot_on_hand,
+        (SELECT quantity_reserved::text FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$5 AND location_id=$6) AS material_lot_reserved,
+        (SELECT quantity_on_hand::text FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4 AND traceability_unit_id=$7) AS finished_lot_on_hand,
+        (SELECT status FROM inventory_reservations WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='WORK_ORDER_MATERIAL' AND reference_id=$8 LIMIT 1) AS reservation_status,
+        (SELECT count(*)::text FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$5 AND target_unit_id=$7 AND relationship_type='CONSUMED_INTO') AS genealogy_count,
+        (SELECT COALESCE(SUM(quantity),0)::text FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$5 AND target_unit_id=$7 AND relationship_type='CONSUMED_INTO') AS genealogy_quantity,
+        (SELECT count(*)::text FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND id=$7 AND unit_type='LOT' AND product_role='FINISHED_GOOD' AND production_report_id=$9) AS finished_lot_count,
+        (SELECT count(*)::text FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='PRODUCTION_OUTPUT' AND reference_id=$9 AND movement_type='RECEIPT') AS receipt_count
+      FROM work_orders wo
+      WHERE wo.id=$8 AND wo.tenant_id=$1 AND wo.factory_id=$2`,
+      [tenantId, factoryId, componentItemId, finishedItemId, materialLot.id, componentLocations.binId,
+        output.finished_good_traceability_unit_id, draft.id, output.production_report_id],
+    );
+    expect(reconciliation.rows[0]).toEqual({
+      work_order_status: 'COMPLETED',
+      material_on_hand: '7.0000',
+      finished_on_hand: '3.0000',
+      material_reserved: '0.0000',
+      material_lot_on_hand: '7.0000',
+      material_lot_reserved: '0.0000',
+      finished_lot_on_hand: '3.0000',
+      reservation_status: 'CONSUMED',
+      genealogy_count: '1',
+      genealogy_quantity: '3.0000',
+      finished_lot_count: '1',
+      receipt_count: '1',
+    });
 
     const evidence = await adminPool.query<{ transfer_count: string; operation_ready_count: string }>(
       "SELECT (SELECT count(*)::text FROM work_order_events WHERE work_order_id=$1 AND event_type='WIP_TRANSFERRED') AS transfer_count, (SELECT count(*)::text FROM work_order_events WHERE work_order_id=$1 AND event_type='OPERATION_READY') AS operation_ready_count",
