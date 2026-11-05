@@ -376,6 +376,17 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         await client.query('DELETE FROM work_orders WHERE id = ANY($1::uuid[])', [workOrderIds]);
       }
 
+      if (workOrderIds.length === 0 && traceabilityUnitIds.length > 0) {
+        await client.query(
+          'DELETE FROM product_genealogy_events WHERE source_unit_id = ANY($1::uuid[]) OR target_unit_id = ANY($1::uuid[])',
+          [traceabilityUnitIds],
+        );
+        await client.query('DELETE FROM audit_events WHERE resource_id = ANY($1::uuid[])', [traceabilityUnitIds]);
+        await client.query('DELETE FROM outbox_events WHERE aggregate_id = ANY($1::uuid[])', [traceabilityUnitIds]);
+        await client.query('DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
+        await client.query('DELETE FROM traceability_units WHERE id = ANY($1::uuid[])', [traceabilityUnitIds]);
+      }
+
       if (inventoryItemIds.length > 0) {
         await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($3::uuid[]))', [tenantId, factoryId, inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
@@ -603,6 +614,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       scrap_quantity: 1,
       scrap_reason: 'Three-step integration fixture scrap',
       notes: 'Post two good units and one scrap unit from the final operation',
+      occurred_at: new Date().toISOString(),
     };
     const outputKey = 'wo-multi-final-output-' + randomUUID();
     const output = await service.reportOutput(
