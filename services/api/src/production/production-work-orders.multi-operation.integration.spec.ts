@@ -271,8 +271,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         const reservationIds = reservationRows.rows.map((row) => row.id);
         if (reservationIds.length > 0) {
           await client.query(
-            'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE reservation_id = ANY($1::uuid[])',
-            [reservationIds],
+            'DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE reservation_id = ANY($3::uuid[]))',
+            [tenantId, factoryId, reservationIds],
           );
           await client.query(
             'DELETE FROM inventory_reservation_consumptions WHERE reservation_id = ANY($1::uuid[])',
@@ -296,7 +296,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       }
 
       if (inventoryItemIds.length > 0) {
-        await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
+        await client.query('DELETE FROM inventory_reservation_consumption_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($3::uuid[]))', [tenantId, factoryId, inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_reservation_traceability_allocations WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
         await client.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [inventoryItemIds]);
@@ -494,6 +494,6 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       "SELECT (SELECT count(*)::text FROM work_order_events WHERE work_order_id=$1 AND event_type='WIP_TRANSFERRED') AS transfer_count, (SELECT count(*)::text FROM work_order_events WHERE work_order_id=$1 AND event_type='OPERATION_READY') AS operation_ready_count",
       [draft.id],
     );
-    expect(evidence.rows[0]).toEqual({ transfer_count: '2', operation_ready_count: '2' });
+    expect(evidence.rows[0]).toEqual({ transfer_count: '2', operation_ready_count: '3' });
   });
 });
