@@ -22,6 +22,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   let factoryId!: string;
   const itemIds: string[] = [];
   const locationIds: string[] = [];
+  const sectorCodes: string[] = [];
 
   const createItem = async (quantityOnHand: string): Promise<string> => {
     const created = await adminPool.query<{ id: string }>(
@@ -135,6 +136,12 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           );
           await adminPool.query('DELETE FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
+          if (sectorCodes.length > 0) {
+            await adminPool.query(
+              "DELETE FROM inventory_material_allocation_policies WHERE tenant_id=$1 AND factory_id=$2 AND policy_scope='SECTOR' AND lower(sector_code)=ANY($3::text[])",
+              [tenantId, factoryId, sectorCodes.map((code) => code.toLowerCase())],
+            );
+          }
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
@@ -429,9 +436,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     locationIds.push(warehouse.id, bin.id);
 
+    const testSectorCode = 'FIFO-' + randomUUID().slice(0, 12).toUpperCase();
+    sectorCodes.push(testSectorCode);
     await adminPool.query(
-      "UPDATE inventory_items SET sector_code='TEXTILE' WHERE tenant_id=$1 AND factory_id=$2 AND id=$3",
-      [tenantId, factoryId, itemId],
+      'UPDATE inventory_items SET sector_code=$4 WHERE tenant_id=$1 AND factory_id=$2 AND id=$3',
+      [tenantId, factoryId, itemId, testSectorCode],
     );
     // The more-specific material policy must win over the sector-level FEFO policy.
     await adminPool.query(
@@ -440,9 +449,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
          allocation_policy, require_traceability, created_by_user_id, updated_by_user_id
        )
        VALUES
-         ($1,$2,'SECTOR','TEXTILE',NULL,'FEFO',TRUE,$4,$4),
-         ($1,$2,'MATERIAL',NULL,$3,'FIFO',TRUE,$4,$4)`,
-      [tenantId, factoryId, itemId, TEST_USER_ID],
+         ($1,$2,'SECTOR',$3,NULL,'FEFO',TRUE,$5,$5),
+         ($1,$2,'MATERIAL',NULL,$4,'FIFO',TRUE,$5,$5)`,
+      [tenantId, factoryId, testSectorCode, itemId, TEST_USER_ID],
     );
 
     const databaseDateResult = await adminPool.query<{ current_date: string }>(
