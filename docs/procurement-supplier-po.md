@@ -32,3 +32,8 @@ All PO lines use a generated numeric line amount; aggregate totals are calculate
 ## Boundary
 
 This is the initial procurement slice, not the full purchasing feature set. Goods receipt/GRN, partial receipts, supplier pricing/scorecards, tax and commercial approval thresholds, and lot/serial genealogy are tracked as separate follow-up work.
+
+
+## External supplier invoice matching
+
+Supplier invoices remain external AP records. The governed Finance connector now accepts a mapped `SUPPLIER_INVOICE_LINE` only as an AP `AP_OPEN` fact with a due date, exact quantity/rate/UOM, canonical supplier crosswalk and a reconciliation to one posted GRN line. That receipt line resolves to its approved PO line and PO supplier; quantity/rate variance is retained for independent finance review. FactoryOS does not create or approve invoices, pay suppliers or post journals. See [Supplier Invoice Three-way Match](supplier-invoice-three-way-match.md). Supplier claims/RMA, scorecards, landed-cost allocation and tax/accrual policy remain separate gaps.
