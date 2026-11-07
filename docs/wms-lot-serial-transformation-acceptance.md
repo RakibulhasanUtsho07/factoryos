@@ -4,7 +4,7 @@
 
 ## Commands and routes
 
-Migration 238 continues to reject generic SPLIT_INTO and MERGED_INTO genealogy writes. Migration 239 adds command-linked stock-conserving execution. The generic POST /api/v1/traceability/genealogy route remains blocked for both relationship types.
+Migration 238 continues to reject generic SPLIT_INTO and MERGED_INTO genealogy writes. Migration 239 adds command-linked stock-conserving execution, and migration 240 adds active reservation-allocation remapping. The generic POST /api/v1/traceability/genealogy route remains blocked for both relationship types.
 
 - POST /api/v1/traceability/units/:unitId/split takes one source material LOT and 2–100 child identities. All outputs in one command must be either LOT or SERIAL. Each output declares its total quantity and the exact quantities to assign to existing source locations.
 - POST /api/v1/traceability/units/merge takes 2–100 compatible source material LOT identities and a new target LOT code. Target location quantities are derived from source identity/location balances; the client cannot invent the result quantity.
@@ -27,7 +27,7 @@ Each command writes immutable transformation headers and per-source/target/locat
 
 ## Automated acceptance evidence
 
-services/api/test/wms-serial-indivisibility.sql now runs against PostgreSQL and exercises:
+services/api/test/wms-serial-indivisibility.sql and the PostgreSQL reservation integration suite exercise:
 - Two compatible LOTs merged into one target LOT, with both source quantities and source identities retired.
 - A ten-unit LOT split into ten independently addressable whole-unit SERIAL identities.
 - Effective receipt timestamp preservation through merge/split.
@@ -44,6 +44,6 @@ The API unit contract tests reject fractional SERIAL outputs, mixed output unit 
 
 ## Remaining SRS acceptance gates
 
-FR-WMS-02 / FR-WMS-04 / FR-WMS-09 remain PARTIAL / OPEN / NOT_ACCEPTED pending: reservation allocation remapping without changing per-reservation sequence precedence; mixed good/scrap and larger serial distribution scenarios; full forward/reverse recall impact acceptance through transformations; cross-location physical movement/put-away handling; representative external factory/site/provider rehearsal; physical barcode/RFID/mobile/printer HIL; capacity/recovery testing; and named independent product/operations owner and reviewer acceptance.
+FR-WMS-02 / FR-WMS-04 / FR-WMS-09 remain PARTIAL / OPEN / NOT_ACCEPTED pending: mixed good/scrap and larger serial distribution scenarios; full forward/reverse recall impact acceptance through transformations; cross-location physical movement/put-away handling; representative external factory/site/provider rehearsal; physical barcode/RFID/mobile/printer HIL; capacity/recovery testing; and named independent product/operations owner and reviewer acceptance.
 
 Do not promote this command slice to main or mark the SRS rows PASS based only on code/CI. The PR is stacked on the generic-transformation safety guard branch and must be reviewed and accepted in that order.
