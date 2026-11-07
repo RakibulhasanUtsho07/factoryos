@@ -241,8 +241,8 @@ BEGIN
     AND l.relationship_type = NEW.relationship_type
   GROUP BY h.operation_type;
 
-  IF v_operation IS DISTINCT FROM CASE NEW.relationship_type
-      WHEN 'SPLIT_INTO' THEN 'SPLIT' ELSE 'MERGE' END
+  IF v_operation IS DISTINCT FROM (CASE NEW.relationship_type
+      WHEN 'SPLIT_INTO' THEN 'SPLIT' ELSE 'MERGE' END)
      OR v_line_quantity IS DISTINCT FROM NEW.quantity THEN
     RAISE EXCEPTION
       'transformation genealogy edge must exactly match its immutable command line quantity and endpoints'
@@ -617,9 +617,6 @@ BEGIN
   END IF;
 
   PERFORM pg_advisory_xact_lock(hashtextextended(
-    p_tenant_id::text || ':' || p_factory_id::text || ':product-genealogy-graph', 0
-  ));
-  PERFORM pg_advisory_xact_lock(hashtextextended(
     p_tenant_id::text || ':' || p_factory_id::text || ':lot-serial-transformation:' || p_idempotency_key, 0
   ));
 
@@ -671,6 +668,11 @@ BEGIN
     RAISE EXCEPTION 'transformation inventory item is missing or inactive'
       USING ERRCODE = '23514';
   END IF;
+
+  -- Canonical item -> genealogy lock order matches work-order consumption and stock issues.
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    p_tenant_id::text || ':' || p_factory_id::text || ':product-genealogy-graph', 0
+  ));
   PERFORM 1 FROM inventory_stock_balances b
   WHERE b.tenant_id = p_tenant_id AND b.factory_id = p_factory_id AND b.item_id = v_item_id
   FOR UPDATE;
