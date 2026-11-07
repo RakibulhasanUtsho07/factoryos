@@ -14885,9 +14885,21 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/production/dto/work-order-output-report.dto.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/198_production_output_lot_genealogy.sql",
+        "migrations/199_wms_work_order_genealogy_consumption_guard.sql",
+        "migrations/236_wms_serial_indivisibility.sql",
+        "migrations/237_production_finished_good_serial_output.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts",
+        "services/api/test/production-output-lot-genealogy.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -14895,7 +14907,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "docs/inventory-stock-ledger.md; docs/lot-serial-product-genealogy.md; docs/production-work-orders-and-operations.md; docs/goods-receipt-grn.md; services/api/src/production/production-work-orders.service.ts; services/api/src/production/dto/work-order-output-report.dto.ts; services/api/src/inventory/inventory.reservation.service.ts; migrations/198_production_output_lot_genealogy.sql; migrations/199_wms_work_order_genealogy_consumption_guard.sql; migrations/236_wms_serial_indivisibility.sql; migrations/237_production_finished_good_serial_output.sql; services/api/src/production/production-work-orders.multi-operation.integration.spec.ts; services/api/test/production-output-lot-genealogy.sql. A finished-good SERIAL can now be emitted from a work-order output report when finished_good_serial_code is supplied. The accepted good quantity is constrained to exactly 1.0000, the serial code is bound into the idempotency fingerprint, and PostgreSQL binds the SERIAL identity to the exact report, item and order line. Reports without a serial code retain the existing bulk LOT behavior. Remaining: configurable label-template and encoded-label validation on physical printers/scanners; RFID hardware-in-the-loop; multi-serial distribution across mixed good/scrap batches; real manufacturing LOT/SERIAL split/merge commands; external factory/provider rehearsal and independent owner/reviewer acceptance. Technical evidence is pending exact-head CI and independent acceptance; this repository implementation does not mark the requirement accepted.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -15070,9 +15082,21 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/production/dto/work-order-output-report.dto.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/198_production_output_lot_genealogy.sql",
+        "migrations/199_wms_work_order_genealogy_consumption_guard.sql",
+        "migrations/236_wms_serial_indivisibility.sql",
+        "migrations/237_production_finished_good_serial_output.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts",
+        "services/api/test/production-output-lot-genealogy.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -15080,7 +15104,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "docs/lot-serial-product-genealogy.md; docs/production-work-orders-and-operations.md; docs/inventory-stock-ledger.md; services/api/src/production/production-work-orders.service.ts; services/api/src/production/dto/work-order-output-report.dto.ts; services/api/src/inventory/inventory.reservation.service.ts; migrations/198_production_output_lot_genealogy.sql; migrations/199_wms_work_order_genealogy_consumption_guard.sql; migrations/236_wms_serial_indivisibility.sql; migrations/237_production_finished_good_serial_output.sql; services/api/src/production/production-work-orders.multi-operation.integration.spec.ts; services/api/test/production-output-lot-genealogy.sql. Finished-good SERIAL output is now represented as a first-class traceability identity and is linked to consumed material LOT/SERIAL allocations by the existing work-order completion genealogy transaction. The output trigger binds the SERIAL to the exact production report, finished item, order line and one-unit quantity; bulk output remains a LOT. This is one SERIAL per output report, not multi-serial batch distribution. Remaining: executable LOT/SERIAL split/merge command paths with stock conservation; mixed good/scrap multi-serial output allocation; complete shipment/customer forward and reverse trace acceptance with sector retention; external site/provider/device acceptance and independent owner/reviewer sign-off. Technical evidence is pending exact-head CI and independent acceptance; this repository implementation does not mark the requirement accepted.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
