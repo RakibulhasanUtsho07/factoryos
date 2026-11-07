@@ -610,6 +610,17 @@ BEGIN
   -- Exercise a mixed split with an active reservation. The first output is a
   -- whole-unit SERIAL so the existing reservation must be remapped onto that
   -- exact target; the remaining two units stay bulk LOT stock.
+  -- Registration automatically binds available aggregate/BIN stock to the
+  -- new identity. Increase the physical source balances first so its trigger
+  -- creates the three-unit row; then reserve exactly one of those units.
+  UPDATE inventory_stock_balances
+  SET quantity_on_hand = 15, quantity_reserved = 2
+  WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item;
+  UPDATE inventory_location_balances
+  SET quantity_on_hand = 15, quantity_reserved = 2
+  WHERE tenant_id = v_tenant AND factory_id = v_factory
+    AND item_id = v_item AND location_id = v_location;
+
   INSERT INTO traceability_units (
     id, tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
     inventory_item_id, quantity, unit, external_reference,
@@ -630,10 +641,10 @@ BEGIN
     'wsi-mixed-reservation-' || v_mixed_reservation::text, repeat('e', 64), v_actor, v_trace
   );
 
-  INSERT INTO inventory_traceability_location_balances (
-    tenant_id, factory_id, item_id, traceability_unit_id, location_id,
-    quantity_on_hand, quantity_reserved
-  ) VALUES (v_tenant, v_factory, v_item, v_mixed_source, v_location, 3, 1);
+  UPDATE inventory_traceability_location_balances
+  SET quantity_reserved = 1, version = version + 1, updated_at = clock_timestamp()
+  WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item
+    AND traceability_unit_id = v_mixed_source AND location_id = v_location;
 
   INSERT INTO inventory_reservation_traceability_allocations (
     tenant_id, factory_id, reservation_id, item_id, traceability_unit_id,
@@ -642,14 +653,6 @@ BEGIN
     v_tenant, v_factory, v_mixed_reservation, v_item, v_mixed_source,
     v_location, 1, 1, 0, 0
   );
-
-  UPDATE inventory_stock_balances
-  SET quantity_on_hand = 15, quantity_reserved = 2
-  WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item;
-  UPDATE inventory_location_balances
-  SET quantity_on_hand = 15, quantity_reserved = 2
-  WHERE tenant_id = v_tenant AND factory_id = v_factory
-    AND item_id = v_item AND location_id = v_location;
 
   v_mixed_outputs := jsonb_build_array(
     jsonb_build_object(
