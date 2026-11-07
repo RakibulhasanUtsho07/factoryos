@@ -1810,4 +1810,278 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   }, 30000);
 
 
+  it('resolves sector policy over factory and factory policy over traceability default under competing demand', async () => {
+    const createdFactory = await adminPool.query<{ id: string }>(
+      `INSERT INTO factories (tenant_id, code, name, status)
+       VALUES ($1, $2, $3, 'ACTIVE')
+       RETURNING id::text AS id`,
+      [tenantId, 'WMS-POLICY-' + randomUUID().slice(0, 8), 'WMS policy precedence integration site'],
+    );
+    const policyFactoryId = createdFactory.rows[0]?.id;
+    if (!policyFactoryId) throw new Error('WMS policy precedence factory was not created');
+    factoryIds.push(policyFactoryId);
+
+    const unassignedResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, policyFactoryId],
+    );
+    const unassignedLocationId = unassignedResult.rows[0]?.id;
+    if (!unassignedLocationId) throw new Error('Policy precedence factory UNASSIGNED location missing');
+    locationIds.push(unassignedLocationId);
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, policyFactoryId,
+      { location_code: 'WMS-POLICY-WH-' + randomUUID().slice(0, 8), name: 'Policy precedence warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, policyFactoryId,
+      { location_code: 'WMS-POLICY-BIN-' + randomUUID().slice(0, 8), name: 'Policy precedence bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    const sectorCode = 'POLICY-' + randomUUID().slice(0, 12).toUpperCase();
+    const createPolicyItem = async (itemSectorCode: string | null): Promise<string> => {
+      const created = await adminPool.query<{ id: string }>(
+        `INSERT INTO inventory_items (
+           tenant_id, factory_id, sku, name, unit, sector_code, created_by_user_id
+         )
+         VALUES ($1, $2, $3, $4, 'PCS', $5, $6)
+         RETURNING id::text AS id`,
+        [
+          tenantId, policyFactoryId, 'WMS-POLICY-' + randomUUID(),
+          'WMS policy precedence material', itemSectorCode, TEST_USER_ID,
+        ],
+      );
+      const itemId = created.rows[0]?.id;
+      if (!itemId) throw new Error('WMS policy precedence item was not created');
+      itemIds.push(itemId);
+      await adminPool.query(
+        `INSERT INTO inventory_stock_balances (
+           tenant_id, factory_id, item_id, quantity_on_hand, quantity_reserved
+         )
+         VALUES ($1, $2, $3, 6, 0)`,
+        [tenantId, policyFactoryId, itemId],
+      );
+      return itemId;
+    };
+
+    const sectorItemId = await createPolicyItem(sectorCode);
+    const factoryItemId = await createPolicyItem(null);
+    const insertedPolicies = await adminPool.query<{ id: string }>(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, sector_code, inventory_item_id,
+         allocation_policy, require_traceability, created_by_user_id, updated_by_user_id
+       )
+       VALUES
+         ($1, $2, 'FACTORY', NULL, NULL, 'FEFO', TRUE, $3, $3),
+         ($1, $2, 'SECTOR', $4, NULL, 'FIFO', TRUE, $3, $3)
+       RETURNING id::text AS id`,
+      [tenantId, policyFactoryId, TEST_USER_ID, sectorCode],
+    );
+    expect(insertedPolicies.rows).toHaveLength(2);
+    policyIds.push(...insertedPolicies.rows.map((row) => row.id));
+
+    const traceabilityDefault = await adminPool.query<{ allocation_policy: string }>(
+      `SELECT allocation_policy FROM traceability_settings
+       WHERE tenant_id=$1 AND factory_id=$2`,
+      [tenantId, policyFactoryId],
+    );
+    expect(traceabilityDefault.rows[0]?.allocation_policy).toBe('FIFO');
+
+    const effectivePolicy = async (itemId: string): Promise<string> => {
+      const result = await adminPool.query<{ allocation_policy: string }>(
+        `SELECT COALESCE(
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+           (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+            WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+              AND p.policy_scope='FACTORY'),
+           (SELECT ts.allocation_policy FROM traceability_settings ts
+            WHERE ts.tenant_id=i.tenant_id AND ts.factory_id=i.factory_id),
+           'FIFO'
+         ) AS allocation_policy
+         FROM inventory_items i
+         WHERE i.tenant_id=$1 AND i.factory_id=$2 AND i.id=$3`,
+        [tenantId, policyFactoryId, itemId],
+      );
+      return result.rows[0]?.allocation_policy ?? 'MISSING';
+    };
+    expect(await effectivePolicy(sectorItemId)).toBe('FIFO');
+    expect(await effectivePolicy(factoryItemId)).toBe('FEFO');
+
+    const dateResult = await adminPool.query<{ current_date: string }>(
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
+    );
+    const databaseCurrentDate = dateResult.rows[0]?.current_date;
+    if (!databaseCurrentDate) throw new Error('PostgreSQL CURRENT_DATE unavailable for policy precedence fixtures');
+    const expiryFromOffset = (offsetDays: number): string => {
+      const date = new Date(databaseCurrentDate + 'T00:00:00.000Z');
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    };
+
+    const createLot = async (itemId: string, label: string, expiry: string): Promise<string> => {
+      const code = 'LOT-WMS-POLICY-' + label + '-' + randomUUID().slice(0, 6);
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, policyFactoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: code,
+          barcode_value: 'BAR-' + code,
+          inventory_item_id: itemId,
+          quantity: 3,
+          unit: 'PCS',
+          expires_at: expiry,
+          attributes: {},
+        } as never,
+        'wms-policy-lot-' + label + '-' + randomUUID(), randomUUID(), randomUUID(),
+      );
+      if (!unit.id) throw new Error('Policy precedence traceability lot was not created');
+      return unit.id;
+    };
+
+    const createReceiptOrderedPair = async (
+      itemId: string,
+      label: string,
+    ): Promise<{ first: string; second: string }> => {
+      const first = await createLot(itemId, label + '-FIRST', expiryFromOffset(90));
+      await adminPool.query('SELECT pg_sleep(0.04)');
+      const second = await createLot(itemId, label + '-SECOND', expiryFromOffset(30));
+      const order = await adminPool.query<{ id: string }>(
+        `SELECT id::text AS id FROM traceability_units
+         WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])
+         ORDER BY created_at, id`,
+        [tenantId, policyFactoryId, [first, second]],
+      );
+      expect(order.rows.map((row) => row.id)).toEqual([first, second]);
+
+      for (const lotId of [first, second]) {
+        await locationService.transferStock(
+          TEST_USER_ID, tenantId, policyFactoryId, itemId,
+          {
+            movement_purpose: 'PUT_AWAY',
+            source_location_id: unassignedLocationId,
+            destination_location_id: bin.id,
+            traceability_unit_id: lotId,
+            quantity: 3,
+          } as never,
+          'wms-policy-putaway-' + label + '-' + randomUUID(), null, randomUUID(),
+        );
+      }
+      return { first, second };
+    };
+
+    const sectorLots = await createReceiptOrderedPair(sectorItemId, 'SECTOR-FIFO');
+    const factoryLots = await createReceiptOrderedPair(factoryItemId, 'FACTORY-FEFO');
+
+    const assertCompetingAllocation = async (
+      itemId: string,
+      policy: 'FIFO' | 'FEFO',
+      expectedOrder: string[],
+    ): Promise<void> => {
+      const reserve = (key: string) => service.createReservation(
+        TEST_USER_ID, tenantId, policyFactoryId, itemId,
+        { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
+        key, null, randomUUID(),
+      );
+      const competing = await Promise.allSettled([
+        reserve('wms-policy-competitor-a-' + randomUUID()),
+        reserve('wms-policy-competitor-b-' + randomUUID()),
+      ]);
+      expect(competing.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(competing.filter((result) => result.status === 'rejected')).toHaveLength(1);
+      const rejected = competing.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      expect(String(rejected?.reason?.message ?? rejected?.reason))
+        .toContain('Insufficient eligible ' + policy + ' lot/serial stock');
+
+      const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
+        `SELECT id::text AS id, quantity::text AS quantity, status
+         FROM inventory_reservations
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         ORDER BY created_at, id`,
+        [tenantId, policyFactoryId, itemId],
+      );
+      expect(reservations.rows).toHaveLength(1);
+      expect(reservations.rows[0]).toMatchObject({ quantity: '4.0000', status: 'RESERVED' });
+
+      const allocations = await adminPool.query<{
+        traceability_unit_id: string;
+        allocation_sequence: number;
+        allocated_quantity: string;
+      }>(
+        `SELECT traceability_unit_id::text AS traceability_unit_id,
+                allocation_sequence, allocated_quantity::text AS allocated_quantity
+         FROM inventory_reservation_traceability_allocations
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND reservation_id=$4
+         ORDER BY allocation_sequence`,
+        [tenantId, policyFactoryId, itemId, reservations.rows[0]!.id],
+      );
+      expect(allocations.rows).toEqual([
+        { traceability_unit_id: expectedOrder[0], allocation_sequence: 1, allocated_quantity: '3.0000' },
+        { traceability_unit_id: expectedOrder[1], allocation_sequence: 2, allocated_quantity: '1.0000' },
+      ]);
+
+      const lotBalances = await adminPool.query<{
+        unit_id: string;
+        quantity_on_hand: string;
+        quantity_reserved: string;
+      }>(
+        `SELECT traceability_unit_id::text AS unit_id,
+                quantity_on_hand::text AS quantity_on_hand,
+                quantity_reserved::text AS quantity_reserved
+         FROM inventory_traceability_location_balances
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+           AND location_id=$4 AND traceability_unit_id=ANY($5::uuid[])`,
+        [tenantId, policyFactoryId, itemId, bin.id, expectedOrder],
+      );
+      const balancesByLot = new Map(lotBalances.rows.map((row) => [row.unit_id, row]));
+      expect(lotBalances.rows).toHaveLength(2);
+      expect(balancesByLot.get(expectedOrder[0])).toMatchObject({
+        quantity_on_hand: '3.0000', quantity_reserved: '3.0000',
+      });
+      expect(balancesByLot.get(expectedOrder[1])).toMatchObject({
+        quantity_on_hand: '3.0000', quantity_reserved: '1.0000',
+      });
+
+      const reconciled = await adminPool.query<{
+        stock_on_hand: string;
+        stock_reserved: string;
+        bin_on_hand: string;
+        bin_reserved: string;
+      }>(
+        `SELECT s.quantity_on_hand::text AS stock_on_hand,
+                s.quantity_reserved::text AS stock_reserved,
+                b.quantity_on_hand::text AS bin_on_hand,
+                b.quantity_reserved::text AS bin_reserved
+         FROM inventory_stock_balances s
+         JOIN inventory_location_balances b ON b.tenant_id=s.tenant_id
+           AND b.factory_id=s.factory_id AND b.item_id=s.item_id
+         WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3
+           AND b.location_id=$4`,
+        [tenantId, policyFactoryId, itemId, bin.id],
+      );
+      expect(reconciled.rows).toEqual([{
+        stock_on_hand: '6.0000',
+        stock_reserved: '4.0000',
+        bin_on_hand: '6.0000',
+        bin_reserved: '4.0000',
+      }]);
+    };
+
+    // Sector FIFO must beat the contradictory factory FEFO rule.
+    await assertCompetingAllocation(sectorItemId, 'FIFO', [sectorLots.first, sectorLots.second]);
+    // With no sector/material override, factory FEFO must beat traceability_settings FIFO.
+    await assertCompetingAllocation(factoryItemId, 'FEFO', [factoryLots.second, factoryLots.first]);
+  }, 30000);
+
 });
