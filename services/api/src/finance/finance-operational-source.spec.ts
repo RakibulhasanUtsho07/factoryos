@@ -27,6 +27,22 @@ describe('finance operational source resolver', () => {
     expect(mock.query.mock.calls[0][0]).toContain("gr.status='POSTED'");
   });
 
+  it('resolves the canonical supplier code only through a posted GRN and its approved PO', async () => {
+    const mock = fakeClient([{
+      quantity: '9.5', rate: '3.25', uom_code: 'KG', currency: 'USD', supplier_code: 'sup-001',
+    }]);
+    await expect(resolveFinanceOperationalSource(
+      mock.client, 'tenant-1', 'factory-1', 'GOODS_RECEIPT_LINE', 'gr-line-1',
+    )).resolves.toEqual({
+      quantity: '9.5', rate: '3.25', uomCode: 'KG', currency: 'USD', supplierCode: 'SUP-001',
+    });
+    const sql = mock.query.mock.calls[0][0];
+    expect(sql).toContain('JOIN suppliers s ON s.id=po.supplier_id AND s.tenant_id=po.tenant_id');
+    expect(sql).toContain("gr.status='POSTED'");
+    expect(sql).toContain("po.status='APPROVED'");
+    expect(sql).toContain('grl.tenant_id=$1 AND grl.factory_id=$2');
+  });
+
   it('resolves confirmed order lines and utility meter rate snapshots', async () => {
     const order = fakeClient([{ quantity: '12', rate: '0', uom_code: 'PCS', currency: 'BDT' }]);
     await expect(resolveFinanceOperationalSource(
