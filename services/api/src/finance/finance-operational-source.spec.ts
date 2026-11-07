@@ -27,6 +27,53 @@ describe('finance operational source resolver', () => {
     expect(mock.query.mock.calls[0][0]).toContain("gr.status='POSTED'");
   });
 
+  it('resolves work-order material consumption only through its direct posted-GRN and approved-PO provenance', async () => {
+    const mock = fakeClient([{ quantity: '2.5000', rate: '18.7500', uom_code: 'kg', currency: 'bdt' }]);
+    await expect(resolveFinanceOperationalSource(
+      mock.client, 'tenant-1', 'factory-1', 'WORK_ORDER_MATERIAL_CONSUMPTION', 'consumption-allocation-1',
+    )).resolves.toEqual({ quantity: '2.5', rate: '18.75', uomCode: 'KG', currency: 'BDT' });
+
+    const [sql, params] = mock.query.mock.calls[0];
+    expect(params).toEqual(['tenant-1', 'factory-1', 'consumption-allocation-1']);
+    for (const fragment of [
+      'inventory_reservation_consumption_traceability_allocations ca',
+      'inventory_reservation_consumptions c',
+      'work_order_material_reservations mr',
+      'traceability_units tu',
+      'goods_receipt_lines grl',
+      "gr.status='POSTED'",
+      'gr.posted_at IS NOT NULL',
+      'purchase_order_lines pol',
+      "po.status='APPROVED'",
+      'pol.unit_price',
+      'upper(pol.unit) AS uom_code',
+      'upper(po.currency) AS currency',
+      'ca.id::text=$3',
+      "tu.product_role='MATERIAL'",
+      "tu.unit_type IN ('LOT','SERIAL')",
+      'ca.quantity<=c.quantity',
+      'ca.quantity<=tu.quantity',
+      'pol.inventory_item_id=grl.inventory_item_id',
+      'upper(tu.unit)=upper(pol.unit)',
+    ]) {
+      expect(sql).toContain(fragment);
+    }
+  });
+
+  it('fails closed when consumed material has no direct posted-GRN or approved-PO rate source', async () => {
+    const unbacked = fakeClient([]);
+    await expect(resolveFinanceOperationalSource(
+      unbacked.client, 'tenant-1', 'factory-1', 'WORK_ORDER_MATERIAL_CONSUMPTION', 'unbacked-allocation',
+    )).rejects.toThrow('was not found or is not approved/posted in this factory');
+
+    const ambiguous = fakeClient([
+      { quantity: '1', rate: '2', uom_code: 'KG', currency: 'BDT' },
+      { quantity: '1', rate: '3', uom_code: 'KG', currency: 'BDT' },
+    ]);
+    await expect(resolveFinanceOperationalSource(
+      ambiguous.client, 'tenant-1', 'factory-1', 'WORK_ORDER_MATERIAL_CONSUMPTION', 'ambiguous-allocation',
+    )).rejects.toThrow('is ambiguous');
+  });
   it('resolves confirmed order lines and utility meter rate snapshots', async () => {
     const order = fakeClient([{ quantity: '12', rate: '0', uom_code: 'PCS', currency: 'BDT' }]);
     await expect(resolveFinanceOperationalSource(
