@@ -18,6 +18,8 @@ The same fixture creates factory-scoped KG and G units, submits and independentl
 
 Authoritative integration path: `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`, test `runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy`.
 
+The complementary three-step routing fixture is `services/api/src/production/production-work-orders.multi-operation.integration.spec.ts`. It now carries an inventory-linked MATERIAL LOT through BOM reservation, cutting → assembly → finishing WIP transfers, final-operation output posting and replay, zero-WIP operation completion, work-order completion, reservation consumption, exact stock/lot balance conservation and deferred source-lot-to-finished-good genealogy. The GRN-backed single-operation acceptance above remains the source for supplier/receipt provenance; neither fixture establishes full manufacturing LOT/SERIAL split/merge or hardware/site acceptance.
+
 The scenario uses one tenant/factory and connected persisted identities:
 
 1. **GRN provenance and incoming quality:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. A supplier inspection HOLD is persisted against the received line, and work-order release is asserted to fail while that hold is active. A recorded RELEASE disposition removes the hold before the same work order can be released.

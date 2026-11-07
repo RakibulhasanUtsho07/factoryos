@@ -1689,18 +1689,34 @@ export class ProductionWorkOrdersService {
     if (goodUnits + scrapUnits <= 0n) throw new BadRequestException('good_quantity and scrap_quantity cannot both be zero');
     const scrapReason = dto.scrap_reason?.trim() || null;
     if (scrapUnits > 0n && !scrapReason) throw new BadRequestException('scrap_reason is required when scrap_quantity is greater than zero');
+    const finishedGoodSerialCode = dto.finished_good_serial_code?.trim().toUpperCase() || null;
+    if (dto.finished_good_serial_code != null && !finishedGoodSerialCode) {
+      throw new BadRequestException('finished_good_serial_code must not be blank');
+    }
+    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    });
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
+      throw new BadRequestException('finished_good_serial_code must be at most 160 printable characters without control characters');
+    }
+    if (finishedGoodSerialCode && goodUnits !== 10_000n) {
+      throw new BadRequestException('Finished-good SERIAL output must contain exactly one accepted good unit; submit a separate output report for each serial');
+    }
     const notes = dto.notes?.trim() || null;
     const source = dto.source ?? 'API';
     const deviceId = dto.device_id?.trim() || null;
     this.assertDeviceSource(source, deviceId);
     const occurredAt = this.eventTimestamp(dto.occurred_at);
-    const requestHash = this.hash({
+    const requestHashPayload: Record<string, unknown> = {
       work_order_id: workOrderId.toLowerCase(), operation_id: dto.operation_id.toLowerCase(),
       expected_work_order_version: dto.expected_work_order_version,
       expected_operation_version: dto.expected_operation_version,
       good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason,
       notes, source, device_id: deviceId, occurred_at: occurredAt,
-    });
+    };
+    if (finishedGoodSerialCode !== null) requestHashPayload.finished_good_serial_code = finishedGoodSerialCode;
+    const requestHash = this.hash(requestHashPayload);
     const correlationId = this.correlationId(traceId, requestId);
     const result = await this.database.transaction({
       tenantId, userId, requestId, traceId,
@@ -1846,6 +1862,7 @@ export class ProductionWorkOrdersService {
           finishedItemId: workOrder.finished_item_id,
           productionReportId,
           goodQuantity,
+          finishedGoodSerialCode,
           scrapQuantity,
           scrapReason,
           yieldPercentage,
@@ -1916,6 +1933,7 @@ export class ProductionWorkOrdersService {
           finished_good_movement_id: finishedGoodsReceipt.movementId,
           finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
           finished_good_traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+          finished_good_serial_code: finishedGoodSerialCode,
           scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
           good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason, notes,
           yield_percentage: yieldPercentage,
@@ -1946,6 +1964,7 @@ export class ProductionWorkOrdersService {
           productionOutputPostingId: result.productionOutputPostingId,
           inventoryMovementId: result.inventoryMovementId,
           finishedGoodTraceabilityUnitId: result.traceabilityUnitId,
+          finishedGoodSerialCode,
           scrapTraceabilityUnitId: result.scrapTraceabilityUnitId,
           goodQuantity, scrapQuantity, yieldPercentage: result.yieldPercentage,
           cumulativeYieldPercentage: result.cumulativeYieldPercentage,
@@ -1960,6 +1979,7 @@ export class ProductionWorkOrdersService {
       source_operation_event_id: result.sourceOperationEventId,
       finished_good_movement_id: result.inventoryMovementId,
       finished_good_traceability_unit_id: result.traceabilityUnitId,
+      finished_good_serial_code: finishedGoodSerialCode,
       scrap_traceability_unit_id: result.scrapTraceabilityUnitId,
       output_yield_percentage: result.yieldPercentage,
       cumulative_yield_percentage: result.cumulativeYieldPercentage,

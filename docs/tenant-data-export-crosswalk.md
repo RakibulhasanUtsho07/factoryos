@@ -146,10 +146,10 @@ For both categories the source raises `ServiceUnavailableException` before emitt
 
 When adding, removing or moving a table:
 
-1. Update `SAAS_TENANT_DATASET_TABLES` and the PostgreSQL source/serialization tests.
-2. Update migration 156's direct allowlist and the `category := CASE` classification; do not add an unknown relation by naming convention.
-3. Update the exact allowlist in `services/api/test/tenant-data-governance-inventory.sql`.
-4. For relations without `tenant_id`, update migration 159 only after documenting FK-derived scope or an explicit global/shared decision; keep unsupported relations denied.
+1. Update `SAAS_TENANT_DATASET_TABLES` and the PostgreSQL source/serialization tests only when a dedicated adapter is reviewed and actually implemented.
+2. Do not rewrite historical migrations 156 or 159. Migration 235 discovers every public base/partition relation missing from the current inventory and adds a fail-closed row; direct relations receive ENABLE/FORCE RLS plus a restrictive tenant fence, FK-derived relations receive a derived fence, and relations without a provable tenant path are denied and remain release-blocking.
+3. To make a relation exportable, add a later numbered, reviewable migration that updates the inventory and ownership disposition, pins the exact relation in migration 215's database-owned adapter registry, adds the matching TypeScript source/target serialization and dependency behavior, and updates the explicit test allowlists. Never make a relation exportable by migration 235's discovery heuristic.
+4. For a new relation without `tenant_id`, record a justified FK-derived scope or an explicit global/shared decision in a later migration. Do not infer global ownership from the absence of a tenant column.
 5. Update this document and preserve the independent logical IAM mapping where applicable.
 6. Run the crosswalk contract plus the full API PostgreSQL suite on the exact candidate SHA.
 
@@ -165,3 +165,10 @@ Commercial billing account configuration, account-version events, billing-close 
 The 17-relation finance inventory adapter uses tenant predicates and verifies forced RLS plus an enabled DELETE guard before counting rows. It produces a deterministic manifest and independent digest read-back. EXECUTE is a non-destructive check: if any aged immutable finance rows exist it writes a BLOCKED residual receipt. There is no automatic archive purge. A distinct finance owner must approve the legal basis, archive format, destination, restore process and exact retention disposition before a portable finance-ledger adapter can be added.
 
 The portable export boundary remains unchanged: INTEGRATION_METADATA and FILE_REFERENCES have no source adapter and fail before emitting rows. AI_CONTEXT and LEARNING_EVALUATION are optional, bounded table lists only. Cross-version COMPATIBLE validation does not itself transform rows; the current PostgreSQL target importer is exact-schema only, and TRANSFORM_REQUIRED remains blocked until a real reviewed mapping/transform adapter exists.
+
+
+## Late-created relation inventory and fail-closed reconciliation
+
+Migration `235_tenant_privacy_inventory_late_relation_reconciliation.sql` reconciles every public base/partition relation present after later domain migrations. It inserts missing privacy-inventory rows as `EXCLUDED / BLOCKED_UNREVIEWED`, preserves any already reviewed adapter entry, and creates a matching ownership record. Direct tenant columns are guarded with ENABLE/FORCE RLS and a restrictive tenant predicate; relations whose tenant is established only through declared foreign keys receive a restrictive FK-derived policy. A no-direct/no-FK relation is denied and remains `UNRESOLVED / REVIEW_REQUIRED`, which blocks the PostgreSQL ownership acceptance contract until an owner records a justified shared-scope or derived-scope decision.
+
+The dedicated `tenant-late-relation-reconciliation.sql` PostgreSQL contract names the later research-document, growth-observation/calibration, AI live-evaluation/artifact, source-freshness, SaaS propagation/retention, commercial-billing and physical-provisioning tables. These are all required to remain explicitly excluded from generic export and blocked from generic erasure. The contract also checks forced RLS and the restrictive direct-tenant policy. These are local schema/ownership controls only; they do not establish external provider completeness, legal-retention approval, production export or whole-tenant erasure. AS-137 / NFR-PROD-14 remain **PARTIAL**.

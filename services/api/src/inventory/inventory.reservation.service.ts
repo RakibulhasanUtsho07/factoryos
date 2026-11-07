@@ -1630,6 +1630,7 @@ export class InventoryReservationService {
       finishedItemId: string;
       productionReportId: string;
       goodQuantity: string;
+      finishedGoodSerialCode?: string | null;
       scrapQuantity: string;
       scrapReason?: string | null;
       yieldPercentage: string;
@@ -1656,6 +1657,20 @@ export class InventoryReservationService {
     };
     const good = parseQuantity(input.goodQuantity, 'Finished-good output quantity');
     const scrap = parseQuantity(input.scrapQuantity, 'Scrap output quantity');
+    const finishedGoodSerialCode = input.finishedGoodSerialCode?.trim().toUpperCase() || null;
+    if (input.finishedGoodSerialCode != null && !finishedGoodSerialCode) {
+      throw new ConflictException('Finished-good SERIAL code must not be blank');
+    }
+    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    });
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
+      throw new ConflictException('Finished-good SERIAL code must be at most 160 printable characters without control characters');
+    }
+    if (finishedGoodSerialCode && good.units !== 10_000n) {
+      throw new ConflictException('Finished-good SERIAL output must contain exactly one accepted good unit');
+    }
     if (good.units + scrap.units === 0n) {
       throw new ConflictException('Production output must include good quantity or scrap quantity');
     }
@@ -1675,6 +1690,19 @@ export class InventoryReservationService {
     }
     if (item.status !== 'ACTIVE') {
       throw new ConflictException('Finished-good inventory item must remain active to receive production output');
+    }
+    if (finishedGoodSerialCode) {
+      const duplicateSerial = await client.query<{ serial_exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM traceability_units
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND (lower(unit_code) = lower($3) OR lower(barcode_value) = lower($3))
+         ) AS serial_exists`,
+        [input.tenantId, input.factoryId, finishedGoodSerialCode],
+      );
+      if (duplicateSerial.rows[0]?.serial_exists) {
+        throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+      }
     }
 
     let movementId: string | null = null;
@@ -1701,7 +1729,7 @@ export class InventoryReservationService {
       }
 
       const movementKey = `production-output-receipt-${input.productionReportId}`;
-      const movementHash = this.hash({
+      const movementHashPayload: Record<string, unknown> = {
         kind: 'PRODUCTION_OUTPUT_RECEIPT',
         tenantId: input.tenantId,
         factoryId: input.factoryId,
@@ -1709,7 +1737,9 @@ export class InventoryReservationService {
         productionReportId: input.productionReportId,
         finishedItemId: input.finishedItemId,
         goodQuantity: good.decimal,
-      });
+      };
+      if (finishedGoodSerialCode !== null) movementHashPayload.finishedGoodSerialCode = finishedGoodSerialCode;
+      const movementHash = this.hash(movementHashPayload);
       const movementResult = await client.query<MovementRow>(
         `
         INSERT INTO inventory_movements (
@@ -1757,6 +1787,7 @@ export class InventoryReservationService {
           order_line_id: input.orderLineId,
           production_report_id: input.productionReportId,
           good_quantity: good.decimal,
+          finished_good_serial_code: finishedGoodSerialCode,
           scrap_quantity: scrap.decimal,
           yield_percentage: input.yieldPercentage,
           cumulative_yield_percentage: input.cumulativeYieldPercentage,
@@ -1777,32 +1808,47 @@ export class InventoryReservationService {
 
     let traceabilityUnitId: string | null = null;
     if (good.units > 0n) {
-      traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
-        tenantId: input.tenantId,
-        factoryId: input.factoryId,
-        userId: input.userId,
-        correlationId: input.correlationId,
-        unitType: 'LOT',
-        productRole: 'FINISHED_GOOD',
-        unitCode: `FG-${input.productionReportId.toUpperCase()}`,
-        idempotencyKey: `production-report:${input.productionReportId}:finished-good-lot:v1`,
-        inventoryItemId: input.finishedItemId,
-        quantity: good.decimal,
-        unit: item.unit,
-        orderId: input.orderId,
-        orderLineId: input.orderLineId,
-        productionReportId: input.productionReportId,
-        attributes: {
-          kind: 'PRODUCTION_FINISHED_GOOD',
-          work_order_id: input.workOrderId,
-          work_order_number: input.workOrderNumber,
-          production_report_id: input.productionReportId,
-          source_movement_id: movementId,
-          sellable: true,
-        },
-      });
+      try {
+        traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          userId: input.userId,
+          correlationId: input.correlationId,
+          unitType: finishedGoodSerialCode ? 'SERIAL' : 'LOT',
+          productRole: 'FINISHED_GOOD',
+          unitCode: finishedGoodSerialCode ?? `FG-${input.productionReportId.toUpperCase()}`,
+          idempotencyKey: finishedGoodSerialCode
+            ? `production-report:${input.productionReportId}:finished-good-serial:${finishedGoodSerialCode.toLowerCase()}:v1`
+            : `production-report:${input.productionReportId}:finished-good-lot:v1`,
+          inventoryItemId: input.finishedItemId,
+          quantity: good.decimal,
+          unit: item.unit,
+          orderId: input.orderId,
+          orderLineId: input.orderLineId,
+          productionReportId: input.productionReportId,
+          attributes: {
+            kind: finishedGoodSerialCode ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
+            ...(finishedGoodSerialCode ? { serial_code: finishedGoodSerialCode } : {}),
+            work_order_id: input.workOrderId,
+            work_order_number: input.workOrderNumber,
+            production_report_id: input.productionReportId,
+            source_movement_id: movementId,
+            sellable: true,
+          },
+        });
+      } catch (error) {
+        const postgresError = error as { code?: unknown; constraint?: unknown };
+        const duplicateIdentityConstraint = [
+          'uq_traceability_unit_code_ci',
+          'uq_traceability_unit_barcode_ci',
+        ].includes(String(postgresError?.constraint ?? ''));
+        if (finishedGoodSerialCode && postgresError?.code === '23505' && duplicateIdentityConstraint) {
+          throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+        }
+        throw error;
+      }
 
-      // Finished-good lot stock shares the existing default virtual location with
+      // Finished-good LOT/SERIAL stock shares the existing default virtual location with
       // the aggregate ledger. The capacity predicate prevents identity registration
       // from assigning stock already represented by another traceable identity.
       const trackedBalance = await client.query<{ id: string }>(
@@ -1828,7 +1874,7 @@ export class InventoryReservationService {
         [input.tenantId, input.factoryId, input.finishedItemId, traceabilityUnitId, good.decimal],
       );
       if (!trackedBalance.rows[0]) {
-        throw new ConflictException('Finished-good lot could not be bound to unassigned stock without exceeding tracked location quantity');
+        throw new ConflictException('Finished-good LOT/SERIAL identity could not be bound to unassigned stock without exceeding tracked location quantity');
       }
     }
 
@@ -1875,7 +1921,7 @@ export class InventoryReservationService {
       factoryId: string;
       userId: string;
       correlationId: string;
-      unitType: 'LOT';
+      unitType: 'LOT' | 'SERIAL';
       productRole: 'FINISHED_GOOD' | 'OTHER';
       unitCode: string;
       idempotencyKey: string;
@@ -1901,25 +1947,34 @@ export class InventoryReservationService {
       production_report_id: input.productionReportId,
       attributes: input.attributes,
     });
-    const inserted = await client.query<{ id: string }>(
-      `
-      INSERT INTO traceability_units (
-        tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
-        inventory_item_id, quantity, unit, order_id, order_line_id, production_report_id,
-        attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
-      ) VALUES (
-        $1, $2, $3, $4, $5, $5, $6, $7::numeric, $8, $9::uuid, $10::uuid, $11::uuid,
-        $12::jsonb, $13, $14, $15, $16::uuid
-      )
-      RETURNING id::text AS id
-      `,
-      [
-        input.tenantId, input.factoryId, input.unitType, input.productRole, input.unitCode,
-        input.inventoryItemId, input.quantity, input.unit, input.orderId, input.orderLineId,
-        input.productionReportId, JSON.stringify(input.attributes), input.idempotencyKey,
-        requestHash, input.userId, input.correlationId,
-      ],
-    );
+    let inserted: { rows: Array<{ id: string }> };
+    try {
+      inserted = await client.query<{ id: string }>(
+        `
+        INSERT INTO traceability_units (
+          tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+          inventory_item_id, quantity, unit, order_id, order_line_id, production_report_id,
+          attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $5, $6, $7::numeric, $8, $9::uuid, $10::uuid, $11::uuid,
+          $12::jsonb, $13, $14, $15, $16::uuid
+        )
+        RETURNING id::text AS id
+        `,
+        [
+          input.tenantId, input.factoryId, input.unitType, input.productRole, input.unitCode,
+          input.inventoryItemId, input.quantity, input.unit, input.orderId, input.orderLineId,
+          input.productionReportId, JSON.stringify(input.attributes), input.idempotencyKey,
+          requestHash, input.userId, input.correlationId,
+        ],
+      );
+    } catch (error) {
+      const postgresError = error as { code?: string };
+      if (input.unitType === 'SERIAL' && postgresError.code === '23505') {
+        throw new ConflictException('This finished-good SERIAL code or identity is already registered in this factory');
+      }
+      throw error;
+    }
     const id = inserted.rows[0]?.id;
     if (!id) throw new Error('PRODUCTION_TRACEABILITY_UNIT_INSERT_FAILED');
 

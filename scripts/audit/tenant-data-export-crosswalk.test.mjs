@@ -14,6 +14,8 @@ const PATHS = {
   doc: "docs/tenant-data-export-crosswalk.md",
   governanceDoc: "docs/tenant-data-governance-and-isolation.md",
   columnContractMigration: "migrations/233_tenant_export_column_contract.sql",
+  lateRelationMigration: "migrations/235_tenant_privacy_inventory_late_relation_reconciliation.sql",
+  lateRelationSql: "services/api/test/tenant-late-relation-reconciliation.sql",
   columnContractSql: "services/api/test/tenant-data-export-column-contract.sql",
   migrationManifest: "scripts/audit/migration-manifest.txt",
   runtimeGrantScript: "scripts/security/grant-tenant-export-column-contract-runtime-access.sql",
@@ -225,4 +227,38 @@ test("crosswalk documentation lists every relation and preserves explicit unsupp
   assert.ok(files.doc.includes("PARTIAL"), "crosswalk documentation must not imply whole-tenant erasure/export acceptance");
   assert.ok(files.governanceDoc.includes("[Tenant export crosswalk](tenant-data-export-crosswalk.md)"),
     "tenant governance documentation must link to the canonical crosswalk");
+});
+
+test("late-created public relations are inventoried and fenced fail-closed", async () => {
+  const files = await loadSources();
+  const expected = [
+    "research_source_authenticity_checks", "research_source_authenticity_reviews",
+    "research_source_documents", "research_source_document_content", "research_source_document_purges",
+    "growth_kpi_source_sync_runs", "growth_kpi_source_observations", "growth_kpi_source_sync_items",
+    "growth_forecast_calibration_policies", "ai_agent_live_evaluation_results",
+    "ai_artifact_trusted_sources", "ai_artifact_registry", "ai_artifact_provenance_events",
+    "ai_artifact_admission_events", "research_source_freshness_policies",
+    "saas_tenant_external_data_targets", "saas_tenant_external_propagation_runs",
+    "saas_tenant_external_propagation_receipts", "saas_tenant_finance_retention_policies",
+    "saas_tenant_finance_retention_runs", "saas_billing_provider_accounts",
+    "saas_billing_provider_account_events", "saas_billing_close_runs",
+    "saas_billing_close_events", "saas_billing_provider_webhook_events",
+    "saas_billing_reconciliation_results", "saas_physical_provisioning_runs",
+    "saas_physical_provisioning_events",
+  ];
+  for (const relation of expected) {
+    assert.ok(files.lateRelationSql.includes("'" + relation + "'"),
+      "late-relation SQL contract omits " + relation);
+  }
+  assert.match(files.lateRelationMigration, /tenant_relation_inventory/);
+  assert.match(files.lateRelationMigration, /tenant_relation_ownership_reviews/);
+  assert.match(files.lateRelationMigration, /EXCLUDED/);
+  assert.match(files.lateRelationMigration, /BLOCKED_UNREVIEWED/);
+  assert.match(files.lateRelationMigration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(files.lateRelationMigration, /build_tenant_scope_predicate/);
+  assert.match(files.lateRelationMigration, /UNRESOLVED/);
+  assert.match(files.lateRelationMigration, /REVIEW_REQUIRED/);
+  assert.ok(files.migrationManifest.includes("migrations/235_tenant_privacy_inventory_late_relation_reconciliation.sql"));
+  assert.match(files.postgresWorkflow, /tenant-late-relation-reconciliation\.sql/);
+  assert.match(files.doc, /Late-created relation inventory and fail-closed reconciliation/);
 });
