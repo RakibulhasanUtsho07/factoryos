@@ -41,6 +41,25 @@ describe('finance operational source resolver', () => {
     expect(utility.query.mock.calls[0][0]).toContain('utility_meter_readings');
   });
 
+  it('resolves only a live, unreversed utility work-order allocation', async () => {
+    const allocation=fakeClient([{quantity:'8.25',rate:'0.125',uom_code:'KWH',currency:'BDT'}]);
+    await expect(resolveFinanceOperationalSource(
+      allocation.client,'tenant-1','factory-1','UTILITY_WORK_ORDER_COST_ALLOCATION',
+      '7b9c7247-1c4f-44eb-8b62-8d1ae4f3ee3a',
+    )).resolves.toEqual({quantity:'8.25',rate:'0.125',uomCode:'KWH',currency:'BDT'});
+    const sql=allocation.query.mock.calls[0][0];
+    expect(sql).toContain('utility_reading_work_order_cost_allocations');
+    expect(sql).toContain("a.allocation_kind='ALLOCATE'");
+    expect(sql).toContain('rev.reverses_allocation_id=a.id');
+    expect(sql).toContain('r.currency_code_snapshot IS NOT NULL');
+
+    const reversed=fakeClient([]);
+    await expect(resolveFinanceOperationalSource(
+      reversed.client,'tenant-1','factory-1','UTILITY_WORK_ORDER_COST_ALLOCATION',
+      '7b9c7247-1c4f-44eb-8b62-8d1ae4f3ee3a',
+    )).rejects.toThrow('was not found');
+  });
+
   it('rejects missing, ambiguous and incomplete operational source evidence', async () => {
     const missing = fakeClient([]);
     await expect(resolveFinanceOperationalSource(

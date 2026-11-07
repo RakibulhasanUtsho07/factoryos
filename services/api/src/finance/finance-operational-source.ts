@@ -58,9 +58,20 @@ export async function resolveFinanceOperationalSource(
       break;
     case 'UTILITY_METER_READING':
       query =
-        'SELECT r.consumption_quantity::text AS quantity,r.unit_cost_snapshot::text AS rate,upper(r.unit_code) AS uom_code,upper(m.currency_code) AS currency ' +
+        'SELECT r.consumption_quantity::text AS quantity,r.unit_cost_snapshot::text AS rate,upper(r.unit_code) AS uom_code,upper(r.currency_code_snapshot) AS currency ' +
         'FROM utility_meter_readings r JOIN utility_meters m ON m.id=r.meter_id AND m.tenant_id=r.tenant_id AND m.factory_id=r.factory_id ' +
         'WHERE r.tenant_id=$1 AND r.factory_id=$2 AND (r.id::text=$3 OR (r.source_event_id IS NOT NULL AND (r.source_type || \':\' || r.source_event_id)=$3)) LIMIT 2';
+      break;
+    case 'UTILITY_WORK_ORDER_COST_ALLOCATION':
+      query =
+        'SELECT a.allocated_quantity::text AS quantity,a.unit_cost_snapshot::text AS rate,upper(a.unit_code) AS uom_code,upper(a.currency_code) AS currency ' +
+        'FROM utility_reading_work_order_cost_allocations a ' +
+        'JOIN utility_meter_readings r ON r.id=a.reading_id AND r.tenant_id=a.tenant_id AND r.factory_id=a.factory_id ' +
+        'JOIN work_orders wo ON wo.id=a.work_order_id AND wo.tenant_id=a.tenant_id AND wo.factory_id=a.factory_id ' +
+        'WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.id::text=$3 AND a.allocation_kind=\'ALLOCATE\' ' +
+        'AND NOT EXISTS (SELECT 1 FROM utility_reading_work_order_cost_allocations rev ' +
+        'WHERE rev.reverses_allocation_id=a.id AND rev.tenant_id=a.tenant_id AND rev.factory_id=a.factory_id) ' +
+        'AND r.currency_code_snapshot IS NOT NULL LIMIT 2';
       break;
     default: {
       const neverType: never = sourceType;
