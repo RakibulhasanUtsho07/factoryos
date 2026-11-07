@@ -34,6 +34,8 @@ services/api/test/wms-serial-indivisibility.sql now runs against PostgreSQL and 
 - Same-key merge and split replay without duplicate command/genealogy/evidence rows.
 - A deliberately late duplicate-identity failure after the source map/header writes begin; the savepoint confirms full rollback.
 - Aggregate on-hand/reserved, item/BIN on-hand/reserved and total traceability-location on-hand/reserved conservation.
+- API PostgreSQL integration races two different split idempotency keys against the same source LOT: one command commits, the other conflicts after source-state revalidation, and only one command/two genealogy edges remain.
+- API PostgreSQL integration races a split against reservation creation: the reservation commits, the split either wins first and the reservation targets only active child LOTs, or the reservation wins first and the split fails closed; no active allocation may reference a disposed LOT, and aggregate/BIN/traceability/reserved totals reconcile.
 - Existing SERIAL indivisibility and generic unbacked-genealogy rejection.
 
 The API unit contract tests reject fractional SERIAL outputs, mixed output unit types and duplicate merge source IDs before opening a transaction. API CI and PostgreSQL CI must pass on the exact PR head. The PostgreSQL workflow applies and replays migration 239 before the WMS SQL contract.
