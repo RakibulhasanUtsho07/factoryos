@@ -14892,7 +14892,7 @@
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
@@ -14946,7 +14946,7 @@
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
@@ -15075,7 +15075,7 @@
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
