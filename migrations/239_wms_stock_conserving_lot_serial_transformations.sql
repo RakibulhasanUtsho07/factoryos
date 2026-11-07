@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS inventory_traceability_transformation_lines (
   transformation_id UUID NOT NULL,
   source_unit_id UUID NOT NULL,
   target_unit_id UUID NOT NULL,
+  target_sequence INTEGER NOT NULL,
   location_id UUID NOT NULL,
   relationship_type VARCHAR(24) NOT NULL,
   quantity NUMERIC(18,4) NOT NULL,
@@ -94,7 +95,8 @@ CREATE TABLE IF NOT EXISTS inventory_traceability_transformation_lines (
     REFERENCES inventory_locations (id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT chk_inventory_traceability_transformation_line_type CHECK
     (relationship_type IN ('SPLIT_INTO', 'MERGED_INTO')),
-  CONSTRAINT chk_inventory_traceability_transformation_line_quantity CHECK (quantity > 0)
+  CONSTRAINT chk_inventory_traceability_transformation_line_quantity CHECK (quantity > 0),
+  CONSTRAINT chk_inventory_traceability_transformation_line_sequence CHECK (target_sequence > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_inventory_traceability_transformation_lines_source
@@ -561,6 +563,7 @@ DECLARE
   v_first_source traceability_units%ROWTYPE;
   v_output JSONB;
   v_output_location JSONB;
+  v_output_sequence INTEGER := 0;
   v_target_id UUID;
   v_target_type TEXT;
   v_target_code TEXT;
@@ -631,11 +634,15 @@ BEGIN
       RAISE EXCEPTION 'Idempotency-Key was already used for a different LOT/SERIAL transformation'
         USING ERRCODE = '23505';
     END IF;
-    SELECT COALESCE(jsonb_agg(DISTINCT l.target_unit_id ORDER BY l.target_unit_id), '[]'::jsonb)
+    SELECT COALESCE(jsonb_agg(t.target_unit_id ORDER BY t.target_sequence, t.target_unit_id), '[]'::jsonb)
       INTO v_target_ids
-    FROM inventory_traceability_transformation_lines l
-    WHERE l.tenant_id = p_tenant_id AND l.factory_id = p_factory_id
-      AND l.transformation_id = v_existing.id;
+    FROM (
+      SELECT l.target_unit_id, MIN(l.target_sequence) AS target_sequence
+      FROM inventory_traceability_transformation_lines l
+      WHERE l.tenant_id = p_tenant_id AND l.factory_id = p_factory_id
+        AND l.transformation_id = v_existing.id
+      GROUP BY l.target_unit_id
+    ) t;
     RETURN jsonb_build_object(
       'transformation_id', v_existing.id,
       'operation_type', v_operation,
@@ -994,6 +1001,7 @@ BEGIN
 
     FOR v_output IN SELECT value FROM jsonb_array_elements(p_outputs)
     LOOP
+      v_output_sequence := v_output_sequence + 1;
       v_target_id := gen_random_uuid();
       v_target_type := upper(v_output->>'unit_type');
       v_target_code := upper(btrim(v_output->>'unit_code'));
@@ -1017,10 +1025,10 @@ BEGIN
       FOR v_output_location IN SELECT value FROM jsonb_array_elements(v_output->'locations')
       LOOP
         INSERT INTO inventory_traceability_transformation_lines (
-          tenant_id, factory_id, transformation_id, source_unit_id, target_unit_id,
+          tenant_id, factory_id, transformation_id, source_unit_id, target_unit_id, target_sequence,
           location_id, relationship_type, quantity
         ) VALUES (
-          p_tenant_id, p_factory_id, v_transformation_id, p_source_unit_ids[1], v_target_id,
+          p_tenant_id, p_factory_id, v_transformation_id, p_source_unit_ids[1], v_target_id, v_output_sequence,
           (v_output_location->>'location_id')::uuid, 'SPLIT_INTO',
           (v_output_location->>'quantity')::numeric(18,4)
         );
@@ -1145,10 +1153,10 @@ BEGIN
       LOOP
         IF v_location.quantity > 0 THEN
           INSERT INTO inventory_traceability_transformation_lines (
-            tenant_id, factory_id, transformation_id, source_unit_id, target_unit_id,
+            tenant_id, factory_id, transformation_id, source_unit_id, target_unit_id, target_sequence,
             location_id, relationship_type, quantity
           ) VALUES (
-            p_tenant_id, p_factory_id, v_transformation_id, v_source_id, v_target_id,
+            p_tenant_id, p_factory_id, v_transformation_id, v_source_id, v_target_id, 1,
             v_location.location_id, 'MERGED_INTO', v_location.quantity
           );
         END IF;
