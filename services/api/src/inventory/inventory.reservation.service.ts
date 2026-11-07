@@ -3366,13 +3366,13 @@ export class InventoryReservationService {
     const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: number }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
          a.location_id::text AS location_id, a.allocation_sequence,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu
          ON tu.id = a.traceability_unit_id AND tu.tenant_id = a.tenant_id
         AND tu.factory_id = a.factory_id AND tu.inventory_item_id = a.item_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
          AND tu.status='ACTIVE'
          AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
          AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
@@ -3439,10 +3439,10 @@ export class InventoryReservationService {
     const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
          a.location_id::text AS location_id,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
        ORDER BY a.allocation_sequence ASC FOR UPDATE`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
