@@ -1940,25 +1940,34 @@ export class InventoryReservationService {
       production_report_id: input.productionReportId,
       attributes: input.attributes,
     });
-    const inserted = await client.query<{ id: string }>(
-      `
-      INSERT INTO traceability_units (
-        tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
-        inventory_item_id, quantity, unit, order_id, order_line_id, production_report_id,
-        attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
-      ) VALUES (
-        $1, $2, $3, $4, $5, $5, $6, $7::numeric, $8, $9::uuid, $10::uuid, $11::uuid,
-        $12::jsonb, $13, $14, $15, $16::uuid
-      )
-      RETURNING id::text AS id
-      `,
-      [
-        input.tenantId, input.factoryId, input.unitType, input.productRole, input.unitCode,
-        input.inventoryItemId, input.quantity, input.unit, input.orderId, input.orderLineId,
-        input.productionReportId, JSON.stringify(input.attributes), input.idempotencyKey,
-        requestHash, input.userId, input.correlationId,
-      ],
-    );
+    let inserted: { rows: Array<{ id: string }> };
+    try {
+      inserted = await client.query<{ id: string }>(
+        `
+        INSERT INTO traceability_units (
+          tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+          inventory_item_id, quantity, unit, order_id, order_line_id, production_report_id,
+          attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $5, $6, $7::numeric, $8, $9::uuid, $10::uuid, $11::uuid,
+          $12::jsonb, $13, $14, $15, $16::uuid
+        )
+        RETURNING id::text AS id
+        `,
+        [
+          input.tenantId, input.factoryId, input.unitType, input.productRole, input.unitCode,
+          input.inventoryItemId, input.quantity, input.unit, input.orderId, input.orderLineId,
+          input.productionReportId, JSON.stringify(input.attributes), input.idempotencyKey,
+          requestHash, input.userId, input.correlationId,
+        ],
+      );
+    } catch (error) {
+      const postgresError = error as { code?: string };
+      if (input.unitType === 'SERIAL' && postgresError.code === '23505') {
+        throw new ConflictException('This finished-good SERIAL code or identity is already registered in this factory');
+      }
+      throw error;
+    }
     const id = inserted.rows[0]?.id;
     if (!id) throw new Error('PRODUCTION_TRACEABILITY_UNIT_INSERT_FAILED');
 
