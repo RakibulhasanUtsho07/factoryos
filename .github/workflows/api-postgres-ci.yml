@@ -460,9 +460,9 @@ jobs:
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/238_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
 
-# Migration 199 replaces the base work-order genealogy functions. Migration 238 is a
-# deliberate multi-SERIAL overlay, so it MUST be reapplied immediately after every
-# 199 replay; otherwise the older function body would silently remove SERIAL targets.
+          # Migration 199 replaces the base work-order genealogy functions. Migration 238 is a
+          # deliberate multi-SERIAL overlay, so it MUST be reapplied immediately after every
+          # 199 replay; otherwise the older function body would silently remove SERIAL targets.
           echo "Checking WMS consumption-bound work-order output genealogy and transaction-completion guards"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/238_production_multi_serial_output.sql
