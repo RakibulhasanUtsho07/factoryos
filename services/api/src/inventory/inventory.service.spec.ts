@@ -121,7 +121,7 @@ describe('InventoryService', () => {
     );
     expect(client.query).toHaveBeenCalledWith(
       expect.stringContaining('FROM inventory_traceability_location_balances'),
-      [ITEM_ID, TENANT_ID, FACTORY_ID],
+      [ITEM_ID.toLowerCase(), TENANT_ID, FACTORY_ID],
     );
     const query = String(client.query.mock.calls[0]?.[0]);
     expect(query).toContain('AND i.tenant_id = $2');
