@@ -506,6 +506,21 @@ BEGIN
           ORDER BY p.target_sequence, p.target_unit_id
         LOOP
           v_next_sequence := v_next_sequence + 1;
+          -- SERIAL allocation guards require the physical unit to be marked reserved
+          -- before the allocation INSERT; keep this update in the same transaction.
+          UPDATE inventory_traceability_location_balances
+          SET quantity_reserved = quantity_reserved + v_take,
+              version = version + 1,
+              updated_at = clock_timestamp()
+          WHERE tenant_id = p_tenant_id AND factory_id = p_factory_id
+            AND item_id = p_item_id
+            AND traceability_unit_id = v_target.target_unit_id
+            AND location_id = v_target.location_id
+            AND quantity_on_hand >= quantity_reserved + v_take;
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'transformation target BIN does not have enough unreserved physical quantity for the reservation remap'
+              USING ERRCODE = '23514';
+          END IF;
           INSERT INTO inventory_reservation_traceability_allocations (
             tenant_id, factory_id, reservation_id, item_id, traceability_unit_id,
             location_id, allocation_sequence, allocated_quantity
