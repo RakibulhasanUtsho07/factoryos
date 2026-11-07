@@ -1132,6 +1132,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       target_identity_role: string;
       report_count: string;
       tracked_location_count: string;
+      tracked_location_row_count: string;
       tracked_location_on_hand: string;
       tracked_location_reserved: string;
       posting_count: string;
@@ -1145,6 +1146,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
                WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
                  AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id
                  AND tlb.quantity_on_hand=1.0000 AND tlb.quantity_reserved=0.0000) AS tracked_location_count,
+              (SELECT count(*)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_row_count,
               (SELECT COALESCE(sum(tlb.quantity_on_hand),0)::text FROM inventory_traceability_location_balances tlb
                WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
                  AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_on_hand,
@@ -1169,6 +1173,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       target_identity_code: finishedGoodSerialCode,
       target_identity_role: 'FINISHED_GOOD',
       tracked_location_count: '1',
+      tracked_location_row_count: '1',
       tracked_location_on_hand: '1.0000',
       tracked_location_reserved: '0.0000',
       report_count: '1',
