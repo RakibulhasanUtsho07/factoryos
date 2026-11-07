@@ -79,8 +79,9 @@ BEGIN
   IF position('positive accepted good output requires a finished-good LOT or SERIAL identity' IN v_function_source) = 0
     OR position('non-sellable scrap traceability identity' IN v_function_source) = 0
     OR position('finished-good LOT/SERIAL identity must match the report' IN v_function_source) = 0
-    OR position('v_trace.unit_type NOT IN (''LOT'', ''SERIAL'')' IN v_function_source) = 0
-    OR position('NEW.good_quantity IS DISTINCT FROM 1.0000::numeric' IN v_function_source) = 0
+    OR position('v_trace.unit_type' IN v_function_source) = 0
+    OR position('NEW.good_quantity' IN v_function_source) = 0
+    OR position('1.0000' IN v_function_source) = 0
     OR position('SERIAL output must equal one unit' IN v_function_source) = 0
   THEN
     RAISE EXCEPTION 'production output guard does not bind LOT/SERIAL identities to report quantity and one-unit serial rules';
