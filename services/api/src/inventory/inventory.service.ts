@@ -70,6 +70,7 @@ export interface InventoryAvailabilityExposure extends QueryResultRow {
   available_quantity: string;
   quarantined_quantity: string;
   damaged_quantity: string;
+  expired_quantity: string;
   expected_quantity: string;
   next_expected_delivery_date: string | null;
   expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED';
@@ -197,7 +198,6 @@ export class InventoryService {
                   AND qh.factory_id = i.factory_id
                   AND qh.inventory_item_id = i.id
                   AND qh.traceability_unit_id IS NULL
-                  AND qh.work_order_id IS NULL
                   AND qh.status = 'ACTIVE'
               ) AS item_wide_quality_hold
             FROM inventory_items i
@@ -215,6 +215,7 @@ export class InventoryService {
               tu.id AS traceability_unit_id,
               tu.status,
               tu.attributes,
+              tu.expires_at,
               SUM(tlb.quantity_on_hand)::numeric(18,4) AS quantity_on_hand,
               SUM(tlb.quantity_reserved)::numeric(18,4) AS quantity_reserved,
               EXISTS (
@@ -235,13 +236,14 @@ export class InventoryService {
              AND tu.inventory_item_id = tlb.item_id
              AND tu.tenant_id = tlb.tenant_id
              AND tu.factory_id = tlb.factory_id
-            GROUP BY tu.id, tu.status, tu.attributes, tu.tenant_id, tu.factory_id
+            GROUP BY tu.id, tu.status, tu.attributes, tu.expires_at, tu.tenant_id, tu.factory_id
           ),
           classified_traceability AS (
             SELECT
               traceability_unit_id,
               quantity_on_hand,
               quantity_reserved,
+              expires_at,
               (
                 status IN ('QUARANTINED', 'RECALLED')
                 OR attributes @> '{"quarantined":true}'::jsonb
@@ -252,7 +254,11 @@ export class InventoryService {
               (
                 attributes @> '{"damaged":true}'::jsonb
                 OR upper(COALESCE(attributes->>'condition', '')) = 'DAMAGED'
-              ) AS is_damaged
+              ) AS is_damaged,
+              (
+                (expires_at IS NOT NULL AND expires_at < CURRENT_DATE)
+                OR upper(COALESCE(attributes->>'condition', '')) = 'EXPIRED'
+              ) AS is_expired
             FROM traceability_balances
           ),
           condition_totals AS (
@@ -261,10 +267,14 @@ export class InventoryService {
                 AS quarantined_quantity,
               COALESCE(SUM(CASE WHEN NOT is_quarantined AND is_damaged THEN quantity_on_hand ELSE 0 END), 0)::numeric(18,4)
                 AS damaged_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND NOT is_damaged AND is_expired THEN quantity_on_hand ELSE 0 END), 0)::numeric(18,4)
+                AS expired_quantity,
               COALESCE(SUM(CASE WHEN is_quarantined THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
                 AS quarantined_unallocated_quantity,
               COALESCE(SUM(CASE WHEN NOT is_quarantined AND is_damaged THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
                 AS damaged_unallocated_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND NOT is_damaged AND is_expired THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
+                AS expired_unallocated_quantity,
               COUNT(*)::integer AS tracked_identity_count
             FROM classified_traceability
           ),
@@ -377,7 +387,8 @@ export class InventoryService {
                 s.quantity_on_hand
                   - s.quantity_reserved
                   - COALESCE(c.quarantined_unallocated_quantity, 0)
-                  - COALESCE(c.damaged_unallocated_quantity, 0),
+                  - COALESCE(c.damaged_unallocated_quantity, 0)
+                  - COALESCE(c.expired_unallocated_quantity, 0),
                 0
               )::numeric(18,4)
             END::text AS available_quantity,
@@ -389,6 +400,7 @@ export class InventoryService {
               THEN 0::numeric(18,4)
               ELSE COALESCE(c.damaged_quantity, 0)
             END::text AS damaged_quantity,
+            COALESCE(c.expired_quantity, 0)::text AS expired_quantity,
             COALESCE(e.expected_quantity, 0)::text AS expected_quantity,
             e.next_expected_delivery_date::text AS next_expected_delivery_date,
             'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED'::text AS expected_quantity_basis,
