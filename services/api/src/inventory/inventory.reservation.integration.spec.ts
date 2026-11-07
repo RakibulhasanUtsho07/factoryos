@@ -362,7 +362,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        JOIN traceability_units u
          ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id AND u.factory_id=a.factory_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
-         AND a.allocated_quantity > a.consumed_quantity + a.released_quantity
+         AND a.allocated_quantity > a.consumed_quantity + a.released_quantity + a.remapped_quantity
          AND u.status <> 'ACTIVE'`,
       [tenantId, factoryId, itemId],
     );
