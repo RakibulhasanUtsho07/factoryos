@@ -333,6 +333,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       throw reservationResult.reason;
     }
     const transformationCommitted = transformationResult.status === 'fulfilled';
+    if (!transformationCommitted && transformationResult.status === 'rejected') {
+      expect(String(transformationResult.reason?.message ?? transformationResult.reason))
+        .toContain('active reserved quantity or allocation');
+    }
 
     const sourceState = await adminPool.query<{ status: string }>(
       'SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
@@ -485,6 +489,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const results = await Promise.allSettled([split('ONE'), split('TWO')]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const rejectedSplit = results.find((result) => result.status === 'rejected');
+    if (rejectedSplit?.status === 'rejected') {
+      expect(String(rejectedSplit.reason?.message ?? rejectedSplit.reason))
+        .toContain('only ACTIVE material LOT identities');
+    }
 
     const sourceState = await adminPool.query<{ status: string }>(
       'SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
