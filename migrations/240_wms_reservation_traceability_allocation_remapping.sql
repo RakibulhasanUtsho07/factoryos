@@ -124,7 +124,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_reservation_traceability
 
 -- Deferred consistency ties the remapped_quantity counter and every replacement
 -- allocation to the append-only remap evidence. Neither side can be written alone.
-CREATE OR REPLACE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity()
+CREATE OR REPLACE FUNCTION factoryos_assert_reservation_allocation_remap_integrity()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $
@@ -189,19 +189,19 @@ BEGIN
 END;
 $;
 
-DROP TRIGGER IF EXISTS ctr_inventory_reservation_traceability_allocation_remap_integrity
+DROP TRIGGER IF EXISTS ctr_reservation_allocation_remap_integrity
   ON inventory_reservation_traceability_allocations;
-CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_traceability_allocation_remap_integrity
+CREATE CONSTRAINT TRIGGER ctr_reservation_allocation_remap_integrity
 AFTER INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocations
 DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity();
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_reservation_allocation_remap_integrity();
 
-DROP TRIGGER IF EXISTS ctr_inventory_reservation_traceability_remap_evidence_integrity
+DROP TRIGGER IF EXISTS ctr_reservation_remap_evidence_integrity
   ON inventory_reservation_traceability_allocation_remaps;
-CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_traceability_remap_evidence_integrity
+CREATE CONSTRAINT TRIGGER ctr_reservation_remap_evidence_integrity
 AFTER INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocation_remaps
 DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity();
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_reservation_allocation_remap_integrity();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_inventory_reservation_traceability_allocation()
 RETURNS trigger
