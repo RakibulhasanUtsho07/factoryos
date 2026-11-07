@@ -127,7 +127,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_reservation_allocation_remap();
 CREATE OR REPLACE FUNCTION factoryos_assert_reservation_allocation_remap_integrity()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $remap$
 DECLARE
   v_allocation_ids UUID[];
   v_allocation_id UUID;
@@ -187,7 +187,7 @@ BEGIN
   END LOOP;
   RETURN NULL;
 END;
-$;
+$remap$;
 
 DROP TRIGGER IF EXISTS ctr_reservation_allocation_remap_integrity
   ON inventory_reservation_traceability_allocations;
