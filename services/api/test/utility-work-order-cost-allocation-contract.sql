@@ -47,6 +47,32 @@ BEGIN
     RAISE EXCEPTION 'Allocation trigger omits capacity, work-order window, source snapshot, reversal or actor enforcement';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM factoryos_governance.tenant_relation_inventory
+    WHERE schema_name='public'
+      AND relation_name='utility_reading_work_order_cost_allocations'
+      AND scope_model='DIRECT_TENANT_ID'
+      AND data_category='UNREVIEWED'
+      AND export_disposition='EXCLUDED'
+      AND erasure_disposition='BLOCKED_UNREVIEWED'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM factoryos_governance.tenant_relation_ownership_reviews
+    WHERE schema_name='public'
+      AND relation_name='utility_reading_work_order_cost_allocations'
+      AND ownership_class='DIRECT_TENANT'
+      AND export_disposition='EXCLUDED'
+      AND erasure_disposition='BLOCKED_UNREVIEWED'
+      AND review_status='VERIFIED'
+  ) THEN
+    RAISE EXCEPTION 'Utility cost allocation table must remain inventoried and excluded from generic export/erasure';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM factoryos_governance.tenant_export_adapter_relation_registry
+    WHERE relation_name='utility_reading_work_order_cost_allocations'
+  ) THEN
+    RAISE EXCEPTION 'Utility cost allocation table must not enter a generic export adapter without a reviewed category adapter';
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_utility_reading_work_order_cost_allocation_reversal')
      OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='idx_utility_reading_work_order_cost_allocation_reading')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('utility_reading_work_order_cost_allocations')
