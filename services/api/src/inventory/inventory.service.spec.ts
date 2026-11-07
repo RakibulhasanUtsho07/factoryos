@@ -104,6 +104,7 @@ describe('InventoryService', () => {
       damaged_quantity: '0.0000',
       expired_quantity: '0.0000',
       expected_quantity: '4.0000',
+      expected_quantity_unit_mismatch_line_count: 0,
       next_expected_delivery_date: '2026-11-12',
       expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED',
       condition_evidence_scope: 'TRACEABILITY_LOCATION_BALANCES',
@@ -126,6 +127,8 @@ describe('InventoryService', () => {
     expect(query).toContain('AND i.tenant_id = $2');
     expect(query).toContain('AND i.factory_id = $3');
     expect(query).toContain("po.status = 'APPROVED'");
+    expect(query).toContain('upper(pol.unit) = upper(s.unit)');
+    expect(query).toContain('expected_quantity_unit_mismatch_line_count');
     expect(query).toContain("gr.status = 'POSTED'");
     expect(query).toContain("ir.reference_type = 'WORK_ORDER_MATERIAL'");
     expect(query).toContain("ir.reference_id = wo.id");
