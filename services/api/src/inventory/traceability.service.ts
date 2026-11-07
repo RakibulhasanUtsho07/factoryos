@@ -398,9 +398,8 @@ export class TraceabilityService {
       }
       return { unit_type: unitType, unit_code: unitCode, barcode_value: barcodeValue, quantity, locations };
     });
-    if (new Set(outputs.map((output) => output.unit_type)).size !== 1) {
-      throw new BadRequestException('One split command must create either all LOT outputs or all SERIAL outputs');
-    }
+    // Mixed LOT/SERIAL targets are valid under FIFO/FEFO. The PostgreSQL command
+    // evaluates the effective material policy and remains the authoritative guard.
     const codes = outputs.map((output) => output.unit_code.toLowerCase());
     if (new Set(codes).size !== codes.length) {
       throw new BadRequestException('SPLIT output unit_code values must be unique');
