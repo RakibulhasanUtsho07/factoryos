@@ -417,13 +417,13 @@ describe('TraceabilityService input contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
-  it('rejects mixed LOT/SERIAL output identities in one split command', async () => {
+  it('accepts mixed LOT/SERIAL outputs and delegates policy validation to PostgreSQL', async () => {
     const dto: SplitTraceabilityLotDto = {
-      reason: 'Do not create mixed source identity types in one allocation policy command',
+      reason: 'Retain bulk remainder as LOT and identify one whole unit as SERIAL',
       outputs: [
         {
-          unit_type: 'LOT', unit_code: 'LOT-CHILD', quantity: 1,
-          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 1 }],
+          unit_type: 'LOT', unit_code: 'LOT-CHILD', quantity: 2,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 2 }],
         },
         {
           unit_type: 'SERIAL', unit_code: 'SERIAL-CHILD', quantity: 1,
@@ -431,10 +431,25 @@ describe('TraceabilityService input contracts', () => {
         },
       ],
     };
-    await expect(service.splitLot(
+    const command = {
+      transformation_id: 'ed7c5f04-18d4-4e2e-9387-2e89a6bb7e11',
+      operation_type: 'SPLIT',
+      target_unit_ids: [
+        'e00d0ca0-d9e0-4a9b-8d7f-3517f3b739c1',
+        'b1cb7a71-f13d-411a-bb34-cdfb3a9a17d8',
+      ],
+      replayed: false,
+    };
+    database.transaction.mockResolvedValue(command);
+    database.query.mockResolvedValue({ rows: [{ id: command.target_unit_ids[0] }] });
+
+    const result = await service.splitLot(
       USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dto, 'split-mixed-unit-types', null, null,
-    )).rejects.toBeInstanceOf(BadRequestException);
-    expect(database.transaction).not.toHaveBeenCalled();
+    );
+
+    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(result.target_unit_ids).toEqual(command.target_unit_ids);
+    expect(result.targets).toHaveLength(2);
   });
 
   it('rejects duplicate merge source identities before opening the transformation transaction', async () => {
