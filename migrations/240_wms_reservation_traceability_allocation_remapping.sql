@@ -407,6 +407,8 @@ BEGIN
            a.allocation_sequence,
            (a.allocated_quantity - a.consumed_quantity - a.released_quantity - a.remapped_quantity)::numeric(18,4) AS remaining_quantity
     FROM inventory_reservation_traceability_allocations a
+    JOIN inventory_reservations r
+      ON r.id = a.reservation_id AND r.tenant_id = a.tenant_id AND r.factory_id = a.factory_id
     WHERE a.tenant_id = p_tenant_id AND a.factory_id = p_factory_id
       AND a.item_id = p_item_id
       AND a.traceability_unit_id IN (
@@ -416,7 +418,7 @@ BEGIN
           AND l.transformation_id = p_transformation_id
       )
       AND a.allocated_quantity > a.consumed_quantity + a.released_quantity + a.remapped_quantity
-    ORDER BY a.reservation_id, a.allocation_sequence, a.id
+    ORDER BY r.created_at, a.reservation_id, a.allocation_sequence, a.id
     FOR UPDATE OF a
   LOOP
     v_remaining := v_allocation.remaining_quantity;
