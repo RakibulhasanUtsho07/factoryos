@@ -71,7 +71,19 @@ BEGIN
      OR position('1.0000' IN v_before_function) = 0
      OR position('v_event_total + NEW.quantity > v_binding.allocated_quantity' IN v_before_function) = 0
   THEN
-    RAISE EXCEPTION 'genealogy edge guard must bind real WMS lot/serial consumption, the work order and the target output posting';
+    RAISE EXCEPTION
+      'genealogy edge guard contract mismatch: source=%, allocations=%, reservations=%, postings=%, allocation_id=%, source_item=%, output_weight=%, serial_ledger=%, serial_flag=%, one_unit=%, over_consumption=%',
+      position('WORK_ORDER_MATERIAL_CONSUMPTION' IN v_before_function) > 0,
+      position('inventory_reservation_consumption_traceability_allocations' IN v_before_function) > 0,
+      position('work_order_material_reservations' IN v_before_function) > 0,
+      position('production_output_postings' IN v_before_function) > 0,
+      position('consumption_traceability_allocation_id' IN v_before_function) > 0,
+      position('source_inventory_item_id' IN v_before_function) > 0,
+      position('output_quantity_weight' IN v_before_function) > 0,
+      position('production_output_posting_serial_units' IN v_before_function) > 0,
+      position('is_serial_output' IN v_before_function) > 0,
+      position('1.0000' IN v_before_function) > 0,
+      position('v_event_total + NEW.quantity > v_binding.allocated_quantity' IN v_before_function) > 0;
   END IF;
 
   SELECT pg_get_functiondef('factoryos_assert_work_order_output_genealogy_coverage()'::regprocedure)
