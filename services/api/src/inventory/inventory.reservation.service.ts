@@ -1685,15 +1685,15 @@ export class InventoryReservationService {
       throw new ConflictException('Finished-good inventory item must remain active to receive production output');
     }
     if (finishedGoodSerialCode) {
-      const duplicateSerial = await client.query<{ exists: boolean }>(
+      const duplicateSerial = await client.query<{ serial_exists: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM traceability_units
            WHERE tenant_id = $1 AND factory_id = $2
              AND (lower(unit_code) = lower($3) OR lower(barcode_value) = lower($3))
-         ) AS exists`,
+         ) AS serial_exists`,
         [input.tenantId, input.factoryId, finishedGoodSerialCode],
       );
-      if (duplicateSerial.rows[0]?.exists) {
+      if (duplicateSerial.rows[0]?.serial_exists) {
         throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
       }
     }
