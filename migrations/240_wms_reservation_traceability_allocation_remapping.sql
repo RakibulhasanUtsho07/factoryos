@@ -212,7 +212,7 @@ DECLARE
   v_expires_at DATE;
   v_attributes JSONB;
   v_inventory_item_id UUID;
-  v_transformation BOOLEAN := current_setting('app.traceability_transformation', TRUE) = 'on';
+  v_transformation BOOLEAN := COALESCE(current_setting('app.traceability_transformation', TRUE) = 'on', FALSE);
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'reservation traceability allocations cannot be deleted'
