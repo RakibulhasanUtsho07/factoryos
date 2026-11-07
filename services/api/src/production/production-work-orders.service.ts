@@ -1693,7 +1693,11 @@ export class ProductionWorkOrdersService {
     if (dto.finished_good_serial_code != null && !finishedGoodSerialCode) {
       throw new BadRequestException('finished_good_serial_code must not be blank');
     }
-    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || /[\\x00-\\x1F\\x7F]/.test(finishedGoodSerialCode))) {
+    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    });
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
       throw new BadRequestException('finished_good_serial_code must be at most 160 printable characters without control characters');
     }
     if (finishedGoodSerialCode && goodUnits !== 10_000n) {
