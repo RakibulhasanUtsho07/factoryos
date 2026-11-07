@@ -2167,7 +2167,7 @@ export class InventoryReservationService {
         AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT', 'SERIAL')
       ORDER BY c.item_id,
         CASE WHEN effective_policy.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        COALESCE(gr.posted_at, gr.received_at, tu.created_at),
+        COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at),
         lower(tu.unit_code), ca.location_id, tu.id,
         c.created_at, ca.created_at, ca.id
       FOR UPDATE OF ca, tu
@@ -3202,14 +3202,25 @@ export class InventoryReservationService {
            WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='FACTORY'),
           FALSE
         ) AS require_traceability,
-        COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
-        COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_serial,
+        COALESCE(bool_or(tu.unit_type = 'LOT' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_lot
+          WHERE active_lot.tenant_id = tu.tenant_id AND active_lot.factory_id = tu.factory_id
+            AND active_lot.item_id = tu.inventory_item_id
+            AND active_lot.traceability_unit_id = tu.id AND active_lot.quantity_on_hand > 0
+        )), FALSE) AS has_lot,
+        COALESCE(bool_or(tu.unit_type = 'SERIAL' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_serial
+          WHERE active_serial.tenant_id = tu.tenant_id AND active_serial.factory_id = tu.factory_id
+            AND active_serial.item_id = tu.inventory_item_id
+            AND active_serial.traceability_unit_id = tu.id AND active_serial.quantity_on_hand > 0
+        )), FALSE) AS has_serial,
         (count(tu.id) > 0) AS has_identity
       FROM inventory_items i
       LEFT JOIN traceability_units tu
         ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
        AND tu.inventory_item_id = i.id
        AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+       AND tu.status = 'ACTIVE'
       WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = $3
       GROUP BY i.id
       `,
@@ -3241,7 +3252,7 @@ export class InventoryReservationService {
       SELECT tlb.traceability_unit_id::text AS traceability_unit_id,
              tlb.location_id::text AS location_id, tu.unit_type, tu.unit_code,
              tu.expires_at::text AS expires_at,
-             COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
+             COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at)::text AS received_at,
              tlb.quantity_on_hand::text AS quantity_on_hand,
              tlb.quantity_reserved::text AS quantity_reserved
       FROM inventory_traceability_location_balances tlb
@@ -3273,7 +3284,7 @@ export class InventoryReservationService {
         AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE'
         AND tlb.quantity_on_hand > tlb.quantity_reserved
       ORDER BY CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
+        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at) END ASC NULLS LAST,
         lower(tu.unit_code), tlb.location_id, tu.id
       FOR UPDATE OF tlb, tu
       `,

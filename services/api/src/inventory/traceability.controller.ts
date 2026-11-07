@@ -9,6 +9,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
+  SplitTraceabilityLotDto, MergeTraceabilityLotsDto,
   CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, CreateRecallNotificationIntentDto,
   RecordRecallNotificationAcknowledgementDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
@@ -173,6 +174,40 @@ export class TraceabilityController {
     @Param('unitId', new ParseUUIDPipe()) unitId: string) {
     const c = this.requireContext(request);
     return this.traceabilityService.getUnit(c.userId, c.tenantId, c.factoryId, unitId);
+  }
+
+
+  @Post('units/:unitId/split')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async splitLot(
+    @Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Body() body: SplitTraceabilityLotDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.splitLot(
+      c.userId, c.tenantId, c.factoryId, unitId, body,
+      idempotencyKey ?? null, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('units/merge')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async mergeLots(
+    @Req() request: TraceabilityRequest,
+    @Body() body: MergeTraceabilityLotsDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.mergeLots(
+      c.userId, c.tenantId, c.factoryId, body,
+      idempotencyKey ?? null, c.requestId, c.traceId,
+    );
   }
 
   @Post('genealogy')

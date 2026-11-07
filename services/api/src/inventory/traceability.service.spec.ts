@@ -4,6 +4,8 @@ import { DatabaseService } from '../database/database.service';
 import {
   ChangeTraceabilityUnitStatusDto,
   CreateGenealogyEventDto,
+  SplitTraceabilityLotDto,
+  MergeTraceabilityLotsDto,
   CreateTraceabilityUnitDto,
   CreateTraceabilityLabelTemplateDto,
   DeclareTraceabilityRecallDto,
@@ -394,4 +396,58 @@ describe('TraceabilityService input contracts', () => {
     expect(client.query.mock.calls.some(([sql]) =>
       String(sql).includes('INSERT INTO traceability_label_issues'))).toBe(false);
   });
+
+  it('rejects a fractional SERIAL child before opening the transformation transaction', async () => {
+    const dto: SplitTraceabilityLotDto = {
+      reason: 'Test split must preserve a whole serialized identity',
+      outputs: [
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-HALF', quantity: 0.5,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 0.5 }],
+        },
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-OTHER-HALF', quantity: 0.5,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 0.5 }],
+        },
+      ],
+    };
+    await expect(service.splitLot(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dto, 'split-fractional-serial', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects mixed LOT/SERIAL output identities in one split command', async () => {
+    const dto: SplitTraceabilityLotDto = {
+      reason: 'Do not create mixed source identity types in one allocation policy command',
+      outputs: [
+        {
+          unit_type: 'LOT', unit_code: 'LOT-CHILD', quantity: 1,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 1 }],
+        },
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-CHILD', quantity: 1,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 1 }],
+        },
+      ],
+    };
+    await expect(service.splitLot(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dto, 'split-mixed-unit-types', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate merge source identities before opening the transformation transaction', async () => {
+    const dto: MergeTraceabilityLotsDto = {
+      source_unit_ids: [UNIT_ID, UNIT_ID],
+      target_unit_code: 'MERGED-LOT',
+      reason: 'Duplicate sources must not double-count physical stock',
+    };
+    await expect(service.mergeLots(
+      USER_ID, TENANT_ID, FACTORY_ID, dto, 'merge-duplicate-source', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+
 });
