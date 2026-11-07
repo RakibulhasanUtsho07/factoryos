@@ -237,6 +237,167 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     }
   });
 
+  it('serializes a LOT split against reservation creation without orphaning the active allocation', async () => {
+    const itemId = await createItem('6.0000');
+    const token = randomUUID().slice(0, 8);
+    const defaultResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-TRR-WH-' + token, name: 'Reservation race warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-TRR-BIN-' + token, name: 'Reservation race bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    const policy = await adminPool.query<{ id: string }>(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+         require_traceability, created_by_user_id, updated_by_user_id
+       ) VALUES ($1,$2,'MATERIAL',$3,'FIFO',TRUE,$4,$4)
+       RETURNING id::text AS id`,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+    if (policy.rows[0]?.id) policyIds.push(policy.rows[0].id);
+
+    const source = await traceabilityService.createUnit(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'MATERIAL',
+        unit_code: 'WMS-TRR-SOURCE-' + token,
+        inventory_item_id: itemId,
+        quantity: 6,
+        unit: 'PCS',
+        external_reference: 'WMS-TRR-RACE-' + token,
+      } as never,
+      'wms-trr-source-' + token, randomUUID(), randomUUID(),
+    );
+    if (!source.id) throw new Error('Reservation race source LOT was not created');
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        movement_purpose: 'PUT_AWAY',
+        source_location_id: defaultLocationId,
+        destination_location_id: bin.id,
+        traceability_unit_id: source.id,
+        quantity: 6,
+      } as never,
+      'wms-trr-putaway-' + token, null, randomUUID(),
+    );
+
+    const transformation = traceabilityService.splitLot(
+      TEST_USER_ID, tenantId, factoryId, source.id,
+      {
+        reason: 'Race a physical LOT split against a reservation on the same inventory item',
+        outputs: [
+          {
+            unit_type: 'LOT',
+            unit_code: 'WMS-TRR-' + token + '-A',
+            quantity: 3,
+            locations: [{ location_id: bin.id, quantity: 3 }],
+          },
+          {
+            unit_type: 'LOT',
+            unit_code: 'WMS-TRR-' + token + '-B',
+            quantity: 3,
+            locations: [{ location_id: bin.id, quantity: 3 }],
+          },
+        ],
+      } as never,
+      'wms-trr-split-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    const reservation = service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
+      'wms-trr-reserve-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+
+    const [transformationResult, reservationResult] = await Promise.allSettled([transformation, reservation]);
+    if (reservationResult.status !== 'fulfilled') {
+      throw reservationResult.reason;
+    }
+    const transformationCommitted = transformationResult.status === 'fulfilled';
+
+    const sourceState = await adminPool.query<{ status: string }>(
+      'SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [source.id, tenantId, factoryId],
+    );
+    expect(sourceState.rows[0]?.status).toBe(transformationCommitted ? 'DISPOSED' : 'ACTIVE');
+
+    const activeAllocations = await adminPool.query<{
+      traceability_unit_id: string;
+      remaining_quantity: string;
+    }>(
+      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+              (a.allocated_quantity - a.consumed_quantity - a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+       FROM inventory_reservation_traceability_allocations a
+       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
+         AND a.allocated_quantity > a.consumed_quantity + a.released_quantity`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(activeAllocations.rows.reduce((sum, row) => sum + Number(row.remaining_quantity), 0)).toBe(4);
+
+    const orphanedAllocations = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM inventory_reservation_traceability_allocations a
+       JOIN traceability_units u
+         ON u.id=a.traceability_unit_id AND u.tenant_id=a.tenant_id AND u.factory_id=a.factory_id
+       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
+         AND a.allocated_quantity > a.consumed_quantity + a.released_quantity
+         AND u.status <> 'ACTIVE'`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(orphanedAllocations.rows[0]?.count).toBe('0');
+
+    const commandCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_traceability_transformations WHERE inventory_item_id=$1',
+      [itemId],
+    );
+    expect(commandCount.rows[0]?.count).toBe(transformationCommitted ? '1' : '0');
+
+    const balances = await adminPool.query<{
+      aggregate_on_hand: string;
+      location_on_hand: string;
+      traceability_on_hand: string;
+      aggregate_reserved: string;
+      location_reserved: string;
+      traceability_reserved: string;
+    }>(
+      `SELECT
+         (SELECT quantity_on_hand::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_on_hand,
+         (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_on_hand,
+         (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_on_hand,
+         (SELECT quantity_reserved::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_reserved,
+         (SELECT COALESCE(sum(quantity_reserved),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_reserved,
+         (SELECT COALESCE(sum(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved`,
+      [itemId],
+    );
+    expect(balances.rows[0]).toMatchObject({
+      aggregate_on_hand: '6.0000',
+      location_on_hand: '6.0000',
+      traceability_on_hand: '6.0000',
+      aggregate_reserved: '4.0000',
+      location_reserved: '4.0000',
+      traceability_reserved: '4.0000',
+    });
+  });
+
   it('serializes competing stock-conserving split commands against one source LOT', async () => {
     const itemId = await createItem('6.0000');
     const token = randomUUID().slice(0, 8);
