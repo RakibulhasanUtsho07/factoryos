@@ -957,7 +957,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     )).rejects.toBeInstanceOf(BadRequestException);
     await expect(service.reportOutput(
       TEST_USER_ID, tenantId, factoryId, winner.draft.id,
-      { ...outputInput, finished_good_serial_code: 'invalid serial code' } as never,
+      { ...outputInput, finished_good_serial_code: 'invalid\nserial code' } as never,
       'wo-multi-serial-invalid-code-' + randomUUID(), randomUUID(), randomUUID(),
     )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
