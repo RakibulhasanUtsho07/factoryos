@@ -14888,11 +14888,13 @@
       "directCodeReferences": [
         "services/api/src/inventory/traceability.controller.ts",
         "services/api/src/inventory/traceability.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
         "services/api/src/inventory/dto/traceability.dto.ts"
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql",
+        "migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
@@ -14943,11 +14945,13 @@
       "directCodeReferences": [
         "services/api/src/inventory/traceability.controller.ts",
         "services/api/src/inventory/traceability.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
         "services/api/src/inventory/dto/traceability.dto.ts"
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql",
+        "migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
@@ -15073,11 +15077,13 @@
       "directCodeReferences": [
         "services/api/src/inventory/traceability.controller.ts",
         "services/api/src/inventory/traceability.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
         "services/api/src/inventory/dto/traceability.dto.ts"
       ],
       "migrationReferences": [
         "migrations/238_wms_genealogy_transformations_require_commands.sql",
-        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql; migrations/240_wms_reservation_traceability_allocation_remapping.sql"
+        "migrations/239_wms_stock_conserving_lot_serial_transformations.sql",
+        "migrations/240_wms_reservation_traceability_allocation_remapping.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/inventory/traceability.service.spec.ts",
