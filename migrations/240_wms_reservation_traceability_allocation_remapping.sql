@@ -117,7 +117,7 @@ $remap$;
 CREATE OR REPLACE FUNCTION factoryos_guard_consumption_allocation_lineage()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $lineage$
 BEGIN
   IF NEW.reservation_allocation_id IS NULL AND NEW.allocation_sequence IS NULL THEN
     -- Existing legacy evidence remains readable and append-only; all new API issue
@@ -149,7 +149,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$lineage$;
 
 DROP TRIGGER IF EXISTS reservation_consumption_allocation_lineage_guard
   ON inventory_reservation_consumption_traceability_allocations;
