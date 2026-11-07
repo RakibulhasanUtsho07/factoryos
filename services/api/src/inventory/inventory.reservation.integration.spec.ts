@@ -108,6 +108,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           'inventory_reservations',
           'inventory_location_transfers',
           'inventory_traceability_location_balances',
+          'product_genealogy_events',
+          'inventory_traceability_transformation_lines',
+          'inventory_traceability_transformations',
           'traceability_unit_status_events',
           'traceability_units',
           'inventory_material_allocation_policies',
@@ -137,6 +140,13 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
                  SELECT id FROM inventory_reservations WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])
+                 UNION SELECT id FROM inventory_traceability_transformations WHERE inventory_item_id = ANY($1::uuid[])
+                 UNION SELECT e.id FROM product_genealogy_events e
+                   JOIN traceability_units u ON u.id = e.source_unit_id
+                   WHERE u.inventory_item_id = ANY($1::uuid[])
+                 UNION SELECT e.id FROM product_genealogy_events e
+                   JOIN traceability_units u ON u.id = e.target_unit_id
+                   WHERE u.inventory_item_id = ANY($1::uuid[])
                )
             `,
             [itemIds, [...supplierIds, ...purchaseOrderIds, ...goodsReceiptIds], locationIds],
@@ -151,6 +161,36 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           await adminPool.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_reservations WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query(
+            `DELETE FROM audit_events
+             WHERE resource_id IN (
+               SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])
+               UNION
+               SELECT id FROM inventory_traceability_transformations WHERE inventory_item_id = ANY($1::uuid[])
+               UNION
+               SELECT e.id FROM product_genealogy_events e
+               JOIN traceability_units u ON u.id = e.source_unit_id
+               WHERE u.inventory_item_id = ANY($1::uuid[])
+             )`,
+            [itemIds],
+          );
+          await adminPool.query(
+            `DELETE FROM product_genealogy_events
+             WHERE source_unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[]))
+                OR target_unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[]))`,
+            [itemIds],
+          );
+          await adminPool.query(
+            `DELETE FROM inventory_traceability_transformation_lines
+             WHERE transformation_id IN (
+               SELECT id FROM inventory_traceability_transformations WHERE inventory_item_id = ANY($1::uuid[])
+             )`,
+            [itemIds],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_traceability_transformations WHERE inventory_item_id = ANY($1::uuid[])',
+            [itemIds],
+          );
           await adminPool.query(
             'DELETE FROM traceability_unit_status_events WHERE unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[]))',
             [itemIds],
@@ -195,6 +235,157 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       if (appPool) await appPool.end();
       if (adminPool) await adminPool.end();
     }
+  });
+
+  it('serializes competing stock-conserving split commands against one source LOT', async () => {
+    const itemId = await createItem('6.0000');
+    const token = randomUUID().slice(0, 8);
+    const defaultResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-TR-WH-' + token, name: 'Transformation race warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-TR-BIN-' + token, name: 'Transformation race bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    const policy = await adminPool.query<{ id: string }>(
+      `INSERT INTO inventory_material_allocation_policies (
+         tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+         require_traceability, created_by_user_id, updated_by_user_id
+       ) VALUES ($1,$2,'MATERIAL',$3,'FIFO',TRUE,$4,$4)
+       RETURNING id::text AS id`,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+    if (policy.rows[0]?.id) policyIds.push(policy.rows[0].id);
+
+    const source = await traceabilityService.createUnit(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'MATERIAL',
+        unit_code: 'WMS-TR-SOURCE-' + token,
+        inventory_item_id: itemId,
+        quantity: 6,
+        unit: 'PCS',
+        external_reference: 'WMS-TR-RACE-' + token,
+      } as never,
+      'wms-tr-source-' + token, randomUUID(), randomUUID(),
+    );
+    if (!source.id) throw new Error('Transformation race source LOT was not created');
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        movement_purpose: 'PUT_AWAY',
+        source_location_id: defaultLocationId,
+        destination_location_id: bin.id,
+        traceability_unit_id: source.id,
+        quantity: 6,
+      } as never,
+      'wms-tr-putaway-' + token, null, randomUUID(),
+    );
+
+    const split = (suffix: string) => traceabilityService.splitLot(
+      TEST_USER_ID, tenantId, factoryId, source.id,
+      {
+        reason: 'Competing split command must be serialized by the inventory item lock',
+        outputs: [
+          {
+            unit_type: 'LOT',
+            unit_code: 'WMS-TR-' + token + '-' + suffix + '-A',
+            quantity: 3,
+            locations: [{ location_id: bin.id, quantity: 3 }],
+          },
+          {
+            unit_type: 'LOT',
+            unit_code: 'WMS-TR-' + token + '-' + suffix + '-B',
+            quantity: 3,
+            locations: [{ location_id: bin.id, quantity: 3 }],
+          },
+        ],
+      } as never,
+      'wms-tr-split-' + token + '-' + suffix,
+      randomUUID(),
+      randomUUID(),
+    );
+
+    const results = await Promise.allSettled([split('ONE'), split('TWO')]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+
+    const sourceState = await adminPool.query<{ status: string }>(
+      'SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [source.id, tenantId, factoryId],
+    );
+    expect(sourceState.rows[0]?.status).toBe('DISPOSED');
+
+    const outputs = await adminPool.query<{ unit_type: string; status: string; quantity: string }>(
+      `SELECT unit_type, status, quantity::text
+       FROM traceability_units
+       WHERE inventory_item_id=$1 AND external_reference LIKE 'LOT_SERIAL_TRANSFORMATION:%'
+       ORDER BY unit_code`,
+      [itemId],
+    );
+    expect(outputs.rows).toHaveLength(2);
+    expect(outputs.rows.every((row) => row.unit_type === 'LOT' && row.status === 'ACTIVE')).toBe(true);
+    expect(outputs.rows.reduce((sum, row) => sum + Number(row.quantity), 0)).toBe(6);
+
+    const evidence = await adminPool.query<{
+      transformations: string;
+      genealogy_edges: string;
+      transformation_lines: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM inventory_traceability_transformations WHERE inventory_item_id=$1) AS transformations,
+         (SELECT count(*)::text FROM product_genealogy_events WHERE source_unit_id=$2 AND relationship_type='SPLIT_INTO') AS genealogy_edges,
+         (SELECT count(*)::text FROM inventory_traceability_transformation_lines l
+          JOIN inventory_traceability_transformations h ON h.id=l.transformation_id
+          WHERE h.inventory_item_id=$1) AS transformation_lines`,
+      [itemId, source.id],
+    );
+    expect(evidence.rows[0]).toMatchObject({
+      transformations: '1',
+      genealogy_edges: '2',
+      transformation_lines: '2',
+    });
+
+    const balances = await adminPool.query<{
+      aggregate_on_hand: string;
+      location_on_hand: string;
+      traceability_on_hand: string;
+      aggregate_reserved: string;
+      location_reserved: string;
+      traceability_reserved: string;
+    }>(
+      `SELECT
+         (SELECT quantity_on_hand::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_on_hand,
+         (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_on_hand,
+         (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_on_hand,
+         (SELECT quantity_reserved::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_reserved,
+         (SELECT COALESCE(sum(quantity_reserved),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_reserved,
+         (SELECT COALESCE(sum(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved`,
+      [itemId],
+    );
+    expect(balances.rows[0]).toMatchObject({
+      aggregate_on_hand: '6.0000',
+      location_on_hand: '6.0000',
+      traceability_on_hand: '6.0000',
+      aggregate_reserved: '0.0000',
+      location_reserved: '0.0000',
+      traceability_reserved: '0.0000',
+    });
   });
 
   it('serializes concurrent reservations and never over-reserves aggregate stock', async () => {
