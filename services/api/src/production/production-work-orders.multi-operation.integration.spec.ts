@@ -968,6 +968,11 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: 'FG-SERIAL-ALTERNATE-' + randomUUID().slice(0, 8).toUpperCase() } as never,
+      outputKey, randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
     const output = outputAttempts.find((attempt) => !attempt.replayed);
     if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
       throw new Error('Serial input output did not produce its canonical report, posting and finished-good SERIAL identity');
