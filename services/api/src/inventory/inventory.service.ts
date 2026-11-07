@@ -74,7 +74,7 @@ export interface InventoryAvailabilityExposure extends QueryResultRow {
   expected_quantity: string;
   expected_quantity_unit_mismatch_line_count: number;
   next_expected_delivery_date: string | null;
-  expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED';
+  expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM';
   condition_evidence_scope:
     | 'ITEM_WIDE_QUALITY_HOLD'
     | 'TRACEABILITY_LOCATION_BALANCES'
@@ -412,7 +412,7 @@ export class InventoryService {
             COALESCE(e.expected_quantity, 0)::text AS expected_quantity,
             COALESCE(e.expected_quantity_unit_mismatch_line_count, 0)::integer AS expected_quantity_unit_mismatch_line_count,
             e.next_expected_delivery_date::text AS next_expected_delivery_date,
-            'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED'::text AS expected_quantity_basis,
+            'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM'::text AS expected_quantity_basis,
             CASE
               WHEN s.item_wide_quality_hold THEN 'ITEM_WIDE_QUALITY_HOLD'
               WHEN COALESCE(c.tracked_identity_count, 0) > 0 THEN 'TRACEABILITY_LOCATION_BALANCES'
