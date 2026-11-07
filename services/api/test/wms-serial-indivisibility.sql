@@ -633,6 +633,24 @@ BEGIN
     'wsi-mixed-source-' || v_mixed_source::text, repeat('d', 64), v_actor, v_trace
   );
 
+  INSERT INTO audit_events (
+    tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
+    correlation_id, request_id, data_class, payload
+  ) VALUES (
+    v_tenant, v_factory, v_actor, 'TRACEABILITY', 'REGISTERED', 'TRACEABILITY_UNIT',
+    v_mixed_source, v_trace, v_request, 'INTERNAL',
+    jsonb_build_object('unit_code', 'WSI-MIXED-SOURCE-' || substr(v_mixed_source::text, 1, 8),
+      'unit_type', 'LOT', 'quantity', 3)
+  );
+  INSERT INTO outbox_events (
+    tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+  ) VALUES (
+    v_tenant, v_factory, 'TRACEABILITY_UNIT', v_mixed_source, 'TRACEABILITY.UNIT_REGISTERED',
+    jsonb_build_object('unit_id', v_mixed_source,
+      'unit_code', 'WSI-MIXED-SOURCE-' || substr(v_mixed_source::text, 1, 8),
+      'unit_type', 'LOT')
+  );
+
   INSERT INTO inventory_reservations (
     id, tenant_id, factory_id, item_id, location_id, quantity, status,
     idempotency_key, request_hash, created_by_user_id, correlation_id
