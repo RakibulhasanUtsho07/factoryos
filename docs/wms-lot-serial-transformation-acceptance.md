@@ -15,7 +15,7 @@ Both routes require traceability.write, factory scope and an Idempotency-Key. Re
 
 A command locks the canonical tenant/factory genealogy graph, the inventory item and the aggregate/location/traceability balances in the same item-first lock order used by stock reservation/issue paths. Source material LOTs must be ACTIVE, unexpired, undamaged, unheld, not under an active quality hold, and fully reconciled: tracked on-hand must exactly equal registered quantity less prior CONSUMED_INTO/PROCESSED_INTO genealogy quantities.
 
-Reserved sources are rejected. Any quantity_reserved or outstanding traceability reservation allocation requires the operator to release the reservation before transformation. The command does not silently release or reassign reservations. This is a deliberate fail-closed boundary; allocation-sequence-preserving reservation remapping remains OPEN.
+Active reservation allocations are remapped transactionally with the stock identity. For each source allocation, the command creates one or more child allocation rows at the exact source allocation's position in that reservation's ordered allocation stream. Unaffected allocations retain their relative precedence; the child rows consume in output sequence order before later original allocations. The original allocation row remains as source history with a monotonic remapped_quantity disposition, while a separate append-only remap ledger links source/target rows, quantities and both sequence positions. The reservation remaining_quantity and aggregate/BIN reserved balances do not change. Split and merge do not release/recreate a reservation and cannot orphan an active allocation on a DISPOSED source. The item-first lock serializes transformation against issue, release and new reservation creation.
 
 For a successful split, all output quantities must sum exactly to the complete source LOT on-hand quantity. Per-output locations must sum to the output quantity, and the total assigned to each source location must remain exactly equal to that location's source LOT quantity. A SERIAL output is exactly 1.0000 in one location. Mixed LOT/SERIAL outputs in one command, partial parent remainders and physical moves to a different location are not supported.
 
@@ -35,10 +35,12 @@ services/api/test/wms-serial-indivisibility.sql now runs against PostgreSQL and 
 - A deliberately late duplicate-identity failure after the source map/header writes begin; the savepoint confirms full rollback.
 - Aggregate on-hand/reserved, item/BIN on-hand/reserved and total traceability-location on-hand/reserved conservation.
 - API PostgreSQL integration races two different split idempotency keys against the same source LOT: one command commits, the other conflicts after source-state revalidation, and only one command/two genealogy edges remain.
-- API PostgreSQL integration races a split against reservation creation: the reservation commits, the split either wins first and the reservation targets only active child LOTs, or the reservation wins first and the split fails closed; no active allocation may reference a disposed LOT, and aggregate/BIN/traceability/reserved totals reconcile.
+- API PostgreSQL integration races a split against reservation creation: both operations commit in either lock order; a reservation created first is remapped to ACTIVE child LOTs, and a reservation created after split allocates directly to the children. No active allocation references a disposed LOT, and aggregate/BIN/traceability/reserved totals reconcile.
+- A FIFO partial-issue regression starts with reservation allocations across two LOTs, splits the first reserved LOT into two child LOTs, verifies child allocations are inserted at the parent's relative sequence position, then consumes across both children and the later original LOT in deterministic order.
+- Remap evidence preserves source/target allocation IDs, quantities, source sequence and replacement sequence; merge may retain multiple ordered rows for the same target LOT when two source LOTs belonged to the same reservation.
 - Existing SERIAL indivisibility and generic unbacked-genealogy rejection.
 
-The API unit contract tests reject fractional SERIAL outputs, mixed output unit types and duplicate merge source IDs before opening a transaction. API CI and PostgreSQL CI must pass on the exact PR head. The PostgreSQL workflow applies and replays migration 239 before the WMS SQL contract.
+The API unit contract tests reject fractional SERIAL outputs, mixed output unit types and duplicate merge source IDs before opening a transaction. API CI and PostgreSQL CI must pass on the exact PR head. The PostgreSQL workflow applies and replays migrations 239 and 240 before the WMS SQL contract.
 
 ## Remaining SRS acceptance gates
 
