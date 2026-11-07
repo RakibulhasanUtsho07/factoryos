@@ -73,3 +73,8 @@ jobs:
         run: node scripts/audit/validate-srs-audit.mjs
       - name: Validate the exact v2.1 delta row population
         run: node --test scripts/audit/srs-v21-delta-occurrence-ledger.test.mjs
+
+      - name: Test source-located SRS occurrence extractor
+        run: |
+          cd scripts/audit
+          python -m unittest -v test_srs_occurrence_candidate_extractor
