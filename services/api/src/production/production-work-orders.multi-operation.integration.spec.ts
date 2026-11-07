@@ -965,6 +965,30 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       { ...outputInput, finished_good_serial_code: '   ' } as never,
       'wo-multi-serial-blank-code-' + randomUUID(), randomUUID(), randomUUID(),
     )).rejects.toBeInstanceOf(BadRequestException);
+    const duplicateFinishedGoodSerialCode = 'DUPLICATE-FG-SERIAL-' + randomUUID().slice(0, 8).toUpperCase();
+    await traceabilityService.createUnit(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'OTHER',
+        unit_code: duplicateFinishedGoodSerialCode,
+        barcode_value: 'BAR-' + duplicateFinishedGoodSerialCode,
+        quantity: 1,
+        unit: 'PCS',
+        external_reference: 'finished-good-serial-code-conflict-regression',
+        attributes: {},
+      } as never,
+      'wo-multi-existing-output-code-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: duplicateFinishedGoodSerialCode } as never,
+      'wo-multi-serial-existing-code-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
       service.reportOutput(
