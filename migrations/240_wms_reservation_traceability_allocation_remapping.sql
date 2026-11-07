@@ -81,6 +81,80 @@ CREATE INDEX IF NOT EXISTS idx_wms_reservation_allocation_remaps_reservation
   ON inventory_reservation_traceability_allocation_remaps
     (tenant_id, factory_id, reservation_id, source_allocation_sequence, target_allocation_sequence);
 
+-- Keep consumption history directly linked to the exact reservation allocation row
+-- that was consumed. This makes post-merge duplicate target-unit rows unambiguous.
+ALTER TABLE inventory_reservation_consumption_traceability_allocations
+  ADD COLUMN IF NOT EXISTS reservation_allocation_id UUID,
+  ADD COLUMN IF NOT EXISTS allocation_sequence BIGINT;
+
+DO $
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'fk_reservation_consumption_allocation_ref'
+      AND conrelid = 'inventory_reservation_consumption_traceability_allocations'::regclass
+  ) THEN
+    ALTER TABLE inventory_reservation_consumption_traceability_allocations
+      ADD CONSTRAINT fk_reservation_consumption_allocation_ref
+      FOREIGN KEY (reservation_allocation_id)
+      REFERENCES inventory_reservation_traceability_allocations (id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'chk_reservation_consumption_allocation_ref_pair'
+      AND conrelid = 'inventory_reservation_consumption_traceability_allocations'::regclass
+  ) THEN
+    ALTER TABLE inventory_reservation_consumption_traceability_allocations
+      ADD CONSTRAINT chk_reservation_consumption_allocation_ref_pair
+      CHECK (
+        (reservation_allocation_id IS NULL AND allocation_sequence IS NULL)
+        OR (reservation_allocation_id IS NOT NULL AND allocation_sequence > 0)
+      );
+  END IF;
+END;
+$;
+
+CREATE OR REPLACE FUNCTION factoryos_guard_consumption_allocation_lineage()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  IF NEW.reservation_allocation_id IS NULL AND NEW.allocation_sequence IS NULL THEN
+    -- Existing legacy evidence remains readable and append-only; all new API issue
+    -- paths populate both lineage columns.
+    RETURN NEW;
+  END IF;
+  IF NEW.reservation_allocation_id IS NULL OR NEW.allocation_sequence IS NULL
+     OR NOT EXISTS (
+       SELECT 1
+       FROM inventory_reservation_consumptions c
+       JOIN inventory_reservation_traceability_allocations a
+         ON a.id = NEW.reservation_allocation_id
+        AND a.tenant_id = c.tenant_id AND a.factory_id = c.factory_id
+        AND a.reservation_id = c.reservation_id AND a.item_id = c.item_id
+        AND a.traceability_unit_id = NEW.traceability_unit_id
+        AND a.location_id = NEW.location_id
+        AND a.allocation_sequence = NEW.allocation_sequence
+       WHERE c.id = NEW.consumption_id
+         AND c.tenant_id = NEW.tenant_id AND c.factory_id = NEW.factory_id
+     ) THEN
+    RAISE EXCEPTION 'consumption evidence must reference the exact reservation allocation row and allocation sequence used for issue'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS reservation_consumption_allocation_lineage_guard
+  ON inventory_reservation_consumption_traceability_allocations;
+CREATE TRIGGER reservation_consumption_allocation_lineage_guard
+BEFORE INSERT ON inventory_reservation_consumption_traceability_allocations
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_consumption_allocation_lineage();
+
+CREATE INDEX IF NOT EXISTS idx_reservation_consumption_allocation_lineage
+  ON inventory_reservation_consumption_traceability_allocations
+    (tenant_id, factory_id, reservation_allocation_id, allocation_sequence);
+
 CREATE OR REPLACE FUNCTION factoryos_guard_reservation_allocation_remap()
 RETURNS trigger
 LANGUAGE plpgsql
