@@ -87,7 +87,7 @@ ALTER TABLE inventory_reservation_consumption_traceability_allocations
   ADD COLUMN IF NOT EXISTS reservation_allocation_id UUID,
   ADD COLUMN IF NOT EXISTS allocation_sequence BIGINT;
 
-DO $
+DO $remap$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -112,7 +112,7 @@ BEGIN
       );
   END IF;
 END;
-$;
+$remap$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_consumption_allocation_lineage()
 RETURNS trigger
