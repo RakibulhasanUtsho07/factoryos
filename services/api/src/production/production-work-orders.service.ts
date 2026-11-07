@@ -1690,8 +1690,11 @@ export class ProductionWorkOrdersService {
     const scrapReason = dto.scrap_reason?.trim() || null;
     if (scrapUnits > 0n && !scrapReason) throw new BadRequestException('scrap_reason is required when scrap_quantity is greater than zero');
     const finishedGoodSerialCode = dto.finished_good_serial_code?.trim().toUpperCase() || null;
-    if (finishedGoodSerialCode && !/^[A-Z0-9._:-]{1,160}$/.test(finishedGoodSerialCode)) {
-      throw new BadRequestException('finished_good_serial_code must contain 1-160 letters, digits, dot, underscore, colon or hyphen');
+    if (dto.finished_good_serial_code != null && !finishedGoodSerialCode) {
+      throw new BadRequestException('finished_good_serial_code must not be blank');
+    }
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || /[\\x00-\\x1F\\x7F]/.test(finishedGoodSerialCode))) {
+      throw new BadRequestException('finished_good_serial_code must be at most 160 printable characters without control characters');
     }
     if (finishedGoodSerialCode && goodUnits !== 10_000n) {
       throw new BadRequestException('Finished-good SERIAL output must contain exactly one accepted good unit; submit a separate output report for each serial');
