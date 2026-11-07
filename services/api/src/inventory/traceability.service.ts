@@ -373,28 +373,28 @@ export class TraceabilityService {
     const outputs = dto.outputs.map((output, index) => {
       const unitType = String(output.unit_type ?? '').trim().toUpperCase();
       if (unitType !== 'LOT' && unitType !== 'SERIAL') {
-        throw new BadRequestException(\`outputs[\${index}].unit_type must be LOT or SERIAL\`);
+        throw new BadRequestException(`outputs[${index}].unit_type must be LOT or SERIAL`);
       }
-      const unitCode = this.requiredText(output.unit_code, \`outputs[\${index}].unit_code\`, 160).toUpperCase();
+      const unitCode = this.requiredText(output.unit_code, `outputs[${index}].unit_code`, 160).toUpperCase();
       const barcodeValue = output.barcode_value?.trim().toUpperCase() || unitCode;
-      if (barcodeValue.length > 255) throw new BadRequestException(\`outputs[\${index}].barcode_value must contain at most 255 characters\`);
-      const quantity = this.quantity(output.quantity, \`outputs[\${index}].quantity\`);
+      if (barcodeValue.length > 255) throw new BadRequestException(`outputs[${index}].barcode_value must contain at most 255 characters`);
+      const quantity = this.quantity(output.quantity, `outputs[${index}].quantity`);
       if (!Array.isArray(output.locations) || output.locations.length < 1 || output.locations.length > 100) {
-        throw new BadRequestException(\`outputs[\${index}].locations must contain between 1 and 100 location allocations\`);
+        throw new BadRequestException(`outputs[${index}].locations must contain between 1 and 100 location allocations`);
       }
       const locations = output.locations.map((location, locationIndex) => ({
-        location_id: this.requiredUuid(location.location_id, \`outputs[\${index}].locations[\${locationIndex}].location_id\`),
-        quantity: this.quantity(location.quantity, \`outputs[\${index}].locations[\${locationIndex}].quantity\`),
+        location_id: this.requiredUuid(location.location_id, `outputs[${index}].locations[${locationIndex}].location_id`),
+        quantity: this.quantity(location.quantity, `outputs[${index}].locations[${locationIndex}].quantity`),
       }));
       if (new Set(locations.map((location) => location.location_id)).size !== locations.length) {
-        throw new BadRequestException(\`outputs[\${index}].locations must not repeat a location\`);
+        throw new BadRequestException(`outputs[${index}].locations must not repeat a location`);
       }
       const locationUnits = locations.reduce((sum, location) => sum + toUnits(location.quantity), 0n);
       if (locationUnits !== toUnits(quantity)) {
-        throw new BadRequestException(\`outputs[\${index}].quantity must exactly equal the sum of its location allocations\`);
+        throw new BadRequestException(`outputs[${index}].quantity must exactly equal the sum of its location allocations`);
       }
       if (unitType === 'SERIAL' && (quantity !== '1.0000' || locations.length !== 1 || locations[0]?.quantity !== '1.0000')) {
-        throw new BadRequestException(\`outputs[\${index}] SERIAL must represent exactly one whole unit in one location\`);
+        throw new BadRequestException(`outputs[${index}] SERIAL must represent exactly one whole unit in one location`);
       }
       return { unit_type: unitType, unit_code: unitCode, barcode_value: barcodeValue, quantity, locations };
     });
@@ -414,10 +414,10 @@ export class TraceabilityService {
         { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
         async (client) => {
           const result = await client.query<{ result: typeof command }>(
-            \`SELECT factoryos_execute_lot_serial_transformation(
+            `SELECT factoryos_execute_lot_serial_transformation(
                'SPLIT', $1::uuid, $2::uuid, $3::uuid, ARRAY[$4::uuid],
                NULL, $5::jsonb, $6::text, $7::text, $8::text
-             ) AS result\`,
+             ) AS result`,
             [tenantId, factoryId, userId, sourceId, JSON.stringify(outputs), reason, idempotencyKey, requestHash],
           );
           if (!result.rows[0]?.result) throw new Error('LOT_SERIAL_SPLIT_COMMAND_RETURNED_NO_RESULT');
@@ -443,7 +443,7 @@ export class TraceabilityService {
     if (!Array.isArray(dto.source_unit_ids) || dto.source_unit_ids.length < 2 || dto.source_unit_ids.length > 100) {
       throw new BadRequestException('source_unit_ids must contain between 2 and 100 LOT identities');
     }
-    const sourceUnitIds = dto.source_unit_ids.map((id, index) => this.requiredUuid(id, \`source_unit_ids[\${index}]\`)).sort();
+    const sourceUnitIds = dto.source_unit_ids.map((id, index) => this.requiredUuid(id, `source_unit_ids[${index}]`)).sort();
     if (new Set(sourceUnitIds).size !== sourceUnitIds.length) {
       throw new BadRequestException('source_unit_ids must not contain duplicate identities');
     }
@@ -456,10 +456,10 @@ export class TraceabilityService {
         { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
         async (client) => {
           const result = await client.query<{ result: typeof command }>(
-            \`SELECT factoryos_execute_lot_serial_transformation(
+            `SELECT factoryos_execute_lot_serial_transformation(
                'MERGE', $1::uuid, $2::uuid, $3::uuid, $4::uuid[],
                $5::text, '[]'::jsonb, $6::text, $7::text, $8::text
-             ) AS result\`,
+             ) AS result`,
             [tenantId, factoryId, userId, sourceUnitIds, targetUnitCode, reason, idempotencyKey, requestHash],
           );
           if (!result.rows[0]?.result) throw new Error('LOT_SERIAL_MERGE_COMMAND_RETURNED_NO_RESULT');
