@@ -939,7 +939,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const outputState = await readState(winner.draft.id);
     const finalOperation = outputState.operations[2];
     if (!finalOperation) throw new Error('Serial work-order final operation was not found');
-    const requestedFinishedGoodSerialCode = 'fg-serial-' + randomUUID().slice(0, 12).toLowerCase();
+    const requestedFinishedGoodSerialCode = 'vendor/fg-' + randomUUID().slice(0, 12).toLowerCase();
     const finishedGoodSerialCode = requestedFinishedGoodSerialCode.toUpperCase();
     const outputInput = {
       operation_id: finalOperation.id,
@@ -959,6 +959,11 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       TEST_USER_ID, tenantId, factoryId, winner.draft.id,
       { ...outputInput, finished_good_serial_code: 'invalid\nserial code' } as never,
       'wo-multi-serial-invalid-code-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: '   ' } as never,
+      'wo-multi-serial-blank-code-' + randomUUID(), randomUUID(), randomUUID(),
     )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
