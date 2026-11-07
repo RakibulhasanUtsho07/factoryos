@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_wms_reservation_allocation_remaps_reservation
   ON inventory_reservation_traceability_allocation_remaps
     (tenant_id, factory_id, reservation_id, source_allocation_sequence, target_allocation_sequence);
 
-CREATE OR REPLACE FUNCTION factoryos_guard_inventory_reservation_traceability_allocation_remap()
+CREATE OR REPLACE FUNCTION factoryos_guard_reservation_allocation_remap()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -120,14 +120,14 @@ DROP TRIGGER IF EXISTS inventory_reservation_traceability_allocation_remap_guard
   ON inventory_reservation_traceability_allocation_remaps;
 CREATE TRIGGER inventory_reservation_traceability_allocation_remap_guard
 BEFORE INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocation_remaps
-FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_reservation_traceability_allocation_remap();
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_reservation_allocation_remap();
 
 -- Deferred consistency ties the remapped_quantity counter and every replacement
 -- allocation to the append-only remap evidence. Neither side can be written alone.
 CREATE OR REPLACE FUNCTION factoryos_assert_reservation_allocation_remap_integrity()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_allocation_ids UUID[];
   v_allocation_id UUID;
