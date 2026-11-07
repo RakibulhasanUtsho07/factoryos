@@ -22,7 +22,7 @@ export class WorkOrderOutputReportDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^[A-Za-z0-9._:-]{1,160}$/)
+  @Matches(/^(?=.*\S)[^\x00-\x1F\x7F]{1,160}$/)
   @MaxLength(160)
   finished_good_serial_code?: string;
 
