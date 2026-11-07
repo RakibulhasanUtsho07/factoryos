@@ -650,12 +650,12 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       );
       try {
         await databaseGuardClient.query(
-          \`INSERT INTO utility_reading_work_order_cost_allocations(
+          `INSERT INTO utility_reading_work_order_cost_allocations(
             tenant_id,factory_id,reading_id,meter_id,work_order_id,allocation_kind,
             allocated_quantity,unit_code,unit_cost_snapshot,allocated_cost,currency_code,
             cost_center_code,reason,idempotency_key,request_hash,created_by_user_id,correlation_id
           ) VALUES($1,$2,$3,$4,$5,'ALLOCATE',31,'kWh',0.25,7.75,'BDT','CC-WO-UTILITY',
-            'Direct database over-allocation guard fixture','wo-multi-utility-db-over-limit',repeat('d',64),$6,$7)\`,
+            'Direct database over-allocation guard fixture','wo-multi-utility-db-over-limit',repeat('d',64),$6,$7)`,
           [tenantId, factoryId, utilityReading.id, utilityMeter.id, draft.id, TEST_USER_ID, randomUUID()],
         );
       } catch (error) {
