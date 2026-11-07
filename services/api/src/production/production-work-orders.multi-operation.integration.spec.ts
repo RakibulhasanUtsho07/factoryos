@@ -1131,6 +1131,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       target_identity_code: string;
       target_identity_role: string;
       report_count: string;
+      tracked_location_count: string;
+      tracked_location_on_hand: string;
+      tracked_location_reserved: string;
       posting_count: string;
     }>(
       `SELECT sb.quantity_on_hand::text AS quantity_on_hand,
@@ -1138,6 +1141,16 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
               tu.unit_type AS target_identity_type,
               tu.unit_code AS target_identity_code,
               tu.product_role AS target_identity_role,
+              (SELECT count(*)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id
+                 AND tlb.quantity_on_hand=1.0000 AND tlb.quantity_reserved=0.0000) AS tracked_location_count,
+              (SELECT COALESCE(sum(tlb.quantity_on_hand),0)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_on_hand,
+              (SELECT COALESCE(sum(tlb.quantity_reserved),0)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_reserved,
               (SELECT count(*)::text FROM order_production_reports r
                WHERE r.work_order_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3) AS report_count,
               (SELECT count(*)::text FROM production_output_postings p
@@ -1155,6 +1168,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       target_identity_type: 'SERIAL',
       target_identity_code: finishedGoodSerialCode,
       target_identity_role: 'FINISHED_GOOD',
+      tracked_location_count: '1',
+      tracked_location_on_hand: '1.0000',
+      tracked_location_reserved: '0.0000',
       report_count: '1',
       posting_count: '1',
     }]);
