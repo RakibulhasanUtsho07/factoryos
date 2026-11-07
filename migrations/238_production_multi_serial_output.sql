@@ -405,8 +405,8 @@ BEGIN
   IF v_output.target_kind = 'FINISHED_GOOD' THEN
     IF NEW.relationship_type <> 'CONSUMED_INTO'
        OR (NEW.evidence->>'output_quantity_weight')::numeric
-         IS DISTINCT FROM CASE WHEN v_output.is_serial_output
-           THEN 1.0000::numeric ELSE v_output.good_quantity END THEN
+         IS DISTINCT FROM (CASE WHEN v_output.is_serial_output
+           THEN 1.0000::numeric ELSE v_output.good_quantity END) THEN
       RAISE EXCEPTION 'finished-good output genealogy must use CONSUMED_INTO and the canonical target identity quantity'
         USING ERRCODE = '23514';
     END IF;
