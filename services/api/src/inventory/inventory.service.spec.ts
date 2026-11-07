@@ -63,7 +63,7 @@ describe('InventoryService', () => {
     expect(result).toEqual(stock);
     expect(database.query).toHaveBeenCalledWith(
       expect.stringContaining('AND i.tenant_id = $2'),
-      [ITEM_ID, TENANT_ID, FACTORY_ID],
+      [ITEM_ID.toLowerCase(), TENANT_ID, FACTORY_ID],
       { tenantId: TENANT_ID, userId: USER_ID },
     );
     const query = String(database.query.mock.calls[0]?.[0]);
