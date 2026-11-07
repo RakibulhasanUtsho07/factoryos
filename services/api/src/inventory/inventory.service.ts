@@ -72,6 +72,7 @@ export interface InventoryAvailabilityExposure extends QueryResultRow {
   damaged_quantity: string;
   expired_quantity: string;
   expected_quantity: string;
+  expected_quantity_unit_mismatch_line_count: number;
   next_expected_delivery_date: string | null;
   expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED';
   condition_evidence_scope:
@@ -283,12 +284,19 @@ export class InventoryService {
               s.id AS item_id,
               COALESCE(SUM(
                 CASE WHEN po.status = 'APPROVED'
+                       AND upper(pol.unit) = upper(s.unit)
                   THEN GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0)
                   ELSE 0
                 END
               ), 0)::numeric(18,4) AS expected_quantity,
+              COUNT(*) FILTER (
+                WHERE po.status = 'APPROVED'
+                  AND upper(pol.unit) <> upper(s.unit)
+                  AND GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0) > 0
+              )::integer AS expected_quantity_unit_mismatch_line_count,
               MIN(po.expected_delivery_date) FILTER (
                 WHERE po.status = 'APPROVED'
+                  AND upper(pol.unit) = upper(s.unit)
                   AND GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0) > 0
               ) AS next_expected_delivery_date
             FROM selected_item s
@@ -402,6 +410,7 @@ export class InventoryService {
             END::text AS damaged_quantity,
             COALESCE(c.expired_quantity, 0)::text AS expired_quantity,
             COALESCE(e.expected_quantity, 0)::text AS expected_quantity,
+            COALESCE(e.expected_quantity_unit_mismatch_line_count, 0)::integer AS expected_quantity_unit_mismatch_line_count,
             e.next_expected_delivery_date::text AS next_expected_delivery_date,
             'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED'::text AS expected_quantity_basis,
             CASE
