@@ -355,6 +355,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId],
     );
     expect(activeAllocations.rows.reduce((sum, row) => sum + Number(row.remaining_quantity), 0)).toBe(4);
+    const transformedTargetIds = transformationResult.value.targets.map((target) => target.id);
+    expect(activeAllocations.rows.every((row) => transformedTargetIds.includes(row.traceability_unit_id))).toBe(true);
 
     const orphanedAllocations = await adminPool.query<{ count: string }>(
       `SELECT count(*)::text AS count
@@ -598,6 +600,48 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       { traceability_unit_id: childIds[1], quantity: '2.0000' },
       { traceability_unit_id: laterLotId, quantity: '1.0000' },
     ]);
+
+    await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
+      { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+      'wms-trs-release-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    const final = await adminPool.query<{
+      remaining_quantity: string;
+      consumed_quantity: string;
+      released_quantity: string;
+      remapped_quantity: string;
+    }>(
+      `SELECT
+         SUM(allocated_quantity - consumed_quantity - released_quantity - remapped_quantity)::numeric(18,4)::text AS remaining_quantity,
+         SUM(consumed_quantity)::numeric(18,4)::text AS consumed_quantity,
+         SUM(released_quantity)::numeric(18,4)::text AS released_quantity,
+         SUM(remapped_quantity)::numeric(18,4)::text AS remapped_quantity
+       FROM inventory_reservation_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3`,
+      [tenantId, factoryId, reservation.id],
+    );
+    expect(final.rows[0]).toMatchObject({
+      remaining_quantity: '0.0000',
+      consumed_quantity: '5.0000',
+      released_quantity: '1.0000',
+      remapped_quantity: '4.0000',
+    });
+    const reservedBalances = await adminPool.query<{
+      aggregate_reserved: string;
+      traceability_reserved: string;
+    }>(
+      `SELECT
+         (SELECT quantity_reserved::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_reserved,
+         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved`,
+      [itemId],
+    );
+    expect(reservedBalances.rows[0]).toMatchObject({
+      aggregate_reserved: '0.0000',
+      traceability_reserved: '0.0000',
+    });
   });
 
   it('serializes competing stock-conserving split commands against one source LOT', async () => {
