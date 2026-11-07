@@ -1658,8 +1658,11 @@ export class InventoryReservationService {
     const good = parseQuantity(input.goodQuantity, 'Finished-good output quantity');
     const scrap = parseQuantity(input.scrapQuantity, 'Scrap output quantity');
     const finishedGoodSerialCode = input.finishedGoodSerialCode?.trim().toUpperCase() || null;
-    if (finishedGoodSerialCode && !/^[A-Z0-9._:-]{1,160}$/.test(finishedGoodSerialCode)) {
-      throw new ConflictException('Finished-good SERIAL code must contain 1-160 letters, digits, dot, underscore, colon or hyphen');
+    if (input.finishedGoodSerialCode != null && !finishedGoodSerialCode) {
+      throw new ConflictException('Finished-good SERIAL code must not be blank');
+    }
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || /[\\x00-\\x1F\\x7F]/.test(finishedGoodSerialCode))) {
+      throw new ConflictException('Finished-good SERIAL code must be at most 160 printable characters without control characters');
     }
     if (finishedGoodSerialCode && good.units !== 10_000n) {
       throw new ConflictException('Finished-good SERIAL output must contain exactly one accepted good unit');
