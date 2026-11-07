@@ -975,6 +975,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         product_role: 'OTHER',
         unit_code: duplicateFinishedGoodSerialCode,
         barcode_value: 'BAR-' + duplicateFinishedGoodSerialCode,
+        inventory_item_id: componentItemId,
         quantity: 1,
         unit: 'PCS',
         external_reference: 'finished-good-serial-code-conflict-regression',
