@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 
@@ -939,14 +939,57 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const outputState = await readState(winner.draft.id);
     const finalOperation = outputState.operations[2];
     if (!finalOperation) throw new Error('Serial work-order final operation was not found');
+    const requestedFinishedGoodSerialCode = 'vendor/fg-' + randomUUID().slice(0, 12).toLowerCase();
+    const finishedGoodSerialCode = requestedFinishedGoodSerialCode.toUpperCase();
     const outputInput = {
       operation_id: finalOperation.id,
       expected_work_order_version: outputState.row_version,
       expected_operation_version: finalOperation.row_version,
       good_quantity: serialTarget,
       scrap_quantity: 0,
-      notes: 'Three-step finished-good output from one serialized material identity',
+      finished_good_serial_code: requestedFinishedGoodSerialCode,
+      notes: 'Three-step finished-good SERIAL output from one serialized material identity',
     };
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, good_quantity: 2 } as never,
+      'wo-multi-serial-invalid-output-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: 'invalid\nserial code' } as never,
+      'wo-multi-serial-invalid-code-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: '   ' } as never,
+      'wo-multi-serial-blank-code-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    const duplicateFinishedGoodSerialCode = 'DUPLICATE-FG-SERIAL-' + randomUUID().slice(0, 8).toUpperCase();
+    await traceabilityService.createUnit(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'OTHER',
+        unit_code: duplicateFinishedGoodSerialCode,
+        barcode_value: 'BAR-' + duplicateFinishedGoodSerialCode,
+        inventory_item_id: componentItemId,
+        quantity: 1,
+        unit: 'PCS',
+        external_reference: 'finished-good-serial-code-conflict-regression',
+        attributes: {},
+      } as never,
+      'wo-multi-existing-output-code-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: duplicateFinishedGoodSerialCode } as never,
+      'wo-multi-serial-existing-code-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
       service.reportOutput(
@@ -961,9 +1004,14 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: 'FG-SERIAL-ALTERNATE-' + randomUUID().slice(0, 8).toUpperCase() } as never,
+      outputKey, randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
     const output = outputAttempts.find((attempt) => !attempt.replayed);
     if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
-      throw new Error('Serial input output did not produce its canonical report, posting and finished-good LOT identity');
+      throw new Error('Serial input output did not produce its canonical report, posting and finished-good SERIAL identity');
     }
 
     await sendOperationEvent(
@@ -1102,20 +1150,41 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       source: 'WORK_ORDER_MATERIAL_CONSUMPTION',
       allocation_method: 'SERIAL_IDENTITY_ASSIGNED_TO_SINGLE_OUTPUT_BY_WEIGHTED_MIDPOINT_V1',
       source_unit_type: 'SERIAL',
-      target_unit_type: 'LOT',
+      target_unit_type: 'SERIAL',
       target_product_role: 'FINISHED_GOOD',
     }]);
 
     const finished = await adminPool.query<{
       quantity_on_hand: string;
       target_identity_quantity: string;
+      target_identity_type: string;
+      target_identity_code: string;
       target_identity_role: string;
       report_count: string;
+      tracked_location_count: string;
+      tracked_location_row_count: string;
+      tracked_location_on_hand: string;
+      tracked_location_reserved: string;
       posting_count: string;
     }>(
       `SELECT sb.quantity_on_hand::text AS quantity_on_hand,
               tu.quantity::text AS target_identity_quantity,
+              tu.unit_type AS target_identity_type,
+              tu.unit_code AS target_identity_code,
               tu.product_role AS target_identity_role,
+              (SELECT count(*)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id
+                 AND tlb.quantity_on_hand=1.0000 AND tlb.quantity_reserved=0.0000) AS tracked_location_count,
+              (SELECT count(*)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_row_count,
+              (SELECT COALESCE(sum(tlb.quantity_on_hand),0)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_on_hand,
+              (SELECT COALESCE(sum(tlb.quantity_reserved),0)::text FROM inventory_traceability_location_balances tlb
+               WHERE tlb.tenant_id=$2 AND tlb.factory_id=$3
+                 AND tlb.item_id=$4 AND tlb.traceability_unit_id=tu.id) AS tracked_location_reserved,
               (SELECT count(*)::text FROM order_production_reports r
                WHERE r.work_order_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3) AS report_count,
               (SELECT count(*)::text FROM production_output_postings p
@@ -1130,7 +1199,13 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(finished.rows).toEqual([{
       quantity_on_hand: '1.0000',
       target_identity_quantity: '1.0000',
+      target_identity_type: 'SERIAL',
+      target_identity_code: finishedGoodSerialCode,
       target_identity_role: 'FINISHED_GOOD',
+      tracked_location_count: '1',
+      tracked_location_row_count: '1',
+      tracked_location_on_hand: '1.0000',
+      tracked_location_reserved: '0.0000',
       report_count: '1',
       posting_count: '1',
     }]);

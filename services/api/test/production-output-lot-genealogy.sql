@@ -40,6 +40,13 @@ BEGIN
     RAISE EXCEPTION 'production output traceability links must be tenant/factory and item scoped foreign keys';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '237_production_finished_good_serial_output'
+  ) THEN
+    RAISE EXCEPTION 'finished-good SERIAL output migration marker is missing';
+  END IF;
+
   SELECT count(*)::INTEGER INTO v_index_count
   FROM pg_index i
   JOIN pg_class t ON t.oid = i.indrelid
@@ -69,11 +76,15 @@ BEGIN
   SELECT pg_get_functiondef('factoryos_guard_production_output_traceability_link()'::regprocedure)
   INTO v_function_source;
 
-  IF position('positive accepted good output requires a finished-good traceability lot' IN v_function_source) = 0
-    OR position('non-sellable scrap traceability identity' IN v_function_source) = 0
-    OR position('finished-good traceability lot must match the report' IN v_function_source) = 0
+  IF position('non-sellable scrap traceability identity' IN v_function_source) = 0
+    OR position('v_trace.unit_type' IN v_function_source) = 0
+    OR position('NEW.good_quantity' IN v_function_source) = 0
+    OR position('1.0000' IN v_function_source) = 0
+    OR position('v_trace.quantity' IN v_function_source) = 0
+    OR position('v_trace.product_role' IN v_function_source) = 0
+    OR position('SERIAL' IN v_function_source) = 0
   THEN
-    RAISE EXCEPTION 'production output guard does not bind identities to report quantities and sellable/scrap roles';
+    RAISE EXCEPTION 'production output guard must bind eligible LOT/SERIAL identities and enforce the one-unit SERIAL output rule';
   END IF;
 
   IF NOT EXISTS (

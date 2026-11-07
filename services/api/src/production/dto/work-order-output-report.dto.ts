@@ -1,4 +1,4 @@
-import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
 
 export class WorkOrderOutputReportDto {
   @IsUUID()
@@ -19,6 +19,12 @@ export class WorkOrderOutputReportDto {
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
   scrap_quantity!: number;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(?=.*\S)[^\x00-\x1F\x7F-\x9F]{1,160}$/)
+  @MaxLength(160)
+  finished_good_serial_code?: string;
 
   @IsOptional()
   @IsString()
