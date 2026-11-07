@@ -96,6 +96,7 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
     expect(result.damaged_quantity).toBe('0.0000');
     expect(result.expired_quantity).toBe('0.0000');
     expect(result.expected_quantity).toBe('0.0000');
+    expect(result.expected_quantity_unit_mismatch_line_count).toBe(0);
     expect(result.expected_quantity_basis).toBe('APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED');
     expect(result.condition_evidence_scope).toBe('NO_TRACEABILITY_CONDITION_EVIDENCE');
     expect(result.first_affected_production_order).toBeNull();
