@@ -939,20 +939,26 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const outputState = await readState(winner.draft.id);
     const finalOperation = outputState.operations[2];
     if (!finalOperation) throw new Error('Serial work-order final operation was not found');
-    const finishedGoodSerialCode = 'FG-SERIAL-' + randomUUID().slice(0, 12).toUpperCase();
+    const requestedFinishedGoodSerialCode = 'fg-serial-' + randomUUID().slice(0, 12).toLowerCase();
+    const finishedGoodSerialCode = requestedFinishedGoodSerialCode.toUpperCase();
     const outputInput = {
       operation_id: finalOperation.id,
       expected_work_order_version: outputState.row_version,
       expected_operation_version: finalOperation.row_version,
       good_quantity: serialTarget,
       scrap_quantity: 0,
-      finished_good_serial_code: finishedGoodSerialCode,
+      finished_good_serial_code: requestedFinishedGoodSerialCode,
       notes: 'Three-step finished-good SERIAL output from one serialized material identity',
     };
     await expect(service.reportOutput(
       TEST_USER_ID, tenantId, factoryId, winner.draft.id,
       { ...outputInput, good_quantity: 2 } as never,
       'wo-multi-serial-invalid-output-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: 'invalid serial code' } as never,
+      'wo-multi-serial-invalid-code-' + randomUUID(), randomUUID(), randomUUID(),
     )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
@@ -968,6 +974,11 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, finished_good_serial_code: 'FG-SERIAL-ALTERNATE-' + randomUUID().slice(0, 8).toUpperCase() } as never,
+      outputKey, randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
     await expect(service.reportOutput(
       TEST_USER_ID, tenantId, factoryId, winner.draft.id,
       { ...outputInput, finished_good_serial_code: 'FG-SERIAL-ALTERNATE-' + randomUUID().slice(0, 8).toUpperCase() } as never,
