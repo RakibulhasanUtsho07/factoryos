@@ -3363,9 +3363,9 @@ export class InventoryReservationService {
     client: PoolClient,
     input: { tenantId: string; factoryId: string; itemId: string; reservationId: string; consumptionId: string; quantity: string },
   ): Promise<void> {
-    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: number }>(
+    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-         a.location_id::text AS location_id, a.allocation_sequence,
+         a.location_id::text AS location_id, a.allocation_sequence::text AS allocation_sequence,
          (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu
@@ -3423,9 +3423,13 @@ export class InventoryReservationService {
       if (!mapUpdate.rows[0]) throw new ConflictException('Lot/serial reservation allocation changed during issue');
       await client.query(
         `INSERT INTO inventory_reservation_consumption_traceability_allocations (
-           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity
-         ) VALUES ($1,$2,$3,$4,$5,$6::numeric)`,
-        [input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id, allocation.location_id, quantity],
+           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity,
+           reservation_allocation_id, allocation_sequence
+         ) VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::uuid,$8::bigint)`,
+        [
+          input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id,
+          allocation.location_id, quantity, allocation.id, allocation.allocation_sequence,
+        ],
       );
       remaining -= units;
     }
