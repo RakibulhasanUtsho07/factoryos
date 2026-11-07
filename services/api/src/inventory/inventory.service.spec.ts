@@ -102,6 +102,7 @@ describe('InventoryService', () => {
       available_quantity: '10.0000',
       quarantined_quantity: '0.0000',
       damaged_quantity: '0.0000',
+      expired_quantity: '0.0000',
       expected_quantity: '4.0000',
       next_expected_delivery_date: '2026-11-12',
       expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED',
@@ -129,6 +130,7 @@ describe('InventoryService', () => {
     expect(query).toContain("ir.reference_type = 'WORK_ORDER_MATERIAL'");
     expect(query).toContain("ir.reference_id = wo.id");
     expect(query).toContain("qh.status = 'ACTIVE'");
+    expect(query).toContain('expires_at < CURRENT_DATE');
     expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
   });
 
