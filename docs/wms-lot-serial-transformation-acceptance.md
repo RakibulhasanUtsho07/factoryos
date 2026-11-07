@@ -7,6 +7,27 @@
 The product_genealogy_events table is append-only lineage evidence. A SPLIT_INTO or MERGED_INTO row by itself does not move stock, update warehouse bins, release or create reservation allocations, or conserve the inventory ledger. Treating that edge as a completed transformation can make the genealogy graph disagree with the quantity the warehouse can actually pick.
 
 Migration 238 therefore blocks both relationship types through the generic POST /api/v1/traceability/genealogy path and through direct PostgreSQL inserts. Its preflight also refuses to install where historical split/merge edges exist until those records receive explicit owner-audited reconciliation. The API returns 409 Conflict before opening a database transaction. The database guard is authoritative for alternate writers.
+Before deployment, an operator can inventory the rows that would block migration 238 with this read-only query (run it against the same database and tenant/factory scope used for the migration):
+
+```sql
+SELECT
+  id,
+  tenant_id,
+  factory_id,
+  source_unit_id,
+  target_unit_id,
+  relationship_type,
+  quantity,
+  unit,
+  created_at,
+  created_by_user_id
+FROM product_genealogy_events
+WHERE relationship_type IN ('SPLIT_INTO', 'MERGED_INTO')
+ORDER BY tenant_id, factory_id, created_at, id;
+```
+
+Do not delete or silently rewrite rows to make the migration pass. Reconcile each result against the physical stock ledger, BIN/location balances, reservations and source/target identities; retain owner approval and append-only correction evidence before applying the guard. The migration intentionally reports a blocker rather than guessing which historical edge is safe.
+
 
 ## Required design before enabling commands
 
