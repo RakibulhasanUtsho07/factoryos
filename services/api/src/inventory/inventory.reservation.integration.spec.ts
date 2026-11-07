@@ -612,6 +612,17 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       },
     ]);
 
+    await expect(adminPool.query(
+      `INSERT INTO inventory_reservation_consumption_traceability_allocations (
+         tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity,
+         reservation_allocation_id, allocation_sequence
+       ) VALUES ($1,$2,$3,$4,$5,0.1000,$6,1)`,
+      [
+        tenantId, factoryId, consumption.rows[0]!.id, childIds[0], bin.id,
+        active.rows[0]!.id,
+      ],
+    )).rejects.toMatchObject({ code: '23514' });
+
     await service.transitionReservation(
       TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
       { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
