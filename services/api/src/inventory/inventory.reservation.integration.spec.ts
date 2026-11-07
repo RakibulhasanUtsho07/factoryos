@@ -529,12 +529,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const childIds = split.targets.map((target) => target.id);
 
     const active = await adminPool.query<{
+      id: string;
       traceability_unit_id: string;
       unit_code: string;
       remaining_quantity: string;
       allocation_sequence: string;
     }>(
-      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+      `SELECT a.id::text AS id,
+              a.traceability_unit_id::text AS traceability_unit_id,
               u.unit_code,
               (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity,
               a.allocation_sequence::text AS allocation_sequence
@@ -552,11 +554,13 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(active.rows.map((row) => row.remaining_quantity)).toEqual(['2.0000', '2.0000', '2.0000']);
 
     const remapEvidence = await adminPool.query<{
+      target_allocation_id: string;
       source_allocation_sequence: string;
       target_allocation_sequence: string;
       quantity: string;
     }>(
-      `SELECT source_allocation_sequence::text AS source_allocation_sequence,
+      `SELECT target_allocation_id::text AS target_allocation_id,
+              source_allocation_sequence::text AS source_allocation_sequence,
               target_allocation_sequence::text AS target_allocation_sequence,
               quantity::numeric(18,4)::text AS quantity
        FROM inventory_reservation_traceability_allocation_remaps
@@ -565,8 +569,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [split.transformation_id],
     );
     expect(remapEvidence.rows).toEqual([
-      { source_allocation_sequence: '1', target_allocation_sequence: '1', quantity: '2.0000' },
-      { source_allocation_sequence: '1', target_allocation_sequence: '2', quantity: '2.0000' },
+      { target_allocation_id: active.rows[0]!.id, source_allocation_sequence: '1', target_allocation_sequence: '1', quantity: '2.0000' },
+      { target_allocation_id: active.rows[1]!.id, source_allocation_sequence: '1', target_allocation_sequence: '2', quantity: '2.0000' },
     ]);
 
     await service.transitionReservation(
@@ -585,18 +589,27 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(consumption.rows[0]?.id).toBeTruthy();
 
     const consumed = await adminPool.query<{
+      reservation_allocation_id: string;
+      allocation_sequence: string;
       traceability_unit_id: string;
       quantity: string;
     }>(
-      `SELECT traceability_unit_id::text AS traceability_unit_id,
+      `SELECT reservation_allocation_id::text AS reservation_allocation_id,
+              allocation_sequence::text AS allocation_sequence,
+              traceability_unit_id::text AS traceability_unit_id,
               quantity::numeric(18,4)::text AS quantity
        FROM inventory_reservation_consumption_traceability_allocations
        WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id=$3
-       ORDER BY created_at, id`,
+       ORDER BY allocation_sequence`,
       [tenantId, factoryId, consumption.rows[0]!.id],
     );
     expect(consumed.rows).toEqual([
-      { traceability_unit_id: childIds[0], quantity: '1.0000' },
+      {
+        reservation_allocation_id: active.rows[0]!.id,
+        allocation_sequence: '1',
+        traceability_unit_id: childIds[0],
+        quantity: '1.0000',
+      },
     ]);
 
     await service.transitionReservation(
@@ -684,12 +697,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const mergedId = merge.targets[0]!.id;
 
     const mergedAllocations = await adminPool.query<{
+      id: string;
       traceability_unit_id: string;
       allocated_quantity: string;
       remaining_quantity: string;
       allocation_sequence: string;
     }>(
-      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+      `SELECT a.id::text AS id,
+              a.traceability_unit_id::text AS traceability_unit_id,
               a.allocated_quantity::numeric(18,4)::text AS allocated_quantity,
               (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity,
               a.allocation_sequence::text AS allocation_sequence
@@ -699,19 +714,23 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        ORDER BY a.allocation_sequence`,
       [tenantId, factoryId, mergeReservation.id],
     );
-    expect(mergedAllocations.rows).toEqual([
+    expect(mergedAllocations.rows.map(({ traceability_unit_id, allocated_quantity, remaining_quantity, allocation_sequence }) => ({
+      traceability_unit_id, allocated_quantity, remaining_quantity, allocation_sequence,
+    }))).toEqual([
       { traceability_unit_id: mergedId, allocated_quantity: '1.0000', remaining_quantity: '1.0000', allocation_sequence: '1' },
       { traceability_unit_id: mergedId, allocated_quantity: '2.0000', remaining_quantity: '2.0000', allocation_sequence: '2' },
     ]);
 
     const mergeRemap = await adminPool.query<{
+      target_allocation_id: string;
       source_unit_id: string;
       target_unit_id: string;
       source_allocation_sequence: string;
       target_allocation_sequence: string;
       quantity: string;
     }>(
-      `SELECT source_unit_id::text AS source_unit_id, target_unit_id::text AS target_unit_id,
+      `SELECT target_allocation_id::text AS target_allocation_id,
+              source_unit_id::text AS source_unit_id, target_unit_id::text AS target_unit_id,
               source_allocation_sequence::text AS source_allocation_sequence,
               target_allocation_sequence::text AS target_allocation_sequence,
               quantity::numeric(18,4)::text AS quantity
@@ -721,8 +740,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [merge.transformation_id],
     );
     expect(mergeRemap.rows).toEqual([
-      { source_unit_id: childIds[0], target_unit_id: mergedId, source_allocation_sequence: '1', target_allocation_sequence: '1', quantity: '1.0000' },
-      { source_unit_id: childIds[1], target_unit_id: mergedId, source_allocation_sequence: '2', target_allocation_sequence: '2', quantity: '2.0000' },
+      { target_allocation_id: mergedAllocations.rows[0]!.id, source_unit_id: childIds[0], target_unit_id: mergedId, source_allocation_sequence: '1', target_allocation_sequence: '1', quantity: '1.0000' },
+      { target_allocation_id: mergedAllocations.rows[1]!.id, source_unit_id: childIds[1], target_unit_id: mergedId, source_allocation_sequence: '2', target_allocation_sequence: '2', quantity: '2.0000' },
     ]);
 
     const mergeIssueKey = 'wms-trs-merge-issue-' + token;
@@ -740,19 +759,33 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     expect(mergeConsumption.rows[0]?.id).toBeTruthy();
     const mergedConsumed = await adminPool.query<{
+      reservation_allocation_id: string;
+      allocation_sequence: string;
       traceability_unit_id: string;
       quantity: string;
     }>(
-      `SELECT traceability_unit_id::text AS traceability_unit_id,
+      `SELECT reservation_allocation_id::text AS reservation_allocation_id,
+              allocation_sequence::text AS allocation_sequence,
+              traceability_unit_id::text AS traceability_unit_id,
               quantity::numeric(18,4)::text AS quantity
        FROM inventory_reservation_consumption_traceability_allocations
        WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id=$3
-       ORDER BY created_at, id`,
+       ORDER BY allocation_sequence`,
       [tenantId, factoryId, mergeConsumption.rows[0]!.id],
     );
     expect(mergedConsumed.rows).toEqual([
-      { traceability_unit_id: mergedId, quantity: '1.0000' },
-      { traceability_unit_id: mergedId, quantity: '2.0000' },
+      {
+        reservation_allocation_id: mergedAllocations.rows[0]!.id,
+        allocation_sequence: '1',
+        traceability_unit_id: mergedId,
+        quantity: '1.0000',
+      },
+      {
+        reservation_allocation_id: mergedAllocations.rows[1]!.id,
+        allocation_sequence: '2',
+        traceability_unit_id: mergedId,
+        quantity: '2.0000',
+      },
     ]);
 
     const mergeBalance = await adminPool.query<{
