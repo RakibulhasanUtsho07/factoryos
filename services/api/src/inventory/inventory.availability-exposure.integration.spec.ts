@@ -98,6 +98,16 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
     expect(result.expected_quantity_basis).toBe('APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED');
     expect(result.condition_evidence_scope).toBe('NO_TRACEABILITY_CONDITION_EVIDENCE');
     expect(result.first_affected_production_order).toBeNull();
+    const transactionReadOnly = await database.transaction(
+      { tenantId, userId: TEST_USER_ID, readOnly: true },
+      async (client) => {
+        const state = await client.query<{ transaction_read_only: string }>(
+          'SHOW transaction_read_only',
+        );
+        return state.rows[0]?.transaction_read_only;
+      },
+    );
+    expect(transactionReadOnly).toBe('on');
   });
 
   it('does not disclose an inventory item outside the selected factory scope', async () => {
