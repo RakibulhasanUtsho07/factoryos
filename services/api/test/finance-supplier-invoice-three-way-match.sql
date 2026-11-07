@@ -67,6 +67,7 @@ PREPARE factoryos_supplier_invoice_grn_po_source(uuid,uuid,text) AS
      AND s.tenant_id=po.tenant_id
    WHERE grl.tenant_id=$1
      AND grl.factory_id=$2
+     AND grl.accepted_quantity>0
      AND gr.status='POSTED'
      AND po.status='APPROVED'
      AND (grl.id::text=$3
