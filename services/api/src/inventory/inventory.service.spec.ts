@@ -129,6 +129,7 @@ describe('InventoryService', () => {
     expect(query).toContain("po.status = 'APPROVED'");
     expect(query).toContain('upper(pol.unit) = upper(s.unit)');
     expect(query).toContain('expected_quantity_unit_mismatch_line_count');
+    expect(query).toContain('APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM');
     expect(query).toContain("gr.status = 'POSTED'");
     expect(query).toContain("ir.reference_type = 'WORK_ORDER_MATERIAL'");
     expect(query).toContain("ir.reference_id = wo.id");
