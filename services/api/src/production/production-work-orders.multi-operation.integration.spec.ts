@@ -801,9 +801,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     if (!materialSerial.id) throw new Error('Serial-controlled component identity was not created');
     await adminPool.query(
-      \`INSERT INTO inventory_traceability_location_balances
+      `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
-       VALUES ($1, $2, $3, $4, $5, 1.0000)\`,
+       VALUES ($1, $2, $3, $4, $5, 1.0000)`,
       [tenantId, factoryId, componentItemId, materialSerial.id, componentBinId],
     );
 
@@ -882,7 +882,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       allocated_quantity: string;
       allocation_count: string;
     }>(
-      \`SELECT ir.id::text AS reservation_id,
+      `SELECT ir.id::text AS reservation_id,
               ir.status AS reservation_status,
               ir.quantity::text AS reservation_quantity,
               min(a.allocated_quantity)::text AS allocated_quantity,
@@ -893,7 +893,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
        LEFT JOIN inventory_reservation_traceability_allocations a
          ON a.reservation_id=ir.id AND a.tenant_id=ir.tenant_id AND a.factory_id=ir.factory_id
        WHERE mr.work_order_id=$1 AND mr.tenant_id=$2 AND mr.factory_id=$3
-       GROUP BY ir.id\`,
+       GROUP BY ir.id`,
       [winner.draft.id, tenantId, factoryId],
     );
     expect(reserved.rows).toHaveLength(1);
@@ -1005,13 +1005,13 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       consumed_quantity: string;
       released_quantity: string;
     }>(
-      \`SELECT ir.status, ir.quantity::text AS quantity,
+      `SELECT ir.status, ir.quantity::text AS quantity,
               ir.consumed_quantity::text AS consumed_quantity,
               ir.released_quantity::text AS released_quantity
        FROM work_order_material_reservations mr
        JOIN inventory_reservations ir
          ON ir.id=mr.reservation_id AND ir.tenant_id=mr.tenant_id AND ir.factory_id=mr.factory_id
-       WHERE mr.work_order_id=$1 AND mr.tenant_id=$2 AND mr.factory_id=$3\`,
+       WHERE mr.work_order_id=$1 AND mr.tenant_id=$2 AND mr.factory_id=$3`,
       [winner.draft.id, tenantId, factoryId],
     );
     expect(reservation.rows).toEqual([{
@@ -1031,7 +1031,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       bin_on_hand: string;
       bin_reserved: string;
     }>(
-      \`SELECT tu.unit_type, tu.quantity::text AS identity_quantity,
+      `SELECT tu.unit_type, tu.quantity::text AS identity_quantity,
               tlb.quantity_on_hand::text AS serial_on_hand,
               tlb.quantity_reserved::text AS serial_reserved,
               sb.quantity_on_hand::text AS aggregate_on_hand,
@@ -1046,7 +1046,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
        JOIN inventory_location_balances lb
          ON lb.item_id=tu.inventory_item_id AND lb.location_id=tlb.location_id
           AND lb.tenant_id=tu.tenant_id AND lb.factory_id=tu.factory_id
-       WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3\`,
+       WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3`,
       [materialSerial.id, tenantId, factoryId],
     );
     expect(sourceBalances.rows).toEqual([{
@@ -1069,7 +1069,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       target_unit_type: string;
       target_product_role: string;
     }>(
-      \`SELECT g.relationship_type, g.quantity::text AS quantity,
+      `SELECT g.relationship_type, g.quantity::text AS quantity,
               g.evidence->>'source' AS source,
               g.evidence->>'allocation_method' AS allocation_method,
               source_unit.unit_type AS source_unit_type,
@@ -1081,7 +1081,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
        JOIN traceability_units target_unit
          ON target_unit.id=g.target_unit_id AND target_unit.tenant_id=g.tenant_id AND target_unit.factory_id=g.factory_id
        WHERE g.tenant_id=$1 AND g.factory_id=$2
-         AND g.source_unit_id=$3 AND g.target_unit_id=$4\`,
+         AND g.source_unit_id=$3 AND g.target_unit_id=$4`,
       [tenantId, factoryId, materialSerial.id, output.finished_good_traceability_unit_id],
     );
     expect(genealogy.rows).toEqual([{
@@ -1101,7 +1101,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       report_count: string;
       posting_count: string;
     }>(
-      \`SELECT sb.quantity_on_hand::text AS quantity_on_hand,
+      `SELECT sb.quantity_on_hand::text AS quantity_on_hand,
               tu.quantity::text AS target_identity_quantity,
               tu.product_role AS target_identity_role,
               (SELECT count(*)::text FROM order_production_reports r
@@ -1112,7 +1112,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
        JOIN traceability_units tu
          ON tu.inventory_item_id=sb.item_id AND tu.tenant_id=sb.tenant_id AND tu.factory_id=sb.factory_id
        WHERE sb.tenant_id=$2 AND sb.factory_id=$3
-         AND sb.item_id=$4 AND tu.id=$5\`,
+         AND sb.item_id=$4 AND tu.id=$5`,
       [winner.draft.id, tenantId, factoryId, winner.finishedItemId, output.finished_good_traceability_unit_id],
     );
     expect(finished.rows).toEqual([{
