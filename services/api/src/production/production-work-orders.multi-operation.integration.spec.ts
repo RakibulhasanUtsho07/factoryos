@@ -65,7 +65,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     return itemId;
   };
 
-  const createComponentBin = async (componentItemId: string): Promise<string> => {
+  const createComponentBin = async (componentItemId: string, quantity: number = 10): Promise<string> => {
     const suffix = randomUUID().slice(0, 8);
     const warehouse = await adminPool.query<{ id: string }>(
       "INSERT INTO inventory_locations (tenant_id, factory_id, location_code, name, location_type, putaway_enabled, picking_enabled, created_by_user_id) VALUES ($1, $2, $3, $4, 'WAREHOUSE', FALSE, FALSE, $5) RETURNING id::text AS id",
@@ -99,7 +99,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
         movement_purpose: 'PUT_AWAY',
         source_location_id: unassignedId,
         destination_location_id: binId,
-        quantity: 10,
+        quantity,
       },
       'wo-multi-putaway-' + randomUUID(),
       randomUUID(),
@@ -771,4 +771,357 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     expect(evidence.rows[0]).toEqual({ transfer_count: '2', operation_ready_count: '3' });
   });
+
+  it('completes a three-operation work order with one tracked SERIAL input and rejects a competing release', async () => {
+    const serialTarget = 1;
+    const finishedItemA = await createItem('Serial-source finished good A', '0.0000');
+    const finishedItemB = await createItem('Serial-source finished good B', '0.0000');
+    const componentItemId = await createItem('Single-unit serialized component', '1.0000');
+    const componentBinId = await createComponentBin(componentItemId, serialTarget);
+
+    const serialCode = 'WO-MULTI-SERIAL-' + randomUUID().slice(0, 12).toUpperCase();
+    const materialSerial = await traceabilityService.createUnit(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      {
+        unit_type: 'SERIAL',
+        product_role: 'MATERIAL',
+        unit_code: serialCode,
+        barcode_value: 'BAR-' + serialCode,
+        inventory_item_id: componentItemId,
+        quantity: serialTarget,
+        unit: 'PCS',
+        external_reference: 'three-step-serial-material-genealogy',
+        attributes: {},
+      } as never,
+      'wo-multi-material-serial-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    if (!materialSerial.id) throw new Error('Serial-controlled component identity was not created');
+    await adminPool.query(
+      \`INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1, $2, $3, $4, $5, 1.0000)\`,
+      [tenantId, factoryId, componentItemId, materialSerial.id, componentBinId],
+    );
+
+    const createSerialWorkOrder = async (finishedItemId: string, label: string) => {
+      await createProductRevisionAndRouting(finishedItemId, componentItemId);
+      const orderResult = await adminPool.query<{ id: string; line_id: string }>(
+        "WITH created_order AS (INSERT INTO orders (tenant_id, factory_id, order_number, status, order_date, currency, created_by_user_id) VALUES ($1, $2, $3, 'IN_PROGRESS', CURRENT_DATE, 'BDT', $4) RETURNING id) INSERT INTO order_lines (tenant_id, factory_id, order_id, line_number, product_code, product_name, quantity, unit, inventory_item_id) SELECT $1, $2, id, 1, $5, $6, $7::numeric, 'PCS', $8 FROM created_order RETURNING order_id::text AS id, id::text AS line_id",
+        [
+          tenantId,
+          factoryId,
+          'WO-MULTI-SERIAL-ORDER-' + label + '-' + randomUUID(),
+          TEST_USER_ID,
+          'WO-MULTI-SERIAL-FG-' + label,
+          'Serial-source finished good ' + label,
+          serialTarget,
+          finishedItemId,
+        ],
+      );
+      const orderId = orderResult.rows[0]?.id;
+      const orderLineId = orderResult.rows[0]?.line_id;
+      if (!orderId || !orderLineId) throw new Error('Serial work-order source order was not created');
+      orderIds.push(orderId);
+
+      const draft = await service.createWorkOrder(
+        TEST_USER_ID,
+        tenantId,
+        factoryId,
+        { order_line_id: orderLineId, target_quantity: serialTarget },
+        'wo-multi-serial-create-' + label + '-' + randomUUID(),
+        randomUUID(),
+        randomUUID(),
+      );
+      workOrderIds.push(draft.id);
+      return { draft, finishedItemId, orderId };
+    };
+
+    const candidates = await Promise.all([
+      createSerialWorkOrder(finishedItemA, 'A'),
+      createSerialWorkOrder(finishedItemB, 'B'),
+    ]);
+    const releaseAttempts = await Promise.allSettled(
+      candidates.map((candidate, index) => service.transitionWorkOrder(
+        TEST_USER_ID,
+        tenantId,
+        factoryId,
+        candidate.draft.id,
+        'RELEASE',
+        { expected_version: candidate.draft.row_version },
+        'wo-multi-serial-release-' + index + '-' + randomUUID(),
+        randomUUID(),
+        randomUUID(),
+      )),
+    );
+    const winnerIndexes = releaseAttempts.flatMap((attempt, index) =>
+      attempt.status === 'fulfilled' ? [index] : [],
+    );
+    const loserIndexes = releaseAttempts.flatMap((attempt, index) =>
+      attempt.status === 'rejected' ? [index] : [],
+    );
+    expect(winnerIndexes).toHaveLength(1);
+    expect(loserIndexes).toHaveLength(1);
+    const winnerIndex = winnerIndexes[0]!;
+    const loserIndex = loserIndexes[0]!;
+    const loserAttempt = releaseAttempts[loserIndex];
+    if (!loserAttempt || loserAttempt.status !== 'rejected') {
+      throw new Error('The competing work-order release unexpectedly succeeded');
+    }
+    expect(loserAttempt.reason).toBeInstanceOf(ConflictException);
+    const winner = candidates[winnerIndex]!;
+    const loser = candidates[loserIndex]!;
+
+    const reserved = await adminPool.query<{
+      reservation_id: string;
+      reservation_status: string;
+      reservation_quantity: string;
+      allocated_quantity: string;
+      allocation_count: string;
+    }>(
+      \`SELECT ir.id::text AS reservation_id,
+              ir.status AS reservation_status,
+              ir.quantity::text AS reservation_quantity,
+              min(a.allocated_quantity)::text AS allocated_quantity,
+              count(a.id)::text AS allocation_count
+       FROM work_order_material_reservations mr
+       JOIN inventory_reservations ir
+         ON ir.id=mr.reservation_id AND ir.tenant_id=mr.tenant_id AND ir.factory_id=mr.factory_id
+       LEFT JOIN inventory_reservation_traceability_allocations a
+         ON a.reservation_id=ir.id AND a.tenant_id=ir.tenant_id AND a.factory_id=ir.factory_id
+       WHERE mr.work_order_id=$1 AND mr.tenant_id=$2 AND mr.factory_id=$3
+       GROUP BY ir.id\`,
+      [winner.draft.id, tenantId, factoryId],
+    );
+    expect(reserved.rows).toHaveLength(1);
+    expect(reserved.rows[0]).toMatchObject({
+      reservation_status: 'RESERVED',
+      reservation_quantity: '1.0000',
+      allocated_quantity: '1.0000',
+      allocation_count: '1',
+    });
+
+    const noLoserReservation = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM work_order_material_reservations WHERE work_order_id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [loser.draft.id, tenantId, factoryId],
+    );
+    expect(noLoserReservation.rows[0]?.count).toBe('0');
+
+    const initial = await readState(winner.draft.id);
+    expect(initial.operations.map((operation) => operation.status)).toEqual(['READY', 'PLANNED', 'PLANNED']);
+    const [first, second, third] = initial.operations;
+    if (!first || !second || !third) throw new Error('Serial work-order routing snapshot was incomplete');
+
+    await sendOperationEvent(winner.draft.id, first.id, { command: 'START' }, 'wo-multi-serial-start-1-' + randomUUID());
+    await sendOperationEvent(winner.draft.id, first.id, { command: 'WIP_REPORTED', quantity: serialTarget }, 'wo-multi-serial-wip-1-' + randomUUID());
+    await sendOperationEvent(
+      winner.draft.id,
+      first.id,
+      { command: 'WIP_TRANSFERRED', quantity: serialTarget, target_operation_id: second.id },
+      'wo-multi-serial-transfer-1-' + randomUUID(),
+    );
+    await sendOperationEvent(winner.draft.id, first.id, { command: 'COMPLETE' }, 'wo-multi-serial-complete-1-' + randomUUID());
+
+    await sendOperationEvent(winner.draft.id, second.id, { command: 'START' }, 'wo-multi-serial-start-2-' + randomUUID());
+    await sendOperationEvent(
+      winner.draft.id,
+      second.id,
+      { command: 'WIP_TRANSFERRED', quantity: serialTarget, target_operation_id: third.id },
+      'wo-multi-serial-transfer-2-' + randomUUID(),
+    );
+    await sendOperationEvent(winner.draft.id, second.id, { command: 'COMPLETE' }, 'wo-multi-serial-complete-2-' + randomUUID());
+
+    await sendOperationEvent(winner.draft.id, third.id, { command: 'START' }, 'wo-multi-serial-start-3-' + randomUUID());
+    await sendOperationEvent(winner.draft.id, third.id, { command: 'WIP_REPORTED', quantity: serialTarget }, 'wo-multi-serial-wip-3-' + randomUUID());
+    const outputState = await readState(winner.draft.id);
+    const finalOperation = outputState.operations[2];
+    if (!finalOperation) throw new Error('Serial work-order final operation was not found');
+    const outputInput = {
+      operation_id: finalOperation.id,
+      expected_work_order_version: outputState.row_version,
+      expected_operation_version: finalOperation.row_version,
+      good_quantity: serialTarget,
+      scrap_quantity: 0,
+      notes: 'Three-step finished-good output from one serialized material identity',
+    };
+    const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
+    const outputAttempts = await Promise.all([
+      service.reportOutput(
+        TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+        outputInput as never, outputKey, randomUUID(), randomUUID(),
+      ),
+      service.reportOutput(
+        TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+        outputInput as never, outputKey, randomUUID(), randomUUID(),
+      ),
+    ]);
+    expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
+    expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
+    expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    const output = outputAttempts.find((attempt) => !attempt.replayed);
+    if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
+      throw new Error('Serial input output did not produce its canonical report, posting and finished-good LOT identity');
+    }
+
+    await sendOperationEvent(
+      winner.draft.id, third.id, { command: 'WIP_REPORTED', quantity: 0 },
+      'wo-multi-serial-final-wip-zero-' + randomUUID(),
+    );
+    await sendOperationEvent(
+      winner.draft.id, third.id, { command: 'COMPLETE' },
+      'wo-multi-serial-final-operation-complete-' + randomUUID(),
+    );
+    const finalState = await readState(winner.draft.id);
+    expect(finalState.operations.map((operation) => operation.status)).toEqual(['COMPLETED', 'COMPLETED', 'COMPLETED']);
+    expect(finalState.operations.map((operation) => operation.wip_quantity)).toEqual(['0.0000', '0.0000', '0.0000']);
+
+    const completed = await service.transitionWorkOrder(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id, 'COMPLETE',
+      { expected_version: finalState.row_version } as never,
+      'wo-multi-serial-final-work-order-complete-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(completed.status).toBe('COMPLETED');
+
+    await expect(service.transitionWorkOrder(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      loser.draft.id,
+      'RELEASE',
+      { expected_version: loser.draft.row_version },
+      'wo-multi-serial-release-retry-' + randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const reservation = await adminPool.query<{
+      status: string;
+      quantity: string;
+      consumed_quantity: string;
+      released_quantity: string;
+    }>(
+      \`SELECT ir.status, ir.quantity::text AS quantity,
+              ir.consumed_quantity::text AS consumed_quantity,
+              ir.released_quantity::text AS released_quantity
+       FROM work_order_material_reservations mr
+       JOIN inventory_reservations ir
+         ON ir.id=mr.reservation_id AND ir.tenant_id=mr.tenant_id AND ir.factory_id=mr.factory_id
+       WHERE mr.work_order_id=$1 AND mr.tenant_id=$2 AND mr.factory_id=$3\`,
+      [winner.draft.id, tenantId, factoryId],
+    );
+    expect(reservation.rows).toEqual([{
+      status: 'CONSUMED',
+      quantity: '1.0000',
+      consumed_quantity: '1.0000',
+      released_quantity: '0.0000',
+    }]);
+
+    const sourceBalances = await adminPool.query<{
+      unit_type: string;
+      identity_quantity: string;
+      serial_on_hand: string;
+      serial_reserved: string;
+      aggregate_on_hand: string;
+      aggregate_reserved: string;
+      bin_on_hand: string;
+      bin_reserved: string;
+    }>(
+      \`SELECT tu.unit_type, tu.quantity::text AS identity_quantity,
+              tlb.quantity_on_hand::text AS serial_on_hand,
+              tlb.quantity_reserved::text AS serial_reserved,
+              sb.quantity_on_hand::text AS aggregate_on_hand,
+              sb.quantity_reserved::text AS aggregate_reserved,
+              lb.quantity_on_hand::text AS bin_on_hand,
+              lb.quantity_reserved::text AS bin_reserved
+       FROM traceability_units tu
+       JOIN inventory_traceability_location_balances tlb
+         ON tlb.traceability_unit_id=tu.id AND tlb.tenant_id=tu.tenant_id AND tlb.factory_id=tu.factory_id
+       JOIN inventory_stock_balances sb
+         ON sb.item_id=tu.inventory_item_id AND sb.tenant_id=tu.tenant_id AND sb.factory_id=tu.factory_id
+       JOIN inventory_location_balances lb
+         ON lb.item_id=tu.inventory_item_id AND lb.location_id=tlb.location_id
+          AND lb.tenant_id=tu.tenant_id AND lb.factory_id=tu.factory_id
+       WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3\`,
+      [materialSerial.id, tenantId, factoryId],
+    );
+    expect(sourceBalances.rows).toEqual([{
+      unit_type: 'SERIAL',
+      identity_quantity: '1.0000',
+      serial_on_hand: '0.0000',
+      serial_reserved: '0.0000',
+      aggregate_on_hand: '0.0000',
+      aggregate_reserved: '0.0000',
+      bin_on_hand: '0.0000',
+      bin_reserved: '0.0000',
+    }]);
+
+    const genealogy = await adminPool.query<{
+      relationship_type: string;
+      quantity: string;
+      source: string;
+      allocation_method: string;
+      source_unit_type: string;
+      target_unit_type: string;
+      target_product_role: string;
+    }>(
+      \`SELECT g.relationship_type, g.quantity::text AS quantity,
+              g.evidence->>'source' AS source,
+              g.evidence->>'allocation_method' AS allocation_method,
+              source_unit.unit_type AS source_unit_type,
+              target_unit.unit_type AS target_unit_type,
+              target_unit.product_role AS target_product_role
+       FROM product_genealogy_events g
+       JOIN traceability_units source_unit
+         ON source_unit.id=g.source_unit_id AND source_unit.tenant_id=g.tenant_id AND source_unit.factory_id=g.factory_id
+       JOIN traceability_units target_unit
+         ON target_unit.id=g.target_unit_id AND target_unit.tenant_id=g.tenant_id AND target_unit.factory_id=g.factory_id
+       WHERE g.tenant_id=$1 AND g.factory_id=$2
+         AND g.source_unit_id=$3 AND g.target_unit_id=$4\`,
+      [tenantId, factoryId, materialSerial.id, output.finished_good_traceability_unit_id],
+    );
+    expect(genealogy.rows).toEqual([{
+      relationship_type: 'CONSUMED_INTO',
+      quantity: '1.0000',
+      source: 'WORK_ORDER_MATERIAL_CONSUMPTION',
+      allocation_method: 'SERIAL_IDENTITY_ASSIGNED_TO_SINGLE_OUTPUT_BY_WEIGHTED_MIDPOINT_V1',
+      source_unit_type: 'SERIAL',
+      target_unit_type: 'LOT',
+      target_product_role: 'FINISHED_GOOD',
+    }]);
+
+    const finished = await adminPool.query<{
+      quantity_on_hand: string;
+      target_identity_quantity: string;
+      target_identity_role: string;
+      report_count: string;
+      posting_count: string;
+    }>(
+      \`SELECT sb.quantity_on_hand::text AS quantity_on_hand,
+              tu.quantity::text AS target_identity_quantity,
+              tu.product_role AS target_identity_role,
+              (SELECT count(*)::text FROM order_production_reports r
+               WHERE r.work_order_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3) AS report_count,
+              (SELECT count(*)::text FROM production_output_postings p
+               WHERE p.work_order_id=$1 AND p.tenant_id=$2 AND p.factory_id=$3) AS posting_count
+       FROM inventory_stock_balances sb
+       JOIN traceability_units tu
+         ON tu.inventory_item_id=sb.item_id AND tu.tenant_id=sb.tenant_id AND tu.factory_id=sb.factory_id
+       WHERE sb.tenant_id=$2 AND sb.factory_id=$3
+         AND sb.item_id=$4 AND tu.id=$5\`,
+      [winner.draft.id, tenantId, factoryId, winner.finishedItemId, output.finished_good_traceability_unit_id],
+    );
+    expect(finished.rows).toEqual([{
+      quantity_on_hand: '1.0000',
+      target_identity_quantity: '1.0000',
+      target_identity_role: 'FINISHED_GOOD',
+      report_count: '1',
+      posting_count: '1',
+    }]);
+  });
+
 });
