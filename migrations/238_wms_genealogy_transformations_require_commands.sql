@@ -11,6 +11,21 @@ DO $transformation_preflight$
 DECLARE
   v_unbacked_count BIGINT;
 BEGIN
+  -- product_genealogy_events uses FORCE RLS. The migration must prove it is
+  -- running with an unfiltered catalog/row visibility role before counting
+  -- historical rows; otherwise tenant policies could hide unsafe edges.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = current_user
+      AND (rolsuper OR rolbypassrls)
+  ) THEN
+    RAISE EXCEPTION
+      'genealogy transformation guard requires a superuser or BYPASSRLS migration role so FORCE RLS cannot hide historical rows (current_user=%)',
+      current_user
+      USING ERRCODE = '42501';
+  END IF;
+
   SELECT count(*)
     INTO v_unbacked_count
   FROM product_genealogy_events
