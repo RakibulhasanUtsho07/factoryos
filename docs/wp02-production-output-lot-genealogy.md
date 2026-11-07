@@ -3,7 +3,7 @@
 SRS linkage: FR-WMS-06 and FR-WMS-08 (both remain Partial overall).
 HLD/Blueprint linkage: WP02 Core Domain Kernel; production output, material reservation, quality/yield and traceability.
 Base SHA: 1c36f01ea6ab74470ab989f75a36d097e6985aec.
-Status: implementation and automated acceptance are in progress until exact-SHA CI results are verified.
+Status: implementation and automated verification are complete on the exact candidate SHA recorded below. FR-WMS-06/08 and broader WP02 acceptance remain Partial / OPEN / NOT_ACCEPTED pending the operational and independent-owner gates listed at the end of this document.
 
 ## Gap established by code review
 
@@ -26,6 +26,18 @@ Before this change, reportOutput() posted a good-output inventory receipt and im
 2. PostgreSQL CI: migrations 198–199, output identity/report/item binding, work-order consumption-evidence binding, deferred exact-allocation conservation, completion gate, traceability RLS contract, and replay/idempotency.
 3. API regression: all prior unit tests, lint and build.
 4. PostgreSQL regression: full ordered migration application, output-genealogy contract, consumption-evidence guard contract, migration replay/idempotency, and full integration/Jest suite on the exact candidate SHA.
+
+
+## Exact-head automated verification
+
+Verified candidate SHA: `2929934a5e716476eb5f5dd2f8021529e798d064` (PR #389, draft, target `dev`). All four required workflows completed successfully on this exact SHA:
+
+- API CI: PASS — [run 42371924984](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/42371924984)
+- API PostgreSQL CI: PASS — [run 42371925039](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/42371925039). Full Jest result: 243 suites passed, 2 skipped; 2,066 tests passed, 11 skipped. This run also applied and replayed migrations 198/199/237/238 in dependency order, passed the WMS genealogy guard SQL contract, and passed the multi-serial mixed good/scrap work-order PostgreSQL integration fixture.
+- Production Dependency Security: PASS — [run 42371925028](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/42371925028)
+- SRS/HLD/Blueprint Traceability: PASS — [run 42371925063](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/42371925063)
+
+These are automated candidate-verification results only. They do not constitute independent review, physical hardware-in-the-loop, external provider/site rehearsal, or business-owner acceptance. Accordingly, no SRS requirement acceptance status is promoted by this CI evidence.
 
 ## Explicitly still open
 
