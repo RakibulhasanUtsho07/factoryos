@@ -1630,6 +1630,7 @@ export class InventoryReservationService {
       finishedItemId: string;
       productionReportId: string;
       goodQuantity: string;
+      finishedGoodSerialCode?: string | null;
       scrapQuantity: string;
       scrapReason?: string | null;
       yieldPercentage: string;
@@ -1656,6 +1657,13 @@ export class InventoryReservationService {
     };
     const good = parseQuantity(input.goodQuantity, 'Finished-good output quantity');
     const scrap = parseQuantity(input.scrapQuantity, 'Scrap output quantity');
+    const finishedGoodSerialCode = input.finishedGoodSerialCode?.trim().toUpperCase() || null;
+    if (finishedGoodSerialCode && !/^[A-Z0-9._:-]{1,160}$/.test(finishedGoodSerialCode)) {
+      throw new ConflictException('Finished-good SERIAL code must contain 1-160 letters, digits, dot, underscore, colon or hyphen');
+    }
+    if (finishedGoodSerialCode && good.units !== 10_000n) {
+      throw new ConflictException('Finished-good SERIAL output must contain exactly one accepted good unit');
+    }
     if (good.units + scrap.units === 0n) {
       throw new ConflictException('Production output must include good quantity or scrap quantity');
     }
@@ -1709,6 +1717,7 @@ export class InventoryReservationService {
         productionReportId: input.productionReportId,
         finishedItemId: input.finishedItemId,
         goodQuantity: good.decimal,
+        finishedGoodSerialCode,
       });
       const movementResult = await client.query<MovementRow>(
         `
@@ -1757,6 +1766,7 @@ export class InventoryReservationService {
           order_line_id: input.orderLineId,
           production_report_id: input.productionReportId,
           good_quantity: good.decimal,
+          finished_good_serial_code: finishedGoodSerialCode,
           scrap_quantity: scrap.decimal,
           yield_percentage: input.yieldPercentage,
           cumulative_yield_percentage: input.cumulativeYieldPercentage,
@@ -1782,10 +1792,12 @@ export class InventoryReservationService {
         factoryId: input.factoryId,
         userId: input.userId,
         correlationId: input.correlationId,
-        unitType: 'LOT',
+        unitType: finishedGoodSerialCode ? 'SERIAL' : 'LOT',
         productRole: 'FINISHED_GOOD',
-        unitCode: `FG-${input.productionReportId.toUpperCase()}`,
-        idempotencyKey: `production-report:${input.productionReportId}:finished-good-lot:v1`,
+        unitCode: finishedGoodSerialCode ?? `FG-${input.productionReportId.toUpperCase()}`,
+        idempotencyKey: finishedGoodSerialCode
+          ? `production-report:${input.productionReportId}:finished-good-serial:${finishedGoodSerialCode.toLowerCase()}:v1`
+          : `production-report:${input.productionReportId}:finished-good-lot:v1`,
         inventoryItemId: input.finishedItemId,
         quantity: good.decimal,
         unit: item.unit,
@@ -1793,7 +1805,8 @@ export class InventoryReservationService {
         orderLineId: input.orderLineId,
         productionReportId: input.productionReportId,
         attributes: {
-          kind: 'PRODUCTION_FINISHED_GOOD',
+          kind: finishedGoodSerialCode ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
+          ...(finishedGoodSerialCode ? { serial_code: finishedGoodSerialCode } : {}),
           work_order_id: input.workOrderId,
           work_order_number: input.workOrderNumber,
           production_report_id: input.productionReportId,
@@ -1802,7 +1815,7 @@ export class InventoryReservationService {
         },
       });
 
-      // Finished-good lot stock shares the existing default virtual location with
+      // Finished-good LOT/SERIAL stock shares the existing default virtual location with
       // the aggregate ledger. The capacity predicate prevents identity registration
       // from assigning stock already represented by another traceable identity.
       const trackedBalance = await client.query<{ id: string }>(
@@ -1828,7 +1841,7 @@ export class InventoryReservationService {
         [input.tenantId, input.factoryId, input.finishedItemId, traceabilityUnitId, good.decimal],
       );
       if (!trackedBalance.rows[0]) {
-        throw new ConflictException('Finished-good lot could not be bound to unassigned stock without exceeding tracked location quantity');
+        throw new ConflictException('Finished-good LOT/SERIAL identity could not be bound to unassigned stock without exceeding tracked location quantity');
       }
     }
 
@@ -1875,7 +1888,7 @@ export class InventoryReservationService {
       factoryId: string;
       userId: string;
       correlationId: string;
-      unitType: 'LOT';
+      unitType: 'LOT' | 'SERIAL';
       productRole: 'FINISHED_GOOD' | 'OTHER';
       unitCode: string;
       idempotencyKey: string;
