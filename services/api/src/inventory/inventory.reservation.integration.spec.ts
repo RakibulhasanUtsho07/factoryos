@@ -571,7 +571,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
     await service.transitionReservation(
       TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
-      { target_status: 'CONSUMED', quantity: 5 } as TransitionInventoryReservationDto,
+      { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto,
       'wms-trs-issue-' + token,
       randomUUID(),
       randomUUID(),
@@ -596,9 +596,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, consumption.rows[0]!.id],
     );
     expect(consumed.rows).toEqual([
-      { traceability_unit_id: childIds[0], quantity: '2.0000' },
-      { traceability_unit_id: childIds[1], quantity: '2.0000' },
-      { traceability_unit_id: laterLotId, quantity: '1.0000' },
+      { traceability_unit_id: childIds[0], quantity: '1.0000' },
     ]);
 
     await service.transitionReservation(
@@ -625,8 +623,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     expect(final.rows[0]).toMatchObject({
       remaining_quantity: '0.0000',
-      consumed_quantity: '5.0000',
-      released_quantity: '1.0000',
+      consumed_quantity: '1.0000',
+      released_quantity: '5.0000',
       remapped_quantity: '4.0000',
     });
     const reservedBalances = await adminPool.query<{
@@ -640,6 +638,140 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     expect(reservedBalances.rows[0]).toMatchObject({
       aggregate_reserved: '0.0000',
+      traceability_reserved: '0.0000',
+    });
+
+    // The same two child LOTs are now independently reserved and merged. A single
+    // reservation may produce two ordered target rows pointing to the same merged
+    // identity/location; issue must consume them in their preserved source order.
+    const mergeReservation = await service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 3, location_id: bin.id } as CreateInventoryReservationDto,
+      'wms-trs-merge-reservation-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    const mergeBefore = await adminPool.query<{
+      traceability_unit_id: string;
+      allocated_quantity: string;
+      allocation_sequence: string;
+    }>(
+      `SELECT traceability_unit_id::text AS traceability_unit_id,
+              allocated_quantity::numeric(18,4)::text AS allocated_quantity,
+              allocation_sequence::text AS allocation_sequence
+       FROM inventory_reservation_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3
+       ORDER BY allocation_sequence`,
+      [tenantId, factoryId, mergeReservation.id],
+    );
+    expect(mergeBefore.rows).toEqual([
+      { traceability_unit_id: childIds[0], allocated_quantity: '1.0000', allocation_sequence: '1' },
+      { traceability_unit_id: childIds[1], allocated_quantity: '2.0000', allocation_sequence: '2' },
+    ]);
+
+    const merge = await traceabilityService.mergeLots(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        source_unit_ids: childIds,
+        target_unit_code: 'WMS-TRS-MERGED-' + token,
+        reason: 'Preserve active reservation allocation order when merging child LOT identities',
+      } as never,
+      'wms-trs-merge-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(merge.targets).toHaveLength(1);
+    const mergedId = merge.targets[0]!.id;
+
+    const mergedAllocations = await adminPool.query<{
+      traceability_unit_id: string;
+      allocated_quantity: string;
+      remaining_quantity: string;
+      allocation_sequence: string;
+    }>(
+      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
+              a.allocated_quantity::numeric(18,4)::text AS allocated_quantity,
+              (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity,
+              a.allocation_sequence::text AS allocation_sequence
+       FROM inventory_reservation_traceability_allocations a
+       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.reservation_id=$3
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
+       ORDER BY a.allocation_sequence`,
+      [tenantId, factoryId, mergeReservation.id],
+    );
+    expect(mergedAllocations.rows).toEqual([
+      { traceability_unit_id: mergedId, allocated_quantity: '1.0000', remaining_quantity: '1.0000', allocation_sequence: '1' },
+      { traceability_unit_id: mergedId, allocated_quantity: '2.0000', remaining_quantity: '2.0000', allocation_sequence: '2' },
+    ]);
+
+    const mergeRemap = await adminPool.query<{
+      source_unit_id: string;
+      target_unit_id: string;
+      source_allocation_sequence: string;
+      target_allocation_sequence: string;
+      quantity: string;
+    }>(
+      `SELECT source_unit_id::text AS source_unit_id, target_unit_id::text AS target_unit_id,
+              source_allocation_sequence::text AS source_allocation_sequence,
+              target_allocation_sequence::text AS target_allocation_sequence,
+              quantity::numeric(18,4)::text AS quantity
+       FROM inventory_reservation_traceability_allocation_remaps
+       WHERE transformation_id=$1
+       ORDER BY target_allocation_sequence`,
+      [merge.transformation_id],
+    );
+    expect(mergeRemap.rows).toEqual([
+      { source_unit_id: childIds[0], target_unit_id: mergedId, source_allocation_sequence: '1', target_allocation_sequence: '1', quantity: '1.0000' },
+      { source_unit_id: childIds[1], target_unit_id: mergedId, source_allocation_sequence: '2', target_allocation_sequence: '2', quantity: '2.0000' },
+    ]);
+
+    const mergeIssueKey = 'wms-trs-merge-issue-' + token;
+    await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, mergeReservation.id,
+      { target_status: 'CONSUMED', quantity: 3 } as TransitionInventoryReservationDto,
+      mergeIssueKey,
+      randomUUID(),
+      randomUUID(),
+    );
+    const mergeConsumption = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_reservation_consumptions
+       WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 AND idempotency_key=$4`,
+      [tenantId, factoryId, mergeReservation.id, mergeIssueKey],
+    );
+    expect(mergeConsumption.rows[0]?.id).toBeTruthy();
+    const mergedConsumed = await adminPool.query<{
+      traceability_unit_id: string;
+      quantity: string;
+    }>(
+      `SELECT traceability_unit_id::text AS traceability_unit_id,
+              quantity::numeric(18,4)::text AS quantity
+       FROM inventory_reservation_consumption_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id=$3
+       ORDER BY created_at, id`,
+      [tenantId, factoryId, mergeConsumption.rows[0]!.id],
+    );
+    expect(mergedConsumed.rows).toEqual([
+      { traceability_unit_id: mergedId, quantity: '1.0000' },
+      { traceability_unit_id: mergedId, quantity: '2.0000' },
+    ]);
+
+    const mergeBalance = await adminPool.query<{
+      aggregate_on_hand: string;
+      aggregate_reserved: string;
+      traceability_on_hand: string;
+      traceability_reserved: string;
+    }>(
+      `SELECT
+         (SELECT quantity_on_hand::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_on_hand,
+         (SELECT quantity_reserved::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_reserved,
+         (SELECT COALESCE(SUM(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_on_hand,
+         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved`,
+      [itemId],
+    );
+    expect(mergeBalance.rows[0]).toMatchObject({
+      aggregate_on_hand: '6.0000',
+      aggregate_reserved: '0.0000',
+      traceability_on_hand: '6.0000',
       traceability_reserved: '0.0000',
     });
   });
