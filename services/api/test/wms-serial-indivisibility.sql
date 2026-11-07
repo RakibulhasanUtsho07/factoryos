@@ -57,6 +57,11 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'stock-conserving LOT/SERIAL transformation command migration marker is missing';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version = '240_wms_reservation_traceability_allocation_remapping'
+  ) THEN
+    RAISE EXCEPTION 'active reservation allocation remapping migration marker is missing';
+  END IF;
 
   INSERT INTO tenants (id, slug, name)
   VALUES (v_tenant, 'wms-serial-unit-' || v_tenant::text, 'WMS Serial Indivisibility Test');
