@@ -120,7 +120,7 @@ describe('InventoryService', () => {
       expect.any(Function),
     );
     expect(client.query).toHaveBeenCalledWith(
-      expect.stringContaining('FROM inventory_traceability_location_balances'),
+      expect.stringContaining('JOIN inventory_traceability_location_balances'),
       [ITEM_ID.toLowerCase(), TENANT_ID, FACTORY_ID],
     );
     const query = String(client.query.mock.calls[0]?.[0]);
