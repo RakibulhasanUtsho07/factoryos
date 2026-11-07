@@ -18,6 +18,7 @@ on:
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'docs/backup-copy-evidence-deployment-provisioning.md'
       - 'services/api/test/**'
+      - 'services/api/src/inventory/**'
       - 'services/api/src/auth/**'
       - 'services/api/src/scim/**'
       - 'services/api/src/common/decorators/**'
@@ -39,6 +40,7 @@ on:
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
+      - 'services/api/src/inventory/**'
       - 'services/api/src/auth/**'
 
 permissions:
