@@ -1828,14 +1828,14 @@ export class InventoryReservationService {
             source_movement_id: movementId,
             sellable: true,
           },
-        })
+        });
       } catch (error) {
         const postgresError = error as { code?: unknown };
         if (finishedGoodSerialCode && postgresError?.code === '23505') {
           throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
         }
         throw error;
-      };
+      }
 
       // Finished-good LOT/SERIAL stock shares the existing default virtual location with
       // the aggregate ledger. The capacity predicate prevents identity registration
