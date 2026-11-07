@@ -78,7 +78,10 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('utility_reading_work_order_cost_allocations')
        AND conname='fk_utility_reading_work_order_cost_allocation_work_order')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('utility_audit_events')
-       AND conname='chk_utility_audit_entity' AND pg_get_constraintdef(oid) LIKE '%WO_COST_ALLOCATION%') THEN
+       AND conname='chk_utility_audit_entity'
+       AND pg_get_constraintdef(oid) LIKE '%METER_SOURCE_BINDING%'
+       AND pg_get_constraintdef(oid) LIKE '%THRESHOLD_POLICY%'
+       AND pg_get_constraintdef(oid) LIKE '%WO_COST_ALLOCATION%') THEN
     RAISE EXCEPTION 'Allocation scope, reverse uniqueness or audit entity contract is incomplete';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('utility_reading_work_order_cost_allocations')

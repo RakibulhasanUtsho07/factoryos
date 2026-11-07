@@ -33,7 +33,7 @@ CREATE TRIGGER trg_utility_reading_source_cost_snapshot
 
 ALTER TABLE utility_audit_events DROP CONSTRAINT IF EXISTS chk_utility_audit_entity;
 ALTER TABLE utility_audit_events ADD CONSTRAINT chk_utility_audit_entity
-  CHECK (entity_type IN ('METER','READING','UTILITY_EVENT','WO_COST_ALLOCATION'));
+  CHECK (entity_type IN ('METER','READING','UTILITY_EVENT','METER_SOURCE_BINDING','THRESHOLD_POLICY','WO_COST_ALLOCATION'));
 
 CREATE TABLE IF NOT EXISTS utility_reading_work_order_cost_allocations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
