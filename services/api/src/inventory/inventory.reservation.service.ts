@@ -1661,7 +1661,11 @@ export class InventoryReservationService {
     if (input.finishedGoodSerialCode != null && !finishedGoodSerialCode) {
       throw new ConflictException('Finished-good SERIAL code must not be blank');
     }
-    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || /[\\x00-\\x1F\\x7F]/.test(finishedGoodSerialCode))) {
+    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    });
+    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
       throw new ConflictException('Finished-good SERIAL code must be at most 160 printable characters without control characters');
     }
     if (finishedGoodSerialCode && good.units !== 10_000n) {
