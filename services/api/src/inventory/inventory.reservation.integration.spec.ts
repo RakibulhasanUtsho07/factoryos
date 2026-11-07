@@ -327,7 +327,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
 
     // Put the candidate away while ACTIVE, then quarantine it in place. This
-    // proves FEFO excludes a held identity even when its physical BIN is otherwise
+    // proves FEFO excludes a quarantined identity even when its physical BIN is otherwise
     // eligible; a non-pickable/unassigned location cannot explain the exclusion.
     await locationService.transferStock(
       TEST_USER_ID, tenantId, factoryId, itemId,
