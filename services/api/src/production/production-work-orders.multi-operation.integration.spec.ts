@@ -970,7 +970,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
     const output = outputAttempts.find((attempt) => !attempt.replayed);
     if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
-      throw new Error('Serial input output did not produce its canonical report, posting and finished-good LOT identity');
+      throw new Error('Serial input output did not produce its canonical report, posting and finished-good SERIAL identity');
     }
 
     await sendOperationEvent(
