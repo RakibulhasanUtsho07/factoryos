@@ -17,6 +17,13 @@ DECLARE
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
   v_created_at TIMESTAMPTZ := clock_timestamp();
+  v_mixed_source UUID := gen_random_uuid();
+  v_mixed_reservation UUID := gen_random_uuid();
+  v_mixed_outputs JSONB;
+  v_mixed_result JSONB;
+  v_mixed_replay JSONB;
+  v_mixed_lot_target UUID;
+  v_mixed_serial_target UUID;
   v_merged_lot UUID;
   v_merge_result JSONB;
   v_merge_replay JSONB;
@@ -600,8 +607,163 @@ BEGIN
     RAISE EXCEPTION 'LOT merge/split changed aggregate, BIN, traceable on-hand or reserved quantity';
   END IF;
 
+  -- Exercise a mixed split with an active reservation. The first output is a
+  -- whole-unit SERIAL so the existing reservation must be remapped onto that
+  -- exact target; the remaining two units stay bulk LOT stock.
+  INSERT INTO traceability_units (
+    id, tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+    inventory_item_id, quantity, unit, external_reference,
+    idempotency_key, request_hash, created_by_user_id, correlation_id
+  ) VALUES (
+    v_mixed_source, v_tenant, v_factory, 'LOT', 'MATERIAL',
+    'WSI-MIXED-SOURCE-' || substr(v_mixed_source::text, 1, 8),
+    'WSI-MIXED-SOURCE-' || substr(v_mixed_source::text, 1, 8),
+    v_item, 3, 'PCS', 'WSI-EXT-MIXED-SOURCE',
+    'wsi-mixed-source-' || v_mixed_source::text, repeat('d', 64), v_actor, v_trace
+  );
+
+  INSERT INTO inventory_reservations (
+    id, tenant_id, factory_id, item_id, location_id, quantity, status,
+    idempotency_key, request_hash, created_by_user_id, correlation_id
+  ) VALUES (
+    v_mixed_reservation, v_tenant, v_factory, v_item, v_location, 1, 'RESERVED',
+    'wsi-mixed-reservation-' || v_mixed_reservation::text, repeat('e', 64), v_actor, v_trace
+  );
+
+  INSERT INTO inventory_traceability_location_balances (
+    tenant_id, factory_id, item_id, traceability_unit_id, location_id,
+    quantity_on_hand, quantity_reserved
+  ) VALUES (v_tenant, v_factory, v_item, v_mixed_source, v_location, 3, 1);
+
+  INSERT INTO inventory_reservation_traceability_allocations (
+    tenant_id, factory_id, reservation_id, item_id, traceability_unit_id,
+    location_id, allocation_sequence, allocated_quantity, consumed_quantity, released_quantity
+  ) VALUES (
+    v_tenant, v_factory, v_mixed_reservation, v_item, v_mixed_source,
+    v_location, 1, 1, 0, 0
+  );
+
+  UPDATE inventory_stock_balances
+  SET quantity_on_hand = 15, quantity_reserved = 2
+  WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item;
+  UPDATE inventory_location_balances
+  SET quantity_on_hand = 15, quantity_reserved = 2
+  WHERE tenant_id = v_tenant AND factory_id = v_factory
+    AND item_id = v_item AND location_id = v_location;
+
+  v_mixed_outputs := jsonb_build_array(
+    jsonb_build_object(
+      'unit_type', 'SERIAL',
+      'unit_code', 'WSI-MIXED-SERIAL-' || substr(v_mixed_source::text, 1, 8),
+      'quantity', 1,
+      'locations', jsonb_build_array(jsonb_build_object('location_id', v_location, 'quantity', 1))
+    ),
+    jsonb_build_object(
+      'unit_type', 'LOT',
+      'unit_code', 'WSI-MIXED-LOT-' || substr(v_mixed_source::text, 1, 8),
+      'quantity', 2,
+      'locations', jsonb_build_array(jsonb_build_object('location_id', v_location, 'quantity', 2))
+    )
+  );
+
+  v_mixed_result := factoryos_execute_lot_serial_transformation(
+    'SPLIT', v_tenant, v_factory, v_actor, ARRAY[v_mixed_source],
+    NULL, v_mixed_outputs, 'Split one material LOT into one SERIAL plus a bulk LOT remainder',
+    'wsi-mixed-lot-serial-split-001', repeat('f', 64)
+  );
+  v_mixed_replay := factoryos_execute_lot_serial_transformation(
+    'SPLIT', v_tenant, v_factory, v_actor, ARRAY[v_mixed_source],
+    NULL, v_mixed_outputs, 'Split one material LOT into one SERIAL plus a bulk LOT remainder',
+    'wsi-mixed-lot-serial-split-001', repeat('f', 64)
+  );
+  v_mixed_serial_target := (v_mixed_result->'target_unit_ids'->>0)::uuid;
+  v_mixed_lot_target := (v_mixed_result->'target_unit_ids'->>1)::uuid;
+
+  IF (v_mixed_result->>'replayed')::boolean
+     OR NOT (v_mixed_replay->>'replayed')::boolean
+     OR v_mixed_result->'target_unit_ids' IS DISTINCT FROM v_mixed_replay->'target_unit_ids'
+     OR jsonb_array_length(v_mixed_result->'target_unit_ids') <> 2 THEN
+    RAISE EXCEPTION 'mixed LOT/SERIAL split did not create two ordered targets or replay idempotently';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM traceability_units
+    WHERE id = v_mixed_serial_target AND tenant_id = v_tenant AND factory_id = v_factory
+      AND unit_type = 'SERIAL' AND quantity = 1 AND status = 'ACTIVE'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM traceability_units
+    WHERE id = v_mixed_lot_target AND tenant_id = v_tenant AND factory_id = v_factory
+      AND unit_type = 'LOT' AND quantity = 2 AND status = 'ACTIVE'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_traceability_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND traceability_unit_id = v_mixed_serial_target
+      AND location_id = v_location AND quantity_on_hand = 1 AND quantity_reserved = 1
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_traceability_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND traceability_unit_id = v_mixed_lot_target
+      AND location_id = v_location AND quantity_on_hand = 2 AND quantity_reserved = 0
+  ) THEN
+    RAISE EXCEPTION 'mixed split did not preserve exact LOT/SERIAL target identities and location quantities';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM inventory_reservation_traceability_allocation_remaps remap
+    JOIN inventory_reservation_traceability_allocations target_allocation
+      ON target_allocation.id = remap.target_allocation_id
+    WHERE remap.transformation_id = (v_mixed_result->>'transformation_id')::uuid
+      AND remap.reservation_id = v_mixed_reservation
+      AND remap.source_unit_id = v_mixed_source
+      AND remap.target_unit_id = v_mixed_serial_target
+      AND remap.quantity = 1
+      AND target_allocation.traceability_unit_id = v_mixed_serial_target
+      AND target_allocation.allocated_quantity = 1
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_reservation_traceability_allocations source_allocation
+    WHERE source_allocation.reservation_id = v_mixed_reservation
+      AND source_allocation.traceability_unit_id = v_mixed_source
+      AND source_allocation.remapped_quantity = 1
+  ) THEN
+    RAISE EXCEPTION 'active reservation allocation was not remapped to the exact whole-unit SERIAL target';
+  END IF;
+
+  IF (SELECT count(*) FROM product_genealogy_events
+      WHERE transformation_id = (v_mixed_result->>'transformation_id')::uuid
+        AND relationship_type = 'SPLIT_INTO') <> 2
+     OR (SELECT count(*) FROM inventory_traceability_transformations
+         WHERE tenant_id = v_tenant AND factory_id = v_factory) <> 3
+     OR (SELECT count(*) FROM outbox_events
+         WHERE tenant_id = v_tenant AND factory_id = v_factory
+           AND aggregate_type = 'WMS_LOT_SERIAL_TRANSFORMATION'
+           AND event_type = 'WMS.LOT_SERIAL_TRANSFORMATION_COMPLETED') <> 3
+     OR (SELECT count(*) FROM audit_events
+         WHERE tenant_id = v_tenant AND factory_id = v_factory
+           AND resource_type = 'WMS_LOT_SERIAL_TRANSFORMATION' AND action = 'COMPLETED') <> 3 THEN
+    RAISE EXCEPTION 'mixed split genealogy, command, audit or outbox evidence is incomplete or duplicated';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM inventory_stock_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND quantity_on_hand = 15 AND quantity_reserved = 2
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND location_id = v_location
+      AND quantity_on_hand = 15 AND quantity_reserved = 2
+  ) OR (
+    SELECT COALESCE(SUM(quantity_on_hand),0) FROM inventory_traceability_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item
+  ) <> 15 OR (
+    SELECT COALESCE(SUM(quantity_reserved),0) FROM inventory_traceability_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item
+  ) <> 2 THEN
+    RAISE EXCEPTION 'mixed LOT/SERIAL split changed aggregate, BIN or traceability on-hand/reserved quantity';
+  END IF;
+
   SET CONSTRAINTS ALL IMMEDIATE;
-  RAISE NOTICE 'serial indivisibility and fail-closed LOT/SERIAL transformation guards passed; no unbacked split/merge edge or stock change was recorded';
+  RAISE NOTICE 'serial indivisibility, mixed LOT/SERIAL split, reservation remap, idempotency and stock conservation passed';
 END;
 $$;
 
