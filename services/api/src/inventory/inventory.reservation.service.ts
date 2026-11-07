@@ -3416,7 +3416,7 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET consumed_quantity=consumed_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );
@@ -3468,7 +3468,7 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET released_quantity=released_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );
