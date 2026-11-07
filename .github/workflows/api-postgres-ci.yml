@@ -548,8 +548,6 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f scripts/security/grant-supplier-performance-report-runtime-access.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/supplier-performance-evidence.sql
 
           echo "Applying tenant-scoped SCIM credential migration after the shared CI grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
@@ -888,6 +886,18 @@ jobs:
           echo "Checking advanced quality grants for the seeded QUALITY_MANAGER role"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-role-grants.sql
+
+          echo "Reapplying supplier performance evidence migration after development-role seeds"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/238_supplier_performance_evidence.sql
+
+          echo "Provisioning supplier performance database and application-role grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/security/grant-supplier-performance-report-runtime-access.sql
+
+          echo "Checking supplier performance evidence grants and database contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/supplier-performance-evidence.sql
 
           echo "Reapplying quality disposition inventory balance guard to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
