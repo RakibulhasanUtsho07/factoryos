@@ -24,14 +24,14 @@ Quality evidence is sourced only from existing `quality_supplier_quality_events`
 
 The report deliberately returns `supplier_score = NOT_CALCULATED`, `supplier_ranking = NOT_CALCULATED`, and `automatic_supplier_recommendation = NOT_PROVIDED`. No weighted score, supplier ranking, alternative-supplier recommendation, price comparison, or external AP-provider acceptance is inferred by this endpoint. Those outcomes require separately approved business thresholds and evidence.
 
-The database function is `STABLE SECURITY INVOKER`, derives the tenant from the verified database context, and is not executable by `PUBLIC`. Permission `suppliers.performance.read` is assigned to `ORG_ADMIN`, `FACTORY_MANAGER`, and `QUALITY_MANAGER`. After migration 238 has been applied and the `factoryos_app` runtime role exists, the database owner/provisioning principal must execute:
+The database function is `STABLE SECURITY INVOKER`, derives the tenant from the verified database context, and is not executable by `PUBLIC`. Permission `suppliers.performance.read` is assigned to `ORG_ADMIN`, `FACTORY_MANAGER`, and `QUALITY_MANAGER`. After migration 238 and the built-in application-role seeds have been applied, and the `factoryos_app` PostgreSQL runtime role exists, the database owner/provisioning principal must execute:
 
 ```sh
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f scripts/security/grant-supplier-performance-report-runtime-access.sql
 ```
 
-Do not run this grant using the application role. The script fails closed when the runtime role or report function is missing. API PostgreSQL CI runs this provisioning step after the role and schema are created, then asserts the EXECUTE grant, absence of PUBLIC EXECUTE, report volatility/security mode, role permissions, forced RLS, indexes and migration marker.
+Do not run this grant using the application role. The script fails closed when the runtime role, report function, permission row, or any of the three required application roles is missing. It grants the application permission mapping as well as the PostgreSQL function EXECUTE privilege. API PostgreSQL CI runs this provisioning step after the role and schema are created, then asserts the EXECUTE grant, absence of PUBLIC EXECUTE, report volatility/security mode, role permissions, forced RLS, indexes and migration marker.
 
 ## Purchase Order API
 
