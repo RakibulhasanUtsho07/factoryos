@@ -15,7 +15,7 @@ It returns:
 - the PO line UOM, after verifying it matches the consumed traceability identity UOM; and
 - the PO currency.
 
-Every join is constrained to the same tenant and factory. The source must be a work-order material reservation, a MATERIAL LOT or SERIAL, a directly linked GRN line, a POSTED receipt with a posting timestamp, an APPROVED purchase order and a non-null PO unit price. Exactly one complete source row must resolve.
+Every join is constrained to the same tenant and factory. The source must be a work-order material reservation, a MATERIAL LOT or SERIAL, a directly linked GRN line, a POSTED receipt with a posting timestamp, an APPROVED purchase order and a non-null PO unit price. The allocation quantity must also be no greater than either the parent consumption quantity or the source LOT/SERIAL identity quantity, and the PO line item must equal the GRN line item. Exactly one complete source row must resolve.
 
 ## Fail-closed conditions and rate semantics
 

@@ -47,6 +47,9 @@ BEGIN
       AND tu.unit_type IN ('LOT','SERIAL')
       AND tu.goods_receipt_line_id IS NOT NULL
       AND c.quantity>0
+      AND ca.quantity<=c.quantity
+      AND ca.quantity<=tu.quantity
+      AND pol.inventory_item_id=grl.inventory_item_id
       AND pol.unit_price IS NOT NULL
       AND upper(tu.unit)=upper(pol.unit)
       AND po.status='APPROVED'

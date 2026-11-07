@@ -72,7 +72,8 @@ export async function resolveFinanceOperationalSource(
         'JOIN purchase_orders po ON po.id=pol.purchase_order_id AND po.tenant_id=pol.tenant_id AND po.factory_id=pol.factory_id ' +
         'WHERE ca.tenant_id=$1 AND ca.factory_id=$2 AND ca.id::text=$3 ' +
         'AND mr.work_order_id IS NOT NULL AND tu.product_role=\'MATERIAL\' AND tu.unit_type IN (\'LOT\',\'SERIAL\') ' +
-        'AND tu.goods_receipt_line_id IS NOT NULL AND c.quantity>0 AND pol.unit_price IS NOT NULL ' +
+        'AND tu.goods_receipt_line_id IS NOT NULL AND c.quantity>0 AND ca.quantity<=c.quantity AND ca.quantity<=tu.quantity ' +
+        'AND pol.inventory_item_id=grl.inventory_item_id AND pol.unit_price IS NOT NULL ' +
         'AND upper(tu.unit)=upper(pol.unit) AND po.status=\'APPROVED\' LIMIT 2';
       break;
     case 'UTILITY_METER_READING':

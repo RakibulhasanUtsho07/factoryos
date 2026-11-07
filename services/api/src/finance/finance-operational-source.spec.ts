@@ -51,6 +51,9 @@ describe('finance operational source resolver', () => {
       'ca.id::text=$3',
       "tu.product_role='MATERIAL'",
       "tu.unit_type IN ('LOT','SERIAL')",
+      'ca.quantity<=c.quantity',
+      'ca.quantity<=tu.quantity',
+      'pol.inventory_item_id=grl.inventory_item_id',
       'upper(tu.unit)=upper(pol.unit)',
     ]) {
       expect(sql).toContain(fragment);
