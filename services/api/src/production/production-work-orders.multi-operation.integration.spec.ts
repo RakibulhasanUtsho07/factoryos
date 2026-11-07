@@ -1026,6 +1026,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       identity_quantity: string;
       serial_on_hand: string;
       serial_reserved: string;
+      serial_total_on_hand: string;
+      serial_total_reserved: string;
       aggregate_on_hand: string;
       aggregate_reserved: string;
       bin_on_hand: string;
@@ -1034,6 +1036,14 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       `SELECT tu.unit_type, tu.quantity::text AS identity_quantity,
               tlb.quantity_on_hand::text AS serial_on_hand,
               tlb.quantity_reserved::text AS serial_reserved,
+              (SELECT COALESCE(sum(all_locations.quantity_on_hand), 0)::text
+               FROM inventory_traceability_location_balances all_locations
+               WHERE all_locations.traceability_unit_id=tu.id
+                 AND all_locations.tenant_id=tu.tenant_id AND all_locations.factory_id=tu.factory_id) AS serial_total_on_hand,
+              (SELECT COALESCE(sum(all_locations.quantity_reserved), 0)::text
+               FROM inventory_traceability_location_balances all_locations
+               WHERE all_locations.traceability_unit_id=tu.id
+                 AND all_locations.tenant_id=tu.tenant_id AND all_locations.factory_id=tu.factory_id) AS serial_total_reserved,
               sb.quantity_on_hand::text AS aggregate_on_hand,
               sb.quantity_reserved::text AS aggregate_reserved,
               lb.quantity_on_hand::text AS bin_on_hand,
@@ -1046,14 +1056,16 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
        JOIN inventory_location_balances lb
          ON lb.item_id=tu.inventory_item_id AND lb.location_id=tlb.location_id
           AND lb.tenant_id=tu.tenant_id AND lb.factory_id=tu.factory_id
-       WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3`,
-      [materialSerial.id, tenantId, factoryId],
+       WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3 AND tlb.location_id=$4`,
+      [materialSerial.id, tenantId, factoryId, componentBinId],
     );
     expect(sourceBalances.rows).toEqual([{
       unit_type: 'SERIAL',
       identity_quantity: '1.0000',
       serial_on_hand: '0.0000',
       serial_reserved: '0.0000',
+      serial_total_on_hand: '0.0000',
+      serial_total_reserved: '0.0000',
       aggregate_on_hand: '0.0000',
       aggregate_reserved: '0.0000',
       bin_on_hand: '0.0000',
