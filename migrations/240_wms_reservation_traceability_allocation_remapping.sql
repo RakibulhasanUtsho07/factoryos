@@ -122,6 +122,87 @@ CREATE TRIGGER inventory_reservation_traceability_allocation_remap_guard
 BEFORE INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocation_remaps
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_reservation_traceability_allocation_remap();
 
+-- Deferred consistency ties the remapped_quantity counter and every replacement
+-- allocation to the append-only remap evidence. Neither side can be written alone.
+CREATE OR REPLACE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_allocation_ids UUID[];
+  v_allocation_id UUID;
+  v_allocated NUMERIC(18,4);
+  v_remapped NUMERIC(18,4);
+  v_outgoing NUMERIC(18,4);
+  v_incoming NUMERIC(18,4);
+  v_has_incoming BOOLEAN;
+BEGIN
+  IF TG_TABLE_NAME = 'inventory_reservation_traceability_allocation_remaps' THEN
+    IF TG_OP = 'DELETE' THEN
+      v_allocation_ids := ARRAY[OLD.source_allocation_id, OLD.target_allocation_id];
+    ELSE
+      v_allocation_ids := ARRAY[NEW.source_allocation_id, NEW.target_allocation_id];
+    END IF;
+  ELSE
+    IF TG_OP = 'DELETE' THEN
+      v_allocation_ids := ARRAY[OLD.id];
+    ELSE
+      v_allocation_ids := ARRAY[NEW.id];
+    END IF;
+  END IF;
+
+  FOREACH v_allocation_id IN ARRAY v_allocation_ids
+  LOOP
+    SELECT allocated_quantity, remapped_quantity
+      INTO v_allocated, v_remapped
+    FROM inventory_reservation_traceability_allocations
+    WHERE id = v_allocation_id;
+    IF NOT FOUND THEN
+      CONTINUE;
+    END IF;
+
+    SELECT COALESCE(SUM(quantity), 0)::numeric(18,4)
+      INTO v_outgoing
+    FROM inventory_reservation_traceability_allocation_remaps
+    WHERE source_allocation_id = v_allocation_id;
+
+    IF v_outgoing IS DISTINCT FROM v_remapped THEN
+      RAISE EXCEPTION 'reservation allocation remapped_quantity must equal append-only outgoing remap evidence'
+        USING ERRCODE = '23514';
+    END IF;
+
+    SELECT COALESCE(SUM(quantity), 0)::numeric(18,4),
+           EXISTS (
+             SELECT 1 FROM inventory_reservation_traceability_allocation_remaps
+             WHERE target_allocation_id = v_allocation_id
+           )
+      INTO v_incoming, v_has_incoming
+    FROM inventory_reservation_traceability_allocation_remaps
+    WHERE target_allocation_id = v_allocation_id;
+
+    IF v_has_incoming AND v_incoming IS DISTINCT FROM v_allocated THEN
+      RAISE EXCEPTION 'replacement reservation allocation quantity must equal append-only incoming remap evidence'
+        USING ERRCODE = '23514';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END;
+$;
+
+DROP TRIGGER IF EXISTS ctr_inventory_reservation_traceability_allocation_remap_integrity
+  ON inventory_reservation_traceability_allocations;
+CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_traceability_allocation_remap_integrity
+AFTER INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocations
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity();
+
+DROP TRIGGER IF EXISTS ctr_inventory_reservation_traceability_remap_evidence_integrity
+  ON inventory_reservation_traceability_allocation_remaps;
+CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_traceability_remap_evidence_integrity
+AFTER INSERT OR UPDATE OR DELETE ON inventory_reservation_traceability_allocation_remaps
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_traceability_allocation_remap_integrity();
+
 CREATE OR REPLACE FUNCTION factoryos_guard_inventory_reservation_traceability_allocation()
 RETURNS trigger
 LANGUAGE plpgsql
