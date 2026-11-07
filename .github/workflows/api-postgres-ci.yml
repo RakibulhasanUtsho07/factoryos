@@ -548,6 +548,8 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f scripts/security/grant-supplier-performance-report-runtime-access.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/supplier-performance-evidence.sql
 
           echo "Applying tenant-scoped SCIM credential migration after the shared CI grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
