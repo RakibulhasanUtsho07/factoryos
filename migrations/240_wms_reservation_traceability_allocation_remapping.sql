@@ -598,9 +598,9 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_traceability_reserved_a
 
 ALTER TABLE inventory_reservation_traceability_allocation_remaps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_reservation_traceability_allocation_remaps FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS inventory_reservation_traceability_allocation_remaps_tenant_isolation
+DROP POLICY IF EXISTS reservation_traceability_allocation_remaps_tenant_isolation
   ON inventory_reservation_traceability_allocation_remaps;
-CREATE POLICY inventory_reservation_traceability_allocation_remaps_tenant_isolation
+CREATE POLICY reservation_traceability_allocation_remaps_tenant_isolation
   ON inventory_reservation_traceability_allocation_remaps
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
