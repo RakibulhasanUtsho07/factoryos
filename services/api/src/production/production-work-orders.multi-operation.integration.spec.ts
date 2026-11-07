@@ -939,14 +939,21 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const outputState = await readState(winner.draft.id);
     const finalOperation = outputState.operations[2];
     if (!finalOperation) throw new Error('Serial work-order final operation was not found');
+    const finishedGoodSerialCode = 'FG-SERIAL-' + randomUUID().slice(0, 12).toUpperCase();
     const outputInput = {
       operation_id: finalOperation.id,
       expected_work_order_version: outputState.row_version,
       expected_operation_version: finalOperation.row_version,
       good_quantity: serialTarget,
       scrap_quantity: 0,
-      notes: 'Three-step finished-good output from one serialized material identity',
+      finished_good_serial_code: finishedGoodSerialCode,
+      notes: 'Three-step finished-good SERIAL output from one serialized material identity',
     };
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, winner.draft.id,
+      { ...outputInput, good_quantity: 2 } as never,
+      'wo-multi-serial-invalid-output-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-serial-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
       service.reportOutput(
@@ -1102,19 +1109,23 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       source: 'WORK_ORDER_MATERIAL_CONSUMPTION',
       allocation_method: 'SERIAL_IDENTITY_ASSIGNED_TO_SINGLE_OUTPUT_BY_WEIGHTED_MIDPOINT_V1',
       source_unit_type: 'SERIAL',
-      target_unit_type: 'LOT',
+      target_unit_type: 'SERIAL',
       target_product_role: 'FINISHED_GOOD',
     }]);
 
     const finished = await adminPool.query<{
       quantity_on_hand: string;
       target_identity_quantity: string;
+      target_identity_type: string;
+      target_identity_code: string;
       target_identity_role: string;
       report_count: string;
       posting_count: string;
     }>(
       `SELECT sb.quantity_on_hand::text AS quantity_on_hand,
               tu.quantity::text AS target_identity_quantity,
+              tu.unit_type AS target_identity_type,
+              tu.unit_code AS target_identity_code,
               tu.product_role AS target_identity_role,
               (SELECT count(*)::text FROM order_production_reports r
                WHERE r.work_order_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3) AS report_count,
@@ -1130,6 +1141,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(finished.rows).toEqual([{
       quantity_on_hand: '1.0000',
       target_identity_quantity: '1.0000',
+      target_identity_type: 'SERIAL',
+      target_identity_code: finishedGoodSerialCode,
       target_identity_role: 'FINISHED_GOOD',
       report_count: '1',
       posting_count: '1',
