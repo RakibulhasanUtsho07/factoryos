@@ -106,7 +106,7 @@ describe('InventoryService', () => {
       expected_quantity: '4.0000',
       expected_quantity_unit_mismatch_line_count: 0,
       next_expected_delivery_date: '2026-11-12',
-      expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED',
+      expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM',
       condition_evidence_scope: 'TRACEABILITY_LOCATION_BALANCES',
       first_affected_production_order: null,
     };
