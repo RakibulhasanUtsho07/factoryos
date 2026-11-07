@@ -1365,7 +1365,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       allocation_sequence: number; allocated_quantity: string;
     }>(
       `SELECT a.traceability_unit_id::text AS traceability_unit_id, tu.unit_code,
-              a.allocation_sequence, a.allocated_quantity::text AS allocated_quantity
+              a.allocation_sequence::int AS allocation_sequence, a.allocated_quantity::text AS allocated_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu ON tu.id=a.traceability_unit_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
@@ -1550,7 +1550,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
     }>(
       `SELECT a.traceability_unit_id::text AS traceability_unit_id,
-              a.allocation_sequence, a.allocated_quantity::text AS allocated_quantity
+              a.allocation_sequence::int AS allocation_sequence, a.allocated_quantity::text AS allocated_quantity
        FROM inventory_reservation_traceability_allocations a
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
          AND a.reservation_id=$4
@@ -1817,7 +1817,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const allocations = await adminPool.query<{
       traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
     }>(
-      `SELECT traceability_unit_id::text AS traceability_unit_id, allocation_sequence,
+      `SELECT traceability_unit_id::text AS traceability_unit_id, allocation_sequence::int AS allocation_sequence,
               allocated_quantity::text AS allocated_quantity
        FROM inventory_reservation_traceability_allocations
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND reservation_id=$4
@@ -2444,7 +2444,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
         accepted_quantity: string;
       }>(
         `SELECT a.traceability_unit_id::text AS traceability_unit_id,
-                a.allocation_sequence, a.allocated_quantity::text AS allocated_quantity,
+                a.allocation_sequence::int AS allocation_sequence, a.allocated_quantity::text AS allocated_quantity,
                 s.id::text AS supplier_id, s.name AS supplier_name,
                 gr.status AS receipt_status, gr.posted_at::text AS posted_at,
                 tu.expires_at::text AS expires_at,
