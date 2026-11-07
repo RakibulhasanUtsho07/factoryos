@@ -33,7 +33,7 @@ The existing finance ingestion boundary still owns external accounting facts. Fa
 - quantity, unit price, UOM and currency are returned from the canonical rows; and
 - missing and ambiguous provenance fails closed.
 
-The API CI runs the resolver unit contract; the PostgreSQL CI continues to verify the underlying reservation-consumption, traceability, GRN and PO ledgers. These checks establish repository-level technical behavior only, not a finance owner's approval or an external accounting reconciliation.
+The API CI runs the resolver unit contract. The PostgreSQL CI also executes `services/api/test/finance-production-material-consumption-reconciliation.sql` after the ordered migrations, compiling and running the complete WMS → GRN → PO join against the real schema with a deliberately absent fixture key; this catches renamed/missing tables and columns without mutating operational evidence. Existing PostgreSQL scenarios continue to verify the underlying reservation-consumption, traceability, GRN and PO ledgers. These checks establish repository-level technical behavior only, not a finance owner's approval or an external accounting reconciliation.
 
 ## Remaining acceptance gates
 
