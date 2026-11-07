@@ -24,6 +24,7 @@ DECLARE
   v_mixed_replay JSONB;
   v_mixed_lot_target UUID;
   v_mixed_serial_target UUID;
+  v_missing_registration_evidence TEXT;
   v_merged_lot UUID;
   v_merge_result JSONB;
   v_merge_replay JSONB;
@@ -781,6 +782,29 @@ BEGIN
     WHERE tenant_id = v_tenant AND factory_id = v_factory AND item_id = v_item
   ) <> 2 THEN
     RAISE EXCEPTION 'mixed LOT/SERIAL split changed aggregate, BIN or traceability on-hand/reserved quantity';
+  END IF;
+
+  SELECT string_agg(u.unit_code, ', ' ORDER BY u.unit_code)
+    INTO v_missing_registration_evidence
+  FROM traceability_units u
+  WHERE u.tenant_id = v_tenant AND u.factory_id = v_factory
+    AND u.version = 1
+    AND (
+      NOT EXISTS (
+        SELECT 1 FROM audit_events a
+        WHERE a.tenant_id = u.tenant_id AND a.factory_id = u.factory_id
+          AND a.resource_type = 'TRACEABILITY_UNIT' AND a.resource_id = u.id
+          AND a.action = 'REGISTERED'
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM outbox_events o
+        WHERE o.tenant_id = u.tenant_id AND o.factory_id = u.factory_id
+          AND o.aggregate_type = 'TRACEABILITY_UNIT' AND o.aggregate_id = u.id
+          AND o.event_type = 'TRACEABILITY.UNIT_REGISTERED'
+      )
+    );
+  IF v_missing_registration_evidence IS NOT NULL THEN
+    RAISE EXCEPTION 'mixed WMS fixture is missing registration audit/outbox for: %', v_missing_registration_evidence;
   END IF;
 
   SET CONSTRAINTS ALL IMMEDIATE;
