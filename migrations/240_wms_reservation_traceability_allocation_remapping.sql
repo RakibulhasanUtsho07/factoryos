@@ -135,6 +135,12 @@ BEGIN
         AND a.traceability_unit_id = NEW.traceability_unit_id
         AND a.location_id = NEW.location_id
         AND a.allocation_sequence = NEW.allocation_sequence
+        AND NEW.quantity <= c.quantity
+        AND (
+          SELECT COALESCE(SUM(prior.quantity), 0)
+          FROM inventory_reservation_consumption_traceability_allocations prior
+          WHERE prior.reservation_allocation_id = a.id
+        ) + NEW.quantity <= a.consumed_quantity
        WHERE c.id = NEW.consumption_id
          AND c.tenant_id = NEW.tenant_id AND c.factory_id = NEW.factory_id
      ) THEN
