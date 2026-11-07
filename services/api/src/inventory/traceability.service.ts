@@ -364,6 +364,11 @@ export class TraceabilityService {
     if (!this.allowedFilter('relationship_type', relationshipType)) {
       throw new BadRequestException('relationship_type is not supported');
     }
+    if (relationshipType === 'SPLIT_INTO' || relationshipType === 'MERGED_INTO') {
+      throw new ConflictException(
+        'SPLIT_INTO and MERGED_INTO require a dedicated stock-conserving transformation command; generic genealogy writes cannot change stock identity or balances',
+      );
+    }
     const quantity = this.quantity(dto.quantity, 'quantity');
     const notes = dto.notes?.trim() || null;
     const evidence = this.objectValue(dto.evidence);
