@@ -302,14 +302,6 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       attributes: { held: true, condition: 'HELD' },
     });
     const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', expiryFromDatabaseDate(90), 'wms-fefo-quarantine-' + randomUUID());
-    // New traceability identities must begin ACTIVE. Exercise quarantine through
-    // the audited lifecycle so the candidate query excludes a real quarantined unit.
-    await traceabilityService.changeUnitStatus(
-      TEST_USER_ID, tenantId, factoryId, quarantinedLotId,
-      { target_status: 'QUARANTINED', reason: 'WMS FEFO exclusion integration fixture' } as never,
-      'wms-fefo-quarantine-status-' + randomUUID(), randomUUID(), randomUUID(),
-    );
-
     await adminPool.query(
       `
       INSERT INTO inventory_material_allocation_policies (
@@ -332,6 +324,21 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
         destination_location_id: binB.id, traceability_unit_id: lateLotId, quantity: 4 } as never,
       'wms-putaway-late-' + randomUUID(), null, randomUUID(),
+    );
+
+    // Put the candidate away while ACTIVE, then quarantine it in place. This
+    // proves FEFO excludes a quarantined identity even when its physical BIN is otherwise
+    // eligible; a non-pickable/unassigned location cannot explain the exclusion.
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: binA.id, traceability_unit_id: quarantinedLotId, quantity: 0.5 } as never,
+      'wms-putaway-quarantine-candidate-' + randomUUID(), null, randomUUID(),
+    );
+    await traceabilityService.changeUnitStatus(
+      TEST_USER_ID, tenantId, factoryId, quarantinedLotId,
+      { target_status: 'QUARANTINED', reason: 'WMS FEFO in-bin quarantine exclusion integration fixture' } as never,
+      'wms-fefo-quarantine-status-' + randomUUID(), randomUUID(), randomUUID(),
     );
 
     const workOrderId = randomUUID();
@@ -381,6 +388,28 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId, [expiredLotId, damagedLotId, heldLotId, quarantinedLotId]],
     );
     expect(excludedAllocations.rows[0]?.count).toBe('0');
+
+    const quarantinedLotState = await adminPool.query<{
+      status: string; location_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT tu.status, tlb.location_id::text AS location_id,
+              tlb.quantity_on_hand::text, tlb.quantity_reserved::text
+       FROM inventory_traceability_location_balances tlb
+       JOIN traceability_units tu ON tu.id=tlb.traceability_unit_id
+       WHERE tlb.tenant_id=$1 AND tlb.factory_id=$2 AND tlb.item_id=$3
+         AND tlb.traceability_unit_id=$4 AND tlb.location_id=$5`,
+      [tenantId, factoryId, itemId, quarantinedLotId, binA.id],
+    );
+    expect(quarantinedLotState.rows[0]).toMatchObject({
+      status: 'QUARANTINED', location_id: binA.id,
+      quantity_on_hand: '0.5000', quantity_reserved: '0.0000',
+    });
+    const quarantineEvents = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM traceability_unit_status_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND unit_id=$3 AND to_status='QUARANTINED'`,
+      [tenantId, factoryId, quarantinedLotId],
+    );
+    expect(quarantineEvents.rows[0]?.count).toBe('1');
 
     const firstReservationId = allocations[0]!.reservationId;
     const issueKey = 'wms-first-order-partial-issue-' + randomUUID();
@@ -433,7 +462,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
       [tenantId, factoryId, itemId, binA.id],
     );
-    expect(locationA.rows[0]).toMatchObject({ quantity_on_hand: '0.0000', quantity_reserved: '0.0000' });
+    expect(locationA.rows[0]).toMatchObject({ quantity_on_hand: '0.5000', quantity_reserved: '0.0000' });
     const lotBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
       `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_traceability_location_balances
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 AND location_id=$5`,
