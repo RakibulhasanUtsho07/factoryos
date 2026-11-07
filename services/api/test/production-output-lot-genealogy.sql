@@ -84,7 +84,14 @@ BEGIN
     OR position('1.0000' IN v_function_source) = 0
     OR position('SERIAL output must equal one unit' IN v_function_source) = 0
   THEN
-    RAISE EXCEPTION 'production output guard does not bind LOT/SERIAL identities to report quantity and one-unit serial rules';
+    RAISE EXCEPTION 'production output guard definition mismatch [missing_identity_message=%; missing_scrap_message=%; missing_binding_message=%; missing_unit_type=%; missing_good_quantity=%; missing_one_unit_literal=%; missing_serial_rule_message=%]',
+      position('positive accepted good output requires a finished-good LOT or SERIAL identity' IN v_function_source) = 0,
+      position('non-sellable scrap traceability identity' IN v_function_source) = 0,
+      position('finished-good LOT/SERIAL identity must match the report' IN v_function_source) = 0,
+      position('v_trace.unit_type' IN v_function_source) = 0,
+      position('NEW.good_quantity' IN v_function_source) = 0,
+      position('1.0000' IN v_function_source) = 0,
+      position('SERIAL output must equal one unit' IN v_function_source) = 0;
   END IF;
 
   IF NOT EXISTS (
