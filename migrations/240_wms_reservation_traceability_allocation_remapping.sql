@@ -728,12 +728,28 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
 
-    SELECT COALESCE(SUM(e.quantity), 0)::numeric(18,4)
-      INTO v_consumed
-    FROM product_genealogy_events e
-    WHERE e.tenant_id = p_tenant_id AND e.factory_id = p_factory_id
-      AND e.source_unit_id = v_source.id
-      AND e.relationship_type IN ('CONSUMED_INTO', 'PROCESSED_INTO');
+    -- Inventory issue evidence is authoritative for reservation-driven consumption.
+    -- Work-order output genealogy can describe the same issue a second time, so use
+    -- the greater complete representation rather than adding the two ledgers.
+    SELECT GREATEST(
+      COALESCE((
+        SELECT SUM(e.quantity)
+        FROM product_genealogy_events e
+        WHERE e.tenant_id = p_tenant_id AND e.factory_id = p_factory_id
+          AND e.source_unit_id = v_source.id
+          AND e.relationship_type IN ('CONSUMED_INTO', 'PROCESSED_INTO')
+      ), 0),
+      COALESCE((
+        SELECT SUM(ca.quantity)
+        FROM inventory_reservation_consumption_traceability_allocations ca
+        JOIN inventory_reservation_consumptions c
+          ON c.id = ca.consumption_id
+         AND c.tenant_id = ca.tenant_id AND c.factory_id = ca.factory_id
+        WHERE ca.tenant_id = p_tenant_id AND ca.factory_id = p_factory_id
+          AND ca.traceability_unit_id = v_source.id
+      ), 0)
+    )::numeric(18,4)
+      INTO v_consumed;
     SELECT COALESCE(SUM(b.quantity_on_hand), 0)::numeric(18,4),
            COALESCE(SUM(b.quantity_reserved), 0)::numeric(18,4)
       INTO v_tracked, v_reserved
