@@ -91,6 +91,21 @@ export class InventoryController {
     );
   }
 
+
+  @Get(':itemId/availability')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async availabilityExposure(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.inventoryService.getAvailabilityExposure(
+      context.userId, context.tenantId, context.factoryId, itemId,
+    );
+  }
+
   @Post(':itemId/movements')
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.write')

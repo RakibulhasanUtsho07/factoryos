@@ -89,6 +89,49 @@ describe('InventoryService', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+
+  it('reads a read-only availability exposure snapshot with every source explicitly factory-scoped', async () => {
+    const exposure = {
+      item_id: ITEM_ID,
+      sku: 'FABRIC-01',
+      name: 'Cotton Fabric',
+      unit: 'M',
+      status: 'ACTIVE',
+      quantity_on_hand: '12.0000',
+      allocated_quantity: '2.0000',
+      available_quantity: '10.0000',
+      quarantined_quantity: '0.0000',
+      damaged_quantity: '0.0000',
+      expected_quantity: '4.0000',
+      next_expected_delivery_date: '2026-11-12',
+      expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED',
+      condition_evidence_scope: 'TRACEABILITY_LOCATION_BALANCES',
+      first_affected_production_order: null,
+    };
+    client.query.mockResolvedValueOnce({ rows: [exposure] } as QueryResponse);
+
+    const result = await service.getAvailabilityExposure(USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID);
+
+    expect(result).toEqual(exposure);
+    expect(database.transaction).toHaveBeenCalledWith(
+      { tenantId: TENANT_ID, userId: USER_ID, readOnly: true },
+      expect.any(Function),
+    );
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM inventory_traceability_location_balances'),
+      [ITEM_ID, TENANT_ID, FACTORY_ID],
+    );
+    const query = String(client.query.mock.calls[0]?.[0]);
+    expect(query).toContain('AND i.tenant_id = $2');
+    expect(query).toContain('AND i.factory_id = $3');
+    expect(query).toContain("po.status = 'APPROVED'");
+    expect(query).toContain("gr.status = 'POSTED'");
+    expect(query).toContain("ir.reference_type = 'WORK_ORDER_MATERIAL'");
+    expect(query).toContain("ir.reference_id = wo.id");
+    expect(query).toContain("qh.status = 'ACTIVE'");
+    expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
+  });
+
   it('creates a normalized item, its zero balance and an outbox event in one transaction', async () => {
     client.query
       .mockResolvedValueOnce({ rows: [{ id: FACTORY_ID }] } as QueryResponse)
