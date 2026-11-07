@@ -1,4 +1,4 @@
-\\set ON_ERROR_STOP on
+\set ON_ERROR_STOP on
 BEGIN;
 
 DO $supplier_performance_runtime_grant$
