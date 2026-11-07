@@ -56,7 +56,7 @@ export async function resolveFinanceOperationalSource(
         'JOIN purchase_order_lines pol ON pol.id=grl.purchase_order_line_id AND pol.tenant_id=grl.tenant_id AND pol.factory_id=grl.factory_id AND pol.purchase_order_id=grl.purchase_order_id ' +
         'JOIN purchase_orders po ON po.id=pol.purchase_order_id AND po.tenant_id=pol.tenant_id AND po.factory_id=pol.factory_id ' +
         'JOIN suppliers s ON s.id=po.supplier_id AND s.tenant_id=po.tenant_id ' +
-        'WHERE grl.tenant_id=$1 AND grl.factory_id=$2 AND gr.status=\'POSTED\' AND po.status=\'APPROVED\' ' +
+        'WHERE grl.tenant_id=$1 AND grl.factory_id=$2 AND grl.accepted_quantity>0 AND gr.status=\'POSTED\' AND po.status=\'APPROVED\' ' +
         'AND (grl.id::text=$3 OR (gr.receipt_number || \':\' || po.po_number || \':\' || pol.line_number::text)=$3) LIMIT 2';
       break;
     case 'UTILITY_METER_READING':
