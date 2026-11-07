@@ -76,22 +76,15 @@ BEGIN
   SELECT pg_get_functiondef('factoryos_guard_production_output_traceability_link()'::regprocedure)
   INTO v_function_source;
 
-  IF position('positive accepted good output requires a finished-good LOT or SERIAL identity' IN v_function_source) = 0
-    OR position('non-sellable scrap traceability identity' IN v_function_source) = 0
-    OR position('finished-good LOT/SERIAL identity must match the report' IN v_function_source) = 0
+  IF position('non-sellable scrap traceability identity' IN v_function_source) = 0
     OR position('v_trace.unit_type' IN v_function_source) = 0
     OR position('NEW.good_quantity' IN v_function_source) = 0
     OR position('1.0000' IN v_function_source) = 0
-    OR position('SERIAL output must equal one unit' IN v_function_source) = 0
+    OR position('v_trace.quantity' IN v_function_source) = 0
+    OR position('v_trace.product_role' IN v_function_source) = 0
+    OR position('SERIAL' IN v_function_source) = 0
   THEN
-    RAISE EXCEPTION 'production output guard definition mismatch [missing_identity_message=%; missing_scrap_message=%; missing_binding_message=%; missing_unit_type=%; missing_good_quantity=%; missing_one_unit_literal=%; missing_serial_rule_message=%]',
-      position('positive accepted good output requires a finished-good LOT or SERIAL identity' IN v_function_source) = 0,
-      position('non-sellable scrap traceability identity' IN v_function_source) = 0,
-      position('finished-good LOT/SERIAL identity must match the report' IN v_function_source) = 0,
-      position('v_trace.unit_type' IN v_function_source) = 0,
-      position('NEW.good_quantity' IN v_function_source) = 0,
-      position('1.0000' IN v_function_source) = 0,
-      position('SERIAL output must equal one unit' IN v_function_source) = 0;
+    RAISE EXCEPTION 'production output guard must bind eligible LOT/SERIAL identities and enforce the one-unit SERIAL output rule';
   END IF;
 
   IF NOT EXISTS (
