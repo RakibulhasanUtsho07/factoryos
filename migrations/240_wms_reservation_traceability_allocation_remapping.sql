@@ -723,7 +723,8 @@ DECLARE
   v_first_source_received_at TIMESTAMPTZ;
   v_policy VARCHAR(12);
   v_output_unit_type TEXT;
-  v_output_type_count INTEGER;
+  v_has_lot_output BOOLEAN := FALSE;
+  v_has_serial_output BOOLEAN := FALSE;
   v_total NUMERIC(18,4) := 0;
   v_consumed NUMERIC(18,4);
   v_tracked NUMERIC(18,4);
@@ -1075,19 +1076,23 @@ BEGIN
       RAISE EXCEPTION 'SPLIT outputs must be LOT/SERIAL identities with positive four-decimal BIN allocations; each SERIAL is exactly one unit in one location'
         USING ERRCODE = '22023';
     END IF;
-    SELECT count(DISTINCT upper(o->>'unit_type')), min(upper(o->>'unit_type'))
-      INTO v_output_type_count, v_output_unit_type
+    SELECT min(upper(o->>'unit_type')),
+           COALESCE(bool_or(upper(o->>'unit_type') = 'LOT'), FALSE),
+           COALESCE(bool_or(upper(o->>'unit_type') = 'SERIAL'), FALSE)
+      INTO v_output_unit_type, v_has_lot_output, v_has_serial_output
     FROM jsonb_array_elements(p_outputs) o;
-    IF v_output_type_count <> 1 THEN
-      RAISE EXCEPTION 'one split command must create either all LOT outputs or all SERIAL outputs; mixed identity types are not supported'
+    IF v_has_lot_output AND v_has_serial_output
+       AND v_policy NOT IN ('FIFO','FEFO') THEN
+      RAISE EXCEPTION 'mixed LOT/SERIAL split outputs require FIFO or FEFO; explicit LOT or SERIAL allocation policy requires one identity type'
         USING ERRCODE = '23514';
     END IF;
-    IF (v_policy = 'LOT' AND v_output_unit_type <> 'LOT')
-       OR (v_policy = 'SERIAL' AND v_output_unit_type <> 'SERIAL') THEN
+    IF NOT (v_has_lot_output AND v_has_serial_output)
+       AND ((v_policy = 'LOT' AND v_output_unit_type <> 'LOT')
+         OR (v_policy = 'SERIAL' AND v_output_unit_type <> 'SERIAL')) THEN
       RAISE EXCEPTION 'split output identity type must follow the effective material allocation policy %', v_policy
         USING ERRCODE = '23514';
     END IF;
-    IF v_policy IN ('FIFO','FEFO') AND v_output_unit_type = 'SERIAL'
+    IF v_policy IN ('FIFO','FEFO') AND v_has_serial_output
        AND EXISTS (
          SELECT 1
          FROM traceability_units u
