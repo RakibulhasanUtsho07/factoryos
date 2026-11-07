@@ -288,6 +288,21 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
 
       if (utilityReadingIds.length > 0 || workOrderIds.length > 0) {
         const readingIds = utilityReadingIds;
+        const allocationAuditRows = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM utility_reading_work_order_cost_allocations
+           WHERE reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[])`,
+          [readingIds, workOrderIds],
+        );
+        const utilityAuditEntityIds = [
+          ...utilityMeterIds, ...utilityReadingIds, ...utilityCostAllocationIds,
+          ...allocationAuditRows.rows.map((row) => row.id),
+        ];
+        if (utilityAuditEntityIds.length > 0) {
+          await client.query(
+            'DELETE FROM utility_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND entity_id=ANY($3::uuid[])',
+            [tenantId, factoryId, utilityAuditEntityIds],
+          );
+        }
         await client.query(
           `DELETE FROM utility_reading_work_order_cost_allocations
            WHERE allocation_kind='REVERSAL'
@@ -299,13 +314,6 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
            WHERE allocation_kind='ALLOCATE'
              AND (reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[]))`,
           [readingIds, workOrderIds],
-        );
-      }
-      const utilityAuditEntityIds = [...utilityMeterIds, ...utilityReadingIds, ...utilityCostAllocationIds];
-      if (utilityAuditEntityIds.length > 0) {
-        await client.query(
-          'DELETE FROM utility_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND entity_id=ANY($3::uuid[])',
-          [tenantId, factoryId, utilityAuditEntityIds],
         );
       }
       if (utilityReadingIds.length > 0) {
