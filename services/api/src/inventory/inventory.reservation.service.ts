@@ -1684,6 +1684,19 @@ export class InventoryReservationService {
     if (item.status !== 'ACTIVE') {
       throw new ConflictException('Finished-good inventory item must remain active to receive production output');
     }
+    if (finishedGoodSerialCode) {
+      const duplicateSerial = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM traceability_units
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND (lower(unit_code) = lower($3) OR lower(barcode_value) = lower($3))
+         ) AS exists`,
+        [input.tenantId, input.factoryId, finishedGoodSerialCode],
+      );
+      if (duplicateSerial.rows[0]?.exists) {
+        throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+      }
+    }
 
     let movementId: string | null = null;
     let quantityAfter: string | null = null;
@@ -1788,33 +1801,41 @@ export class InventoryReservationService {
 
     let traceabilityUnitId: string | null = null;
     if (good.units > 0n) {
-      traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
-        tenantId: input.tenantId,
-        factoryId: input.factoryId,
-        userId: input.userId,
-        correlationId: input.correlationId,
-        unitType: finishedGoodSerialCode ? 'SERIAL' : 'LOT',
-        productRole: 'FINISHED_GOOD',
-        unitCode: finishedGoodSerialCode ?? `FG-${input.productionReportId.toUpperCase()}`,
-        idempotencyKey: finishedGoodSerialCode
-          ? `production-report:${input.productionReportId}:finished-good-serial:${finishedGoodSerialCode.toLowerCase()}:v1`
-          : `production-report:${input.productionReportId}:finished-good-lot:v1`,
-        inventoryItemId: input.finishedItemId,
-        quantity: good.decimal,
-        unit: item.unit,
-        orderId: input.orderId,
-        orderLineId: input.orderLineId,
-        productionReportId: input.productionReportId,
-        attributes: {
-          kind: finishedGoodSerialCode ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
-          ...(finishedGoodSerialCode ? { serial_code: finishedGoodSerialCode } : {}),
-          work_order_id: input.workOrderId,
-          work_order_number: input.workOrderNumber,
-          production_report_id: input.productionReportId,
-          source_movement_id: movementId,
-          sellable: true,
-        },
-      });
+      try {
+        traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          userId: input.userId,
+          correlationId: input.correlationId,
+          unitType: finishedGoodSerialCode ? 'SERIAL' : 'LOT',
+          productRole: 'FINISHED_GOOD',
+          unitCode: finishedGoodSerialCode ?? `FG-${input.productionReportId.toUpperCase()}`,
+          idempotencyKey: finishedGoodSerialCode
+            ? `production-report:${input.productionReportId}:finished-good-serial:${finishedGoodSerialCode.toLowerCase()}:v1`
+            : `production-report:${input.productionReportId}:finished-good-lot:v1`,
+          inventoryItemId: input.finishedItemId,
+          quantity: good.decimal,
+          unit: item.unit,
+          orderId: input.orderId,
+          orderLineId: input.orderLineId,
+          productionReportId: input.productionReportId,
+          attributes: {
+            kind: finishedGoodSerialCode ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
+            ...(finishedGoodSerialCode ? { serial_code: finishedGoodSerialCode } : {}),
+            work_order_id: input.workOrderId,
+            work_order_number: input.workOrderNumber,
+            production_report_id: input.productionReportId,
+            source_movement_id: movementId,
+            sellable: true,
+          },
+        })
+      } catch (error) {
+        const postgresError = error as { code?: unknown };
+        if (finishedGoodSerialCode && postgresError?.code === '23505') {
+          throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+        }
+        throw error;
+      };
 
       // Finished-good LOT/SERIAL stock shares the existing default virtual location with
       // the aggregate ledger. The capacity predicate prevents identity registration
