@@ -1830,8 +1830,12 @@ export class InventoryReservationService {
           },
         });
       } catch (error) {
-        const postgresError = error as { code?: unknown };
-        if (finishedGoodSerialCode && postgresError?.code === '23505') {
+        const postgresError = error as { code?: unknown; constraint?: unknown };
+        const duplicateIdentityConstraint = [
+          'uq_traceability_unit_code_ci',
+          'uq_traceability_unit_barcode_ci',
+        ].includes(String(postgresError?.constraint ?? ''));
+        if (finishedGoodSerialCode && postgresError?.code === '23505' && duplicateIdentityConstraint) {
           throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
         }
         throw error;
