@@ -51,14 +51,20 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
   afterAll(async () => {
     try {
       if (adminPool && itemIds.length > 0) {
+        await adminPool.query('ALTER TABLE inventory_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_stock_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_items DISABLE TRIGGER USER');
         try {
+          // Stock-balance INSERT synchronizes the item's initial quantity into
+          // the default UNASSIGNED inventory location. Remove that dependent
+          // location row before its stock/item parents during fixture cleanup.
+          await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
         } finally {
           await adminPool.query('ALTER TABLE inventory_items ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_stock_balances ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_location_balances ENABLE TRIGGER USER');
         }
       }
     } finally {
