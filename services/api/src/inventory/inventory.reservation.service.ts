@@ -1709,7 +1709,7 @@ export class InventoryReservationService {
       }
 
       const movementKey = `production-output-receipt-${input.productionReportId}`;
-      const movementHash = this.hash({
+      const movementHashPayload: Record<string, unknown> = {
         kind: 'PRODUCTION_OUTPUT_RECEIPT',
         tenantId: input.tenantId,
         factoryId: input.factoryId,
@@ -1717,8 +1717,9 @@ export class InventoryReservationService {
         productionReportId: input.productionReportId,
         finishedItemId: input.finishedItemId,
         goodQuantity: good.decimal,
-        finishedGoodSerialCode,
-      });
+      };
+      if (finishedGoodSerialCode !== null) movementHashPayload.finishedGoodSerialCode = finishedGoodSerialCode;
+      const movementHash = this.hash(movementHashPayload);
       const movementResult = await client.query<MovementRow>(
         `
         INSERT INTO inventory_movements (
