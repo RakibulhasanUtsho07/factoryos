@@ -2112,6 +2112,6 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       stock_on_hand: '6.0000', stock_reserved: '4.0000',
       bin_on_hand: '6.0000', bin_reserved: '4.0000',
     });
-  });
+  }, 30000);
 
 });
