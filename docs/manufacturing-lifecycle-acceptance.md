@@ -26,6 +26,8 @@ This is deliberately different from duplicate-request replay: it validates two i
 
 Authoritative integration path: `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`, test `runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy`.
 
+The complementary three-step routing fixture is `services/api/src/production/production-work-orders.multi-operation.integration.spec.ts`. It now carries an inventory-linked MATERIAL LOT through BOM reservation, cutting → assembly → finishing WIP transfers, final-operation output posting and replay, zero-WIP operation completion, work-order completion, reservation consumption, exact stock/lot balance conservation and deferred source-lot-to-finished-good genealogy. The GRN-backed single-operation acceptance above remains the source for supplier/receipt provenance; neither fixture establishes full manufacturing LOT/SERIAL split/merge or hardware/site acceptance.
+
 The scenario uses one tenant/factory and connected persisted identities:
 
 1. **GRN provenance and incoming quality:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. A supplier inspection HOLD is persisted against the received line, and work-order release is asserted to fail while that hold is active. A recorded RELEASE disposition removes the hold before the same work order can be released.
@@ -67,7 +69,7 @@ Overall factory lifecycle remains **PARTIAL** until:
 
 1. API CI, full PostgreSQL integration CI, production dependency/security checks and SRS/HLD/Blueprint traceability pass on the exact current PR head; rerun after every source change.
 2. Independent review confirms no duplicate/conflicting migrations and the cross-UoM conversion snapshot, concurrent replay, incoming-quality HOLD/RELEASE and rollback assertions pass in the consolidated fixture.
-3. Repeat independent-order contention in the approved staging topology under representative connection-pool/load conditions; PostgreSQL CI now proves the distinct-order transaction/rollback contract, not production lock-wait, timeout or site-capacity acceptance.
+3. Competing independent orders with different idempotency keys are exercised under shared-stock contention in the selected staging topology; duplicate-delivery CI does not prove site concurrency/load acceptance.
 4. Lot-and-serial identities are exercised together across receipt, reservations, multi-operation WIP, output, quality and forward/reverse genealogy, including partial consumption, split/merge and mixed-unit conversions at the factory's configured precision.
 5. Actual-cost capture, material/labour/overhead allocation, WIP/finished-goods valuation and downstream accounting/stock valuation reconciliation are integrated with production and signed off by the finance owner. The existing finance workbench is not proof of manufacturing actual-cost posting.
 6. The complete maker-checker cycle-count journey (blind count, independent approval, stale-balance rejection, recount/escalation and reconciliation) is accepted on physical mobile clients with offline queue, cross-device replay and real ledger reconciliation.

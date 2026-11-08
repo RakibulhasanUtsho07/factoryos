@@ -110,6 +110,32 @@ describe('TraceabilityService input contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('blocks generic LOT-to-SERIAL split writes until a stock-conserving command exists', async () => {
+    const split: CreateGenealogyEventDto = {
+      source_unit_id: UNIT_ID,
+      target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3',
+      relationship_type: 'SPLIT_INTO',
+      quantity: 1,
+    };
+    await expect(service.recordGenealogyEvent(
+      USER_ID, TENANT_ID, FACTORY_ID, split, 'trace-generic-split-blocked', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic LOT merge writes until a stock-conserving command exists', async () => {
+    const merge: CreateGenealogyEventDto = {
+      source_unit_id: UNIT_ID,
+      target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3',
+      relationship_type: 'MERGED_INTO',
+      quantity: 1,
+    };
+    await expect(service.recordGenealogyEvent(
+      USER_ID, TENANT_ID, FACTORY_ID, merge, 'trace-generic-merge-blocked', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid recall bounds before opening a transaction', async () => {
     const invalidDepth: DeclareTraceabilityRecallDto = {
       reason: 'Valid recall rationale', depth: 13, limit: 200,

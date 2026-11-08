@@ -1,4 +1,4 @@
--- WP02 / SRS v2.1 FR-WMS-04: serial identities are indivisible while lots remain splittable.
+-- WP02 / SRS v2.1 FR-WMS-04: serial identities are indivisible; unbacked LOT/SERIAL transformations fail closed.
 BEGIN;
 
 DO $$
@@ -7,6 +7,7 @@ DECLARE
   v_factory UUID := gen_random_uuid();
   v_actor UUID := gen_random_uuid();
   v_item UUID := gen_random_uuid();
+  v_lot_two UUID := gen_random_uuid();
   v_serial_one UUID := gen_random_uuid();
   v_serial_two UUID := gen_random_uuid();
   v_lot UUID := gen_random_uuid();
@@ -15,12 +16,12 @@ DECLARE
   v_fake_id UUID := gen_random_uuid();
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
-  v_genealogy_event UUID := gen_random_uuid();
+  v_lot_split_rejected BOOLEAN := FALSE;
+  v_lot_merge_rejected BOOLEAN := FALSE;
   v_serial_fractional_edge_rejected BOOLEAN := FALSE;
   v_serial_split_rejected BOOLEAN := FALSE;
   v_serial_merge_source_rejected BOOLEAN := FALSE;
   v_serial_merge_target_rejected BOOLEAN := FALSE;
-  v_duplicate_serial_split_target_rejected BOOLEAN := FALSE;
   v_fractional_location_rejected BOOLEAN := FALSE;
   v_duplicate_serial_location_rejected BOOLEAN := FALSE;
   v_fractional_reserved_location_rejected BOOLEAN := FALSE;
@@ -35,6 +36,30 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version = '236_wms_serial_indivisibility'
   ) THEN
     RAISE EXCEPTION 'serial indivisibility migration marker is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version = '238_wms_genealogy_transformations_require_commands'
+  ) THEN
+    RAISE EXCEPTION 'stock-conserving genealogy transformation guard migration marker is missing';
+  END IF;
+
+  -- Migration 238 blocks generic SPLIT_INTO writes before the serial guard runs.
+  -- Keep migration 236's single-parent invariant independently verified from the
+  -- installed trigger/function definition, without fabricating a genealogy edge.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger t
+    WHERE t.tgrelid = 'product_genealogy_events'::regclass
+      AND t.tgname = 'a_product_genealogy_serial_indivisibility'
+      AND t.tgenabled <> 'D'
+  ) THEN
+    RAISE EXCEPTION 'serial genealogy indivisibility trigger is missing or disabled';
+  END IF;
+  IF position(
+    'a serial can have only one SPLIT_INTO parent identity'
+    IN pg_get_functiondef('factoryos_guard_serial_genealogy_indivisibility()'::regprocedure)
+  ) = 0 THEN
+    RAISE EXCEPTION 'serial unique split-parent guard is missing from the installed trigger function';
   END IF;
 
   INSERT INTO tenants (id, slug, name)
@@ -60,7 +85,7 @@ BEGIN
   );
   INSERT INTO inventory_stock_balances (
     tenant_id, factory_id, item_id, quantity_on_hand, quantity_reserved
-  ) VALUES (v_tenant, v_factory, v_item, 10, 0);
+  ) VALUES (v_tenant, v_factory, v_item, 12, 0);
 
   SELECT id INTO v_location
   FROM inventory_locations
@@ -71,7 +96,7 @@ BEGIN
 
   INSERT INTO inventory_location_balances (
     tenant_id, factory_id, item_id, location_id, quantity_on_hand, quantity_reserved
-  ) VALUES (v_tenant, v_factory, v_item, v_location, 10, 0)
+  ) VALUES (v_tenant, v_factory, v_item, v_location, 12, 0)
   ON CONFLICT (tenant_id, factory_id, item_id, location_id)
   DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand,
                 quantity_reserved = EXCLUDED.quantity_reserved;
@@ -95,7 +120,12 @@ BEGIN
      'WSI-LOT-001-' || substr(v_lot::text, 1, 8),
      'WSI-LOT-001-' || substr(v_lot::text, 1, 8),
      v_item, 8, 'PCS', 'WSI-EXT-LOT-001',
-     'wsi-lot-' || v_lot::text, repeat('3', 64), v_actor, v_trace);
+     'wsi-lot-' || v_lot::text, repeat('3', 64), v_actor, v_trace),
+    (v_lot_two, v_tenant, v_factory, 'LOT', 'MATERIAL',
+     'WSI-LOT-002-' || substr(v_lot_two::text, 1, 8),
+     'WSI-LOT-002-' || substr(v_lot_two::text, 1, 8),
+     v_item, 2, 'PCS', 'WSI-EXT-LOT-002',
+     'wsi-lot-two-' || v_lot_two::text, repeat('c', 64), v_actor, v_trace);
 
   INSERT INTO audit_events (
     tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
@@ -106,57 +136,48 @@ BEGIN
     jsonb_build_object('unit_code', u.unit_code, 'unit_type', u.unit_type, 'quantity', u.quantity)
   FROM traceability_units u
   WHERE u.tenant_id = v_tenant AND u.factory_id = v_factory
-    AND u.id IN (v_serial_one, v_serial_two, v_lot);
+    AND u.id IN (v_serial_one, v_serial_two, v_lot, v_lot_two);
 
   INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
   SELECT u.tenant_id, u.factory_id, 'TRACEABILITY_UNIT', u.id, 'TRACEABILITY.UNIT_REGISTERED',
     jsonb_build_object('unit_id', u.id, 'unit_code', u.unit_code, 'unit_type', u.unit_type)
   FROM traceability_units u
   WHERE u.tenant_id = v_tenant AND u.factory_id = v_factory
-    AND u.id IN (v_serial_one, v_serial_two, v_lot);
+    AND u.id IN (v_serial_one, v_serial_two, v_lot, v_lot_two);
 
-  -- A lot may be split into one-unit serial identities.
-  INSERT INTO product_genealogy_events (
-    id, tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
-    quantity, unit, evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
-  ) VALUES (
-    v_genealogy_event, v_tenant, v_factory, v_lot, v_serial_one, 'SPLIT_INTO',
-    1, 'PCS', '{"fixture":"lot-to-serial split"}'::jsonb,
-    'wsi-valid-lot-split-' || v_genealogy_event::text, repeat('4', 64), v_actor, v_trace
-  );
-
-  INSERT INTO audit_events (
-    tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
-    correlation_id, request_id, data_class, payload
-  ) VALUES (
-    v_tenant, v_factory, v_actor, 'TRACEABILITY', 'RECORDED', 'PRODUCT_GENEALOGY_EVENT',
-    v_genealogy_event, v_trace, v_request, 'INTERNAL',
-    jsonb_build_object('source_unit_id', v_lot, 'target_unit_id', v_serial_one,
-      'relationship_type', 'SPLIT_INTO', 'quantity', 1)
-  );
-  INSERT INTO outbox_events (
-    tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
-  ) VALUES (
-    v_tenant, v_factory, 'PRODUCT_GENEALOGY_EVENT', v_genealogy_event,
-    'TRACEABILITY.GENEALOGY_RECORDED',
-    jsonb_build_object('source_unit_id', v_lot, 'target_unit_id', v_serial_one,
-      'relationship_type', 'SPLIT_INTO', 'quantity', 1, 'unit', 'PCS')
-  );
-
-  -- One serial may be created by only one split parent.
+  -- A genealogy-only LOT -> SERIAL edge is not a stock split. The generic path
+  -- must fail until an authorized command conserves aggregate, bin and identity stock.
   BEGIN
     INSERT INTO product_genealogy_events (
       tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
       quantity, unit, evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
     ) VALUES (
       v_tenant, v_factory, v_lot, v_serial_one, 'SPLIT_INTO',
-      1, 'PCS', '{}'::jsonb, 'wsi-duplicate-serial-split-parent', repeat('b', 64), v_actor, v_trace
+      1, 'PCS', '{"fixture":"unbacked split must be blocked"}'::jsonb,
+      'wsi-generic-lot-serial-split-rejected', repeat('4', 64), v_actor, v_trace
     );
   EXCEPTION WHEN check_violation THEN
-    v_duplicate_serial_split_target_rejected := TRUE;
+    v_lot_split_rejected := TRUE;
   END;
-  IF NOT v_duplicate_serial_split_target_rejected THEN
-    RAISE EXCEPTION 'a serial was allowed to receive a second SPLIT_INTO parent';
+  IF NOT v_lot_split_rejected THEN
+    RAISE EXCEPTION 'generic LOT-to-SERIAL genealogy write bypassed stock-conserving split command';
+  END IF;
+
+  -- A LOT -> LOT merge is equally forbidden through the generic edge API/SQL path.
+  BEGIN
+    INSERT INTO product_genealogy_events (
+      tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
+      quantity, unit, evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, v_lot, v_lot_two, 'MERGED_INTO',
+      2, 'PCS', '{"fixture":"unbacked merge must be blocked"}'::jsonb,
+      'wsi-generic-lot-merge-rejected', repeat('d', 64), v_actor, v_trace
+    );
+  EXCEPTION WHEN check_violation THEN
+    v_lot_merge_rejected := TRUE;
+  END;
+  IF NOT v_lot_merge_rejected THEN
+    RAISE EXCEPTION 'generic LOT-to-LOT genealogy write bypassed stock-conserving merge command';
   END IF;
 
   -- A serial source cannot represent fractional consumption.
@@ -386,12 +407,38 @@ BEGIN
     WHERE tenant_id = v_tenant AND factory_id = v_factory
       AND item_id = v_item AND traceability_unit_id = v_lot
       AND location_id = v_location AND quantity_on_hand = 8
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_traceability_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND traceability_unit_id = v_lot_two
+      AND location_id = v_location AND quantity_on_hand = 2
   ) THEN
-    RAISE EXCEPTION 'lot partial/splittable stock quantity was unexpectedly changed';
+    RAISE EXCEPTION 'failed transformation attempt changed LOT identity stock';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM product_genealogy_events
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND relationship_type IN ('SPLIT_INTO', 'MERGED_INTO')
+  ) THEN
+    RAISE EXCEPTION 'blocked transformations left genealogy rows without stock-ledger commands';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM inventory_stock_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND quantity_on_hand = 12 AND quantity_reserved = 1
+  ) OR NOT EXISTS (
+    SELECT 1 FROM inventory_location_balances
+    WHERE tenant_id = v_tenant AND factory_id = v_factory
+      AND item_id = v_item AND location_id = v_location
+      AND quantity_on_hand = 12 AND quantity_reserved = 1
+  ) THEN
+    RAISE EXCEPTION 'failed transformation attempt changed aggregate or BIN stock';
   END IF;
 
   SET CONSTRAINTS ALL IMMEDIATE;
-  RAISE NOTICE 'serial indivisibility passed: genealogy, location, unique reservation, full issue/release and transfer guards; lot-to-serial split remains supported';
+  RAISE NOTICE 'serial indivisibility and fail-closed LOT/SERIAL transformation guards passed; no unbacked split/merge edge or stock change was recorded';
 END;
 $$;
 
