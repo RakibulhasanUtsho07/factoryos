@@ -281,15 +281,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       }
 
       if (qualityInspectionIds.length > 0) {
-        await client.query(
-          `DELETE FROM audit_events
-           WHERE tenant_id=$1 AND factory_id=$2
-             AND correlation_id IN (
-               SELECT correlation_id FROM quality_inspections
-               WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])
-             )`,
-          [tenantId, factoryId, qualityInspectionIds],
-        );
+        // General audit_events are append-only evidence; retain the quality-hold quarantine audit rows.
         await client.query(
           'DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
           [tenantId, factoryId, qualityInspectionIds],
