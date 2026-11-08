@@ -14357,9 +14357,18 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
+      "directCodeReferences": [
+        "services/api/src/production/production-work-orders.controller.ts",
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
+        "services/api/src/procurement/procurement.service.ts",
+        "services/api/src/procurement/goods-receipt.service.ts"
+      ],
       "migrationReferences": [],
-      "automatedTestReferences": [],
+      "automatedTestReferences": [
+        "services/api/src/production/production-work-orders.service.spec.ts",
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
