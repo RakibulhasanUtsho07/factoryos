@@ -31,7 +31,7 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='public.quality_supplier_quality_events'::regclass AND relrowsecurity AND relforcerowsecurity) THEN
     RAISE EXCEPTION 'Supplier quality evidence must retain forced tenant RLS';
   END IF;
-  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='238_supplier_performance_evidence') THEN
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='239_supplier_performance_evidence') THEN
     RAISE EXCEPTION 'Supplier performance migration marker is missing';
   END IF;
   v_report:=public.factoryos_supplier_performance_report(
