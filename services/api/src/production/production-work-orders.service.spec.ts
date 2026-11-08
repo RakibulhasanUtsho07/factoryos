@@ -193,4 +193,98 @@ describe('ProductionWorkOrdersService request contracts', () => {
     )).rejects.toThrow('reason is required to cancel a work order');
     expect(database.transaction).not.toHaveBeenCalled();
   });
+
+
+  it('allocates shared eligible stock and approved PO supply once by order priority without floating-point arithmetic', async () => {
+    const firstWorkOrder = '11111111-1111-4111-8111-111111111111';
+    const secondWorkOrder = '22222222-2222-4222-8222-222222222222';
+    const requirementOne = '33333333-3333-4333-8333-333333333333';
+    const requirementTwo = '44444444-4444-4444-8444-444444444444';
+    const itemId = '55555555-5555-4555-8555-555555555555';
+    const query = jest.fn();
+    query.mockResolvedValueOnce({ rows: [
+      {
+        work_order_id: firstWorkOrder, work_order_number: 'WO-001', work_order_status: 'IN_PROGRESS',
+        due_date: '2026-11-10', planned_start_date: '2026-11-08', priority: 1, created_at: '2026-11-08T08:00:00Z',
+        requirement_id: requirementOne, bom_line_id: '66666666-6666-4666-8666-666666666666',
+        line_number: 1, component_item_id: itemId, component_sku: 'MAT-1', component_name: 'Material',
+        component_unit: 'PCS', required_quantity: '5.0000', allocated_quantity: '1.0000', consumed_quantity: '1.0000',
+      },
+      {
+        work_order_id: secondWorkOrder, work_order_number: 'WO-002', work_order_status: 'RELEASED',
+        due_date: '2026-11-12', planned_start_date: '2026-11-09', priority: 2, created_at: '2026-11-08T09:00:00Z',
+        requirement_id: requirementTwo, bom_line_id: '77777777-7777-4777-8777-777777777777',
+        line_number: 1, component_item_id: itemId, component_sku: 'MAT-1', component_name: 'Material',
+        component_unit: 'PCS', required_quantity: '4.0000', allocated_quantity: '0.0000', consumed_quantity: '0.0000',
+      },
+    ] });
+    query.mockResolvedValueOnce({ rows: [{
+      item_id: itemId, inventory_unit: 'PCS', status: 'ACTIVE', allocation_policy: 'FIFO',
+      require_traceability: false, has_identity: false, eligible_on_hand_free_quantity: '4.0000',
+      as_of_date: '2026-11-08',
+    }] });
+    query.mockResolvedValueOnce({ rows: [
+      { item_id: itemId, inventory_unit: 'PCS', purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-001', purchase_order_line_id: '99999999-9999-4999-8999-999999999991',
+        expected_delivery_date: '2026-11-09', open_quantity: '2.0000', unit_compatible: true },
+      { item_id: itemId, inventory_unit: 'PCS', purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-002', purchase_order_line_id: '99999999-9999-4999-8999-999999999992',
+        expected_delivery_date: '2026-11-15', open_quantity: '3.0000', unit_compatible: true },
+      { item_id: itemId, inventory_unit: 'PCS', purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-003', purchase_order_line_id: '99999999-9999-4999-8999-999999999993',
+        expected_delivery_date: null, open_quantity: '2.0000', unit_compatible: true },
+      { item_id: itemId, inventory_unit: 'PCS', purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-004', purchase_order_line_id: '99999999-9999-4999-8999-999999999994',
+        expected_delivery_date: '2026-11-10', open_quantity: '9.0000', unit_compatible: false },
+    ] });
+    const client = { query };
+    database.transaction.mockImplementation(async (...args: unknown[]) => {
+      const callback = args[1] as (db: typeof client) => Promise<unknown>;
+      return callback(client);
+    });
+
+    const result = await service.getMaterialShortageRadar(USER, TENANT, FACTORY, 50);
+    const rows = result.items as Array<Record<string, unknown>>;
+    expect(database.transaction).toHaveBeenCalledWith(
+      { tenantId: TENANT, userId: USER, isolationLevel: 'REPEATABLE READ', readOnly: true },
+      expect.any(Function),
+    );
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(result.work_order_count).toBe(2);
+    expect(result.requirement_count).toBe(2);
+    expect(rows[0]).toMatchObject({
+      work_order_id: firstWorkOrder,
+      required_quantity: '5.0000',
+      allocated_quantity: '1.0000',
+      consumed_quantity: '1.0000',
+      unfulfilled_quantity: '3.0000',
+      eligible_on_hand_pool_quantity: '4.0000',
+      projected_on_hand_quantity: '3.0000',
+      approved_po_open_pool_quantity: '7.0000',
+      projected_incoming_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+      material_ready_basis: 'ELIGIBLE_ON_HAND_AND_EXISTING_RESERVATIONS',
+      projected_material_ready_date: '2026-11-08',
+    });
+    expect(rows[1]).toMatchObject({
+      work_order_id: secondWorkOrder,
+      required_quantity: '4.0000',
+      unfulfilled_quantity: '4.0000',
+      projected_on_hand_quantity: '1.0000',
+      projected_incoming_quantity: '3.0000',
+      projected_shortage_quantity: '0.0000',
+      incoming_unit_mismatch_line_count: 1,
+      shortage_by_due_date_quantity: '1.0000',
+      shortage_date: '2026-11-12',
+      projected_material_ready_date: '2026-11-15',
+      material_ready_basis: 'DATED_APPROVED_PO_SUPPLY',
+    });
+  });
+
+  it('rejects malformed factory scope before opening a read-only radar transaction', async () => {
+    await expect(service.getMaterialShortageRadar('bad-user', TENANT, FACTORY)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
 });
