@@ -9051,9 +9051,18 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
+      "directCodeReferences": [
+        "services/api/src/production/production-work-orders.controller.ts",
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
+        "services/api/src/procurement/procurement.service.ts",
+        "services/api/src/procurement/goods-receipt.service.ts"
+      ],
       "migrationReferences": [],
-      "automatedTestReferences": [],
+      "automatedTestReferences": [
+        "services/api/src/production/production-work-orders.service.spec.ts",
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -9061,7 +9070,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "The bounded order-level material shortage radar has direct controller/service and unit/PostgreSQL coverage. It reports pinned BOM demand, actual reservations/consumption, shared eligible stock priority allocation, compatible approved-PO residuals and due-date material readiness; the integration case proves ITEM and LOT quality holds exclude stock and restoration after release. No migration was introduced; FR-MAT-02 remains OPEN / NOT_ACCEPTED pending owner approval of the no-migration basis, active-scope/priority attestation, exact-final-head CI, representative staging/site validation, named owner and independent reviewer. It does not replace horizon-based MRP or finite-capacity planning.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
