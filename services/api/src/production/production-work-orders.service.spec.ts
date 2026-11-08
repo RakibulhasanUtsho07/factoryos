@@ -364,6 +364,15 @@ describe('ProductionWorkOrdersService request contracts', () => {
     );
   });
 
+  it('rejects material radar limits outside the supported 1–100 range before opening a transaction', async () => {
+    await expect(service.getMaterialShortageRadar(USER, TENANT, FACTORY, 0))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getMaterialShortageRadar(USER, TENANT, FACTORY, 101))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed factory scope before opening a read-only radar transaction', async () => {
     await expect(service.getMaterialShortageRadar('bad-user', TENANT, FACTORY)).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
