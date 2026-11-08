@@ -9032,9 +9032,18 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
+      "directCodeReferences": [
+        "services/api/src/production/production-work-orders.controller.ts",
+        "services/api/src/production/production-work-orders.service.ts",
+        "services/api/src/inventory/inventory.reservation.service.ts",
+        "services/api/src/procurement/procurement.service.ts",
+        "services/api/src/procurement/goods-receipt.service.ts"
+      ],
       "migrationReferences": [],
-      "automatedTestReferences": [],
+      "automatedTestReferences": [
+        "services/api/src/production/production-work-orders.service.spec.ts",
+        "services/api/src/production/production-work-orders.multi-operation.integration.spec.ts"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -9042,7 +9051,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Direct controller/service, inventory/procurement dependencies and unit/PostgreSQL integration tests now evidence the bounded order-level material shortage radar. No schema migration was introduced by this read-only projection; the no-migration rationale is not yet independently approved. Remains OPEN / NOT_ACCEPTED pending exact final-head CI, staging/site validation, source-owner scope/priority attestation, named owner and independent reviewer; do not infer requirement PASS.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -14376,7 +14385,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Direct controller/service, inventory/procurement dependencies and unit/PostgreSQL integration tests now evidence the bounded order-level readiness projection. No schema migration was introduced by this read-only projection; the no-migration rationale is not yet independently approved. Remains PARTIAL / OPEN / NOT_ACCEPTED pending broader horizon MRP and capacity/calendar planning, representative live-site/provider validation, exact final-head CI, source-owner scope/priority attestation, named owner and independent reviewer; do not infer requirement PASS.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
