@@ -70,3 +70,11 @@ Link this matrix from the final Round 43 audit and preserve exact source/test/re
 ### WP07 utility cost allocation evidence (migration 243)
 
 The utility meter lifecycle now freezes currency/cost-centre snapshots at reading capture, and an append-only, idempotent work-order allocation ledger enforces released work-order time windows, exact source rate/UOM/currency snapshots, net consumption capacity, full reversal semantics and immutable utility audit events. Evidence: `docs/utility-work-order-cost-allocation.md`, `services/api/src/utilities/utility-work-order-cost-allocation.service.ts`, `services/api/test/utility-work-order-cost-allocation-contract.sql`, `services/api/src/production/production-work-orders.multi-operation.integration.spec.ts`, and `services/api/test/finance-utility-work-order-cost-allocation.sql`. This is an operational cost attribution input only; calibrated site meter/HIL, finance owner acceptance, landed cost and WIP/finished-goods valuation remain OPEN.
+
+
+### WP02 finance/procurement source reconciliation evidence
+
+- External AP `SUPPLIER_INVOICE_LINE` facts require one posted GRN line, accepted quantity, approved PO unit price and canonical tenant-scoped PO supplier match; `docs/supplier-invoice-three-way-match.md` and the finance operational-source tests document the contract. AP remains the invoice/payables system of record.
+- Production material costing can reconcile one immutable WMS consumption-to-LOT/SERIAL allocation to its direct posted-GRN/approved-PO reference rate only; identities created by unsupported transformations fail closed. See `docs/wp02-production-material-cost-reconciliation.md`.
+- Finance can source utility cost only from a live unreversed work-order allocation with capture-time quantity, rate, UOM, currency and cost-centre snapshots. See `docs/utility-work-order-cost-allocation.md`.
+- These are technical source-reconciliation inputs, not landed-cost allocation, complete manufacturing actual cost, WIP/finished-good valuation, GL posting, or finance-owner acceptance. WP02/WP07 remain PARTIAL pending remaining integrations and operational/reviewer evidence.
