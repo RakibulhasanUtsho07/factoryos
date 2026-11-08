@@ -485,6 +485,19 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     workOrderIds.push(draft.id);
 
+    const beforeReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const beforeReleaseMaterial = (beforeReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(beforeReleaseMaterial).toMatchObject({
+      required_quantity: '3.0000',
+      allocated_quantity: '0.0000',
+      consumed_quantity: '0.0000',
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_incoming_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
     const released = await service.transitionWorkOrder(
       TEST_USER_ID,
       tenantId,
@@ -497,6 +510,17 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       randomUUID(),
     );
     expect(released.status).toBe('RELEASED');
+
+    const afterReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const afterReleaseMaterial = (afterReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(afterReleaseMaterial).toMatchObject({
+      allocated_quantity: '3.0000',
+      consumed_quantity: '0.0000',
+      unfulfilled_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
 
     const initial = await readState(draft.id);
     expect(initial.operations.map((operation) => operation.status)).toEqual(['READY', 'PLANNED', 'PLANNED']);
