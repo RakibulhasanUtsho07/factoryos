@@ -190,8 +190,32 @@ export class InventoryService {
           `
           WITH selected_item AS (
             SELECT
-              i.id, i.tenant_id, i.factory_id, i.sku, i.name, i.unit, i.status,
+              i.id, i.tenant_id, i.factory_id, i.sku, i.name, i.unit, i.status, i.sector_code,
               b.quantity_on_hand, b.quantity_reserved,
+              COALESCE(
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id AND p.policy_scope='FACTORY'),
+                (SELECT ts.allocation_policy FROM traceability_settings ts
+                 WHERE ts.tenant_id=i.tenant_id AND ts.factory_id=i.factory_id),
+                'FIFO'
+              ) AS allocation_policy,
+              COALESCE(
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id AND p.policy_scope='FACTORY'),
+                FALSE
+              ) AS require_traceability,
               EXISTS (
                 SELECT 1
                 FROM quality_holds qh
@@ -278,6 +302,80 @@ export class InventoryService {
                 AS expired_unallocated_quantity,
               COUNT(*)::integer AS tracked_identity_count
             FROM classified_traceability
+          ),
+          allocation_identity AS (
+            SELECT
+              s.id AS item_id,
+              s.allocation_policy,
+              s.require_traceability,
+              COALESCE(bool_or(tu.unit_type='LOT'),FALSE) AS has_lot,
+              COALESCE(bool_or(tu.unit_type='SERIAL'),FALSE) AS has_serial,
+              (COUNT(tu.id)>0) AS has_identity
+            FROM selected_item s
+            LEFT JOIN traceability_units tu
+              ON tu.tenant_id=s.tenant_id AND tu.factory_id=s.factory_id
+             AND tu.inventory_item_id=s.id
+             AND tu.product_role='MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+            GROUP BY s.id,s.allocation_policy,s.require_traceability
+          ),
+          allocatable_stock AS (
+            SELECT
+              CASE
+                WHEN p.allocation_policy IN ('LOT','SERIAL') OR p.require_traceability OR p.has_identity
+                THEN COALESCE((
+                  SELECT SUM(tlb.quantity_on_hand-tlb.quantity_reserved)
+                  FROM inventory_traceability_location_balances tlb
+                  JOIN traceability_units tu
+                    ON tu.id=tlb.traceability_unit_id AND tu.tenant_id=tlb.tenant_id
+                   AND tu.factory_id=tlb.factory_id AND tu.inventory_item_id=tlb.item_id
+                  JOIN inventory_locations l
+                    ON l.id=tlb.location_id AND l.tenant_id=tlb.tenant_id AND l.factory_id=tlb.factory_id
+                  JOIN inventory_locations parent
+                    ON parent.id=l.parent_location_id AND parent.tenant_id=l.tenant_id AND parent.factory_id=l.factory_id
+                  WHERE tlb.tenant_id=s.tenant_id AND tlb.factory_id=s.factory_id AND tlb.item_id=s.id
+                    AND tu.product_role='MATERIAL'
+                    AND tu.unit_type=CASE
+                      WHEN p.allocation_policy='LOT' THEN 'LOT'
+                      WHEN p.allocation_policy='SERIAL' THEN 'SERIAL'
+                      WHEN p.has_lot THEN 'LOT'
+                      ELSE 'SERIAL'
+                    END
+                    AND tu.status='ACTIVE'
+                    AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                    AND NOT (tu.attributes @> '{\"damaged\":true}'::jsonb)
+                    AND NOT (tu.attributes @> '{\"held\":true}'::jsonb)
+                    AND NOT (tu.attributes @> '{\"quarantined\":true}'::jsonb)
+                    AND upper(COALESCE(tu.attributes->>'condition','')) NOT IN ('DAMAGED','HELD','QUARANTINED','EXPIRED')
+                    AND NOT EXISTS (
+                      SELECT 1 FROM quality_holds qh
+                      WHERE qh.tenant_id=tu.tenant_id AND qh.factory_id=tu.factory_id
+                        AND qh.status='ACTIVE'
+                        AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
+                    )
+                    AND l.status='ACTIVE' AND l.picking_enabled=TRUE AND l.location_type='BIN'
+                    AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status='ACTIVE'
+                    AND tlb.quantity_on_hand>tlb.quantity_reserved
+                ),0)
+                WHEN p.allocation_policy IN ('FIFO','FEFO') AND NOT p.has_identity
+                THEN COALESCE((
+                  SELECT SUM(lb.quantity_on_hand-lb.quantity_reserved)
+                  FROM inventory_location_balances lb
+                  JOIN inventory_locations l
+                    ON l.id=lb.location_id AND l.tenant_id=lb.tenant_id AND l.factory_id=lb.factory_id
+                  LEFT JOIN inventory_locations parent
+                    ON parent.id=l.parent_location_id AND parent.tenant_id=l.tenant_id AND parent.factory_id=l.factory_id
+                  WHERE lb.tenant_id=s.tenant_id AND lb.factory_id=s.factory_id AND lb.item_id=s.id
+                    AND l.status='ACTIVE' AND l.picking_enabled=TRUE
+                    AND lb.quantity_on_hand>lb.quantity_reserved
+                    AND (
+                      (l.location_type='BIN' AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status='ACTIVE')
+                      OR (l.is_default=TRUE AND l.location_type='VIRTUAL')
+                    )
+                ),0)
+                ELSE 0
+              END::numeric(18,4) AS allocatable_quantity
+            FROM selected_item s
+            JOIN allocation_identity p ON p.item_id=s.id
           ),
           expected_supply AS (
             SELECT
@@ -391,14 +489,7 @@ export class InventoryService {
             s.quantity_reserved::text AS allocated_quantity,
             CASE
               WHEN s.status <> 'ACTIVE' OR s.item_wide_quality_hold THEN 0::numeric(18,4)
-              ELSE GREATEST(
-                s.quantity_on_hand
-                  - s.quantity_reserved
-                  - COALESCE(c.quarantined_unallocated_quantity, 0)
-                  - COALESCE(c.damaged_unallocated_quantity, 0)
-                  - COALESCE(c.expired_unallocated_quantity, 0),
-                0
-              )::numeric(18,4)
+              ELSE COALESCE(a.allocatable_quantity,0)
             END::text AS available_quantity,
             CASE WHEN s.item_wide_quality_hold
               THEN s.quantity_on_hand
@@ -421,6 +512,7 @@ export class InventoryService {
             a.order_evidence AS first_affected_production_order
           FROM selected_item s
           CROSS JOIN condition_totals c
+          LEFT JOIN allocatable_stock a ON a.allocatable_quantity IS NOT NULL
           LEFT JOIN expected_supply e ON e.item_id = s.id
           LEFT JOIN first_affected_order a ON TRUE
           LIMIT 1
