@@ -521,27 +521,41 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       const heldItemId = isItemScope ? componentItemId : null;
       const heldUnitId = isItemScope ? null : materialLot.id;
       const correlationId = randomUUID();
-      await adminPool.query(
-        `INSERT INTO quality_inspections (
-           id, tenant_id, factory_id, inspection_type, target_type, target_id,
-           inventory_item_id, traceability_unit_id, status, idempotency_key, request_hash,
-           created_by_user_id, updated_by_user_id, correlation_id
-         ) VALUES ($1,$2,$3,'INVENTORY',$4,$5,$6::uuid,$7::uuid,'OPEN',$8,repeat('d',64),$9,$9,$10::uuid)`,
-        [
-          inspectionId, tenantId, factoryId, targetType, targetId, heldItemId, heldUnitId,
-          'wo-multi-quality-inspection-' + randomUUID(), TEST_USER_ID, correlationId,
-        ],
-      );
-      await adminPool.query(
-        `INSERT INTO quality_holds (
-           tenant_id, factory_id, inspection_id, inventory_item_id, traceability_unit_id,
-           reason, created_by_user_id, correlation_id
-         ) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6,$7,$8::uuid)`,
-        [
-          tenantId, factoryId, inspectionId, heldItemId, heldUnitId,
-          'Material quality hold regression fixture', TEST_USER_ID, correlationId,
-        ],
-      );
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspections (
+             id, tenant_id, factory_id, inspection_type, target_type, target_id,
+             inventory_item_id, traceability_unit_id, status, idempotency_key, request_hash,
+             created_by_user_id, updated_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INVENTORY',$4,$5,$6::uuid,$7::uuid,'OPEN',$8,repeat('d',64),$9,$9,$10::uuid)`,
+          [
+            inspectionId, tenantId, factoryId, targetType, targetId, heldItemId, heldUnitId,
+            'wo-multi-quality-inspection-' + randomUUID(), TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_holds (
+             tenant_id, factory_id, inspection_id, inventory_item_id, traceability_unit_id,
+             reason, created_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6,$7,$8::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, heldItemId, heldUnitId,
+            'Material quality hold regression fixture', TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
       return inspectionId;
     };
 
