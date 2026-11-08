@@ -731,9 +731,18 @@ export class InventoryService {
                     )
                 ),0)
                 ELSE 0
-              END::numeric(18,4) AS allocatable_quantity
+              END::numeric(18,4) AS raw_allocatable_quantity
             FROM selected_item s
             JOIN allocation_identity p ON p.item_id=s.id
+          ),
+          allocatable_stock_capped AS (
+            SELECT
+              LEAST(
+                GREATEST(raw_allocatable_quantity, 0),
+                GREATEST(quantity_on_hand - quantity_reserved, 0)
+              )::numeric(18,4) AS allocatable_quantity
+            FROM allocatable_stock
+            CROSS JOIN selected_item
           ),
           expected_supply AS (
             SELECT
@@ -870,7 +879,7 @@ export class InventoryService {
             a.order_evidence AS first_affected_production_order
           FROM selected_item s
           CROSS JOIN condition_totals c
-          CROSS JOIN allocatable_stock eligible
+          CROSS JOIN allocatable_stock_capped eligible
           LEFT JOIN expected_supply e ON e.item_id = s.id
           LEFT JOIN first_affected_order a ON TRUE
           LIMIT 1
