@@ -3,7 +3,7 @@
   "registerId": "FOS-TRACE-P0P1-01",
   "generatedFrom": "docs/srs-v2.1-requirement-evidence-matrix.md",
   "generatedAgainstMainMergeSha": "91dd6a5629562ca8ce01fbc8892a7200d85577c8",
-  "generatedOn": "2026-11-04",
+  "generatedOn": "2026-11-08",
   "status": "OPEN_NOT_ACCEPTED",
   "policy": {
     "knownPriorityGateRows": 805,
