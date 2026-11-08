@@ -15017,6 +15017,10 @@
         {
           "path": "services/api/src/inventory/inventory.reservation.service.integration.spec.ts",
           "assertion": "PostgreSQL allocation, item-wide quarantine, approved PO/posted GRN remainder, damaged/expired tracked lot and first affected work-order fixtures"
+        },
+        {
+          "path": "services/api/src/inventory/inventory.availability-exposure.integration.spec.ts",
+          "assertion": "PostgreSQL allocator-aware WMS availability including non-picking BIN exclusion, quality-hold fail-closed behavior/release restoration, tracked LOT/SERIAL conditions, and READ ONLY transaction semantics"
         }
       ],
       "ciRunUrls": [],
@@ -15026,7 +15030,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Direct service/controller and unit/PostgreSQL test references now exist on the implementation branch. Keep OPEN / NOT_ACCEPTED: exact-head CI, reviewed migration-N/A determination, source-owner priority/scope attestation, named owner/reviewer and site/WMS acceptance evidence are not yet complete.",
+      "closureNote": "Canonical service/controller and unit/PostgreSQL test references now exist on the integration branch. Both compatibility and allocator-aware projections run in one tenant-scoped REPEATABLE READ / READ ONLY transaction; exact-head CI, independent review, source-owner priority/scope attestation, named owner/reviewer and live site/WMS acceptance evidence are still required. Keep OPEN / NOT_ACCEPTED.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
