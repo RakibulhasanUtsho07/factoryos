@@ -8,6 +8,8 @@ import { InventoryLocationService } from '../inventory/inventory.location.servic
 import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { TraceabilityService } from '../inventory/traceability.service';
 import { ProductionWorkOrdersService } from './production-work-orders.service';
+import { UtilitiesService } from '../utilities/utilities.service';
+import { UtilityWorkOrderCostAllocationService } from '../utilities/utility-work-order-cost-allocation.service';
 
 const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TARGET_QUANTITY = 3;
@@ -34,6 +36,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   let service: ProductionWorkOrdersService;
   let locationService: InventoryLocationService;
   let traceabilityService: TraceabilityService;
+  let utilitiesService: UtilitiesService;
+  let utilityWorkOrderCostAllocationService: UtilityWorkOrderCostAllocationService;
   let tenantId: string;
   let factoryId: string;
   let approverUserId: string;
@@ -47,6 +51,10 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   const warehouseIds: string[] = [];
   const binIds: string[] = [];
   const workOrderIds: string[] = [];
+  const qualityInspectionIds: string[] = [];
+  const utilityMeterIds: string[] = [];
+  const utilityReadingIds: string[] = [];
+  const utilityCostAllocationIds: string[] = [];
 
   const audit = { record: async () => undefined } as unknown as AuditService;
 
@@ -236,12 +244,19 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     locationService = new InventoryLocationService(database as never, audit);
     service = new ProductionWorkOrdersService(database as never, audit, inventory);
     traceabilityService = new TraceabilityService(database as never);
+    utilitiesService = new UtilitiesService(database as never);
+    utilityWorkOrderCostAllocationService = new UtilityWorkOrderCostAllocationService(database as never);
   });
 
   afterAll(async () => {
     if (!adminPool) return;
     const mutableTables = [
+      'quality_holds',
+      'quality_inspections',
+      'quality_inspection_events',
+      'quality_audit_events',
       'product_genealogy_events',
+      'production_output_posting_serial_units',
       'production_output_postings',
       'order_production_reports',
       'traceability_unit_status_events',
@@ -265,12 +280,84 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       'product_versions',
       'product_definitions',
       'manufacturing_work_centres',
+      'utility_reading_work_order_cost_allocations',
+      'utility_meter_readings',
+      'utility_meters',
+      'utility_audit_events',
     ];
     const client = await adminPool.connect();
     try {
       await client.query('BEGIN');
       for (const table of mutableTables) {
         await client.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      if (qualityInspectionIds.length > 0) {
+        // Retain general audit evidence; remove only the scoped fixture records created above.
+        await client.query(
+          'DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_INSPECTION'
+             AND aggregate_id = ANY($3::uuid[]) AND event_type='QUALITY.INSPECTION_CHANGED'`,
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_inspection_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+      }
+      if (utilityReadingIds.length > 0 || workOrderIds.length > 0) {
+        const readingIds = utilityReadingIds;
+        const allocationAuditRows = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM utility_reading_work_order_cost_allocations
+           WHERE reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[])`,
+          [readingIds, workOrderIds],
+        );
+        const utilityAuditEntityIds = [
+          ...utilityMeterIds, ...utilityReadingIds, ...utilityCostAllocationIds,
+          ...allocationAuditRows.rows.map((row) => row.id),
+        ];
+        if (utilityAuditEntityIds.length > 0) {
+          await client.query(
+            'DELETE FROM utility_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND entity_id=ANY($3::uuid[])',
+            [tenantId, factoryId, utilityAuditEntityIds],
+          );
+        }
+        await client.query(
+          `DELETE FROM utility_reading_work_order_cost_allocations
+           WHERE allocation_kind='REVERSAL'
+             AND (reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[]))`,
+          [readingIds, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM utility_reading_work_order_cost_allocations
+           WHERE allocation_kind='ALLOCATE'
+             AND (reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[]))`,
+          [readingIds, workOrderIds],
+        );
+      }
+      if (utilityReadingIds.length > 0) {
+        await client.query(
+          'DELETE FROM utility_meter_readings WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])',
+          [tenantId, factoryId, utilityReadingIds],
+        );
+      }
+      if (utilityMeterIds.length > 0) {
+        await client.query(
+          'DELETE FROM utility_meters WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])',
+          [tenantId, factoryId, utilityMeterIds],
+        );
       }
 
       if (workOrderIds.length > 0) {
@@ -326,7 +413,56 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
              ))`,
           [tenantId, factoryId, inventoryItemIds],
         );
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE aggregate_type='PRODUCT_GENEALOGY_EVENT'
+             AND aggregate_id IN (
+               SELECT g.id FROM product_genealogy_events g
+               JOIN production_output_postings p
+                 ON p.tenant_id=g.tenant_id AND p.factory_id=g.factory_id
+               WHERE p.tenant_id=$1 AND p.factory_id=$2
+                 AND p.work_order_id=ANY($3::uuid[])
+                 AND g.target_unit_id=p.scrap_traceability_unit_id
+             )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM product_genealogy_events g USING production_output_postings p
+           WHERE p.tenant_id=$1 AND p.factory_id=$2
+             AND p.work_order_id=ANY($3::uuid[])
+             AND g.tenant_id=p.tenant_id AND g.factory_id=p.factory_id
+             AND g.target_unit_id=p.scrap_traceability_unit_id`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM outbox_events WHERE aggregate_id IN (
+             SELECT p.scrap_traceability_unit_id FROM production_output_postings p
+             WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.work_order_id=ANY($3::uuid[])
+               AND p.scrap_traceability_unit_id IS NOT NULL
+           )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2
+           AND unit_id IN (
+             SELECT p.scrap_traceability_unit_id FROM production_output_postings p
+             WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.work_order_id=ANY($3::uuid[])
+               AND p.scrap_traceability_unit_id IS NOT NULL
+           )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          'DELETE FROM production_output_posting_serial_units WHERE tenant_id=$1 AND factory_id=$2 AND production_output_posting_id IN (SELECT id FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, workOrderIds],
+        );
         await client.query('DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[])', [tenantId, factoryId, workOrderIds]);
+        await client.query(
+          `DELETE FROM traceability_units
+           WHERE tenant_id=$1 AND factory_id=$2
+             AND attributes->>'kind'='PRODUCTION_SCRAP'
+             AND attributes->>'work_order_id'=ANY($3::text[])`,
+          [tenantId, factoryId, workOrderIds],
+        );
         await client.query(
           'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
           [tenantId, factoryId, inventoryItemIds],
@@ -485,6 +621,155 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     workOrderIds.push(draft.id);
 
+    const beforeReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const beforeReleaseMaterial = (beforeReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(beforeReleaseMaterial).toMatchObject({
+      required_quantity: '3.0000',
+      allocated_quantity: '0.0000',
+      consumed_quantity: '0.0000',
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_incoming_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
+    const createActiveQualityHold = async (scope: 'ITEM' | 'LOT'): Promise<string> => {
+      const inspectionId = randomUUID();
+      qualityInspectionIds.push(inspectionId);
+      const isItemScope = scope === 'ITEM';
+      const targetType = isItemScope ? 'INVENTORY_ITEM' : 'TRACEABILITY_UNIT';
+      const targetId = isItemScope ? componentItemId : materialLot.id;
+      const heldItemId = isItemScope ? componentItemId : null;
+      const heldUnitId = isItemScope ? null : materialLot.id;
+      const correlationId = randomUUID();
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspections (
+             id, tenant_id, factory_id, inspection_type, target_type, target_id,
+             inventory_item_id, traceability_unit_id, status, idempotency_key, request_hash,
+             created_by_user_id, updated_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INVENTORY',$4,$5,$6::uuid,$7::uuid,'OPEN',$8,repeat('d',64),$9,$9,$10::uuid)`,
+          [
+            inspectionId, tenantId, factoryId, targetType, targetId, heldItemId, heldUnitId,
+            'wo-multi-quality-inspection-' + randomUUID(), TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspection_events (
+             tenant_id, factory_id, inspection_id, version, from_status, to_status, action, reason,
+             idempotency_key, request_hash, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,1,NULL,'OPEN','CREATED',$4,$5,repeat('e',64),$6,$7::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, 'Material quality hold regression inspection',
+            'wo-multi-quality-inspection-created-' + inspectionId, TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_audit_events (
+             tenant_id, factory_id, inspection_id, action_type, payload, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INSPECTION_CREATED',$4::jsonb,$5,$6::uuid)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ target_type: targetType, target_id: targetId, status: 'OPEN' }),
+            TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO outbox_events (
+             tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+           ) VALUES ($1,$2,'QUALITY_INSPECTION',$3,'QUALITY.INSPECTION_CHANGED',$4::jsonb)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ inspection_id: inspectionId, action: 'INSPECTION_CREATED', status: 'OPEN', correlation_id: correlationId }),
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_holds (
+             tenant_id, factory_id, inspection_id, inventory_item_id, traceability_unit_id,
+             reason, created_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6,$7,$8::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, heldItemId, heldUnitId,
+            'Material quality hold regression fixture', TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
+      return inspectionId;
+    };
+
+    const releaseQualityHold = async (inspectionId: string) => {
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        const updated = await qualityClient.query(
+          `UPDATE quality_holds
+           SET status='RELEASED', released_by_user_id=$1, released_at=clock_timestamp(),
+               release_reason=$2, updated_at=clock_timestamp()
+           WHERE tenant_id=$3 AND factory_id=$4 AND inspection_id=$5 AND status='ACTIVE'`,
+          [TEST_USER_ID, 'Regression fixture released after eligibility assertion', tenantId, factoryId, inspectionId],
+        );
+        expect(updated.rowCount).toBe(1);
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
+    };
+
+    const readRadarMaterial = async (): Promise<Record<string, unknown>> => {
+      const snapshot = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+      const material = (snapshot.items as Array<Record<string, unknown>>)
+        .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+      if (!material) throw new Error('Quality-hold radar material row disappeared');
+      return material;
+    };
+
+    const lotHoldInspectionId = await createActiveQualityHold('LOT');
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '3.0000',
+    });
+    await releaseQualityHold(lotHoldInspectionId);
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
+    const itemHoldInspectionId = await createActiveQualityHold('ITEM');
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '3.0000',
+    });
+    await releaseQualityHold(itemHoldInspectionId);
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
+
     const released = await service.transitionWorkOrder(
       TEST_USER_ID,
       tenantId,
@@ -498,6 +783,19 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     expect(released.status).toBe('RELEASED');
 
+    // The read-only radar must reflect the reservation actually created by RELEASE,
+    // not continue projecting those units as unreserved eligible stock.
+    const afterReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const afterReleaseMaterial = (afterReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(afterReleaseMaterial).toMatchObject({
+      allocated_quantity: '3.0000',
+      consumed_quantity: '0.0000',
+      unfulfilled_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
     const initial = await readState(draft.id);
     expect(initial.operations.map((operation) => operation.status)).toEqual(['READY', 'PLANNED', 'PLANNED']);
     const [first, second, third] = initial.operations;
@@ -505,6 +803,162 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
 
     await sendOperationEvent(draft.id, first.id, { command: 'START' }, 'wo-multi-start-1-' + randomUUID());
     await sendOperationEvent(draft.id, first.id, { command: 'WIP_REPORTED', quantity: TARGET_QUANTITY }, 'wo-multi-wip-1-' + randomUUID());
+    // A real shared meter reading is assigned to the active work order. Exercise the
+    // API transaction, database conservation trigger, idempotent replay and reversal
+    // against PostgreSQL rather than only asserting the schema shape.
+    const utilityContext = {
+      userId: TEST_USER_ID, tenantId, factoryId,
+      requestId: randomUUID(), traceId: randomUUID(),
+    };
+    const utilityMeter = await utilitiesService.createMeter(
+      utilityContext,
+      {
+        meter_code: 'WO-MULTI-UTILITY-' + randomUUID().slice(0, 8),
+        name: 'Three-step work-order electricity sub-meter',
+        utility_type: 'ELECTRICITY',
+        reading_mode: 'INTERVAL',
+        unit_code: 'kWh',
+        multiplier_factor: 1,
+        unit_cost: 0.25,
+        currency_code: 'BDT',
+        cost_center_code: 'CC-WO-UTILITY',
+      },
+      'wo-multi-utility-meter-' + randomUUID(),
+    );
+    utilityMeterIds.push(utilityMeter.id);
+    const utilityReading = await utilitiesService.recordReading(
+      utilityContext,
+      utilityMeter.id,
+      {
+        reading_at: new Date().toISOString(),
+        reading_value: 40,
+        source_type: 'MANUAL',
+        notes: 'PostgreSQL integration shared-meter allocation fixture',
+      } as never,
+      'wo-multi-utility-reading-' + randomUUID(),
+    );
+    utilityReadingIds.push(utilityReading.id);
+    expect(utilityReading).toMatchObject({
+      consumption_quantity: '40.00000000',
+      unit_cost_snapshot: '0.25000000',
+      cost_amount: '10.00000000',
+    });
+    expect(utilityReading).toMatchObject({
+      currency_code_snapshot: 'BDT',
+      cost_center_code_snapshot: 'CC-WO-UTILITY',
+    });
+
+    const allocationInput = {
+      work_order_id: draft.id,
+      allocated_quantity: '10.00000000',
+      reason: 'Shift supervisor assigned the shared meter reading to this active work order',
+    };
+    const allocationKey = 'wo-multi-utility-allocation-' + randomUUID();
+    const utilityAllocation = await utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id, allocationInput, allocationKey,
+    );
+    utilityCostAllocationIds.push(utilityAllocation.id);
+    expect(utilityAllocation).toMatchObject({
+      allocation_kind: 'ALLOCATE',
+      work_order_number: expect.any(String),
+      allocated_quantity: '10.00000000',
+      unit_cost_snapshot: '0.25000000',
+      allocated_cost: '2.50000000',
+      currency_code: 'BDT',
+      cost_center_code: 'CC-WO-UTILITY',
+    });
+
+    const allocationReplay = await utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id, allocationInput, allocationKey,
+    );
+    expect(allocationReplay.replayed).toBe(true);
+    expect(allocationReplay.id).toBe(utilityAllocation.id);
+
+    await expect(utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id,
+      { ...allocationInput, allocated_quantity: '31.00000000' },
+      'wo-multi-utility-over-allocation-' + randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // Bypass the service-side capacity precheck and prove that PostgreSQL itself
+    // still rejects a competing write that would allocate 10 + 31 > 40 kWh.
+    const databaseGuardClient = await adminPool.connect();
+    let databaseGuardError: unknown;
+    try {
+      await databaseGuardClient.query('BEGIN');
+      await databaseGuardClient.query(
+        "SELECT set_config('app.tenant_id',$1,TRUE),set_config('app.user_id',$2,TRUE)",
+        [tenantId, TEST_USER_ID],
+      );
+      try {
+        await databaseGuardClient.query(
+          `INSERT INTO utility_reading_work_order_cost_allocations(
+            tenant_id,factory_id,reading_id,meter_id,work_order_id,allocation_kind,
+            allocated_quantity,unit_code,unit_cost_snapshot,allocated_cost,currency_code,
+            cost_center_code,reason,idempotency_key,request_hash,created_by_user_id,correlation_id
+          ) VALUES($1,$2,$3,$4,$5,'ALLOCATE',31,'kWh',0.25,7.75,'BDT','CC-WO-UTILITY',
+            'Direct database over-allocation guard fixture','wo-multi-utility-db-over-limit',repeat('d',64),$6,$7)`,
+          [tenantId, factoryId, utilityReading.id, utilityMeter.id, draft.id, TEST_USER_ID, randomUUID()],
+        );
+      } catch (error) {
+        databaseGuardError = error;
+      }
+    } finally {
+      await databaseGuardClient.query('ROLLBACK');
+      databaseGuardClient.release();
+    }
+    expect((databaseGuardError as { code?: string } | undefined)?.code).toBe('23514');
+    expect(String(databaseGuardError)).toContain('Total net work-order allocations cannot exceed source meter consumption');
+
+    const reversal = await utilityWorkOrderCostAllocationService.reverse(
+      utilityContext, utilityMeter.id, utilityReading.id, utilityAllocation.id,
+      { reason: 'Reverse the first assignment to verify append-only capacity restoration' },
+      'wo-multi-utility-reversal-' + randomUUID(),
+    );
+    utilityCostAllocationIds.push(reversal.id);
+    expect(reversal).toMatchObject({
+      allocation_kind: 'REVERSAL',
+      reverses_allocation_id: utilityAllocation.id,
+      allocated_quantity: '10.00000000',
+      allocated_cost: '2.50000000',
+    });
+    await expect(utilityWorkOrderCostAllocationService.reverse(
+      utilityContext, utilityMeter.id, utilityReading.id, utilityAllocation.id,
+      { reason: 'A second full reversal must be blocked' },
+      'wo-multi-utility-reversal-duplicate-' + randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // Same-reading allocations race through two application transactions. The
+    // source-row/advisory lock must allow only one 25 kWh allocation from 40 kWh.
+    const allocationRace = await Promise.allSettled([
+      utilityWorkOrderCostAllocationService.allocate(
+        utilityContext, utilityMeter.id, utilityReading.id,
+        { ...allocationInput, allocated_quantity: '25.00000000', reason: 'Concurrent allocation candidate A' },
+        'wo-multi-utility-race-a-' + randomUUID(),
+      ),
+      utilityWorkOrderCostAllocationService.allocate(
+        utilityContext, utilityMeter.id, utilityReading.id,
+        { ...allocationInput, allocated_quantity: '25.00000000', reason: 'Concurrent allocation candidate B' },
+        'wo-multi-utility-race-b-' + randomUUID(),
+      ),
+    ]);
+    expect(allocationRace.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(allocationRace.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const winningAllocation = allocationRace.find(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<UtilityWorkOrderCostAllocationService['allocate']>>> =>
+        result.status === 'fulfilled',
+    );
+    if (!winningAllocation) throw new Error('Exactly one utility work-order allocation must win the concurrent capacity race');
+    utilityCostAllocationIds.push(winningAllocation.value.id);
+
+    const allocationLedger = await utilityWorkOrderCostAllocationService.list(
+      utilityContext, utilityMeter.id, utilityReading.id,
+    );
+    expect(allocationLedger.source.net_allocated_quantity).toBe('25.00000000');
+    expect(allocationLedger.source.remaining_quantity).toBe('15.00000000');
+    expect(allocationLedger.items.filter((row) => row.allocation_kind === 'ALLOCATE')).toHaveLength(2);
+    expect(allocationLedger.items.filter((row) => row.allocation_kind === 'REVERSAL')).toHaveLength(1);
+
 
     await expect(
       sendOperationEvent(
@@ -608,10 +1062,25 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       operation_id: finalOperation.id,
       expected_work_order_version: outputState.row_version,
       expected_operation_version: finalOperation.row_version,
-      good_quantity: TARGET_QUANTITY,
-      scrap_quantity: 0,
-      notes: 'Three-step final finished-good output',
+      good_quantity: 2,
+      scrap_quantity: 1,
+      scrap_reason: 'Acceptance-test trim loss',
+      finished_good_serial_codes: [
+        'WO-MULTI-FG-' + randomUUID().slice(0, 12).toUpperCase(),
+        'WO-MULTI-FG-' + randomUUID().slice(0, 12).toUpperCase(),
+      ],
+      notes: 'Three-step mixed output with two individually traceable finished-good SERIAL units and one scrap unit',
     };
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, draft.id,
+      { ...outputInput, finished_good_serial_codes: [outputInput.finished_good_serial_codes[0]!] } as never,
+      'wo-multi-serial-count-mismatch-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, draft.id,
+      { ...outputInput, finished_good_serial_codes: [outputInput.finished_good_serial_codes[0]!, outputInput.finished_good_serial_codes[0]!] } as never,
+      'wo-multi-serial-duplicate-codes-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
       service.reportOutput(
@@ -626,9 +1095,11 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    expect(new Set(outputAttempts.map((attempt) => JSON.stringify(attempt.finished_good_serial_traceability_unit_ids))).size).toBe(1);
     const output = outputAttempts.find((attempt) => !attempt.replayed);
-    if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
-      throw new Error('Final output did not produce its canonical report, posting and finished-good identity');
+    if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id
+      || output.finished_good_serial_traceability_unit_ids?.length !== 2 || !output.scrap_traceability_unit_id) {
+      throw new Error('Final mixed output did not produce its canonical posting, two SERIAL identities and a scrap identity');
     }
 
     await sendOperationEvent(
@@ -754,15 +1225,85 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       material_bin_reserved: '0.0000',
       material_lot_on_hand: '7.0000',
       material_lot_reserved: '0.0000',
-      finished_on_hand: '3.0000',
+      finished_on_hand: '2.0000',
       report_count: '1',
       output_count: '1',
-      output_quantity: '3.0000',
+      output_quantity: '2.0000',
       consumption_count: '1',
       consumed_quantity: '3.0000',
       consumption_allocation_count: '1',
       genealogy_count: '1',
-      genealogy_quantity: '3.0000',
+      genealogy_quantity: '1.0000',
+    }]);
+
+    const serialScrapEvidence = await adminPool.query<{
+      serial_count: string;
+      valid_serial_count: string;
+      serial_sequence_count: string;
+      serial_location_quantity: string;
+      finished_genealogy_count: string;
+      scrap_genealogy_count: string;
+      total_genealogy_quantity: string;
+      scrap_identity_count: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM production_output_posting_serial_units s
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_count,
+         (SELECT count(*)::text FROM production_output_posting_serial_units s
+          JOIN traceability_units u ON u.id=s.traceability_unit_id AND u.tenant_id=s.tenant_id AND u.factory_id=s.factory_id
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3
+            AND u.unit_type='SERIAL' AND u.product_role='FINISHED_GOOD'
+            AND u.quantity=1.0000 AND u.status='ACTIVE' AND u.inventory_item_id=$4) AS valid_serial_count,
+         (SELECT count(DISTINCT s.unit_sequence)::text FROM production_output_posting_serial_units s
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_sequence_count,
+         (SELECT COALESCE(sum(b.quantity_on_hand),0)::text
+          FROM production_output_posting_serial_units s
+          JOIN inventory_traceability_location_balances b
+            ON b.traceability_unit_id=s.traceability_unit_id AND b.tenant_id=s.tenant_id
+           AND b.factory_id=s.factory_id AND b.item_id=s.finished_item_id
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_location_quantity,
+         (SELECT count(*)::text FROM product_genealogy_events g
+          JOIN production_output_posting_serial_units s
+            ON s.traceability_unit_id=g.target_unit_id AND s.tenant_id=g.tenant_id AND s.factory_id=g.factory_id
+          WHERE s.production_output_posting_id=$1 AND g.source_unit_id=$5
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS finished_genealogy_count,
+         (SELECT count(*)::text FROM product_genealogy_events g
+          WHERE g.target_unit_id=$7 AND g.source_unit_id=$5
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS scrap_genealogy_count,
+         (SELECT COALESCE(sum(g.quantity),0)::text FROM product_genealogy_events g
+          WHERE g.source_unit_id=$5
+            AND (g.target_unit_id IN (SELECT s.traceability_unit_id FROM production_output_posting_serial_units s
+               WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3)
+              OR g.target_unit_id=$7)
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS total_genealogy_quantity,
+         (SELECT count(*)::text FROM traceability_units u
+          WHERE u.id=$7 AND u.tenant_id=$2 AND u.factory_id=$3
+            AND u.unit_type='LOT' AND u.product_role='OTHER'
+            AND u.inventory_item_id IS NULL AND u.quantity=1.0000
+            AND u.attributes->>'kind'='PRODUCTION_SCRAP'
+            AND u.attributes->>'sellable'='false') AS scrap_identity_count`,
+      [
+        output.production_output_posting_id,
+        tenantId,
+        factoryId,
+        finishedItemId,
+        materialLot.id,
+        output.production_report_id,
+        output.scrap_traceability_unit_id,
+      ],
+    );
+    expect(serialScrapEvidence.rows).toEqual([{
+      serial_count: '2',
+      valid_serial_count: '2',
+      serial_sequence_count: '2',
+      serial_location_quantity: '2.0000',
+      finished_genealogy_count: '2',
+      scrap_genealogy_count: '1',
+      total_genealogy_quantity: '3.0000',
+      scrap_identity_count: '1',
     }]);
 
     const evidence = await adminPool.query<{ transfer_count: string; operation_ready_count: string }>(

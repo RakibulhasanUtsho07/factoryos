@@ -1631,6 +1631,7 @@ export class InventoryReservationService {
       productionReportId: string;
       goodQuantity: string;
       finishedGoodSerialCode?: string | null;
+      finishedGoodSerialCodes?: string[] | null;
       scrapQuantity: string;
       scrapReason?: string | null;
       yieldPercentage: string;
@@ -1641,6 +1642,7 @@ export class InventoryReservationService {
     movementId: string | null;
     quantityAfter: string | null;
     traceabilityUnitId: string | null;
+    traceabilityUnitIds: string[];
     scrapTraceabilityUnitId: string | null;
   }> {
     const parseQuantity = (value: string, name: string): { units: bigint; decimal: string } => {
@@ -1661,15 +1663,29 @@ export class InventoryReservationService {
     if (input.finishedGoodSerialCode != null && !finishedGoodSerialCode) {
       throw new ConflictException('Finished-good SERIAL code must not be blank');
     }
-    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
-    });
-    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
-      throw new ConflictException('Finished-good SERIAL code must be at most 160 printable characters without control characters');
+    if (input.finishedGoodSerialCode != null && input.finishedGoodSerialCodes != null) {
+      throw new ConflictException('Supply one finished-good SERIAL code input shape only');
     }
-    if (finishedGoodSerialCode && good.units !== 10_000n) {
-      throw new ConflictException('Finished-good SERIAL output must contain exactly one accepted good unit');
+    const serialCodes = (input.finishedGoodSerialCodes ?? (finishedGoodSerialCode ? [finishedGoodSerialCode] : []))
+      .map((code) => code.trim().toUpperCase());
+    if (serialCodes.length > 100 || serialCodes.some((serialCode) => !serialCode || serialCode.length > 160)) {
+      throw new ConflictException('Finished-good SERIAL codes must be 1–100 non-blank values of at most 160 characters');
+    }
+    const hasSerialControlCharacters = serialCodes.some((serialCode) =>
+      Array.from(serialCode).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+      })
+    );
+    if (hasSerialControlCharacters) {
+      throw new ConflictException('Finished-good SERIAL codes must not contain control characters');
+    }
+    if (new Set(serialCodes).size !== serialCodes.length) {
+      throw new ConflictException('Finished-good SERIAL codes must be unique within the output report');
+    }
+    if (serialCodes.length > 0
+      && (good.units % 10_000n !== 0n || BigInt(serialCodes.length) * 10_000n !== good.units)) {
+      throw new ConflictException('Finished-good SERIAL code count must exactly match whole accepted good units');
     }
     if (good.units + scrap.units === 0n) {
       throw new ConflictException('Production output must include good quantity or scrap quantity');
@@ -1691,14 +1707,14 @@ export class InventoryReservationService {
     if (item.status !== 'ACTIVE') {
       throw new ConflictException('Finished-good inventory item must remain active to receive production output');
     }
-    if (finishedGoodSerialCode) {
+    if (serialCodes.length > 0) {
       const duplicateSerial = await client.query<{ serial_exists: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM traceability_units
            WHERE tenant_id = $1 AND factory_id = $2
-             AND (lower(unit_code) = lower($3) OR lower(barcode_value) = lower($3))
+             AND (lower(unit_code) = ANY($3::text[]) OR lower(barcode_value) = ANY($3::text[]))
          ) AS serial_exists`,
-        [input.tenantId, input.factoryId, finishedGoodSerialCode],
+        [input.tenantId, input.factoryId, serialCodes.map((code) => code.toLowerCase())],
       );
       if (duplicateSerial.rows[0]?.serial_exists) {
         throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
@@ -1739,6 +1755,7 @@ export class InventoryReservationService {
         goodQuantity: good.decimal,
       };
       if (finishedGoodSerialCode !== null) movementHashPayload.finishedGoodSerialCode = finishedGoodSerialCode;
+      else if (serialCodes.length > 0) movementHashPayload.finishedGoodSerialCodes = serialCodes;
       const movementHash = this.hash(movementHashPayload);
       const movementResult = await client.query<MovementRow>(
         `
@@ -1788,6 +1805,7 @@ export class InventoryReservationService {
           production_report_id: input.productionReportId,
           good_quantity: good.decimal,
           finished_good_serial_code: finishedGoodSerialCode,
+          finished_good_serial_codes: input.finishedGoodSerialCodes != null ? serialCodes : undefined,
           scrap_quantity: scrap.decimal,
           yield_percentage: input.yieldPercentage,
           cumulative_yield_percentage: input.cumulativeYieldPercentage,
@@ -1806,75 +1824,83 @@ export class InventoryReservationService {
       });
     }
 
+    const traceabilityUnitIds: string[] = [];
     let traceabilityUnitId: string | null = null;
     if (good.units > 0n) {
-      try {
-        traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
-          tenantId: input.tenantId,
-          factoryId: input.factoryId,
-          userId: input.userId,
-          correlationId: input.correlationId,
-          unitType: finishedGoodSerialCode ? 'SERIAL' : 'LOT',
-          productRole: 'FINISHED_GOOD',
-          unitCode: finishedGoodSerialCode ?? `FG-${input.productionReportId.toUpperCase()}`,
-          idempotencyKey: finishedGoodSerialCode
-            ? `production-report:${input.productionReportId}:finished-good-serial:${finishedGoodSerialCode.toLowerCase()}:v1`
-            : `production-report:${input.productionReportId}:finished-good-lot:v1`,
-          inventoryItemId: input.finishedItemId,
-          quantity: good.decimal,
-          unit: item.unit,
-          orderId: input.orderId,
-          orderLineId: input.orderLineId,
-          productionReportId: input.productionReportId,
-          attributes: {
-            kind: finishedGoodSerialCode ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
-            ...(finishedGoodSerialCode ? { serial_code: finishedGoodSerialCode } : {}),
-            work_order_id: input.workOrderId,
-            work_order_number: input.workOrderNumber,
-            production_report_id: input.productionReportId,
-            source_movement_id: movementId,
-            sellable: true,
-          },
-        });
-      } catch (error) {
-        const postgresError = error as { code?: unknown; constraint?: unknown };
-        const duplicateIdentityConstraint = [
-          'uq_traceability_unit_code_ci',
-          'uq_traceability_unit_barcode_ci',
-        ].includes(String(postgresError?.constraint ?? ''));
-        if (finishedGoodSerialCode && postgresError?.code === '23505' && duplicateIdentityConstraint) {
-          throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+      const identityInputs = serialCodes.length > 0
+        ? serialCodes.map((unitCode) => ({ unitType: 'SERIAL' as const, unitCode, quantity: '1.0000' }))
+        : [{ unitType: 'LOT' as const, unitCode: `FG-${input.productionReportId.toUpperCase()}`, quantity: good.decimal }];
+      for (const identity of identityInputs) {
+        let createdTraceabilityUnitId: string;
+        try {
+          createdTraceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
+            tenantId: input.tenantId,
+            factoryId: input.factoryId,
+            userId: input.userId,
+            correlationId: input.correlationId,
+            unitType: identity.unitType,
+            productRole: 'FINISHED_GOOD',
+            unitCode: identity.unitCode,
+            idempotencyKey: identity.unitType === 'SERIAL'
+              ? `production-report:${input.productionReportId}:finished-good-serial:${identity.unitCode.toLowerCase()}:v1`
+              : `production-report:${input.productionReportId}:finished-good-lot:v1`,
+            inventoryItemId: input.finishedItemId,
+            quantity: identity.quantity,
+            unit: item.unit,
+            orderId: input.orderId,
+            orderLineId: input.orderLineId,
+            productionReportId: input.productionReportId,
+            attributes: {
+              kind: identity.unitType === 'SERIAL' ? 'PRODUCTION_FINISHED_GOOD_SERIAL' : 'PRODUCTION_FINISHED_GOOD',
+              ...(identity.unitType === 'SERIAL' ? { serial_code: identity.unitCode } : {}),
+              work_order_id: input.workOrderId,
+              work_order_number: input.workOrderNumber,
+              production_report_id: input.productionReportId,
+              source_movement_id: movementId,
+              sellable: true,
+            },
+          });
+        } catch (error) {
+          const postgresError = error as { code?: unknown; constraint?: unknown };
+          const duplicateIdentityConstraint = [
+            'uq_traceability_unit_code_ci',
+            'uq_traceability_unit_barcode_ci',
+          ].includes(String(postgresError?.constraint ?? ''));
+          if (identity.unitType === 'SERIAL' && postgresError?.code === '23505' && duplicateIdentityConstraint) {
+            throw new ConflictException('Finished-good SERIAL code is already registered in this factory');
+          }
+          throw error;
         }
-        throw error;
-      }
 
-      // Finished-good LOT/SERIAL stock shares the existing default virtual location with
-      // the aggregate ledger. The capacity predicate prevents identity registration
-      // from assigning stock already represented by another traceable identity.
-      const trackedBalance = await client.query<{ id: string }>(
-        `
-        INSERT INTO inventory_traceability_location_balances (
-          tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand
-        )
-        SELECT $1, $2, $3, $4, l.id, $5::numeric
-        FROM inventory_locations l
-        JOIN inventory_location_balances lb
-          ON lb.tenant_id = l.tenant_id AND lb.factory_id = l.factory_id
-         AND lb.location_id = l.id AND lb.item_id = $3
-        WHERE l.tenant_id = $1 AND l.factory_id = $2
-          AND l.is_default = TRUE AND l.location_type = 'VIRTUAL' AND l.status = 'ACTIVE'
-          AND lb.quantity_on_hand - COALESCE((
-            SELECT SUM(tlb.quantity_on_hand)
-            FROM inventory_traceability_location_balances tlb
-            WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2
-              AND tlb.item_id = $3 AND tlb.location_id = l.id
-          ), 0) >= $5::numeric
-        RETURNING id::text AS id
-        `,
-        [input.tenantId, input.factoryId, input.finishedItemId, traceabilityUnitId, good.decimal],
-      );
-      if (!trackedBalance.rows[0]) {
-        throw new ConflictException('Finished-good LOT/SERIAL identity could not be bound to unassigned stock without exceeding tracked location quantity');
+        // The item ledger receives the complete good quantity once. Each serial
+        // identity then binds exactly one physical unit into the default virtual bin.
+        const trackedBalance = await client.query<{ id: string }>(
+          `
+          INSERT INTO inventory_traceability_location_balances (
+            tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand
+          )
+          SELECT $1, $2, $3, $4, l.id, $5::numeric
+          FROM inventory_locations l
+          JOIN inventory_location_balances lb
+            ON lb.tenant_id = l.tenant_id AND lb.factory_id = l.factory_id
+           AND lb.location_id = l.id AND lb.item_id = $3
+          WHERE l.tenant_id = $1 AND l.factory_id = $2
+            AND l.is_default = TRUE AND l.location_type = 'VIRTUAL' AND l.status = 'ACTIVE'
+            AND lb.quantity_on_hand - COALESCE((
+              SELECT SUM(tlb.quantity_on_hand)
+              FROM inventory_traceability_location_balances tlb
+              WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2
+                AND tlb.item_id = $3 AND tlb.location_id = l.id
+            ), 0) >= $5::numeric
+          RETURNING id::text AS id
+          `,
+          [input.tenantId, input.factoryId, input.finishedItemId, createdTraceabilityUnitId, identity.quantity],
+        );
+        if (!trackedBalance.rows[0]) {
+          throw new ConflictException('Finished-good LOT/SERIAL identity could not be bound to unassigned stock without exceeding tracked location quantity');
+        }
+        if (traceabilityUnitId === null) traceabilityUnitId = createdTraceabilityUnitId;
+        if (identity.unitType === 'SERIAL') traceabilityUnitIds.push(createdTraceabilityUnitId);
       }
     }
 
@@ -1906,7 +1932,7 @@ export class InventoryReservationService {
       });
     }
 
-    return { movementId, quantityAfter, traceabilityUnitId, scrapTraceabilityUnitId };
+    return { movementId, quantityAfter, traceabilityUnitId, traceabilityUnitIds, scrapTraceabilityUnitId };
   }
 
   /**
@@ -2032,6 +2058,7 @@ export class InventoryReservationService {
       production_report_id: string;
       finished_item_id: string;
       traceability_unit_id: string | null;
+      finished_good_unit_type: 'LOT' | 'SERIAL' | null;
       scrap_traceability_unit_id: string | null;
       good_quantity: string;
       scrap_quantity: string;
@@ -2040,11 +2067,14 @@ export class InventoryReservationService {
       SELECT p.id::text AS posting_id, r.id::text AS production_report_id,
         p.finished_item_id::text AS finished_item_id,
         p.traceability_unit_id::text AS traceability_unit_id,
+        fg.unit_type AS finished_good_unit_type,
         p.scrap_traceability_unit_id::text AS scrap_traceability_unit_id,
         r.good_quantity::text AS good_quantity, r.scrap_quantity::text AS scrap_quantity
       FROM order_production_reports r
       JOIN production_output_postings p
         ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+      LEFT JOIN traceability_units fg
+        ON fg.id=p.traceability_unit_id AND fg.tenant_id=p.tenant_id AND fg.factory_id=p.factory_id
       WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.work_order_id = $3
       ORDER BY p.created_at, p.id
       FOR UPDATE OF r, p
@@ -2053,6 +2083,31 @@ export class InventoryReservationService {
     );
     if (outputs.rows.length === 0) {
       throw new ConflictException('Work-order output genealogy cannot be completed without posted output reports');
+    }
+    const serialUnits = await client.query<{
+      posting_id: string;
+      traceability_unit_id: string;
+      unit_sequence: number;
+    }>(
+      `
+      SELECT s.production_output_posting_id::text AS posting_id,
+        s.traceability_unit_id::text AS traceability_unit_id, s.unit_sequence
+      FROM production_output_posting_serial_units s
+      JOIN production_output_postings p
+        ON p.id=s.production_output_posting_id AND p.tenant_id=s.tenant_id AND p.factory_id=s.factory_id
+      JOIN traceability_units u
+        ON u.id=s.traceability_unit_id AND u.tenant_id=s.tenant_id AND u.factory_id=s.factory_id
+      WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.work_order_id=$3
+      ORDER BY p.created_at,p.id,s.unit_sequence
+      FOR UPDATE OF s,u
+      `,
+      [input.tenantId, input.factoryId, input.workOrderId],
+    );
+    const serialUnitsByPosting = new Map<string, typeof serialUnits.rows>();
+    for (const row of serialUnits.rows) {
+      const group = serialUnitsByPosting.get(row.posting_id) ?? [];
+      group.push(row);
+      serialUnitsByPosting.set(row.posting_id, group);
     }
 
     const parseUnits = (value: string, name: string): bigint => {
@@ -2078,19 +2133,40 @@ export class InventoryReservationService {
       const scrapUnits = parseUnits(output.scrap_quantity, 'scrap_quantity');
       if (goodUnits > 0n) {
         if (!output.traceability_unit_id) {
-          throw new ConflictException('A work-order output report is missing its finished-good traceability lot; completion is blocked');
+          throw new ConflictException('A work-order output report is missing its finished-good traceability identity; completion is blocked');
         }
-        targets.push({
-          unitId: output.traceability_unit_id,
-          reportId: output.production_report_id,
-          postingId: output.posting_id,
-          finishedItemId: output.finished_item_id,
-          quantityUnits: goodUnits,
-          relationshipType: 'CONSUMED_INTO',
-          targetKind: 'FINISHED_GOOD',
-        });
-      } else if (output.traceability_unit_id) {
-        throw new ConflictException('A scrap-only production report cannot link to a sellable finished-good lot');
+        if (output.finished_good_unit_type === 'SERIAL') {
+          const serialTargets = serialUnitsByPosting.get(output.posting_id) ?? [];
+          if (goodUnits % 10_000n !== 0n || BigInt(serialTargets.length) * 10_000n !== goodUnits) {
+            throw new ConflictException('Finished-good SERIAL output identities do not exactly cover the accepted good quantity');
+          }
+          for (const serialTarget of serialTargets) {
+            targets.push({
+              unitId: serialTarget.traceability_unit_id,
+              reportId: output.production_report_id,
+              postingId: output.posting_id,
+              finishedItemId: output.finished_item_id,
+              quantityUnits: 10_000n,
+              relationshipType: 'CONSUMED_INTO',
+              targetKind: 'FINISHED_GOOD',
+            });
+          }
+        } else {
+          if (output.finished_good_unit_type !== 'LOT' || (serialUnitsByPosting.get(output.posting_id)?.length ?? 0) !== 0) {
+            throw new ConflictException('Finished-good LOT output must have one LOT identity and no SERIAL identity ledger rows');
+          }
+          targets.push({
+            unitId: output.traceability_unit_id,
+            reportId: output.production_report_id,
+            postingId: output.posting_id,
+            finishedItemId: output.finished_item_id,
+            quantityUnits: goodUnits,
+            relationshipType: 'CONSUMED_INTO',
+            targetKind: 'FINISHED_GOOD',
+          });
+        }
+      } else if (output.traceability_unit_id || (serialUnitsByPosting.get(output.posting_id)?.length ?? 0) > 0) {
+        throw new ConflictException('A scrap-only production report cannot link to a sellable finished-good identity');
       }
       if (scrapUnits > 0n) {
         if (!output.scrap_traceability_unit_id) {
@@ -2167,7 +2243,7 @@ export class InventoryReservationService {
         AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT', 'SERIAL')
       ORDER BY c.item_id,
         CASE WHEN effective_policy.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        COALESCE(gr.posted_at, gr.received_at, tu.created_at),
+        COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at),
         lower(tu.unit_code), ca.location_id, tu.id,
         c.created_at, ca.created_at, ca.id
       FOR UPDATE OF ca, tu
@@ -3202,14 +3278,25 @@ export class InventoryReservationService {
            WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='FACTORY'),
           FALSE
         ) AS require_traceability,
-        COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
-        COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_serial,
+        COALESCE(bool_or(tu.unit_type = 'LOT' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_lot
+          WHERE active_lot.tenant_id = tu.tenant_id AND active_lot.factory_id = tu.factory_id
+            AND active_lot.item_id = tu.inventory_item_id
+            AND active_lot.traceability_unit_id = tu.id AND active_lot.quantity_on_hand > 0
+        )), FALSE) AS has_lot,
+        COALESCE(bool_or(tu.unit_type = 'SERIAL' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_serial
+          WHERE active_serial.tenant_id = tu.tenant_id AND active_serial.factory_id = tu.factory_id
+            AND active_serial.item_id = tu.inventory_item_id
+            AND active_serial.traceability_unit_id = tu.id AND active_serial.quantity_on_hand > 0
+        )), FALSE) AS has_serial,
         (count(tu.id) > 0) AS has_identity
       FROM inventory_items i
       LEFT JOIN traceability_units tu
         ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
        AND tu.inventory_item_id = i.id
        AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+       AND tu.status = 'ACTIVE'
       WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = $3
       GROUP BY i.id
       `,
@@ -3241,7 +3328,7 @@ export class InventoryReservationService {
       SELECT tlb.traceability_unit_id::text AS traceability_unit_id,
              tlb.location_id::text AS location_id, tu.unit_type, tu.unit_code,
              tu.expires_at::text AS expires_at,
-             COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
+             COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at)::text AS received_at,
              tlb.quantity_on_hand::text AS quantity_on_hand,
              tlb.quantity_reserved::text AS quantity_reserved
       FROM inventory_traceability_location_balances tlb
@@ -3273,7 +3360,7 @@ export class InventoryReservationService {
         AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE'
         AND tlb.quantity_on_hand > tlb.quantity_reserved
       ORDER BY CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
+        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at) END ASC NULLS LAST,
         lower(tu.unit_code), tlb.location_id, tu.id
       FOR UPDATE OF tlb, tu
       `,
@@ -3352,16 +3439,16 @@ export class InventoryReservationService {
     client: PoolClient,
     input: { tenantId: string; factoryId: string; itemId: string; reservationId: string; consumptionId: string; quantity: string },
   ): Promise<void> {
-    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: number }>(
+    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-         a.location_id::text AS location_id, a.allocation_sequence,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         a.location_id::text AS location_id, a.allocation_sequence::text AS allocation_sequence,
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu
          ON tu.id = a.traceability_unit_id AND tu.tenant_id = a.tenant_id
         AND tu.factory_id = a.factory_id AND tu.inventory_item_id = a.item_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
          AND tu.status='ACTIVE'
          AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
          AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
@@ -3405,16 +3492,20 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET consumed_quantity=consumed_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );
       if (!mapUpdate.rows[0]) throw new ConflictException('Lot/serial reservation allocation changed during issue');
       await client.query(
         `INSERT INTO inventory_reservation_consumption_traceability_allocations (
-           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity
-         ) VALUES ($1,$2,$3,$4,$5,$6::numeric)`,
-        [input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id, allocation.location_id, quantity],
+           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity,
+           reservation_allocation_id, allocation_sequence
+         ) VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::uuid,$8::bigint)`,
+        [
+          input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id,
+          allocation.location_id, quantity, allocation.id, allocation.allocation_sequence,
+        ],
       );
       remaining -= units;
     }
@@ -3428,10 +3519,10 @@ export class InventoryReservationService {
     const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
          a.location_id::text AS location_id,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
        ORDER BY a.allocation_sequence ASC FOR UPDATE`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
@@ -3457,7 +3548,7 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET released_quantity=released_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );

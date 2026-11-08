@@ -564,6 +564,391 @@ export class ProductionWorkOrdersService {
     return result.rows;
   }
 
+
+  /**
+   * Read-only, priority-allocated material readiness view for active work orders.
+   * It uses pinned BOM requirements and actual reservations, then virtually allocates
+   * the shared eligible-stock and approved-PO pools once per item in stable order.
+   */
+  async getMaterialShortageRadar(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    rawLimit = 50,
+  ) {
+    this.assertScope(userId, tenantId, factoryId);
+    const limit = this.limit(rawLimit);
+
+    type DemandRow = QueryResultRow & {
+      work_order_id: string; work_order_number: string; work_order_status: WorkOrderStatus;
+      due_date: string | null; planned_start_date: string; priority: number; created_at: string;
+      requirement_id: string; bom_line_id: string; line_number: number;
+      component_item_id: string; component_sku: string; component_name: string; component_unit: string;
+      required_quantity: string; allocated_quantity: string; consumed_quantity: string;
+    };
+    type StockRow = QueryResultRow & {
+      item_id: string; inventory_unit: string; status: string; allocation_policy: string;
+      require_traceability: boolean; has_identity: boolean;
+      eligible_on_hand_free_quantity: string; as_of_date: string;
+    };
+    type PurchaseRow = QueryResultRow & {
+      item_id: string; inventory_unit: string; purchase_order_id: string;
+      purchase_order_number: string; purchase_order_line_id: string;
+      expected_delivery_date: string | null; open_quantity: string; unit_compatible: boolean;
+    };
+
+    const toUnits = (value: string | number): bigint => {
+      const match = /^(-?)(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
+      if (!match) throw new ConflictException('Material radar received an invalid four-decimal quantity');
+      const units = BigInt(match[2]!) * 10_000n + BigInt((match[3] ?? '').padEnd(4, '0'));
+      return match[1] === '-' ? -units : units;
+    };
+    const fromUnits = (value: bigint): string => {
+      const sign = value < 0n ? '-' : '';
+      const absolute = value < 0n ? -value : value;
+      return sign + String(absolute / 10_000n) + '.' + String(absolute % 10_000n).padStart(4, '0');
+    };
+    const maxZero = (value: bigint) => value > 0n ? value : 0n;
+    const minUnits = (left: bigint, right: bigint) => left < right ? left : right;
+
+    return this.database.transaction(
+      { tenantId, userId, isolationLevel: 'REPEATABLE READ', readOnly: true },
+      async (client) => {
+        const demandResult = await client.query<DemandRow>(`
+          WITH selected_work_orders AS (
+            SELECT wo.id, wo.tenant_id, wo.factory_id, wo.work_order_number, wo.status,
+              wo.due_date::text AS due_date, wo.planned_start_date::text AS planned_start_date,
+              wo.priority, wo.created_at::text AS created_at,
+              row_number() OVER (
+                ORDER BY CASE wo.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'ON_HOLD' THEN 1
+                  WHEN 'RELEASED' THEN 2 ELSE 3 END,
+                  wo.due_date ASC NULLS LAST, wo.priority ASC,
+                  wo.planned_start_date ASC, wo.created_at ASC, wo.id
+              ) AS priority_rank
+            FROM work_orders wo
+            WHERE wo.tenant_id = $1 AND wo.factory_id = $2
+              AND wo.status IN ('DRAFT', 'RELEASED', 'IN_PROGRESS', 'ON_HOLD')
+            ORDER BY CASE wo.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'ON_HOLD' THEN 1
+                WHEN 'RELEASED' THEN 2 ELSE 3 END,
+              wo.due_date ASC NULLS LAST, wo.priority ASC,
+              wo.planned_start_date ASC, wo.created_at ASC, wo.id
+            LIMIT $3
+          )
+          SELECT wo.id::text AS work_order_id, wo.work_order_number,
+            wo.status AS work_order_status, wo.due_date, wo.planned_start_date,
+            wo.priority, wo.created_at,
+            r.id::text AS requirement_id, r.bom_line_id::text AS bom_line_id,
+            r.line_number, r.component_item_id::text AS component_item_id,
+            r.component_sku, r.component_name, r.component_unit,
+            r.required_quantity::text AS required_quantity,
+            COALESCE(res.allocated_quantity, 0)::text AS allocated_quantity,
+            COALESCE(res.consumed_quantity, 0)::text AS consumed_quantity
+          FROM selected_work_orders wo
+          JOIN work_order_material_requirements r
+            ON r.work_order_id = wo.id AND r.tenant_id = wo.tenant_id
+           AND r.factory_id = wo.factory_id
+          JOIN inventory_items i
+            ON i.id = r.component_item_id AND i.tenant_id = r.tenant_id
+           AND i.factory_id = r.factory_id
+          LEFT JOIN LATERAL (
+            SELECT
+              COALESCE(SUM(CASE WHEN ir.status = 'RESERVED'
+                THEN ir.remaining_quantity ELSE 0 END), 0) AS allocated_quantity,
+              COALESCE(SUM(ir.consumed_quantity), 0) AS consumed_quantity
+            FROM work_order_material_reservations mr
+            JOIN inventory_reservations ir
+              ON ir.id = mr.reservation_id AND ir.tenant_id = mr.tenant_id
+             AND ir.factory_id = mr.factory_id
+            WHERE mr.requirement_id = r.id AND mr.work_order_id = wo.id
+              AND mr.tenant_id = r.tenant_id AND mr.factory_id = r.factory_id
+          ) res ON TRUE
+          ORDER BY wo.priority_rank, r.line_number, r.id
+        `, [tenantId, factoryId, limit]);
+
+        if (demandResult.rows.length === 0) {
+          const today = await client.query<{ as_of_date: string }>(
+            'SELECT CURRENT_DATE::text AS as_of_date',
+          );
+          return {
+            as_of_date: today.rows[0]?.as_of_date ?? null,
+            planning_basis: 'PINNED_WORK_ORDER_BOM_REQUIREMENTS_PRIORITY_ALLOCATED_SHARED_STOCK_AND_APPROVED_PO_SUPPLY',
+            work_order_count: 0, requirement_count: 0, items: [],
+          };
+        }
+
+        const itemIds = [...new Set(demandResult.rows.map((row) => row.component_item_id))];
+        const stockResult = await client.query<StockRow>(`
+          WITH selected_items AS (
+            SELECT i.id, i.unit, i.status, i.sector_code,
+              COALESCE(
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'MATERIAL' AND p.inventory_item_id = i.id),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'SECTOR' AND lower(p.sector_code) = lower(i.sector_code)),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'FACTORY'),
+                (SELECT ts.allocation_policy FROM traceability_settings ts
+                 WHERE ts.tenant_id = i.tenant_id AND ts.factory_id = i.factory_id),
+                'FIFO'
+              ) AS allocation_policy,
+              COALESCE(
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'MATERIAL' AND p.inventory_item_id = i.id),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'SECTOR' AND lower(p.sector_code) = lower(i.sector_code)),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id = i.tenant_id AND p.factory_id = i.factory_id
+                   AND p.policy_scope = 'FACTORY'),
+                FALSE
+              ) AS require_traceability,
+              COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
+              (count(tu.id) > 0) AS has_identity
+            FROM inventory_items i
+            LEFT JOIN traceability_units tu
+              ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
+             AND tu.inventory_item_id = i.id AND tu.product_role = 'MATERIAL'
+             AND tu.unit_type IN ('LOT','SERIAL')
+            WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = ANY($3::uuid[])
+            GROUP BY i.id
+          )
+          SELECT i.id::text AS item_id, i.unit AS inventory_unit, i.status,
+            i.allocation_policy, i.require_traceability, i.has_identity,
+            CASE WHEN i.status <> 'ACTIVE' THEN 0::numeric
+              WHEN (i.allocation_policy IN ('LOT','SERIAL') OR i.require_traceability OR i.has_identity)
+              THEN (
+                SELECT COALESCE(SUM(tlb.quantity_on_hand - tlb.quantity_reserved), 0)
+                FROM inventory_traceability_location_balances tlb
+                JOIN traceability_units tu
+                  ON tu.id = tlb.traceability_unit_id AND tu.tenant_id = tlb.tenant_id
+                 AND tu.factory_id = tlb.factory_id AND tu.inventory_item_id = tlb.item_id
+                JOIN inventory_locations l
+                  ON l.id = tlb.location_id AND l.tenant_id = tlb.tenant_id
+                 AND l.factory_id = tlb.factory_id
+                JOIN inventory_locations parent
+                  ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id
+                 AND parent.factory_id = l.factory_id
+                WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2 AND tlb.item_id = i.id
+                  AND tu.product_role = 'MATERIAL'
+                  AND tu.unit_type = CASE WHEN i.allocation_policy = 'LOT' THEN 'LOT'
+                    WHEN i.allocation_policy = 'SERIAL' THEN 'SERIAL'
+                    WHEN i.has_lot THEN 'LOT' ELSE 'SERIAL' END
+                  AND tu.status = 'ACTIVE'
+                  AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                  AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
+                  AND NOT (tu.attributes @> '{"held":true}'::jsonb)
+                  AND NOT (tu.attributes @> '{"quarantined":true}'::jsonb)
+                  AND upper(COALESCE(tu.attributes->>'condition', '')) NOT IN ('DAMAGED','HELD','QUARANTINED','EXPIRED')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM quality_holds qh
+                    WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
+                      AND qh.status = 'ACTIVE'
+                      AND (qh.inventory_item_id = tu.inventory_item_id OR qh.traceability_unit_id = tu.id)
+                  )
+                  AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE AND l.location_type = 'BIN'
+                  AND parent.status = 'ACTIVE' AND parent.location_type IN ('WAREHOUSE','STAGING')
+                  AND tlb.quantity_on_hand > tlb.quantity_reserved
+              )
+              ELSE (
+                SELECT COALESCE(SUM(lb.quantity_on_hand - lb.quantity_reserved), 0)
+                FROM inventory_location_balances lb
+                JOIN inventory_locations l
+                  ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id
+                 AND l.factory_id = lb.factory_id
+                LEFT JOIN inventory_locations parent
+                  ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id
+                 AND parent.factory_id = l.factory_id
+                WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = i.id
+                  AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+                  AND (
+                    (l.location_type = 'BIN' AND parent.status = 'ACTIVE'
+                      AND parent.location_type IN ('WAREHOUSE','STAGING'))
+                    OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
+                  )
+                  AND lb.quantity_on_hand > lb.quantity_reserved
+              )
+            END::text AS eligible_on_hand_free_quantity,
+            CURRENT_DATE::text AS as_of_date
+          FROM selected_items i
+          ORDER BY i.id
+        `, [tenantId, factoryId, itemIds]);
+
+        const purchaseResult = await client.query<PurchaseRow>(`
+          SELECT pol.inventory_item_id::text AS item_id, i.unit AS inventory_unit,
+            po.id::text AS purchase_order_id, po.po_number AS purchase_order_number,
+            pol.id::text AS purchase_order_line_id,
+            po.expected_delivery_date::text AS expected_delivery_date,
+            GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0)::text AS open_quantity,
+            (upper(btrim(pol.unit)) = upper(btrim(i.unit))) AS unit_compatible
+          FROM purchase_order_lines pol
+          JOIN purchase_orders po
+            ON po.id = pol.purchase_order_id AND po.tenant_id = pol.tenant_id
+           AND po.factory_id = pol.factory_id
+          JOIN inventory_items i
+            ON i.id = pol.inventory_item_id AND i.tenant_id = pol.tenant_id
+           AND i.factory_id = pol.factory_id
+          LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(gl.received_quantity), 0) AS received_quantity
+            FROM goods_receipt_lines gl
+            JOIN goods_receipts gr
+              ON gr.id = gl.goods_receipt_id AND gr.tenant_id = gl.tenant_id
+             AND gr.factory_id = gl.factory_id
+            WHERE gl.tenant_id = pol.tenant_id AND gl.factory_id = pol.factory_id
+              AND gl.purchase_order_line_id = pol.id AND gr.status = 'POSTED'
+          ) received ON TRUE
+          WHERE pol.tenant_id = $1 AND pol.factory_id = $2
+            AND pol.inventory_item_id = ANY($3::uuid[])
+            AND po.status = 'APPROVED' AND i.status = 'ACTIVE'
+            AND pol.quantity > COALESCE(received.received_quantity, 0)
+          ORDER BY pol.inventory_item_id, po.expected_delivery_date ASC NULLS LAST,
+            po.po_number, pol.line_number, pol.id
+        `, [tenantId, factoryId, itemIds]);
+
+        const stockByItem = new Map<string, StockRow>();
+        for (const row of stockResult.rows) stockByItem.set(row.item_id, row);
+        const purchasesByItem = new Map<string, PurchaseRow[]>();
+        for (const row of purchaseResult.rows) {
+          const rows = purchasesByItem.get(row.item_id) ?? [];
+          rows.push(row);
+          purchasesByItem.set(row.item_id, rows);
+        }
+        const demandsByItem = new Map<string, Array<{
+          row: DemandRow; required: bigint; allocated: bigint; consumed: bigint; remaining: bigint;
+        }>>();
+        for (const row of demandResult.rows) {
+          const required = toUnits(row.required_quantity);
+          const allocated = toUnits(row.allocated_quantity);
+          const consumed = toUnits(row.consumed_quantity);
+          const entry = { row, required, allocated, consumed, remaining: maxZero(required - allocated - consumed) };
+          const group = demandsByItem.get(row.component_item_id) ?? [];
+          group.push(entry);
+          demandsByItem.set(row.component_item_id, group);
+        }
+
+        const output: Array<Record<string, unknown>> = [];
+        for (const [itemId, demands] of demandsByItem.entries()) {
+          const stock = stockByItem.get(itemId);
+          const eligiblePool = stock ? maxZero(toUnits(stock.eligible_on_hand_free_quantity)) : 0n;
+          const purchaseRows = purchasesByItem.get(itemId) ?? [];
+          const compatiblePurchases = purchaseRows.filter((row) => row.unit_compatible && toUnits(row.open_quantity) > 0n);
+          const mismatchedLineCount = purchaseRows.filter((row) => !row.unit_compatible && toUnits(row.open_quantity) > 0n).length;
+          const incomingPool = compatiblePurchases.reduce((sum, row) => sum + toUnits(row.open_quantity), 0n);
+          const datedSupply = new Map<string, bigint>();
+          for (const row of compatiblePurchases) {
+            const quantity = toUnits(row.open_quantity);
+            if (row.expected_delivery_date) {
+              datedSupply.set(row.expected_delivery_date, (datedSupply.get(row.expected_delivery_date) ?? 0n) + quantity);
+            }
+          }
+          const dates = [...datedSupply.keys()].sort();
+          const cumulativeDated: Array<{ date: string; quantity: bigint }> = [];
+          let datedTotal = 0n;
+          for (const date of dates) {
+            datedTotal += datedSupply.get(date)!;
+            cumulativeDated.push({ date, quantity: datedTotal });
+          }
+          const asOfDate = stock?.as_of_date ?? null;
+
+          let cumulativeDemand = 0n;
+          let cumulativeNeedAfterOnHand = 0n;
+          let cumulativeNeedAfterOnHandBefore = 0n;
+          for (const demand of demands) {
+            cumulativeNeedAfterOnHandBefore = cumulativeNeedAfterOnHand;
+            cumulativeDemand += demand.remaining;
+            const freeBefore = maxZero(eligiblePool - (cumulativeDemand - demand.remaining));
+            const projectedOnHand = minUnits(demand.remaining, freeBefore);
+            const remainingAfterOnHand = demand.remaining - projectedOnHand;
+            cumulativeNeedAfterOnHand += remainingAfterOnHand;
+            const incomingBefore = maxZero(incomingPool - cumulativeNeedAfterOnHandBefore);
+            const projectedIncoming = minUnits(remainingAfterOnHand, incomingBefore);
+            const projectedShortage = remainingAfterOnHand - projectedIncoming;
+
+            let projectedReadyDate: string | null = null;
+            let materialReadyBasis: string;
+            if (cumulativeNeedAfterOnHand === 0n) {
+              projectedReadyDate = asOfDate;
+              materialReadyBasis = 'ELIGIBLE_ON_HAND_AND_EXISTING_RESERVATIONS';
+            } else {
+              const ready = cumulativeDated.find((supply) => supply.quantity >= cumulativeNeedAfterOnHand);
+              if (ready) {
+                projectedReadyDate = ready.date;
+                materialReadyBasis = 'DATED_APPROVED_PO_SUPPLY';
+              } else if (eligiblePool + incomingPool >= cumulativeDemand) {
+                materialReadyBasis = 'APPROVED_PO_DATE_UNKNOWN';
+              } else {
+                materialReadyBasis = 'PROJECTED_SHORTAGE';
+              }
+            }
+
+            let shortageByDueDate: bigint | null = null;
+            let shortageDate: string | null = null;
+            if (demand.row.due_date) {
+              let incomingByDue = 0n;
+              for (const [date, quantity] of datedSupply.entries()) {
+                if (date <= demand.row.due_date) incomingByDue += quantity;
+              }
+              const supplyByDue = eligiblePool + incomingByDue;
+              const shortageThrough = maxZero(cumulativeDemand - supplyByDue);
+              const shortageBefore = maxZero((cumulativeDemand - demand.remaining) - supplyByDue);
+              shortageByDueDate = shortageThrough - shortageBefore;
+              if (shortageByDueDate > 0n) shortageDate = demand.row.due_date;
+            }
+
+            output.push({
+              work_order_id: demand.row.work_order_id,
+              work_order_number: demand.row.work_order_number,
+              work_order_status: demand.row.work_order_status,
+              due_date: demand.row.due_date,
+              planned_start_date: demand.row.planned_start_date,
+              priority: demand.row.priority,
+              requirement_id: demand.row.requirement_id,
+              bom_line_id: demand.row.bom_line_id,
+              line_number: demand.row.line_number,
+              component_item_id: itemId,
+              component_sku: demand.row.component_sku,
+              component_name: demand.row.component_name,
+              unit: demand.row.component_unit,
+              required_quantity: fromUnits(demand.required),
+              allocated_quantity: fromUnits(demand.allocated),
+              consumed_quantity: fromUnits(demand.consumed),
+              unfulfilled_quantity: fromUnits(demand.remaining),
+              eligible_on_hand_pool_quantity: fromUnits(eligiblePool),
+              projected_on_hand_quantity: fromUnits(projectedOnHand),
+              approved_po_open_pool_quantity: fromUnits(incomingPool),
+              projected_incoming_quantity: fromUnits(projectedIncoming),
+              projected_shortage_quantity: fromUnits(projectedShortage),
+              incoming_unit_mismatch_line_count: mismatchedLineCount,
+              shortage_by_due_date_quantity: shortageByDueDate === null ? null : fromUnits(shortageByDueDate),
+              shortage_date: shortageDate,
+              shortage_date_basis: shortageDate ? 'WORK_ORDER_DUE_DATE' : null,
+              projected_material_ready_date: projectedReadyDate,
+              material_ready_basis: materialReadyBasis,
+              supply_allocation_basis: 'SHARED_ITEM_POOL_ALLOCATED_ONCE_BY_WORK_ORDER_STATUS_DUE_DATE_PRIORITY_PLANNED_START_AND_BOM_LINE',
+              allocation_policy: stock?.allocation_policy ?? 'UNKNOWN',
+              traceability_required: stock
+                ? (stock.require_traceability || stock.allocation_policy === 'LOT'
+                  || stock.allocation_policy === 'SERIAL' || stock.has_identity)
+                : false,
+            });
+          }
+        }
+
+        const workOrderIds = new Set(demandResult.rows.map((row) => row.work_order_id));
+        return {
+          as_of_date: stockResult.rows[0]?.as_of_date ?? null,
+          planning_basis: 'PINNED_WORK_ORDER_BOM_REQUIREMENTS_PRIORITY_ALLOCATED_SHARED_STOCK_AND_APPROVED_PO_SUPPLY',
+          work_order_count: workOrderIds.size,
+          requirement_count: output.length,
+          items: output,
+        };
+      },
+    );
+  }
+
   async getWorkOrder(userId: string, tenantId: string, factoryId: string, workOrderId: string) {
     this.assertScope(userId, tenantId, factoryId);
     this.uuid(workOrderId, 'workOrderId');
@@ -1689,20 +2074,42 @@ export class ProductionWorkOrdersService {
     if (goodUnits + scrapUnits <= 0n) throw new BadRequestException('good_quantity and scrap_quantity cannot both be zero');
     const scrapReason = dto.scrap_reason?.trim() || null;
     if (scrapUnits > 0n && !scrapReason) throw new BadRequestException('scrap_reason is required when scrap_quantity is greater than zero');
-    const finishedGoodSerialCode = dto.finished_good_serial_code?.trim().toUpperCase() || null;
-    if (dto.finished_good_serial_code != null && !finishedGoodSerialCode) {
+    const hasLegacySerialCode = dto.finished_good_serial_code != null;
+    const hasSerialCodesArray = dto.finished_good_serial_codes != null;
+    if (hasLegacySerialCode && hasSerialCodesArray) {
+      throw new BadRequestException('Supply finished_good_serial_code or finished_good_serial_codes, not both');
+    }
+    const finishedGoodSerialCodes = (hasSerialCodesArray
+      ? dto.finished_good_serial_codes ?? []
+      : hasLegacySerialCode ? [dto.finished_good_serial_code ?? ''] : [])
+      .map((code) => typeof code === 'string' ? code.trim().toUpperCase() : '');
+    if (hasLegacySerialCode && !finishedGoodSerialCodes[0]) {
       throw new BadRequestException('finished_good_serial_code must not be blank');
     }
-    const hasSerialControlCharacters = finishedGoodSerialCode !== null && Array.from(finishedGoodSerialCode).some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
-    });
-    if (finishedGoodSerialCode && (finishedGoodSerialCode.length > 160 || hasSerialControlCharacters)) {
-      throw new BadRequestException('finished_good_serial_code must be at most 160 printable characters without control characters');
+    if (hasSerialCodesArray && finishedGoodSerialCodes.length === 0) {
+      throw new BadRequestException('finished_good_serial_codes must contain at least one serial code');
     }
-    if (finishedGoodSerialCode && goodUnits !== 10_000n) {
-      throw new BadRequestException('Finished-good SERIAL output must contain exactly one accepted good unit; submit a separate output report for each serial');
+    if (finishedGoodSerialCodes.length > 100) {
+      throw new BadRequestException('A work-order output report may register at most 100 finished-good SERIAL identities');
     }
+    const hasSerialControlCharacters = finishedGoodSerialCodes.some((serialCode) =>
+      Array.from(serialCode).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+      })
+    );
+    if (finishedGoodSerialCodes.some((serialCode) => !serialCode || serialCode.length > 160)
+      || hasSerialControlCharacters) {
+      throw new BadRequestException('Finished-good SERIAL codes must be non-blank and at most 160 printable characters without control characters');
+    }
+    if (new Set(finishedGoodSerialCodes).size !== finishedGoodSerialCodes.length) {
+      throw new BadRequestException('Finished-good SERIAL codes must be unique within the output report');
+    }
+    if (finishedGoodSerialCodes.length > 0
+      && (goodUnits % 10_000n !== 0n || BigInt(finishedGoodSerialCodes.length) * 10_000n !== goodUnits)) {
+      throw new BadRequestException('The number of finished-good SERIAL codes must exactly match whole accepted good units');
+    }
+    const finishedGoodSerialCode = hasLegacySerialCode ? finishedGoodSerialCodes[0]! : null;
     const notes = dto.notes?.trim() || null;
     const source = dto.source ?? 'API';
     const deviceId = dto.device_id?.trim() || null;
@@ -1715,7 +2122,8 @@ export class ProductionWorkOrdersService {
       good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason,
       notes, source, device_id: deviceId, occurred_at: occurredAt,
     };
-    if (finishedGoodSerialCode !== null) requestHashPayload.finished_good_serial_code = finishedGoodSerialCode;
+    if (hasSerialCodesArray) requestHashPayload.finished_good_serial_codes = finishedGoodSerialCodes;
+    else if (finishedGoodSerialCode !== null) requestHashPayload.finished_good_serial_code = finishedGoodSerialCode;
     const requestHash = this.hash(requestHashPayload);
     const correlationId = this.correlationId(traceId, requestId);
     const result = await this.database.transaction({
@@ -1734,11 +2142,15 @@ export class ProductionWorkOrdersService {
           source_operation_event_id: string | null;
           yield_percentage: string | null;
           cumulative_yield_percentage: string | null;
+          finished_good_serial_traceability_unit_ids: string[] | null;
         }>(`
           SELECT r.id::text AS production_report_id, p.id::text AS production_output_posting_id,
             p.inventory_movement_id::text AS inventory_movement_id,
             p.traceability_unit_id::text AS traceability_unit_id,
             p.scrap_traceability_unit_id::text AS scrap_traceability_unit_id,
+            COALESCE((SELECT json_agg(s.traceability_unit_id::text ORDER BY s.unit_sequence)
+              FROM production_output_posting_serial_units s
+              WHERE s.production_output_posting_id=p.id AND s.tenant_id=p.tenant_id AND s.factory_id=p.factory_id), '[]'::json) AS finished_good_serial_traceability_unit_ids,
             e.id::text AS source_operation_event_id,
             p.yield_percentage::text AS yield_percentage,
             p.cumulative_yield_percentage::text AS cumulative_yield_percentage
@@ -1764,6 +2176,7 @@ export class ProductionWorkOrdersService {
           productionOutputPostingId: previousOutput.production_output_posting_id,
           inventoryMovementId: previousOutput.inventory_movement_id,
           traceabilityUnitId: previousOutput.traceability_unit_id,
+          finishedGoodSerialTraceabilityUnitIds: previousOutput.finished_good_serial_traceability_unit_ids ?? [],
           scrapTraceabilityUnitId: previousOutput.scrap_traceability_unit_id,
           sourceOperationEventId: previousOutput.source_operation_event_id,
           yieldPercentage: previousOutput.yield_percentage,
@@ -1863,6 +2276,7 @@ export class ProductionWorkOrdersService {
           productionReportId,
           goodQuantity,
           finishedGoodSerialCode,
+          finishedGoodSerialCodes: hasSerialCodesArray ? finishedGoodSerialCodes : undefined,
           scrapQuantity,
           scrapReason,
           yieldPercentage,
@@ -1881,6 +2295,7 @@ export class ProductionWorkOrdersService {
         cumulative_yield_percentage: cumulativeYieldPercentage,
         inventory_movement_id: finishedGoodsReceipt.movementId,
         traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+        finished_good_serial_traceability_unit_ids: finishedGoodsReceipt.traceabilityUnitIds,
         scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
         request_hash: requestHash,
       });
@@ -1906,6 +2321,18 @@ export class ProductionWorkOrdersService {
       ]);
       const productionOutputPostingId = outputPostingResult.rows[0]?.id;
       if (!productionOutputPostingId) throw new Error('PRODUCTION_OUTPUT_POSTING_INSERT_FAILED');
+      for (let index = 0; index < finishedGoodsReceipt.traceabilityUnitIds.length; index += 1) {
+        const serialUnitId = finishedGoodsReceipt.traceabilityUnitIds[index];
+        if (!serialUnitId) throw new Error('PRODUCTION_OUTPUT_SERIAL_IDENTITY_SEQUENCE_INVALID');
+        await client.query(
+          `INSERT INTO production_output_posting_serial_units (
+             tenant_id, factory_id, production_output_posting_id, production_report_id,
+             finished_item_id, traceability_unit_id, unit_sequence
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [tenantId, factoryId, productionOutputPostingId, productionReportId,
+            workOrder.finished_item_id, serialUnitId, index + 1],
+        );
+      }
 
       const newWorkOrderVersion = workOrder.row_version + 1;
       const woUpdate = await client.query(`
@@ -1934,6 +2361,8 @@ export class ProductionWorkOrdersService {
           finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
           finished_good_traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
           finished_good_serial_code: finishedGoodSerialCode,
+          finished_good_serial_codes: hasSerialCodesArray ? finishedGoodSerialCodes : undefined,
+          finished_good_serial_traceability_unit_ids: finishedGoodsReceipt.traceabilityUnitIds,
           scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
           good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason, notes,
           yield_percentage: yieldPercentage,
@@ -1948,6 +2377,7 @@ export class ProductionWorkOrdersService {
         workOrderId, productionReportId, productionOutputPostingId,
         inventoryMovementId: finishedGoodsReceipt.movementId,
         traceabilityUnitId: finishedGoodsReceipt.traceabilityUnitId,
+        finishedGoodSerialTraceabilityUnitIds: finishedGoodsReceipt.traceabilityUnitIds,
         scrapTraceabilityUnitId: finishedGoodsReceipt.scrapTraceabilityUnitId,
         sourceOperationEventId: outputEvent.id,
         yieldPercentage, cumulativeYieldPercentage, replayed: false as const,
@@ -1965,6 +2395,8 @@ export class ProductionWorkOrdersService {
           inventoryMovementId: result.inventoryMovementId,
           finishedGoodTraceabilityUnitId: result.traceabilityUnitId,
           finishedGoodSerialCode,
+          finishedGoodSerialCodes: hasSerialCodesArray ? finishedGoodSerialCodes : undefined,
+          finishedGoodSerialTraceabilityUnitIds: result.finishedGoodSerialTraceabilityUnitIds,
           scrapTraceabilityUnitId: result.scrapTraceabilityUnitId,
           goodQuantity, scrapQuantity, yieldPercentage: result.yieldPercentage,
           cumulativeYieldPercentage: result.cumulativeYieldPercentage,
@@ -1980,6 +2412,8 @@ export class ProductionWorkOrdersService {
       finished_good_movement_id: result.inventoryMovementId,
       finished_good_traceability_unit_id: result.traceabilityUnitId,
       finished_good_serial_code: finishedGoodSerialCode,
+      finished_good_serial_codes: hasSerialCodesArray ? finishedGoodSerialCodes : undefined,
+      finished_good_serial_traceability_unit_ids: result.finishedGoodSerialTraceabilityUnitIds,
       scrap_traceability_unit_id: result.scrapTraceabilityUnitId,
       output_yield_percentage: result.yieldPercentage,
       cumulative_yield_percentage: result.cumulativeYieldPercentage,

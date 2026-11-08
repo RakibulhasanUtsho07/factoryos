@@ -1,4 +1,4 @@
-import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
 
 export class WorkOrderOutputReportDto {
   @IsUUID()
@@ -25,6 +25,15 @@ export class WorkOrderOutputReportDto {
   @Matches(/^(?=.*\S)[^\x00-\x1F\x7F-\x9F]{1,160}$/)
   @MaxLength(160)
   finished_good_serial_code?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @Matches(/^(?=.{1,160}$)(?=.*\S)[^\x00-\x1F\x7F-\x9F]+$/, { each: true })
+  @MaxLength(160, { each: true })
+  finished_good_serial_codes?: string[];
 
   @IsOptional()
   @IsString()

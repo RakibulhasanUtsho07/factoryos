@@ -61,6 +61,21 @@ export class ProductionWorkOrdersController {
     );
   }
 
+  @Get('material-shortage-radar')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('production.workorders.read')
+  @RequireFactoryScope()
+  materialShortageRadar(
+    @Req() request: ProductionRequest,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const c = this.context(request);
+    return this.service.getMaterialShortageRadar(
+      c.userId, c.tenantId, c.factoryId,
+      rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
   @Get(':workOrderId')
   @UseGuards(PermissionGuard)
   @RequirePermission('production.workorders.read')

@@ -57,6 +57,18 @@ BEGIN
   SELECT consumption_quantity,cost_amount INTO v_qty,v_cost FROM utility_meter_readings
     WHERE tenant_id=v_tenant AND factory_id=v_factory AND idempotency_key='ci-utility-reading-2';
   IF v_qty<>20 OR v_cost<>5 THEN RAISE EXCEPTION 'Cumulative reading consumption/cost calculation incorrect: %, %',v_qty,v_cost; END IF;
+  IF (SELECT currency_code_snapshot FROM utility_meter_readings
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND id=v_reading)<>'BDT'
+     OR (SELECT cost_center_code_snapshot FROM utility_meter_readings
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND id=v_reading)<>'CC-UTIL' THEN
+    RAISE EXCEPTION 'Utility reading must freeze its source currency and cost-centre mapping';
+  END IF;
+  IF (SELECT currency_code_snapshot FROM utility_meter_readings
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND idempotency_key='ci-utility-reading-2')<>'BDT'
+     OR (SELECT cost_center_code_snapshot FROM utility_meter_readings
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND idempotency_key='ci-utility-reading-2')<>'CC-UTIL' THEN
+    RAISE EXCEPTION 'Each utility reading must preserve meter currency/cost-centre snapshot at capture time';
+  END IF;
 
   INSERT INTO utility_meter_readings(
     tenant_id,factory_id,meter_id,reading_at,reading_value,previous_reading_value,consumption_quantity,

@@ -190,7 +190,11 @@ export class IntegrationDatabaseAdapter {
         sessionAdvisoryLockAcquired = true;
       }
 
-      await client.query('BEGIN');
+      const isolationLevel = context?.isolationLevel;
+      const beginStatement = isolationLevel
+        ? `BEGIN ISOLATION LEVEL ${isolationLevel}`
+        : 'BEGIN';
+      await client.query(context?.readOnly ? beginStatement + ' READ ONLY' : beginStatement);
 
       const hasContext =
         context?.tenantId !==

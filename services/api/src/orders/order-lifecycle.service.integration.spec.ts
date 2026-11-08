@@ -114,6 +114,64 @@ describe(
       return { orderId, itemId, lineIds };
     };
 
+    const createOrderForSharedInventoryItem = async (
+      itemId: string,
+      lineQuantities: number[],
+    ): Promise<{ orderId: string; lineIds: string[] }> => {
+      const orderNumber = 'COMPETING-ORDER-' + randomUUID();
+      const orderResult = await pool.query<{ id: string }>(
+        `
+        INSERT INTO orders (
+          tenant_id, factory_id, order_number, status, order_date,
+          currency, created_by_user_id
+        )
+        VALUES ($1, $2, $3, 'DRAFT', CURRENT_DATE, 'BDT', $4)
+        RETURNING id::text AS id
+        `,
+        [tenantId, factoryId, orderNumber, TEST_USER_ID],
+      );
+      const orderId = orderResult.rows[0]?.id;
+      if (!orderId) throw new Error('Competing inventory order fixture was not created');
+      reservationOrderIds.push(orderId);
+
+      // The reservation query orders lines by item ID and then line UUID.
+      // Assign the smaller UUID to the first, smaller quantity so the losing
+      // transaction must roll back a successful partial line reservation.
+      const lineIds = lineQuantities.map(() => randomUUID()).sort();
+      for (let index = 0; index < lineQuantities.length; index += 1) {
+        const quantity = lineQuantities[index];
+        const lineId = lineIds[index];
+        if (quantity === undefined || lineId === undefined) {
+          throw new Error('Competing order line fixture is incomplete');
+        }
+        const lineResult = await pool.query<{ id: string }>(
+          `
+          INSERT INTO order_lines (
+            id, tenant_id, factory_id, order_id, line_number,
+            product_code, product_name, inventory_item_id, quantity, unit
+          )
+          VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::numeric, 'PCS')
+          RETURNING id::text AS id
+          `,
+          [
+            lineId,
+            tenantId,
+            factoryId,
+            orderId,
+            index + 1,
+            'COMPETING-SKU-' + randomUUID(),
+            'Competing order shared-stock fixture',
+            itemId,
+            quantity.toFixed(4),
+          ],
+        );
+        if (lineResult.rows[0]?.id !== lineId) {
+          throw new Error('Competing inventory order line fixture was not persisted');
+        }
+      }
+      return { orderId, lineIds };
+    };
+
     beforeAll(async () => {
       const databaseUrl =
         process.env.DATABASE_URL;
@@ -973,6 +1031,183 @@ describe(
           [tenantId, factoryId, fixture.orderId],
         );
         expect(confirmationEvents.rows[0]?.count).toBe(0);
+      },
+    );
+
+    it(
+      'serializes independent order confirmations competing for the same shared stock',
+      async () => {
+        const itemResult = await pool.query<{ id: string }>(
+          `
+          INSERT INTO inventory_items (
+            tenant_id, factory_id, sku, name, unit, created_by_user_id
+          )
+          VALUES ($1, $2, $3, $4, 'PCS', $5)
+          RETURNING id::text AS id
+          `,
+          [
+            tenantId,
+            factoryId,
+            'COMPETING-STOCK-' + randomUUID(),
+            'Shared-stock competing order fixture',
+            TEST_USER_ID,
+          ],
+        );
+        const itemId = itemResult.rows[0]?.id;
+        if (!itemId) throw new Error('Shared-stock inventory item fixture was not created');
+        reservationItemIds.push(itemId);
+
+        await pool.query(
+          `
+          INSERT INTO inventory_stock_balances (
+            tenant_id, factory_id, item_id, quantity_on_hand
+          )
+          VALUES ($1, $2, $3, 5.0000)
+          `,
+          [tenantId, factoryId, itemId],
+        );
+
+        const first = await createOrderForSharedInventoryItem(itemId, [0.75, 3.25]);
+        const second = await createOrderForSharedInventoryItem(itemId, [0.75, 3.25]);
+        const attempts = await Promise.allSettled([
+          ordersService.transitionOrderStatus(
+            TEST_USER_ID, tenantId, first.orderId, 'CONFIRMED', null, randomUUID(), 1,
+          ),
+          ordersService.transitionOrderStatus(
+            TEST_USER_ID, tenantId, second.orderId, 'CONFIRMED', null, randomUUID(), 1,
+          ),
+        ]);
+
+        expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+        expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+
+        const winner = attempts[0]?.status === 'fulfilled' ? first : second;
+        const loser = attempts[0]?.status === 'fulfilled' ? second : first;
+        const rejection = attempts.find((attempt) => attempt.status === 'rejected');
+        if (!rejection || rejection.status !== 'rejected') {
+          throw new Error('The competing order did not produce an insufficient-stock rejection');
+        }
+        expect(String(rejection.reason?.message ?? rejection.reason)).toContain(
+          'Insufficient available stock for order line',
+        );
+
+        const orderStates = await pool.query<{
+          id: string;
+          status: string;
+          version: string;
+        }>(
+          `
+          SELECT id::text AS id, status, version::text AS version
+          FROM orders
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND id = ANY($3::uuid[])
+          `,
+          [tenantId, factoryId, [first.orderId, second.orderId]],
+        );
+        expect(orderStates.rows).toHaveLength(2);
+        const winningOrderState = orderStates.rows.find((row) => row.id === winner.orderId);
+        const losingOrderState = orderStates.rows.find((row) => row.id === loser.orderId);
+        expect(winningOrderState).toMatchObject({
+          status: 'CONFIRMED',
+          version: '2',
+        });
+        expect(losingOrderState).toMatchObject({
+          status: 'DRAFT',
+          version: '1',
+        });
+
+        const allLineIds = [...first.lineIds, ...second.lineIds];
+        const reservations = await pool.query<{
+          reference_id: string;
+          status: string;
+          reservation_count: number;
+          reserved_quantity: string;
+        }>(
+          `
+          SELECT reference_id::text AS reference_id,
+                 status,
+                 COUNT(*)::int AS reservation_count,
+                 SUM(quantity)::text AS reserved_quantity
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_type = 'ORDER_LINE'
+            AND reference_id = ANY($3::uuid[])
+          GROUP BY reference_id, status
+          `,
+          [tenantId, factoryId, allLineIds],
+        );
+        const actualReservations = reservations.rows
+          .map((row) => ({
+            reference_id: row.reference_id,
+            status: row.status,
+            reserved_quantity: row.reserved_quantity,
+          }))
+          .sort((left, right) => left.reference_id.localeCompare(right.reference_id));
+        const expectedReservations = winner.lineIds
+          .map((lineId, index) => ({
+            reference_id: lineId,
+            status: 'RESERVED',
+            reserved_quantity: index === 0 ? '0.7500' : '3.2500',
+          }))
+          .sort((left, right) => left.reference_id.localeCompare(right.reference_id));
+        expect(actualReservations).toEqual(expectedReservations);
+        expect(actualReservations.some((row) => loser.lineIds.includes(row.reference_id))).toBe(false);
+
+        const reservationEvents = await pool.query<{
+          order_id: string;
+          event_count: number;
+        }>(
+          `
+          SELECT payload #>> '{reservation,order_id}' AS order_id,
+                 COUNT(*)::int AS event_count
+          FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3::uuid
+            AND event_type = 'INVENTORY.STOCK_RESERVED'
+            AND payload #>> '{reservation,order_id}' = ANY($4::text[])
+          GROUP BY payload #>> '{reservation,order_id}'
+          `,
+          [tenantId, factoryId, itemId, [first.orderId, second.orderId]],
+        );
+        expect(reservationEvents.rows).toHaveLength(1);
+        expect(reservationEvents.rows[0]?.order_id).toBe(winner.orderId);
+        expect(reservationEvents.rows[0]?.event_count).toBeGreaterThanOrEqual(2);
+
+        const balance = await pool.query<{
+          quantity_on_hand: string;
+          quantity_reserved: string;
+        }>(
+          `
+          SELECT quantity_on_hand::text AS quantity_on_hand,
+                 quantity_reserved::text AS quantity_reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, itemId],
+        );
+        expect(balance.rows[0]).toMatchObject({
+          quantity_on_hand: '5.0000',
+          quantity_reserved: '4.0000',
+        });
+
+        const confirmationEvents = await pool.query<{
+          aggregate_id: string;
+          event_count: number;
+        }>(
+          `
+          SELECT aggregate_id::text AS aggregate_id,
+                 COUNT(*)::int AS event_count
+          FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND event_type = 'ORDER.CONFIRMED'
+            AND aggregate_id = ANY($3::uuid[])
+          GROUP BY aggregate_id
+          `,
+          [tenantId, factoryId, [first.orderId, second.orderId]],
+        );
+        expect(confirmationEvents.rows).toEqual([
+          { aggregate_id: winner.orderId, event_count: 1 },
+        ]);
       },
     );
 

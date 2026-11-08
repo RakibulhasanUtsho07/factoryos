@@ -27,6 +27,74 @@ describe('finance operational source resolver', () => {
     expect(mock.query.mock.calls[0][0]).toContain("gr.status='POSTED'");
   });
 
+  it('returns canonical supplier code for a posted GRN line and excludes rejected-only lines', async () => {
+    const mock = fakeClient([{
+      quantity: '9.5', rate: '3.25', uom_code: 'kg', currency: 'usd', supplier_code: 'sup-001',
+    }]);
+    await expect(resolveFinanceOperationalSource(
+      mock.client, 'tenant-1', 'factory-1', 'GOODS_RECEIPT_LINE', 'gr-line-1',
+    )).resolves.toEqual({
+      quantity: '9.5', rate: '3.25', uomCode: 'KG', currency: 'USD', supplierCode: 'SUP-001',
+    });
+    const sql = mock.query.mock.calls[0][0];
+    expect(sql).toContain('JOIN suppliers s ON s.id=po.supplier_id AND s.tenant_id=po.tenant_id');
+    expect(sql).toContain("gr.status='POSTED'");
+    expect(sql).toContain("po.status='APPROVED'");
+    expect(sql).toContain('grl.accepted_quantity>0');
+  });
+
+  it('resolves work-order material consumption only through direct posted-GRN and approved-PO provenance', async () => {
+    const mock = fakeClient([{ quantity: '2.5000', rate: '18.7500', uom_code: 'kg', currency: 'bdt' }]);
+    await expect(resolveFinanceOperationalSource(
+      mock.client, 'tenant-1', 'factory-1', 'WORK_ORDER_MATERIAL_CONSUMPTION', 'consumption-allocation-1',
+    )).resolves.toEqual({ quantity: '2.5', rate: '18.75', uomCode: 'KG', currency: 'BDT' });
+    const [sql, params] = mock.query.mock.calls[0];
+    expect(params).toEqual(['tenant-1', 'factory-1', 'consumption-allocation-1']);
+    for (const fragment of [
+      'inventory_reservation_consumption_traceability_allocations ca',
+      'inventory_reservation_consumptions c',
+      'work_order_material_reservations mr',
+      'traceability_units tu',
+      'goods_receipt_lines grl',
+      "gr.status='POSTED'",
+      'gr.posted_at IS NOT NULL',
+      'purchase_order_lines pol',
+      "po.status='APPROVED'",
+      'ca.id::text=$3',
+      "tu.product_role='MATERIAL'",
+      "tu.unit_type IN ('LOT','SERIAL')",
+      'ca.quantity<=c.quantity',
+      'ca.quantity<=tu.quantity',
+      'pol.inventory_item_id=grl.inventory_item_id',
+      'upper(tu.unit)=upper(pol.unit)',
+    ]) expect(sql).toContain(fragment);
+  });
+
+  it('fails closed when consumed material has no direct posted-GRN rate source', async () => {
+    const unbacked = fakeClient([]);
+    await expect(resolveFinanceOperationalSource(
+      unbacked.client, 'tenant-1', 'factory-1', 'WORK_ORDER_MATERIAL_CONSUMPTION', 'unbacked-allocation',
+    )).rejects.toThrow('was not found or is not approved/posted in this factory');
+  });
+
+  it('resolves only a live, unreversed utility work-order allocation', async () => {
+    const allocation = fakeClient([{ quantity: '8.25', rate: '0.125', uom_code: 'KWH', currency: 'BDT' }]);
+    await expect(resolveFinanceOperationalSource(
+      allocation.client, 'tenant-1', 'factory-1', 'UTILITY_WORK_ORDER_COST_ALLOCATION',
+      '7b9c7247-1c4f-44eb-8b62-8d1ae4f3ee3a',
+    )).resolves.toEqual({ quantity: '8.25', rate: '0.125', uomCode: 'KWH', currency: 'BDT' });
+    const sql = allocation.query.mock.calls[0][0];
+    expect(sql).toContain('utility_reading_work_order_cost_allocations');
+    expect(sql).toContain("a.allocation_kind='ALLOCATE'");
+    expect(sql).toContain('rev.reverses_allocation_id=a.id');
+    expect(sql).toContain('r.currency_code_snapshot IS NOT NULL');
+    const reversed = fakeClient([]);
+    await expect(resolveFinanceOperationalSource(
+      reversed.client, 'tenant-1', 'factory-1', 'UTILITY_WORK_ORDER_COST_ALLOCATION',
+      '7b9c7247-1c4f-44eb-8b62-8d1ae4f3ee3a',
+    )).rejects.toThrow('was not found');
+  });
+
   it('resolves confirmed order lines and utility meter rate snapshots', async () => {
     const order = fakeClient([{ quantity: '12', rate: '0', uom_code: 'PCS', currency: 'BDT' }]);
     await expect(resolveFinanceOperationalSource(

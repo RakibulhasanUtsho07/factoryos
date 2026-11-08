@@ -265,6 +265,18 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/238_wms_genealogy_transformations_require_commands.sql
 
+          echo "Applying and replaying real stock-conserving LOT/SERIAL transformation commands"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/241_wms_stock_conserving_lot_serial_transformations.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/241_wms_stock_conserving_lot_serial_transformations.sql
+
+          echo "Applying and replaying active WMS reservation allocation remapping"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/242_wms_reservation_traceability_allocation_remapping.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/242_wms_reservation_traceability_allocation_remapping.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
@@ -458,17 +470,24 @@ jobs:
           echo "Checking production output LOT/SERIAL traceability with ordered migrations"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/198_production_output_lot_genealogy.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/237_production_finished_good_serial_output.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
           echo "Reapplying production output LOT/SERIAL migrations in dependency order to verify idempotency"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/198_production_output_lot_genealogy.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/237_production_finished_good_serial_output.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
 
+          # Migration 199 replaces the base work-order genealogy functions. Migration 240 is a
+          # deliberate multi-SERIAL overlay, so it MUST be reapplied immediately after every
+          # 199 replay; otherwise the older function body would silently remove SERIAL targets.
           echo "Checking WMS consumption-bound work-order output genealogy and transaction-completion guards"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/work-order-genealogy-consumption-guard.sql
           echo "Reapplying WMS genealogy evidence guard and PostgreSQL contract to verify idempotency"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/work-order-genealogy-consumption-guard.sql
 
           echo "Checking finished-good lot put-away, pick and transfer traceability guards"
@@ -637,6 +656,9 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-lifecycle.sql
+          echo "Replaying utility work-order cost allocation migration 243 and verifying schema/audit contracts"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/243_utility_work_order_cost_allocations.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-work-order-cost-allocation-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-lifecycle.sql
           echo "Verifying normalized vendor events, threshold alerts, drill close-out, SDS and contractor induction lifecycle"
@@ -645,6 +667,9 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/should-cost.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-integration.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-workbench-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-supplier-invoice-three-way-match.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-production-material-consumption-reconciliation.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-utility-work-order-cost-allocation.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-dlq-replay-idempotency.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-bus-dlq-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-webhook.sql
@@ -892,6 +917,18 @@ jobs:
           echo "Checking advanced quality grants for the seeded QUALITY_MANAGER role"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-role-grants.sql
+
+          echo "Reapplying supplier performance evidence migration after development-role seeds"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/239_supplier_performance_evidence.sql
+
+          echo "Provisioning supplier performance database and application-role grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/security/grant-supplier-performance-report-runtime-access.sql
+
+          echo "Checking supplier performance evidence grants and database contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/supplier-performance-evidence.sql
 
           echo "Reapplying quality disposition inventory balance guard to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \

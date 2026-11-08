@@ -538,6 +538,7 @@ describe('InventoryReservationService', () => {
       movementId,
       quantityAfter: '62.5000',
       traceabilityUnitId: finishedLotId,
+      traceabilityUnitIds: [],
       scrapTraceabilityUnitId: scrapUnitId,
     });
     const finishedInsert = client.query.mock.calls.find((call) =>
@@ -619,6 +620,7 @@ describe('InventoryReservationService', () => {
       movementId: null,
       quantityAfter: null,
       traceabilityUnitId: null,
+      traceabilityUnitIds: [],
       scrapTraceabilityUnitId: scrapUnitId,
     });
     expect(client.query.mock.calls.some((call) => String(call[0]).includes('UPDATE inventory_stock_balances'))).toBe(false);
@@ -672,16 +674,17 @@ describe('InventoryReservationService', () => {
         return queryRows([
           {
             posting_id: postingA, production_report_id: reportA, finished_item_id: ITEM_ID,
-            traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
+            finished_good_unit_type: 'LOT', traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
             good_quantity: '3.0000', scrap_quantity: '1.0000',
           },
           {
             posting_id: postingB, production_report_id: reportB, finished_item_id: ITEM_ID,
-            traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
+            finished_good_unit_type: 'LOT', traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
             good_quantity: '5.0000', scrap_quantity: '1.0000',
           },
         ]);
       }
+      if (query.includes('FROM production_output_posting_serial_units s')) return queryRows([]);
       if (query.includes('FROM inventory_reservation_consumption_traceability_allocations ca')) {
         return queryRows([{
           allocation_id: allocationId,
@@ -781,16 +784,17 @@ describe('InventoryReservationService', () => {
         return queryRows([
           {
             posting_id: postingA, production_report_id: reportA, finished_item_id: ITEM_ID,
-            traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
+            finished_good_unit_type: 'LOT', traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
             good_quantity: '3.0000', scrap_quantity: '1.0000',
           },
           {
             posting_id: postingB, production_report_id: reportB, finished_item_id: ITEM_ID,
-            traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
+            finished_good_unit_type: 'LOT', traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
             good_quantity: '5.0000', scrap_quantity: '1.0000',
           },
         ]);
       }
+      if (query.includes('FROM production_output_posting_serial_units s')) return queryRows([]);
       if (query.includes('FROM inventory_reservation_consumption_traceability_allocations ca')) {
         return queryRows([
           {
@@ -866,6 +870,7 @@ describe('InventoryReservationService', () => {
           scrap_quantity: '0.0000',
         }]);
       }
+      if (query.includes('FROM production_output_posting_serial_units s')) return queryRows([]);
       throw new Error('The completion gate should fail before reading material allocations: ' + query.slice(0, 100));
     });
 
@@ -875,9 +880,9 @@ describe('InventoryReservationService', () => {
       factoryId: FACTORY_ID,
       workOrderId: ORDER_ID,
       correlationId: TRACE_ID,
-    })).rejects.toThrow('missing its finished-good traceability lot');
+    })).rejects.toThrow('missing its finished-good traceability identity');
 
-    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query).toHaveBeenCalledTimes(2);
     expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'))).toBe(false);
   });
 

@@ -28,6 +28,10 @@ A meter declares utility type, reading mode, unit, multiplier, unit cost/currenc
 
 For a cumulative meter, the first observation establishes a zero-consumption baseline. Each later observation must be newer than the prior observation, must not decrease the counter and must include the exact previous reading. Consumption is (current - previous) × multiplier. For an interval meter, consumption is reading × multiplier. Cost uses the meter's rate snapshot: consumption × unit_cost. If a positive production quantity is supplied, the ledger derives intensity_per_unit = consumption / production_quantity. Readings are append-only. Counter rollover and corrections are not silently inferred; they require a separately governed correction/rollover workflow.
 
+Every reading captured after migration 241 also freezes its currency and optional cost-centre mapping alongside the unit-cost snapshot. An operator may allocate an exact decimal quantity to a work order only when the reading timestamp falls between that work order's release and completion, the work order belongs to the same tenant/factory and its state is IN_PROGRESS or COMPLETED, and the net allocation does not exceed the meter reading's consumption. The database recomputes allocated cost from the frozen unit rate and rejects changed UOM/rate/currency/cost-centre values. Allocation rows are append-only; one full reversal may be appended per allocation and must exactly mirror the original snapshots. Reversal does not post a journal or alter the meter ledger. Historical readings are deliberately not backfilled with a guessed currency or cost centre and cannot be allocated unless their capture-time snapshot exists. Shared-meter splits are operator-assigned, not inferred automatically from production quantity or runtime.
+
+This is a utility-to-work-order actual-cost attribution input only. It does not allocate labour, freight, duty, overhead or scrap, capitalize WIP, value finished goods, or post external GL entries.
+
 Example meter payload (JSON):
     {
       "meter_code": "ELEC-MAIN-01",
