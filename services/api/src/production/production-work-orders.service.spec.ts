@@ -281,6 +281,89 @@ describe('ProductionWorkOrdersService request contracts', () => {
     });
   });
 
+  it('preserves four-decimal quantities and excludes late or undated PO supply from earlier due-date exposure', async () => {
+    const higherPriorityWorkOrder = '11111111-1111-4111-8111-111111111111';
+    const earlierDueWorkOrder = '22222222-2222-4222-8222-222222222222';
+    const itemId = '55555555-5555-4555-8555-555555555555';
+    const query = jest.fn();
+    query.mockResolvedValueOnce({ rows: [
+      {
+        work_order_id: higherPriorityWorkOrder, work_order_number: 'WO-PRIORITY',
+        work_order_status: 'IN_PROGRESS', due_date: '2026-11-20',
+        planned_start_date: '2026-11-08', priority: 1, created_at: '2026-11-08T08:00:00Z',
+        requirement_id: '33333333-3333-4333-8333-333333333333',
+        bom_line_id: '66666666-6666-4666-8666-666666666666',
+        line_number: 1, component_item_id: itemId, component_sku: 'MAT-DEC',
+        component_name: 'Decimal material', component_unit: 'KG',
+        required_quantity: '0.3001', allocated_quantity: '0.0001', consumed_quantity: '0.1000',
+      },
+      {
+        work_order_id: earlierDueWorkOrder, work_order_number: 'WO-EARLIER-DUE',
+        work_order_status: 'RELEASED', due_date: '2026-11-10',
+        planned_start_date: '2026-11-09', priority: 2, created_at: '2026-11-08T09:00:00Z',
+        requirement_id: '44444444-4444-4444-8444-444444444444',
+        bom_line_id: '77777777-7777-4777-8777-777777777777',
+        line_number: 1, component_item_id: itemId, component_sku: 'MAT-DEC',
+        component_name: 'Decimal material', component_unit: 'KG',
+        required_quantity: '0.4000', allocated_quantity: '0.0000', consumed_quantity: '0.0000',
+      },
+    ] });
+    query.mockResolvedValueOnce({ rows: [{
+      item_id: itemId, inventory_unit: 'KG', status: 'ACTIVE', allocation_policy: 'FIFO',
+      require_traceability: false, has_identity: false,
+      eligible_on_hand_free_quantity: '0.1501', as_of_date: '2026-11-08',
+    }] });
+    query.mockResolvedValueOnce({ rows: [
+      {
+        item_id: itemId, inventory_unit: 'KG',
+        purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-LATE', purchase_order_line_id: '99999999-9999-4999-8999-999999999991',
+        expected_delivery_date: '2026-11-15', open_quantity: '0.1001', unit_compatible: true,
+      },
+      {
+        item_id: itemId, inventory_unit: 'KG',
+        purchase_order_id: '88888888-8888-4888-8888-888888888888',
+        purchase_order_number: 'PO-UNDATED', purchase_order_line_id: '99999999-9999-4999-8999-999999999992',
+        expected_delivery_date: null, open_quantity: '0.0500', unit_compatible: true,
+      },
+    ] });
+    const client = { query };
+    database.transaction.mockImplementation(async (...args: unknown[]) => {
+      const callback = args[1] as (db: typeof client) => Promise<unknown>;
+      return callback(client);
+    });
+
+    const result = await service.getMaterialShortageRadar(USER, TENANT, FACTORY, 50);
+    const rows = result.items as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      work_order_id: higherPriorityWorkOrder,
+      unfulfilled_quantity: '0.2000',
+      eligible_on_hand_pool_quantity: '0.1501',
+      projected_on_hand_quantity: '0.1501',
+      projected_incoming_quantity: '0.0499',
+      projected_shortage_quantity: '0.0000',
+      shortage_by_due_date_quantity: '0.0000',
+      projected_material_ready_date: '2026-11-15',
+      material_ready_basis: 'DATED_APPROVED_PO_SUPPLY',
+    });
+    expect(rows[1]).toMatchObject({
+      work_order_id: earlierDueWorkOrder,
+      unfulfilled_quantity: '0.4000',
+      projected_on_hand_quantity: '0.0000',
+      projected_incoming_quantity: '0.1002',
+      projected_shortage_quantity: '0.2998',
+      shortage_by_due_date_quantity: '0.4000',
+      shortage_date: '2026-11-10',
+      projected_material_ready_date: null,
+      material_ready_basis: 'PROJECTED_SHORTAGE',
+    });
+    expect(database.transaction).toHaveBeenCalledWith(
+      { tenantId: TENANT, userId: USER, isolationLevel: 'REPEATABLE READ', readOnly: true },
+      expect.any(Function),
+    );
+  });
+
   it('rejects malformed factory scope before opening a read-only radar transaction', async () => {
     await expect(service.getMaterialShortageRadar('bad-user', TENANT, FACTORY)).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
