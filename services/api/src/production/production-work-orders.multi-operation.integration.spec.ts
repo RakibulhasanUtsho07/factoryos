@@ -783,6 +783,19 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     expect(released.status).toBe('RELEASED');
 
+    // The read-only radar must reflect the reservation actually created by RELEASE,
+    // not continue projecting those units as unreserved eligible stock.
+    const afterReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const afterReleaseMaterial = (afterReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(afterReleaseMaterial).toMatchObject({
+      allocated_quantity: '3.0000',
+      consumed_quantity: '0.0000',
+      unfulfilled_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
     const initial = await readState(draft.id);
     expect(initial.operations.map((operation) => operation.status)).toEqual(['READY', 'PLANNED', 'PLANNED']);
     const [first, second, third] = initial.operations;
