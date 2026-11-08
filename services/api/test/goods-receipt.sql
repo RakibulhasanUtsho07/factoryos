@@ -28,6 +28,9 @@ DECLARE
   v_rejected NUMERIC(18,4);
   v_accepted NUMERIC(18,4);
   v_expected_hash CHAR(64);
+  v_supplier_report JSONB;
+  v_other_factory_report JSONB;
+  v_expected_delivery_date DATE := CURRENT_DATE - 1;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '072_goods_receipt_grn') THEN
     RAISE EXCEPTION 'GRN migration marker is missing';
@@ -79,9 +82,11 @@ BEGIN
   VALUES (v_tenant, v_factory, v_item, 0);
 
   INSERT INTO purchase_orders (
-    id, tenant_id, factory_id, supplier_id, po_number, status, created_by_user_id
+    id, tenant_id, factory_id, supplier_id, po_number, status,
+    order_date, expected_delivery_date, created_by_user_id
   ) VALUES (v_order, v_tenant, v_factory, v_supplier,
-    'GRN-PO-' || upper(substr(v_order::text, 1, 8)), 'DRAFT', v_creator);
+    'GRN-PO-' || upper(substr(v_order::text, 1, 8)), 'DRAFT',
+    v_expected_delivery_date - 1, v_expected_delivery_date, v_creator);
   INSERT INTO purchase_order_lines (
     id, tenant_id, factory_id, purchase_order_id, line_number, inventory_item_id,
     description, quantity, unit, unit_price
@@ -474,6 +479,45 @@ BEGIN
       AND aggregate_type = 'GOODS_RECEIPT' AND aggregate_id = v_receipt_one
       AND event_type = 'PROCUREMENT.GOODS_RECEIPT_POSTED'
   ) THEN RAISE EXCEPTION 'GRN transactional outbox event is missing'; END IF;
+
+  v_supplier_report := public.factoryos_supplier_performance_report(
+    v_factory, v_supplier, v_expected_delivery_date, v_expected_delivery_date, CURRENT_DATE
+  );
+  IF v_supplier_report#>>'{summary,approved_purchase_order_count}'<>'1'
+     OR v_supplier_report#>>'{summary,due_purchase_order_count}'<>'1'
+     OR v_supplier_report#>>'{summary,due_line_count}'<>'1'
+     OR v_supplier_report#>>'{summary,completed_line_count}'<>'1'
+     OR v_supplier_report#>>'{summary,late_complete_line_count}'<>'1'
+     OR v_supplier_report#>>'{summary,on_time_complete_line_count}'<>'0' THEN
+    RAISE EXCEPTION 'Supplier report did not classify completed late PO line: %',v_supplier_report;
+  END IF;
+  IF v_supplier_report#>>'{quantities_by_unit,0,unit}'<>'PCS'
+     OR v_supplier_report#>>'{quantities_by_unit,0,ordered_quantity}'<>'12.0000'
+     OR v_supplier_report#>>'{quantities_by_unit,0,received_quantity}'<>'12.0000'
+     OR v_supplier_report#>>'{quantities_by_unit,0,accepted_quantity}'<>'9.0000'
+     OR v_supplier_report#>>'{quantities_by_unit,0,rejected_quantity}'<>'3.0000'
+     OR v_supplier_report#>>'{quantities_by_unit,0,outstanding_quantity}'<>'0.0000' THEN
+    RAISE EXCEPTION 'Supplier report did not reconcile physical/accepted/rejected quantities by UOM: %',v_supplier_report;
+  END IF;
+  IF v_supplier_report#>>'{quality,event_count}'<>'1'
+     OR v_supplier_report#>>'{quality,distinct_defect_count}'<>'1'
+     OR v_supplier_report#>>'{quality,evidence,0,defect_id}'<>v_quality_defect::text
+     OR v_supplier_report#>>'{quality,evidence,0,goods_receipt_line_id}'<>v_grn_line::text
+     OR v_supplier_report#>>'{quality,evidence,0,severity}'<>'MAJOR' THEN
+    RAISE EXCEPTION 'Supplier report lost GRN-linked quality event: %',v_supplier_report;
+  END IF;
+  IF v_supplier_report#>>'{methodology,supplier_score}'<>'NOT_CALCULATED'
+     OR v_supplier_report#>>'{methodology,supplier_ranking}'<>'NOT_CALCULATED'
+     OR v_supplier_report#>>'{methodology,automatic_supplier_recommendation}'<>'NOT_PROVIDED' THEN
+    RAISE EXCEPTION 'Supplier report must not invent scores, ranks or recommendations';
+  END IF;
+  v_other_factory_report := public.factoryos_supplier_performance_report(
+    gen_random_uuid(),v_supplier,v_expected_delivery_date,v_expected_delivery_date,CURRENT_DATE
+  );
+  IF v_other_factory_report#>>'{summary,due_line_count}'<>'0'
+     OR v_other_factory_report#>>'{quality,event_count}'<>'0' THEN
+    RAISE EXCEPTION 'Supplier report leaked evidence across factory scope: %',v_other_factory_report;
+  END IF;
 
   SET CONSTRAINTS ALL IMMEDIATE;
   RAISE NOTICE 'GRN partial receipt, fully rejected receipt, duplicate-key, no-late-posting, stock, and audit checks passed';

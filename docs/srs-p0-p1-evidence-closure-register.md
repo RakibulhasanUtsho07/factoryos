@@ -27,7 +27,7 @@ The register is intentionally initialized with `disposition: OPEN` and `acceptan
 | `disposition` | `OPEN`, `ACCEPTED`, `APPROVED_EXCEPTION`, or `NOT_APPLICABLE_APPROVED`. Exceptions must identify an approval record and expiry/review condition. |
 | `acceptanceResult` | `NOT_ACCEPTED`, `PASS`, `PASS_WITH_APPROVED_EXCEPTION`, or `NOT_APPLICABLE_APPROVED`. Only an evidence-complete row may leave `NOT_ACCEPTED`. |
 
-Empty evidence arrays and null approval fields are deliberate. The register does not fabricate per-ID tests or source-owner sign-off where the repository matrix only carries family-level pointers.
+Evidence arrays are populated only when an exact repository path/assertion exists. Missing migration rationale, exact-SHA CI, staging evidence, named owner, reviewer and approval fields remain empty until independently supported; adding code/test pointers never changes OPEN / NOT_ACCEPTED by itself.
 
 ## Row-level source/evidence export
 

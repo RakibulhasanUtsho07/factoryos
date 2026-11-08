@@ -18,6 +18,12 @@ BEGIN
   IF NOT v_migration_present THEN
     RAISE EXCEPTION 'work-order genealogy consumption guard migration marker is missing';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='240_production_multi_serial_output') THEN
+    RAISE EXCEPTION 'multi-serial production output migration marker is missing';
+  END IF;
+  IF to_regclass('public.production_output_posting_serial_units') IS NULL THEN
+    RAISE EXCEPTION 'production output SERIAL membership ledger is missing';
+  END IF;
 
   SELECT EXISTS (
     SELECT 1 FROM pg_trigger t
@@ -60,14 +66,30 @@ BEGIN
      OR position('consumption_traceability_allocation_id' IN v_before_function) = 0
      OR position('source_inventory_item_id' IN v_before_function) = 0
      OR position('output_quantity_weight' IN v_before_function) = 0
+     OR position('production_output_posting_serial_units' IN v_before_function) = 0
+     OR position('is_serial_output' IN v_before_function) = 0
+     OR position('1.0000' IN v_before_function) = 0
      OR position('v_event_total + NEW.quantity > v_binding.allocated_quantity' IN v_before_function) = 0
   THEN
-    RAISE EXCEPTION 'genealogy edge guard must bind real WMS lot/serial consumption, the work order and the target output posting';
+    RAISE EXCEPTION
+      'genealogy edge guard contract mismatch: source=%, allocations=%, reservations=%, postings=%, allocation_id=%, source_item=%, output_weight=%, serial_ledger=%, serial_flag=%, one_unit=%, over_consumption=%',
+      position('WORK_ORDER_MATERIAL_CONSUMPTION' IN v_before_function) > 0,
+      position('inventory_reservation_consumption_traceability_allocations' IN v_before_function) > 0,
+      position('work_order_material_reservations' IN v_before_function) > 0,
+      position('production_output_postings' IN v_before_function) > 0,
+      position('consumption_traceability_allocation_id' IN v_before_function) > 0,
+      position('source_inventory_item_id' IN v_before_function) > 0,
+      position('output_quantity_weight' IN v_before_function) > 0,
+      position('production_output_posting_serial_units' IN v_before_function) > 0,
+      position('is_serial_output' IN v_before_function) > 0,
+      position('1.0000' IN v_before_function) > 0,
+      position('v_event_total + NEW.quantity > v_binding.allocated_quantity' IN v_before_function) > 0;
   END IF;
 
   SELECT pg_get_functiondef('factoryos_assert_work_order_output_genealogy_coverage()'::regprocedure)
     INTO v_edge_constraint_function;
   IF position('COMPLETED' IN v_edge_constraint_function) = 0
+     OR position('production_output_posting_serial_units' IN v_edge_constraint_function) = 0
      OR position('v_event_total IS DISTINCT FROM v_binding.allocated_quantity' IN v_edge_constraint_function) = 0
   THEN
     RAISE EXCEPTION 'genealogy edge commit guard must require a completed work order and exact source allocation conservation';

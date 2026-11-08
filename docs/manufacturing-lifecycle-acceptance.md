@@ -14,9 +14,19 @@ The consolidated fixture includes deterministic concurrent duplicate-delivery ch
 
 The same fixture creates factory-scoped KG and G units, submits and independently approves the exact `1000/1` conversion, receives base-unit G stock, and writes the product BOM as `1 KG` per finished unit. The immutable BOM snapshot retains the approved conversion rule ID/version/factor and resolves to `1000.0000 G`; a three-unit work order therefore reserves and consumes exactly `3000.0000 G`, with that quantity/unit carried through the material lot and consumption genealogy. Finished output remains `3.0000 PCS`. This is an explicit cross-module UoM boundary test, not merely a standalone conversion check.
 
+## Independent order confirmation under shared-stock contention
+
+Authoritative PostgreSQL test: `services/api/src/orders/order-lifecycle.service.integration.spec.ts`, test `serializes independent order confirmations competing for the same shared stock`.
+
+The scenario creates one factory-scoped inventory item with `5.0000 PCS` on hand and two distinct draft sales orders, each demanding `4.0000 PCS` of that same item across two lines (`0.7500` and `3.2500 PCS`). The fixture assigns the lower UUID to the smaller line because the service processes lines by item ID and line UUID; this guarantees the losing order first acquires a partial `0.7500 PCS` reservation before its `3.2500 PCS` line encounters insufficient stock. Their confirmations run concurrently in separate service transactions with distinct trace IDs. Exactly one order must commit as `CONFIRMED`; the other must receive the insufficient-stock conflict and remain `DRAFT` at its original version. Read-back requires exactly the winner's two order-line reservations (`0.7500` and `3.2500 PCS`), aggregate on-hand/reserved values of `5.0000/4.0000 PCS`, only the winner's `INVENTORY.STOCK_RESERVED` outbox events, and exactly one `ORDER.CONFIRMED` outbox event. Both partial reservation and event writes from the losing order must roll back.
+
+This is deliberately different from duplicate-request replay: it validates two independent business transactions contending for the same authoritative stock, including rollback of the losing order transition. It proves the repository PostgreSQL transaction/locking contract covered by CI; it does not certify production lock-wait capacity, peak concurrency or a live factory topology.
+
 ## Consolidated persisted PostgreSQL acceptance
 
 Authoritative integration path: `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`, test `runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy`.
+
+The complementary three-step routing fixture is `services/api/src/production/production-work-orders.multi-operation.integration.spec.ts`. It now carries an inventory-linked MATERIAL LOT through BOM reservation, cutting → assembly → finishing WIP transfers, final-operation output posting and replay, zero-WIP operation completion, work-order completion, reservation consumption, exact stock/lot balance conservation and deferred source-lot-to-finished-good genealogy. The GRN-backed single-operation acceptance above remains the source for supplier/receipt provenance; neither fixture establishes full manufacturing LOT/SERIAL split/merge or hardware/site acceptance.
 
 The scenario uses one tenant/factory and connected persisted identities:
 

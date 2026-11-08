@@ -4,6 +4,8 @@ import { DatabaseService } from '../database/database.service';
 import {
   ChangeTraceabilityUnitStatusDto,
   CreateGenealogyEventDto,
+  SplitTraceabilityLotDto,
+  MergeTraceabilityLotsDto,
   CreateTraceabilityUnitDto,
   CreateTraceabilityLabelTemplateDto,
   DeclareTraceabilityRecallDto,
@@ -107,6 +109,32 @@ describe('TraceabilityService input contracts', () => {
       { ...selfEdge, target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3', relationship_type: 'UNKNOWN' as never },
       'trace-invalid-edge', null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic LOT-to-SERIAL split writes until a stock-conserving command exists', async () => {
+    const split: CreateGenealogyEventDto = {
+      source_unit_id: UNIT_ID,
+      target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3',
+      relationship_type: 'SPLIT_INTO',
+      quantity: 1,
+    };
+    await expect(service.recordGenealogyEvent(
+      USER_ID, TENANT_ID, FACTORY_ID, split, 'trace-generic-split-blocked', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('blocks generic LOT merge writes until a stock-conserving command exists', async () => {
+    const merge: CreateGenealogyEventDto = {
+      source_unit_id: UNIT_ID,
+      target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3',
+      relationship_type: 'MERGED_INTO',
+      quantity: 1,
+    };
+    await expect(service.recordGenealogyEvent(
+      USER_ID, TENANT_ID, FACTORY_ID, merge, 'trace-generic-merge-blocked', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
@@ -368,4 +396,73 @@ describe('TraceabilityService input contracts', () => {
     expect(client.query.mock.calls.some(([sql]) =>
       String(sql).includes('INSERT INTO traceability_label_issues'))).toBe(false);
   });
+
+  it('rejects a fractional SERIAL child before opening the transformation transaction', async () => {
+    const dto: SplitTraceabilityLotDto = {
+      reason: 'Test split must preserve a whole serialized identity',
+      outputs: [
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-HALF', quantity: 0.5,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 0.5 }],
+        },
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-OTHER-HALF', quantity: 0.5,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 0.5 }],
+        },
+      ],
+    };
+    await expect(service.splitLot(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dto, 'split-fractional-serial', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts mixed LOT/SERIAL outputs and delegates policy validation to PostgreSQL', async () => {
+    const dto: SplitTraceabilityLotDto = {
+      reason: 'Retain bulk remainder as LOT and identify one whole unit as SERIAL',
+      outputs: [
+        {
+          unit_type: 'LOT', unit_code: 'LOT-CHILD', quantity: 2,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 2 }],
+        },
+        {
+          unit_type: 'SERIAL', unit_code: 'SERIAL-CHILD', quantity: 1,
+          locations: [{ location_id: 'a6b1da3b-d978-4ea0-a62f-c7eb7cfdcb8b', quantity: 1 }],
+        },
+      ],
+    };
+    const command = {
+      transformation_id: 'ed7c5f04-18d4-4e2e-9387-2e89a6bb7e11',
+      operation_type: 'SPLIT',
+      target_unit_ids: [
+        'e00d0ca0-d9e0-4a9b-8d7f-3517f3b739c1',
+        'b1cb7a71-f13d-411a-bb34-cdfb3a9a17d8',
+      ],
+      replayed: false,
+    };
+    database.transaction.mockResolvedValue(command);
+    database.query.mockResolvedValue({ rows: [{ id: command.target_unit_ids[0] }] });
+
+    const result = await service.splitLot(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dto, 'split-mixed-unit-types', null, null,
+    );
+
+    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(result.target_unit_ids).toEqual(command.target_unit_ids);
+    expect(result.targets).toHaveLength(2);
+  });
+
+  it('rejects duplicate merge source identities before opening the transformation transaction', async () => {
+    const dto: MergeTraceabilityLotsDto = {
+      source_unit_ids: [UNIT_ID, UNIT_ID],
+      target_unit_code: 'MERGED-LOT',
+      reason: 'Duplicate sources must not double-count physical stock',
+    };
+    await expect(service.mergeLots(
+      USER_ID, TENANT_ID, FACTORY_ID, dto, 'merge-duplicate-source', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+
 });

@@ -21,6 +21,7 @@ on:
       - 'services/api/src/auth/**'
       - 'services/api/src/scim/**'
       - 'services/api/src/common/decorators/**'
+      - 'services/api/src/production/**'
       - 'migrations/**'
   push:
     branches: [main, dev, rakibul-hasan]
@@ -40,6 +41,7 @@ on:
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
       - 'services/api/src/auth/**'
+      - 'services/api/src/production/**'
 
 permissions:
   contents: read

@@ -30,6 +30,7 @@ import {
   type FinanceReconciliationSourceType,
 } from './finance-contract';
 import { assertFinanceOperationalSourceMatches, resolveFinanceOperationalSource } from './finance-operational-source';
+import { assertSupplierInvoiceThreeWayMatch } from './finance-supplier-invoice-match';
 import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
   FinanceFactInputDto,
   FinanceMarginInputsQueryDto,
@@ -1056,6 +1057,7 @@ export class FinanceService {
             });
             continue;
           }
+          assertSupplierInvoiceThreeWayMatch(connector.domain, normalized);
           normalizedByRow.set(row, normalized);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Fact normalization failed';
@@ -1092,6 +1094,7 @@ export class FinanceService {
               fact.reconciliation.expected_source_type as FinanceReconciliationSourceType,
               fact.reconciliation.expected_source_ref,
             );
+            assertSupplierInvoiceThreeWayMatch(connector.domain, fact, operational);
             assertFinanceOperationalSourceMatches(
               fact.currency, fact.reconciliation.expected_quantity, fact.reconciliation.expected_rate,
               fact.reconciliation.uom_code, operational,
@@ -1308,6 +1311,7 @@ export class FinanceService {
               'Fact type ' + fact.fact_type + ' is not permitted for connector domain ' + connector.domain,
             );
           }
+          assertSupplierInvoiceThreeWayMatch(connector.domain, fact);
         }
 
         const prior = await client.query<{
@@ -1376,6 +1380,7 @@ export class FinanceService {
             reconciliation.expected_source_type as FinanceReconciliationSourceType,
             reconciliation.expected_source_ref,
           );
+          assertSupplierInvoiceThreeWayMatch(connector.domain, fact, operational);
           assertFinanceOperationalSourceMatches(
             fact.currency,
             reconciliation.expected_quantity,
@@ -1806,7 +1811,7 @@ export class FinanceService {
       external_fact_id: input.external_fact_id.trim(),
       source_fact_key: input.source_fact_key.trim(),
       fact_type: factType,
-      source_record_type: input.source_record_type.trim(),
+      source_record_type: input.source_record_type.trim().toUpperCase(),
       source_record_ref: input.source_record_ref.trim(),
       effective_at: effectiveAt.toISOString(),
       due_at: input.due_at ? new Date(input.due_at).toISOString() : null,

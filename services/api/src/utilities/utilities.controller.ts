@@ -9,8 +9,10 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   CreateUtilityEventDto, CreateUtilityMeterDto, ListUtilityMetersQueryDto,
   ListUtilityReadingsQueryDto, RecordUtilityReadingDto, TransitionUtilityEventDto,
+  CreateUtilityWorkOrderCostAllocationDto, ReverseUtilityWorkOrderCostAllocationDto,
 } from './utilities.dto';
 import { UtilityContext, UtilitiesService } from './utilities.service';
+import { UtilityWorkOrderCostAllocationService } from './utility-work-order-cost-allocation.service';
 
 interface UtilityRequestContext {
   requestId?: string | null;
@@ -23,7 +25,7 @@ type UtilityRequest=Request & {factoryos?:UtilityRequestContext};
 
 @Controller('utilities')
 export class UtilitiesController {
-  constructor(private readonly service:UtilitiesService){}
+  constructor(private readonly service:UtilitiesService,private readonly workOrderCostAllocationService:UtilityWorkOrderCostAllocationService){}
 
   @Get('meters')
   @UseGuards(PermissionGuard)
@@ -64,6 +66,47 @@ export class UtilitiesController {
     @Headers('idempotency-key') key?:string,
   ){
     return this.service.recordReading(this.context(req),meterId,dto,key??null);
+  }
+
+  @Get('meters/:meterId/readings/:readingId/work-order-cost-allocations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('utilities.readings.read')
+  @RequireFactoryScope()
+  listWorkOrderCostAllocations(
+    @Req() req:UtilityRequest,
+    @Param('meterId',new ParseUUIDPipe()) meterId:string,
+    @Param('readingId',new ParseUUIDPipe()) readingId:string,
+  ){
+    return this.workOrderCostAllocationService.list(this.context(req),meterId,readingId);
+  }
+
+  @Post('meters/:meterId/readings/:readingId/work-order-cost-allocations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('utilities.readings.capture')
+  @RequireFactoryScope()
+  allocateWorkOrderCost(
+    @Req() req:UtilityRequest,
+    @Param('meterId',new ParseUUIDPipe()) meterId:string,
+    @Param('readingId',new ParseUUIDPipe()) readingId:string,
+    @Body() dto:CreateUtilityWorkOrderCostAllocationDto,
+    @Headers('idempotency-key') key?:string,
+  ){
+    return this.workOrderCostAllocationService.allocate(this.context(req),meterId,readingId,dto,key??null);
+  }
+
+  @Post('meters/:meterId/readings/:readingId/work-order-cost-allocations/:allocationId/reverse')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('utilities.readings.capture')
+  @RequireFactoryScope()
+  reverseWorkOrderCostAllocation(
+    @Req() req:UtilityRequest,
+    @Param('meterId',new ParseUUIDPipe()) meterId:string,
+    @Param('readingId',new ParseUUIDPipe()) readingId:string,
+    @Param('allocationId',new ParseUUIDPipe()) allocationId:string,
+    @Body() dto:ReverseUtilityWorkOrderCostAllocationDto,
+    @Headers('idempotency-key') key?:string,
+  ){
+    return this.workOrderCostAllocationService.reverse(this.context(req),meterId,readingId,allocationId,dto,key??null);
   }
 
   @Get('events')

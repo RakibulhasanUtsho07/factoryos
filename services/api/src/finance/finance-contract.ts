@@ -22,6 +22,7 @@ export type FinanceFactType = (typeof FINANCE_FACT_TYPES)[number];
 
 export const FINANCE_RECONCILABLE_SOURCE_TYPES = [
   'ORDER_LINE', 'PURCHASE_ORDER_LINE', 'GOODS_RECEIPT_LINE', 'UTILITY_METER_READING',
+  'WORK_ORDER_MATERIAL_CONSUMPTION', 'UTILITY_WORK_ORDER_COST_ALLOCATION',
 ] as const;
 export type FinanceReconciliationSourceType = (typeof FINANCE_RECONCILABLE_SOURCE_TYPES)[number];
 
