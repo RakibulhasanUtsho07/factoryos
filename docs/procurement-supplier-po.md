@@ -80,3 +80,8 @@ All PO lines use a generated numeric line amount; aggregate totals are calculate
 ## Boundary
 
 This is a bounded procurement evidence slice, not a full supplier scorecard. Supplier performance is read-only evidence based on approved POs, POSTED GRNs and GRN-linked quality events; supplier scores, rankings, automatic recommendations, AP-provider certification, tax and commercial approval thresholds remain separate, explicitly unaccepted outcomes.
+
+
+## External AP supplier invoice matching
+
+External AP `SUPPLIER_INVOICE_LINE` facts must match the exact posted GRN line, accepted quantity, approved PO unit price and tenant-scoped PO supplier master through a canonical supplier code crosswalk. FactoryOS retains only the external AP fact and reconciliation evidence; it does not create or pay invoices. See `docs/supplier-invoice-three-way-match.md` for the bounded contract and exclusions.
