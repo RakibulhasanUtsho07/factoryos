@@ -889,7 +889,7 @@ jobs:
 
           echo "Reapplying supplier performance evidence migration after development-role seeds"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f migrations/238_supplier_performance_evidence.sql
+            -v ON_ERROR_STOP=1 -f migrations/239_supplier_performance_evidence.sql
 
           echo "Provisioning supplier performance database and application-role grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
