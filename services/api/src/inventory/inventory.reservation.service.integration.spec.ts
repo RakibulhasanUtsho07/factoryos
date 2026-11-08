@@ -377,13 +377,10 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
     const itemId = await createItem('10.0000');
     const damagedExpiredUnitId = randomUUID();
     const recalledUnitId = randomUUID();
+    const eligibleUnitId = randomUUID();
     const fixtureKey = randomUUID();
-    const defaultLocation = await adminPool.query<{ id: string }>(
-      "SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE' LIMIT 1",
-      [tenantId, factoryId],
-    );
-    const locationId = defaultLocation.rows[0]?.id;
-    if (!locationId) throw new Error('Factory UNASSIGNED location is missing for availability fixture');
+    // Tracked stock is pickable only from an active BIN below an active WAREHOUSE/STAGING parent.
+    const { binA: locationId } = await createWarehouseAndBins();
 
     const mutableTables = [
       'inventory_traceability_location_balances',
@@ -452,13 +449,44 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
 
       await adminPool.query(
         `
+        INSERT INTO traceability_units (
+          id, tenant_id, factory_id, unit_type, product_role, unit_code,
+          barcode_value, inventory_item_id, quantity, unit, expires_at, status,
+          attributes, idempotency_key, request_hash, created_by_user_id,
+          correlation_id
+        )
+        VALUES (
+          $1, $2, $3, 'LOT', 'MATERIAL', $4, $5, $6, 5, 'PCS',
+          CURRENT_DATE + 30, 'ACTIVE', '{}'::jsonb,
+          $7, $8, $9, $10
+        )
+        `,
+        [
+          eligibleUnitId,
+          tenantId,
+          factoryId,
+          'ELIGIBLE-' + fixtureKey.slice(0, 10),
+          'ELIGIBLE-BARCODE-' + fixtureKey.slice(0, 10),
+          itemId,
+          'traceability-eligible-' + fixtureKey,
+          'b'.repeat(64),
+          TEST_USER_ID,
+          randomUUID(),
+        ],
+      );
+
+      await adminPool.query(
+        `
         INSERT INTO inventory_traceability_location_balances (
           tenant_id, factory_id, item_id, traceability_unit_id, location_id,
           quantity_on_hand, quantity_reserved
         )
-        VALUES ($1, $2, $3, $4, $5, 3, 0), ($1, $2, $3, $6, $5, 2, 0)
+        VALUES
+          ($1, $2, $3, $4, $5, 3, 0),
+          ($1, $2, $3, $6, $5, 2, 0),
+          ($1, $2, $3, $7, $5, 5, 0)
         `,
-        [tenantId, factoryId, itemId, damagedExpiredUnitId, locationId, recalledUnitId],
+        [tenantId, factoryId, itemId, damagedExpiredUnitId, locationId, recalledUnitId, eligibleUnitId],
       );
 
       const availability = await inventoryService.getAvailabilitySummary(
@@ -482,11 +510,11 @@ describe('Inventory WMS reservation and first production work-order PostgreSQL i
       try {
         await adminPool.query(
           'DELETE FROM inventory_traceability_location_balances WHERE traceability_unit_id = ANY($1::uuid[])',
-          [[damagedExpiredUnitId, recalledUnitId]],
+          [[damagedExpiredUnitId, recalledUnitId, eligibleUnitId]],
         );
         await adminPool.query(
           'DELETE FROM traceability_units WHERE id = ANY($1::uuid[])',
-          [[damagedExpiredUnitId, recalledUnitId]],
+          [[damagedExpiredUnitId, recalledUnitId, eligibleUnitId]],
         );
       } finally {
         for (const table of mutableTables) {
