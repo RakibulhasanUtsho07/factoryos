@@ -6920,9 +6920,23 @@
       "provisionalOwnerRole": "Finance / ERP",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/finance/finance-operational-source.ts",
+        "services/api/src/finance/finance.service.ts",
+        "services/api/src/finance/finance-supplier-invoice-match.ts",
+        "services/api/src/utilities/utility-work-order-cost-allocation.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/243_utility_work_order_cost_allocations.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/finance/finance-operational-source.spec.ts",
+        "services/api/src/finance/finance-supplier-invoice-match.spec.ts",
+        "services/api/test/finance-supplier-invoice-three-way-match.sql",
+        "services/api/test/finance-production-material-consumption-reconciliation.sql",
+        "services/api/test/finance-utility-work-order-cost-allocation.sql",
+        "services/api/test/utility-work-order-cost-allocation-contract.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -6930,7 +6944,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Direct source-backed AP invoice, WMS material-consumption and utility work-order allocation code/tests are present; migration 243 is ordered after current supplier migration 239. Still NOT_ACCEPTED pending exact-head CI, independent finance owner/reviewer, full-cost/landed-cost policy, WIP/finished-goods valuation and operational finance evidence.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -13785,9 +13799,22 @@
       "provisionalOwnerRole": "Manufacturing / Warehouse / Quality",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/finance/finance-supplier-invoice-match.ts",
+        "services/api/src/finance/finance.service.ts",
+        "services/api/src/procurement/supplier-performance.service.ts",
+        "services/api/src/procurement/procurement.controller.ts"
+      ],
+      "migrationReferences": [
+        "migrations/239_supplier_performance_evidence.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/finance/finance-supplier-invoice-match.spec.ts",
+        "services/api/test/finance-supplier-invoice-three-way-match.sql",
+        "services/api/test/goods-receipt.sql",
+        "services/api/src/procurement/supplier-performance.service.spec.ts",
+        "services/api/test/supplier-performance-evidence.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -13795,7 +13822,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Supplier performance evidence and AP supplier-invoice three-way match code/tests are present. Still NOT_ACCEPTED pending exact-head CI, named supplier/finance owner and independent reviewer, supplier acknowledgements/ASN/certificates, claims/RMA, price scorecards and external AP operational acceptance.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
