@@ -135,6 +135,15 @@ describe('InventoryService', () => {
     expect(query).toContain("ir.reference_id = wo.id");
     expect(query).toContain("qh.status = 'ACTIVE'");
     expect(query).toContain('expires_at < CURRENT_DATE');
+    expect(query).toContain('allocation_identity AS');
+    expect(query).toContain("l.status='ACTIVE' AND l.picking_enabled=TRUE");
+    expect(query).toContain("l.location_type='BIN'");
+    expect(query).toContain("parent.location_type IN ('WAREHOUSE','STAGING')");
+    expect(query).toContain("l.is_default=TRUE AND l.location_type='VIRTUAL'");
+    expect(query).toContain("tu.unit_type=CASE");
+    expect(query).toContain("tu.status='ACTIVE'");
+    expect(query).toContain("tu.attributes->>'condition'");
+    expect(query).toContain("qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id");
     expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
   });
 
