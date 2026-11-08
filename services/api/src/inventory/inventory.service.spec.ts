@@ -73,7 +73,7 @@ describe('InventoryService', () => {
     expect(query).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:inventory_|public\.inventory_)/i);
   });
 
-  it('returns the FR-WMS-05 availability, quality, expected-supply and first-production-order projection', async () => {
+  it('returns one canonical allocator-aware availability contract with legacy aliases from a repeatable read-only snapshot', async () => {
     const firstAffected = {
       work_order_id: randomUUID(),
       work_order_number: 'WO-2026-0042',
@@ -86,7 +86,7 @@ describe('InventoryService', () => {
       outstanding_material_quantity: '6.0000',
       shortfall_quantity: '2.0000',
     };
-    const availability = {
+    const legacyAvailability = {
       item_id: ITEM_ID,
       sku: 'FABRIC-01',
       name: 'Cotton Fabric',
@@ -95,7 +95,7 @@ describe('InventoryService', () => {
       quantity_on_hand: '20.0000',
       quantity_reserved: '7.0000',
       quantity_allocated: '7.0000',
-      quantity_available: '8.0000',
+      quantity_available: '13.0000',
       quantity_quarantined: '3.0000',
       quantity_quality_held: '5.0000',
       quantity_damaged: '2.0000',
@@ -105,28 +105,77 @@ describe('InventoryService', () => {
       balance_version: '9',
       first_affected_production_order: firstAffected,
     };
-    database.query.mockResolvedValueOnce({ rows: [availability] } as QueryResponse);
+    const dueDateRequirement = {
+      production_order_id: randomUUID(),
+      production_order_number: 'SO-2026-0119',
+      work_order_id: randomUUID(),
+      work_order_number: 'WO-2026-0043',
+      work_order_status: 'RELEASED',
+      due_date: '2026-11-09',
+      required_quantity: '10.0000',
+      allocated_quantity: '4.0000',
+      consumed_quantity: '1.0000',
+      unallocated_requirement_quantity: '5.0000',
+    };
+    const exposure = {
+      item_id: ITEM_ID,
+      sku: 'FABRIC-01',
+      name: 'Cotton Fabric',
+      unit: 'M',
+      status: 'ACTIVE',
+      quantity_on_hand: '20.0000',
+      allocated_quantity: '7.0000',
+      available_quantity: '8.0000',
+      quarantined_quantity: '3.0000',
+      damaged_quantity: '2.0000',
+      expired_quantity: '1.0000',
+      expected_quantity: '9.0000',
+      expected_quantity_unit_mismatch_line_count: 1,
+      next_expected_delivery_date: '2026-11-12',
+      expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM',
+      condition_evidence_scope: 'TRACEABILITY_LOCATION_BALANCES',
+      first_affected_production_order: dueDateRequirement,
+    };
+    client.query
+      .mockResolvedValueOnce({ rows: [legacyAvailability] } as QueryResponse)
+      .mockResolvedValueOnce({ rows: [exposure] } as QueryResponse);
 
     const result = await service.getAvailabilitySummary(USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID);
 
-    expect(result).toEqual(availability);
-    expect(database.query).toHaveBeenCalledWith(
-      expect.stringContaining('FROM inventory_items i'),
-      [ITEM_ID, TENANT_ID, FACTORY_ID],
-      { tenantId: TENANT_ID, userId: USER_ID },
+    expect(result).toMatchObject({
+      quantity_available: '8.0000',
+      available_quantity: '8.0000',
+      quantity_available_legacy_projection: '13.0000',
+      available_quantity_basis: 'RESERVATION_ALLOCATOR_ELIGIBLE_PICKING_ENABLED_STOCK',
+      quantity_expected: '12.0000',
+      quantity_expected_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_ACCEPTED_LEGACY',
+      expected_quantity: '9.0000',
+      expected_quantity_unit_mismatch_line_count: 1,
+      next_expected_delivery_date: '2026-11-12',
+      expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM',
+      first_affected_production_order: firstAffected,
+      first_affected_production_order_basis: 'LEGACY_PLANNED_START_PRIORITY_STOCK_SHORTFALL_PROJECTION',
+      earliest_due_uncovered_requirement: dueDateRequirement,
+    });
+    expect(database.transaction).toHaveBeenCalledWith(
+      {
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        isolationLevel: 'REPEATABLE READ',
+        readOnly: true,
+      },
+      expect.any(Function),
     );
-    const query = String(database.query.mock.calls[0]?.[0]);
-    expect(query).toContain('FROM quality_holds qh');
-    expect(query).toContain('inventory_traceability_location_balances');
-    expect(query).toContain('FROM goods_receipt_lines gl');
-    expect(query).toContain('FROM work_order_material_requirements req');
-    expect(query).toContain('ir2.remaining_quantity');
-    expect(query).toContain('tu.expires_at < CURRENT_DATE');
-    expect(query).toContain("'EXPIRED'");
-    expect(query).toContain('ORDER BY d.planned_start_date ASC, d.priority ASC');
-    expect(query.replaceAll(' ', '')).toContain('req.tenant_id=$2');
-    expect(query).toContain('AND req.factory_id = $3');
-    expect(query).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
+    expect(client.query).toHaveBeenCalledTimes(2);
+    const legacyQuery = String(client.query.mock.calls[0]?.[0]);
+    const allocatorQuery = String(client.query.mock.calls[1]?.[0]);
+    expect(legacyQuery).toContain('FROM goods_receipt_lines gl');
+    expect(legacyQuery).toContain('ORDER BY d.planned_start_date ASC, d.priority ASC');
+    expect(allocatorQuery).toContain('JOIN inventory_locations l');
+    expect(allocatorQuery).toContain('l.picking_enabled=TRUE');
+    expect(allocatorQuery).toContain('received.received_quantity');
+    expect(legacyQuery).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
+    expect(allocatorQuery).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
   });
 
   it('rejects an invalid availability item identifier before querying PostgreSQL', async () => {
