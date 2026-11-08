@@ -215,14 +215,12 @@ export class InventoryService {
   }
 
   /**
-   * Read the SRS FR-WMS-05 inventory availability projection.
+   * Read the canonical SRS FR-WMS-05 inventory availability projection.
    *
-   * Allocation is the authoritative active reservation balance. Quality-held,
-   * quarantined and damaged quantities are physical-condition indicators and
-   * may overlap allocated stock; quantity_available is calculated from the
-   * unallocated usable balance so blocked stock is never advertised as free.
-   * Expected stock includes only outstanding quantities on approved POs after
-   * accepted quantities on posted GRNs have been deducted.
+   * Compatibility fields are retained, while allocator-eligible availability
+   * and physically received approved-PO supply are returned with explicit
+   * formula labels. The two work-order views retain their distinct ordering
+   * and shortfall semantics for consumers during migration.
    */
   /**
    * Canonical WMS availability contract.
