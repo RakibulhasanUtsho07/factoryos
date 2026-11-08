@@ -1,6 +1,6 @@
 import {
-  ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
-  IsString, IsUUID, Matches, Max, MaxLength, Min,
+  ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
+  IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -96,6 +96,73 @@ export class CreateGenealogyEventDto {
   @IsOptional()
   @IsObject()
   evidence?: Record<string, unknown>;
+}
+
+
+export class TraceabilityTransformationLocationDto {
+  @IsUUID()
+  location_id!: string;
+
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  quantity!: number;
+}
+
+export class SplitTraceabilityLotOutputDto {
+  @IsIn(['LOT', 'SERIAL'])
+  unit_type!: 'LOT' | 'SERIAL';
+
+  @IsString()
+  @MaxLength(160)
+  unit_code!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  barcode_value?: string;
+
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  quantity!: number;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => TraceabilityTransformationLocationDto)
+  locations!: TraceabilityTransformationLocationDto[];
+}
+
+export class SplitTraceabilityLotDto {
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => SplitTraceabilityLotOutputDto)
+  outputs!: SplitTraceabilityLotOutputDto[];
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+}
+
+export class MergeTraceabilityLotsDto {
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsUUID(undefined, { each: true })
+  source_unit_ids!: string[];
+
+  @IsString()
+  @MaxLength(160)
+  target_unit_code!: string;
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
 }
 
 export class ChangeTraceabilityUnitStatusDto {
