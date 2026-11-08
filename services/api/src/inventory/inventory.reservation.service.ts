@@ -2243,7 +2243,7 @@ export class InventoryReservationService {
         AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT', 'SERIAL')
       ORDER BY c.item_id,
         CASE WHEN effective_policy.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        COALESCE(gr.posted_at, gr.received_at, tu.created_at),
+        COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at),
         lower(tu.unit_code), ca.location_id, tu.id,
         c.created_at, ca.created_at, ca.id
       FOR UPDATE OF ca, tu
@@ -3278,14 +3278,25 @@ export class InventoryReservationService {
            WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='FACTORY'),
           FALSE
         ) AS require_traceability,
-        COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
-        COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_serial,
+        COALESCE(bool_or(tu.unit_type = 'LOT' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_lot
+          WHERE active_lot.tenant_id = tu.tenant_id AND active_lot.factory_id = tu.factory_id
+            AND active_lot.item_id = tu.inventory_item_id
+            AND active_lot.traceability_unit_id = tu.id AND active_lot.quantity_on_hand > 0
+        )), FALSE) AS has_lot,
+        COALESCE(bool_or(tu.unit_type = 'SERIAL' AND EXISTS (
+          SELECT 1 FROM inventory_traceability_location_balances active_serial
+          WHERE active_serial.tenant_id = tu.tenant_id AND active_serial.factory_id = tu.factory_id
+            AND active_serial.item_id = tu.inventory_item_id
+            AND active_serial.traceability_unit_id = tu.id AND active_serial.quantity_on_hand > 0
+        )), FALSE) AS has_serial,
         (count(tu.id) > 0) AS has_identity
       FROM inventory_items i
       LEFT JOIN traceability_units tu
         ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
        AND tu.inventory_item_id = i.id
        AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+       AND tu.status = 'ACTIVE'
       WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = $3
       GROUP BY i.id
       `,
@@ -3317,7 +3328,7 @@ export class InventoryReservationService {
       SELECT tlb.traceability_unit_id::text AS traceability_unit_id,
              tlb.location_id::text AS location_id, tu.unit_type, tu.unit_code,
              tu.expires_at::text AS expires_at,
-             COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
+             COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at)::text AS received_at,
              tlb.quantity_on_hand::text AS quantity_on_hand,
              tlb.quantity_reserved::text AS quantity_reserved
       FROM inventory_traceability_location_balances tlb
@@ -3349,7 +3360,7 @@ export class InventoryReservationService {
         AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE'
         AND tlb.quantity_on_hand > tlb.quantity_reserved
       ORDER BY CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
+        CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at) END ASC NULLS LAST,
         lower(tu.unit_code), tlb.location_id, tu.id
       FOR UPDATE OF tlb, tu
       `,
@@ -3428,16 +3439,16 @@ export class InventoryReservationService {
     client: PoolClient,
     input: { tenantId: string; factoryId: string; itemId: string; reservationId: string; consumptionId: string; quantity: string },
   ): Promise<void> {
-    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: number }>(
+    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-         a.location_id::text AS location_id, a.allocation_sequence,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         a.location_id::text AS location_id, a.allocation_sequence::text AS allocation_sequence,
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu
          ON tu.id = a.traceability_unit_id AND tu.tenant_id = a.tenant_id
         AND tu.factory_id = a.factory_id AND tu.inventory_item_id = a.item_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
          AND tu.status='ACTIVE'
          AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
          AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
@@ -3481,16 +3492,20 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET consumed_quantity=consumed_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );
       if (!mapUpdate.rows[0]) throw new ConflictException('Lot/serial reservation allocation changed during issue');
       await client.query(
         `INSERT INTO inventory_reservation_consumption_traceability_allocations (
-           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity
-         ) VALUES ($1,$2,$3,$4,$5,$6::numeric)`,
-        [input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id, allocation.location_id, quantity],
+           tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity,
+           reservation_allocation_id, allocation_sequence
+         ) VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::uuid,$8::bigint)`,
+        [
+          input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id,
+          allocation.location_id, quantity, allocation.id, allocation.allocation_sequence,
+        ],
       );
       remaining -= units;
     }
@@ -3504,10 +3519,10 @@ export class InventoryReservationService {
     const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
          a.location_id::text AS location_id,
-         (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+         (a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+         AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity
        ORDER BY a.allocation_sequence ASC FOR UPDATE`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
@@ -3533,7 +3548,7 @@ export class InventoryReservationService {
         `UPDATE inventory_reservation_traceability_allocations
          SET released_quantity=released_quantity+$1::numeric, updated_at=clock_timestamp()
          WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-           AND consumed_quantity+released_quantity+$1::numeric <= allocated_quantity
+           AND consumed_quantity+released_quantity+remapped_quantity+$1::numeric <= allocated_quantity
          RETURNING id::text AS id`,
         [quantity, allocation.id, input.tenantId, input.factoryId],
       );

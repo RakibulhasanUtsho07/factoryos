@@ -265,6 +265,18 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/238_wms_genealogy_transformations_require_commands.sql
 
+          echo "Applying and replaying real stock-conserving LOT/SERIAL transformation commands"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/244_wms_stock_conserving_lot_serial_transformations.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/244_wms_stock_conserving_lot_serial_transformations.sql
+
+          echo "Applying and replaying active WMS reservation allocation remapping"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/245_wms_reservation_traceability_allocation_remapping.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/245_wms_reservation_traceability_allocation_remapping.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
@@ -466,7 +478,7 @@ jobs:
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
 
-          # Migration 199 replaces the base work-order genealogy functions. Migration 240 is a
+          # Migration 199 replaces the base work-order genealogy functions. Migration 245 is a
           # deliberate multi-SERIAL overlay, so it MUST be reapplied immediately after every
           # 199 replay; otherwise the older function body would silently remove SERIAL targets.
           echo "Checking WMS consumption-bound work-order output genealogy and transaction-completion guards"

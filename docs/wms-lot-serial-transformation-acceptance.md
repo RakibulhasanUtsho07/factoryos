@@ -1,56 +1,49 @@
 # WMS LOT/SERIAL transformation acceptance boundary
 
-**Status: OPEN — no production split/merge command is implemented.**
+**Implementation status: bounded backend commands implemented on the stacked WP02 branch; SRS product acceptance remains OPEN / NOT_ACCEPTED.**
 
-## Why the generic genealogy path is insufficient
+## Commands and routes
 
-The product_genealogy_events table is append-only lineage evidence. A SPLIT_INTO or MERGED_INTO row by itself does not move stock, update warehouse bins, release or create reservation allocations, or conserve the inventory ledger. Treating that edge as a completed transformation can make the genealogy graph disagree with the quantity the warehouse can actually pick.
+Migration 238 continues to reject generic SPLIT_INTO and MERGED_INTO genealogy writes. Migration 244 adds command-linked stock-conserving execution, and migration 245 adds active reservation-allocation remapping. The generic POST /api/v1/traceability/genealogy route remains blocked for both relationship types.
 
-Migration 238 therefore blocks both relationship types through the generic POST /api/v1/traceability/genealogy path and through direct PostgreSQL inserts. Its preflight also refuses to install where historical split/merge edges exist until those records receive explicit owner-audited reconciliation. The API returns 409 Conflict before opening a database transaction. The database guard is authoritative for alternate writers. Because the genealogy tables use FORCE RLS, the migration additionally requires its effective PostgreSQL role to have superuser or BYPASSRLS visibility; it aborts with SQLSTATE `42501` rather than risk a false-empty preflight under a tenant-filtered role.
-Before deployment, an operator can inventory the rows that would block migration 238 with this read-only query (run it against the same database and tenant/factory scope used for the migration):
+- POST /api/v1/traceability/units/:unitId/split takes one source material LOT and 2–100 child identities. A command may mix LOT and whole-unit SERIAL outputs when the effective material allocation policy is FIFO or FEFO. An explicit LOT or SERIAL policy requires every child to use that one identity type. PostgreSQL evaluates the effective policy using material → sector → factory → traceability-settings precedence. Each output declares its total quantity and the exact quantities to assign to existing source locations; every SERIAL is exactly 1.0000 in one location.
+- POST /api/v1/traceability/units/merge takes 2–100 compatible source material LOT identities and a new target LOT code. Target location quantities are derived from source identity/location balances; the client cannot invent the result quantity.
 
-```sql
-SELECT
-  id,
-  tenant_id,
-  factory_id,
-  source_unit_id,
-  target_unit_id,
-  relationship_type,
-  quantity,
-  unit,
-  created_at,
-  created_by_user_id
-FROM product_genealogy_events
-WHERE relationship_type IN ('SPLIT_INTO', 'MERGED_INTO')
-ORDER BY tenant_id, factory_id, created_at, id;
-```
+Both routes require traceability.write, factory scope and an Idempotency-Key. Repeating the same key and request hash returns the same target IDs without duplicate identities, command lines, genealogy, audit or outbox events. Reusing the key with a changed payload conflicts.
 
-Do not delete or silently rewrite rows to make the migration pass. Reconcile each result against the physical stock ledger, BIN/location balances, reservations and source/target identities; retain owner approval and append-only correction evidence before applying the guard. The migration intentionally reports a blocker rather than guessing which historical edge is safe.
+## Transaction and ledger invariants
 
+A command locks the canonical tenant/factory genealogy graph, the inventory item and the aggregate/location/traceability balances in the same item-first lock order used by stock reservation/issue paths. Source material LOTs must be ACTIVE, unexpired, undamaged, unheld, not under an active quality hold, and fully reconciled: tracked on-hand must exactly equal registered quantity less prior CONSUMED_INTO/PROCESSED_INTO genealogy quantities.
 
-## Required design before enabling commands
+Active reservation allocations are remapped transactionally with the stock identity. For each source allocation, the command creates one or more child allocation rows at the exact source allocation's position in that reservation's ordered allocation stream. Unaffected allocations retain their relative precedence; the child rows consume in output sequence order before later original allocations. The original allocation row remains as source history with a monotonic remapped_quantity disposition, while a separate append-only remap ledger links source/target rows, quantities and both sequence positions. Each subsequent issue-evidence row records the exact replacement reservation allocation ID and issue-time sequence, so reverse audit can traverse consumption -> replacement allocation -> remap edge -> original source allocation, including merge commands where multiple rows share one target LOT. Legacy consumption rows remain immutable with null lineage fields. The reservation remaining_quantity and aggregate/BIN reserved balances do not change. Split and merge do not release/recreate a reservation and cannot orphan an active allocation on a DISPOSED source. The item-first lock serializes transformation against issue, release and new reservation creation.
 
-A future command must have its own authenticated, permission-gated route and typed DTO. It must not reopen the generic genealogy endpoint.
+For a successful split, all output quantities must sum exactly to the complete source LOT on-hand quantity. Per-output locations must sum to the output quantity, and the total assigned to each source location must remain exactly equal to that location's source LOT quantity. A SERIAL output is exactly 1.0000 in one location; LOT outputs may retain any positive four-decimal bulk remainder. Under FIFO/FEFO, the same command may create both LOT and SERIAL children. If the output set contains any SERIAL, the existing guard still requires all other active LOT stock for that item to be transformed first. Partial parent remainders and physical moves to a different location are not supported.
 
-The command must bind tenant, factory, source identities, target identities, inventory item, UOM, source/destination location, expected identity versions, idempotency key, reason and actor. It must take the canonical genealogy graph lock and lock identity, aggregate-balance, location-balance, reservation and allocation rows in one documented order.
+For a successful merge, all sources must be material LOTs for the same factory/item/base unit, be unreserved and fully tracked, and have identical manufacturing timestamp, expiry, attributes and effective receipt timestamp. The new target LOT quantity equals the sum of all source on-hand quantities. Source identities are moved to DISPOSED; the target identity remains ACTIVE.
 
-For a LOT split, every child identity must be created with unique normalized unit/barcode identity and valid item/UOM scope. The sum of child quantities plus any explicitly retained parent remainder must equal the source's eligible unreserved quantity. SERIAL children are exactly 1.0000; a SERIAL may never be split or merged. The command must conserve aggregate on-hand/reserved quantities and every affected BIN and traceability-location balance, and it must not consume reserved, quarantined, recalled, expired, damaged, held, shipped or otherwise ineligible quantity.
+Both operations replace only the traceability-unit/location attribution. They do not change aggregate inventory_stock_balances, item/location inventory_location_balances, or physical quantity in any BIN. Traceability-location balance totals are preserved exactly per location. The child's allocation_received_at_override retains the original effective receipt precedence (posted_at, then received_at, then prior override, then identity created_at) so FIFO/FEFO ordering is stable. The reservation allocator and database genealogy policy guard use the same precedence.
 
-For a LOT merge, all source lots must be compatible in tenant/factory, item, UOM, quality/expiry disposition and policy. Only eligible unreserved quantities may be moved. The new target LOT must have a unique identity, and the sum of source quantities must equal the target quantity. Serial identities remain separate; a merge must never collapse their identity.
+Each command writes immutable transformation headers and per-source/target/location lines, genealogy events linked through transformation_id, target unit registration audit/outbox, source disposition status-history/audit/outbox, and a command-level completion audit/outbox event. Database deferred evidence constraints require the associated records to exist before commit. A late uniqueness/write failure rolls the command back, including the header, source balance change, target rows and all evidence.
 
-Both commands must create immutable genealogy edges, audit events and transactional outbox events in the same transaction as the stock movement. They must replay the original result for an identical idempotency payload, return 409 Conflict for a changed payload under the same key, and reject cross-tenant/factory IDs, duplicate targets, cycles, stale expected versions and concurrent oversubscription. A failed command must leave every balance, reservation, identity and evidence table unchanged.
+## Automated acceptance evidence
 
-## Acceptance evidence required
+services/api/test/wms-serial-indivisibility.sql and the PostgreSQL reservation integration suite exercise:
+- Two compatible LOTs merged into one target LOT, with both source quantities and source identities retired.
+- A ten-unit LOT split into ten independently addressable whole-unit SERIAL identities.
+- Effective receipt timestamp preservation through merge/split.
+- Same-key merge and split replay without duplicate command/genealogy/evidence rows.
+- A deliberately late duplicate-identity failure after the source map/header writes begin; the savepoint confirms full rollback.
+- Aggregate on-hand/reserved, item/BIN on-hand/reserved and total traceability-location on-hand/reserved conservation.
+- API PostgreSQL integration races two different split idempotency keys against the same source LOT: one command commits, the other conflicts after source-state revalidation, and only one command/two genealogy edges remain.
+- API PostgreSQL integration races a split against reservation creation: both operations commit in either lock order; a reservation created first is remapped to ACTIVE child LOTs, and a reservation created after split allocates directly to the children. No active allocation references a disposed LOT, and aggregate/BIN/traceability/reserved totals reconcile.
+- A FIFO partial-issue regression starts with reservation allocations across two LOTs, splits the first reserved LOT into two child LOTs, verifies child allocations are inserted at the parent's relative sequence position, then consumes across both children and the later original LOT in deterministic order.
+- Remap evidence preserves source/target allocation IDs, quantities, source sequence and replacement sequence; merge may retain multiple ordered rows for the same target LOT when two source LOTs belonged to the same reservation.
+- Existing SERIAL indivisibility and generic unbacked-genealogy rejection.
 
-- PostgreSQL integration tests using real inventory fixtures and two concurrent command attempts against the same source quantity.
-- Split quantity conservation across parent remainder, children, aggregate stock, every BIN, traceability-location balances and reservation availability.
-- Merge source compatibility, exact output quantity, lineage completeness and full stock conservation.
-- SERIAL cannot be split or merged; SERIAL child quantities are exactly one.
-- Rejected reserved/held/expired/quarantined/recalled/shipped sources, wrong tenant/factory, stale versions, cycles, duplicate idempotency conflicts and insufficient quantity.
-- Idempotent replay creates no duplicate units, movements, genealogy, audit or outbox rows.
-- Failure injection at each write stage proves transaction rollback.
-- Full ordered migration replay, API CI, PostgreSQL CI, dependency security and SRS/HLD/Blueprint traceability on the exact PR head.
-- Factory/site rehearsal, physical label/scanner/RFID HIL where applicable, and named independent owner/reviewer acceptance.
+The API unit contract rejects fractional SERIAL outputs and duplicate merge source IDs before opening a transaction; mixed LOT/SERIAL output shape is accepted by the DTO/service and its effective policy is enforced by PostgreSQL. The WMS SQL contract proves a reserved one-unit allocation remaps to the SERIAL child while the remaining bulk quantity becomes LOT stock. API CI and PostgreSQL CI must pass on the exact PR head. The PostgreSQL workflow applies and replays migrations 239 and 240 before the WMS SQL contract.
 
-Until all evidence is present, FR-WMS-02 / FR-WMS-04 / FR-WMS-09 remain PARTIAL / OPEN / NOT_ACCEPTED. The fail-closed guard is a safety improvement, not proof that the transformation feature has been delivered.
+## Remaining SRS acceptance gates
+
+FR-WMS-02 / FR-WMS-04 / FR-WMS-09 remain PARTIAL / OPEN / NOT_ACCEPTED pending: mixed good/scrap and larger serial distribution scenarios; full forward/reverse recall impact acceptance through transformations; cross-location physical movement/put-away handling; representative external factory/site/provider rehearsal; physical barcode/RFID/mobile/printer HIL; capacity/recovery testing; and named independent product/operations owner and reviewer acceptance.
+
+Do not promote this command slice to main or mark the SRS rows PASS based only on code/CI. The PR is stacked on the generic-transformation safety guard branch and must be reviewed and accepted in that order.
