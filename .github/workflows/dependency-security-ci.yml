@@ -21,6 +21,50 @@ on:
       - 'services/api/src/auth/**'
       - 'services/api/src/scim/**'
       - 'services/api/src/common/decorators/**'
+      - 'services/api/src/production/**'
+      - 'migrations/**'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'apps/**/package.json'
+      - 'services/**/package.json'
+      - '.github/workflows/dependency-security-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/api-postgres-ci.yml'
+      - 'scripts/recovery/**'
+      - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
+      - 'services/api/test/**'
+name: Production Dependency Security
+
+on:
+  pull_request:
+    paths:
+      - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'apps/**/package.json'
+      - 'services/**/package.json'
+      - '.github/workflows/dependency-security-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/api-postgres-ci.yml'
+      - 'scripts/recovery/**'
+      - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
+      - 'docs/backup-copy-evidence-deployment-provisioning.md'
+      - 'services/api/test/**'
+      - 'services/api/src/auth/**'
+      - 'services/api/src/production/**'
+      - 'services/api/src/scim/**'
+      - 'services/api/src/common/decorators/**'
+      - 'services/api/src/production/**'
       - 'migrations/**'
   push:
     branches: [main, dev, rakibul-hasan]
