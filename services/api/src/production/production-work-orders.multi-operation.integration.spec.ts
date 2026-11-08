@@ -608,14 +608,28 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     };
 
     const releaseQualityHold = async (inspectionId: string) => {
-      const updated = await adminPool.query(
-        `UPDATE quality_holds
-         SET status='RELEASED', released_by_user_id=$1, released_at=clock_timestamp(),
-             release_reason=$2, updated_at=clock_timestamp()
-         WHERE tenant_id=$3 AND factory_id=$4 AND inspection_id=$5 AND status='ACTIVE'`,
-        [TEST_USER_ID, 'Regression fixture released after eligibility assertion', tenantId, factoryId, inspectionId],
-      );
-      expect(updated.rowCount).toBe(1);
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        const updated = await qualityClient.query(
+          `UPDATE quality_holds
+           SET status='RELEASED', released_by_user_id=$1, released_at=clock_timestamp(),
+               release_reason=$2, updated_at=clock_timestamp()
+           WHERE tenant_id=$3 AND factory_id=$4 AND inspection_id=$5 AND status='ACTIVE'`,
+          [TEST_USER_ID, 'Regression fixture released after eligibility assertion', tenantId, factoryId, inspectionId],
+        );
+        expect(updated.rowCount).toBe(1);
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
     };
 
     const readRadarMaterial = async (): Promise<Record<string, unknown>> => {
