@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min,
+  IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength,
 } from 'class-validator';
 
 export const UTILITY_TYPES = ['ELECTRICITY','GAS','STEAM','WATER','COMPRESSED_AIR','FUEL','OTHER'] as const;
@@ -65,4 +65,16 @@ export class TransitionUtilityEventDto {
   @IsOptional() @IsString() @MaxLength(4000) resolution?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(1440) impact_minutes?: number;
   @IsOptional() @Type(() => Number) @IsNumber({ maxDecimalPlaces: 8 }) @Min(0) impact_quantity?: number;
+}
+
+
+export class CreateUtilityWorkOrderCostAllocationDto {
+  @IsUUID() work_order_id!: string;
+  // Keep accounting quantities as decimal strings; do not coerce through IEEE-754.
+  @IsString() @MaxLength(25) @Matches(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/) allocated_quantity!: string;
+  @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
+}
+
+export class ReverseUtilityWorkOrderCostAllocationDto {
+  @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
 }
