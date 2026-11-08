@@ -489,7 +489,7 @@ export class InventoryService {
             s.quantity_reserved::text AS allocated_quantity,
             CASE
               WHEN s.status <> 'ACTIVE' OR s.item_wide_quality_hold THEN 0::numeric(18,4)
-              ELSE COALESCE(a.allocatable_quantity,0)
+              ELSE COALESCE(eligible.allocatable_quantity,0)
             END::text AS available_quantity,
             CASE WHEN s.item_wide_quality_hold
               THEN s.quantity_on_hand
@@ -512,7 +512,7 @@ export class InventoryService {
             a.order_evidence AS first_affected_production_order
           FROM selected_item s
           CROSS JOIN condition_totals c
-          LEFT JOIN allocatable_stock a ON a.allocatable_quantity IS NOT NULL
+          CROSS JOIN allocatable_stock eligible
           LEFT JOIN expected_supply e ON e.item_id = s.id
           LEFT JOIN first_affected_order a ON TRUE
           LIMIT 1
