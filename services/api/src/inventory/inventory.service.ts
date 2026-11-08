@@ -45,6 +45,42 @@ export interface InventoryStockSummary extends QueryResultRow {
   balance_version: string;
 }
 
+export interface InventoryDueDateUncoveredRequirement extends QueryResultRow {
+  production_order_id: string;
+  production_order_number: string;
+  work_order_id: string;
+  work_order_number: string;
+  work_order_status: 'RELEASED' | 'IN_PROGRESS' | 'ON_HOLD';
+  due_date: string | null;
+  required_quantity: string;
+  allocated_quantity: string;
+  consumed_quantity: string;
+  unallocated_requirement_quantity: string;
+}
+
+export interface InventoryAvailabilityExposure extends QueryResultRow {
+  item_id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  status: 'ACTIVE' | 'DISABLED';
+  quantity_on_hand: string;
+  allocated_quantity: string;
+  available_quantity: string;
+  quarantined_quantity: string;
+  damaged_quantity: string;
+  expired_quantity: string;
+  expected_quantity: string;
+  expected_quantity_unit_mismatch_line_count: number;
+  next_expected_delivery_date: string | null;
+  expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM';
+  condition_evidence_scope:
+    | 'ITEM_WIDE_QUALITY_HOLD'
+    | 'TRACEABILITY_LOCATION_BALANCES'
+    | 'NO_TRACEABILITY_CONDITION_EVIDENCE';
+  first_affected_production_order: InventoryDueDateUncoveredRequirement | null;
+}
+
 export interface InventoryAvailabilitySummary extends QueryResultRow {
   item_id: string;
   sku: string;
@@ -54,14 +90,33 @@ export interface InventoryAvailabilitySummary extends QueryResultRow {
   quantity_on_hand: string;
   quantity_reserved: string;
   quantity_allocated: string;
+  /** Canonical allocator-eligible value; retained legacy key, corrected semantics. */
   quantity_available: string;
+  /** Value produced by the pre-canonical aggregate-only calculation for migration diagnostics. */
+  quantity_available_legacy_projection: string;
+  /** Canonical explicit alias of allocator-eligible quantity. */
+  available_quantity: string;
+  allocated_quantity: string;
   quantity_quarantined: string;
   quantity_quality_held: string;
   quantity_damaged: string;
   quantity_expired: string;
   quantity_status_blocked: string;
+  /** Backward-compatible PO remainder using POSTED GRN accepted_quantity. */
   quantity_expected: string;
+  quantity_expected_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_ACCEPTED_LEGACY';
+  /** Canonical PO remainder using physical received_quantity and matching item UOM. */
+  expected_quantity: string;
+  expected_quantity_unit_mismatch_line_count: number;
+  next_expected_delivery_date: string | null;
+  expected_quantity_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM';
+  condition_evidence_scope:
+    | 'ITEM_WIDE_QUALITY_HOLD'
+    | 'TRACEABILITY_LOCATION_BALANCES'
+    | 'NO_TRACEABILITY_CONDITION_EVIDENCE';
+  available_quantity_basis: 'RESERVATION_ALLOCATOR_ELIGIBLE_PICKING_ENABLED_STOCK';
   balance_version: string;
+  /** Backward-compatible planned-start / priority projection. */
   first_affected_production_order: {
     work_order_id: string;
     work_order_number: string;
@@ -74,6 +129,9 @@ export interface InventoryAvailabilitySummary extends QueryResultRow {
     outstanding_material_quantity: string;
     shortfall_quantity: string;
   } | null;
+  first_affected_production_order_basis: 'LEGACY_PLANNED_START_PRIORITY_STOCK_SHORTFALL_PROJECTION';
+  /** Separate due-date view of requirements not covered by reservations or consumption. */
+  earliest_due_uncovered_requirement: InventoryDueDateUncoveredRequirement | null;
 }
 
 type InventoryMovementRow = QueryResultRow & {
@@ -166,6 +224,14 @@ export class InventoryService {
    * Expected stock includes only outstanding quantities on approved POs after
    * accepted quantities on posted GRNs have been deducted.
    */
+  /**
+   * Canonical WMS availability contract.
+   *
+   * Both the legacy response projection and allocator-aware exposure are read
+   * from one tenant-scoped REPEATABLE READ / READ ONLY snapshot. Existing keys
+   * remain available; corrected allocator availability and explicit PO/order
+   * semantics are exposed alongside their legacy counterparts.
+   */
   async getAvailabilitySummary(
     userId: string,
     tenantId: string,
@@ -175,8 +241,12 @@ export class InventoryService {
     this.validateScope(userId, tenantId, factoryId);
     if (!isUUID(itemId)) throw new BadRequestException('itemId must be a valid UUID');
 
-    const result = await this.database.query<InventoryAvailabilitySummary>(
-      `
+    return this.database.transaction(
+      { tenantId, userId, isolationLevel: 'REPEATABLE READ', readOnly: true },
+      async (client) => {
+        const legacyResult = await client.query<InventoryAvailabilitySummary>(
+          `
+
       WITH item_balance AS (
         SELECT i.id::text AS item_id,
                i.tenant_id::text AS tenant_id,
@@ -468,15 +538,406 @@ export class InventoryService {
       FROM availability a
       LEFT JOIN first_affected_order fa ON TRUE
       LIMIT 1
-      `,
-      [itemId.toLowerCase(), tenantId, factoryId],
-      { tenantId, userId },
+      
+          `,
+          [itemId.toLowerCase(), tenantId, factoryId],
+        );
+        const legacy = legacyResult.rows[0];
+        if (!legacy) throw new NotFoundException('Inventory item not found in this factory');
+
+        const exposureResult = await client.query<InventoryAvailabilityExposure>(
+          `
+
+          WITH selected_item AS (
+            SELECT
+              i.id, i.tenant_id, i.factory_id, i.sku, i.name, i.unit, i.status, i.sector_code,
+              b.quantity_on_hand, b.quantity_reserved,
+              COALESCE(
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+                (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id AND p.policy_scope='FACTORY'),
+                (SELECT ts.allocation_policy FROM traceability_settings ts
+                 WHERE ts.tenant_id=i.tenant_id AND ts.factory_id=i.factory_id),
+                'FIFO'
+              ) AS allocation_policy,
+              COALESCE(
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
+                   AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+                (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+                 WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id AND p.policy_scope='FACTORY'),
+                FALSE
+              ) AS require_traceability,
+              EXISTS (
+                SELECT 1
+                FROM quality_holds qh
+                WHERE qh.tenant_id = i.tenant_id
+                  AND qh.factory_id = i.factory_id
+                  AND qh.inventory_item_id = i.id
+                  AND qh.traceability_unit_id IS NULL
+                  AND qh.status = 'ACTIVE'
+              ) AS item_wide_quality_hold
+            FROM inventory_items i
+            JOIN inventory_stock_balances b
+              ON b.item_id = i.id
+             AND b.tenant_id = i.tenant_id
+             AND b.factory_id = i.factory_id
+            WHERE i.id = $1
+              AND i.tenant_id = $2
+              AND i.factory_id = $3
+            LIMIT 1
+          ),
+          traceability_balances AS (
+            SELECT
+              tu.id AS traceability_unit_id,
+              tu.status,
+              tu.attributes,
+              tu.expires_at,
+              SUM(tlb.quantity_on_hand)::numeric(18,4) AS quantity_on_hand,
+              SUM(tlb.quantity_reserved)::numeric(18,4) AS quantity_reserved,
+              EXISTS (
+                SELECT 1
+                FROM quality_holds qh
+                WHERE qh.tenant_id = tu.tenant_id
+                  AND qh.factory_id = tu.factory_id
+                  AND qh.traceability_unit_id = tu.id
+                  AND qh.status = 'ACTIVE'
+              ) AS has_active_quality_hold
+            FROM selected_item s
+            JOIN inventory_traceability_location_balances tlb
+              ON tlb.item_id = s.id
+             AND tlb.tenant_id = s.tenant_id
+             AND tlb.factory_id = s.factory_id
+            JOIN traceability_units tu
+              ON tu.id = tlb.traceability_unit_id
+             AND tu.inventory_item_id = tlb.item_id
+             AND tu.tenant_id = tlb.tenant_id
+             AND tu.factory_id = tlb.factory_id
+            GROUP BY tu.id, tu.status, tu.attributes, tu.expires_at, tu.tenant_id, tu.factory_id
+          ),
+          classified_traceability AS (
+            SELECT
+              traceability_unit_id,
+              quantity_on_hand,
+              quantity_reserved,
+              expires_at,
+              (
+                status IN ('QUARANTINED', 'RECALLED')
+                OR attributes @> '{"quarantined":true}'::jsonb
+                OR attributes @> '{"held":true}'::jsonb
+                OR upper(COALESCE(attributes->>'condition', '')) IN ('QUARANTINED', 'HELD', 'RECALLED')
+                OR has_active_quality_hold
+              ) AS is_quarantined,
+              (
+                attributes @> '{"damaged":true}'::jsonb
+                OR upper(COALESCE(attributes->>'condition', '')) = 'DAMAGED'
+              ) AS is_damaged,
+              (
+                (expires_at IS NOT NULL AND expires_at < CURRENT_DATE)
+                OR upper(COALESCE(attributes->>'condition', '')) = 'EXPIRED'
+              ) AS is_expired
+            FROM traceability_balances
+          ),
+          condition_totals AS (
+            SELECT
+              COALESCE(SUM(CASE WHEN is_quarantined THEN quantity_on_hand ELSE 0 END), 0)::numeric(18,4)
+                AS quarantined_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND is_damaged THEN quantity_on_hand ELSE 0 END), 0)::numeric(18,4)
+                AS damaged_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND NOT is_damaged AND is_expired THEN quantity_on_hand ELSE 0 END), 0)::numeric(18,4)
+                AS expired_quantity,
+              COALESCE(SUM(CASE WHEN is_quarantined THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
+                AS quarantined_unallocated_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND is_damaged THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
+                AS damaged_unallocated_quantity,
+              COALESCE(SUM(CASE WHEN NOT is_quarantined AND NOT is_damaged AND is_expired THEN quantity_on_hand - quantity_reserved ELSE 0 END), 0)::numeric(18,4)
+                AS expired_unallocated_quantity,
+              COUNT(*)::integer AS tracked_identity_count
+            FROM classified_traceability
+          ),
+          allocation_identity AS (
+            SELECT
+              s.id AS item_id,
+              s.allocation_policy,
+              s.require_traceability,
+              COALESCE(bool_or(tu.unit_type='LOT'),FALSE) AS has_lot,
+              COALESCE(bool_or(tu.unit_type='SERIAL'),FALSE) AS has_serial,
+              (COUNT(tu.id)>0) AS has_identity
+            FROM selected_item s
+            LEFT JOIN traceability_units tu
+              ON tu.tenant_id=s.tenant_id AND tu.factory_id=s.factory_id
+             AND tu.inventory_item_id=s.id
+             AND tu.product_role='MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+            GROUP BY s.id,s.allocation_policy,s.require_traceability
+          ),
+          allocatable_stock AS (
+            SELECT
+              CASE
+                WHEN p.allocation_policy IN ('LOT','SERIAL') OR p.require_traceability OR p.has_identity
+                THEN COALESCE((
+                  SELECT SUM(tlb.quantity_on_hand-tlb.quantity_reserved)
+                  FROM inventory_traceability_location_balances tlb
+                  JOIN traceability_units tu
+                    ON tu.id=tlb.traceability_unit_id AND tu.tenant_id=tlb.tenant_id
+                   AND tu.factory_id=tlb.factory_id AND tu.inventory_item_id=tlb.item_id
+                  JOIN inventory_locations l
+                    ON l.id=tlb.location_id AND l.tenant_id=tlb.tenant_id AND l.factory_id=tlb.factory_id
+                  JOIN inventory_locations parent
+                    ON parent.id=l.parent_location_id AND parent.tenant_id=l.tenant_id AND parent.factory_id=l.factory_id
+                  WHERE tlb.tenant_id=s.tenant_id AND tlb.factory_id=s.factory_id AND tlb.item_id=s.id
+                    AND tu.product_role='MATERIAL'
+                    AND tu.unit_type=CASE
+                      WHEN p.allocation_policy='LOT' THEN 'LOT'
+                      WHEN p.allocation_policy='SERIAL' THEN 'SERIAL'
+                      WHEN p.has_lot THEN 'LOT'
+                      ELSE 'SERIAL'
+                    END
+                    AND tu.status='ACTIVE'
+                    AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                    AND NOT (tu.attributes @> '{\"damaged\":true}'::jsonb)
+                    AND NOT (tu.attributes @> '{\"held\":true}'::jsonb)
+                    AND NOT (tu.attributes @> '{\"quarantined\":true}'::jsonb)
+                    AND upper(COALESCE(tu.attributes->>'condition','')) NOT IN ('DAMAGED','HELD','QUARANTINED','EXPIRED')
+                    AND NOT EXISTS (
+                      SELECT 1 FROM quality_holds qh
+                      WHERE qh.tenant_id=tu.tenant_id AND qh.factory_id=tu.factory_id
+                        AND qh.status='ACTIVE'
+                        AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
+                    )
+                    AND l.status='ACTIVE' AND l.picking_enabled=TRUE AND l.location_type='BIN'
+                    AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status='ACTIVE'
+                    AND tlb.quantity_on_hand>tlb.quantity_reserved
+                ),0)
+                WHEN p.allocation_policy IN ('FIFO','FEFO') AND NOT p.has_identity
+                THEN COALESCE((
+                  SELECT SUM(lb.quantity_on_hand-lb.quantity_reserved)
+                  FROM inventory_location_balances lb
+                  JOIN inventory_locations l
+                    ON l.id=lb.location_id AND l.tenant_id=lb.tenant_id AND l.factory_id=lb.factory_id
+                  LEFT JOIN inventory_locations parent
+                    ON parent.id=l.parent_location_id AND parent.tenant_id=l.tenant_id AND parent.factory_id=l.factory_id
+                  WHERE lb.tenant_id=s.tenant_id AND lb.factory_id=s.factory_id AND lb.item_id=s.id
+                    AND l.status='ACTIVE' AND l.picking_enabled=TRUE
+                    AND lb.quantity_on_hand>lb.quantity_reserved
+                    AND (
+                      (l.location_type='BIN' AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status='ACTIVE')
+                      OR (l.is_default=TRUE AND l.location_type='VIRTUAL')
+                    )
+                ),0)
+                ELSE 0
+              END::numeric(18,4) AS allocatable_quantity
+            FROM selected_item s
+            JOIN allocation_identity p ON p.item_id=s.id
+          ),
+          expected_supply AS (
+            SELECT
+              s.id AS item_id,
+              COALESCE(SUM(
+                CASE WHEN po.status = 'APPROVED'
+                       AND upper(pol.unit) = upper(s.unit)
+                  THEN GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0)
+                  ELSE 0
+                END
+              ), 0)::numeric(18,4) AS expected_quantity,
+              COUNT(*) FILTER (
+                WHERE po.status = 'APPROVED'
+                  AND upper(pol.unit) <> upper(s.unit)
+                  AND GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0) > 0
+              )::integer AS expected_quantity_unit_mismatch_line_count,
+              MIN(po.expected_delivery_date) FILTER (
+                WHERE po.status = 'APPROVED'
+                  AND upper(pol.unit) = upper(s.unit)
+                  AND GREATEST(pol.quantity - COALESCE(received.received_quantity, 0), 0) > 0
+              ) AS next_expected_delivery_date
+            FROM selected_item s
+            LEFT JOIN purchase_order_lines pol
+              ON pol.tenant_id = s.tenant_id
+             AND pol.factory_id = s.factory_id
+             AND pol.inventory_item_id = s.id
+            LEFT JOIN purchase_orders po
+              ON po.id = pol.purchase_order_id
+             AND po.tenant_id = pol.tenant_id
+             AND po.factory_id = pol.factory_id
+             AND po.status = 'APPROVED'
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(SUM(gl.received_quantity), 0)::numeric AS received_quantity
+              FROM goods_receipt_lines gl
+              JOIN goods_receipts gr
+                ON gr.id = gl.goods_receipt_id
+               AND gr.tenant_id = gl.tenant_id
+               AND gr.factory_id = gl.factory_id
+               AND gr.purchase_order_id = gl.purchase_order_id
+              WHERE gl.tenant_id = pol.tenant_id
+                AND gl.factory_id = pol.factory_id
+                AND gl.purchase_order_line_id = pol.id
+                AND gr.status = 'POSTED'
+            ) received ON TRUE
+            GROUP BY s.id
+          ),
+          first_affected_order AS (
+            SELECT
+              jsonb_build_object(
+                'production_order_id', wo.source_order_id::text,
+                'production_order_number', o.order_number,
+                'work_order_id', wo.id::text,
+                'work_order_number', wo.work_order_number,
+                'work_order_status', wo.status,
+                'due_date', wo.due_date::text,
+                'required_quantity', req.required_quantity::text,
+                'allocated_quantity', COALESCE(usage.remaining_quantity, 0)::text,
+                'consumed_quantity', COALESCE(usage.consumed_quantity, 0)::text,
+                'unallocated_requirement_quantity',
+                  GREATEST(
+                    req.required_quantity
+                      - COALESCE(usage.remaining_quantity, 0)
+                      - COALESCE(usage.consumed_quantity, 0),
+                    0
+                  )::text
+              ) AS order_evidence
+            FROM selected_item s
+            JOIN work_order_material_requirements req
+              ON req.component_item_id = s.id
+             AND req.tenant_id = s.tenant_id
+             AND req.factory_id = s.factory_id
+            JOIN work_orders wo
+              ON wo.id = req.work_order_id
+             AND wo.tenant_id = req.tenant_id
+             AND wo.factory_id = req.factory_id
+            JOIN orders o
+              ON o.id = wo.source_order_id
+             AND o.tenant_id = wo.tenant_id
+             AND o.factory_id = wo.factory_id
+            LEFT JOIN LATERAL (
+              SELECT
+                COALESCE(SUM(ir.remaining_quantity), 0)::numeric(18,4) AS remaining_quantity,
+                COALESCE(SUM(ir.consumed_quantity), 0)::numeric(18,4) AS consumed_quantity
+              FROM work_order_material_reservations wmr
+              JOIN inventory_reservations ir
+                ON ir.id = wmr.reservation_id
+               AND ir.tenant_id = wmr.tenant_id
+               AND ir.factory_id = wmr.factory_id
+               AND ir.item_id = wmr.item_id
+              WHERE wmr.tenant_id = req.tenant_id
+                AND wmr.factory_id = req.factory_id
+                AND wmr.work_order_id = wo.id
+                AND wmr.requirement_id = req.id
+                AND wmr.item_id = req.component_item_id
+                AND ir.reference_type = 'WORK_ORDER_MATERIAL'
+                AND ir.reference_id = wo.id
+            ) usage ON TRUE
+            WHERE wo.status IN ('RELEASED', 'IN_PROGRESS', 'ON_HOLD')
+              AND req.required_quantity >
+                COALESCE(usage.remaining_quantity, 0) + COALESCE(usage.consumed_quantity, 0)
+            ORDER BY wo.due_date ASC NULLS LAST, wo.created_at ASC, wo.id ASC, req.line_number ASC, req.id ASC
+            LIMIT 1
+          )
+          SELECT
+            s.id::text AS item_id,
+            s.sku,
+            s.name,
+            s.unit,
+            s.status,
+            s.quantity_on_hand::text AS quantity_on_hand,
+            s.quantity_reserved::text AS allocated_quantity,
+            CASE
+              WHEN s.status <> 'ACTIVE' OR s.item_wide_quality_hold THEN 0::numeric(18,4)
+              ELSE COALESCE(eligible.allocatable_quantity,0)
+            END::text AS available_quantity,
+            CASE WHEN s.item_wide_quality_hold
+              THEN s.quantity_on_hand
+              ELSE COALESCE(c.quarantined_quantity, 0)
+            END::text AS quarantined_quantity,
+            CASE WHEN s.item_wide_quality_hold
+              THEN 0::numeric(18,4)
+              ELSE COALESCE(c.damaged_quantity, 0)
+            END::text AS damaged_quantity,
+            COALESCE(c.expired_quantity, 0)::text AS expired_quantity,
+            COALESCE(e.expected_quantity, 0)::text AS expected_quantity,
+            COALESCE(e.expected_quantity_unit_mismatch_line_count, 0)::integer AS expected_quantity_unit_mismatch_line_count,
+            e.next_expected_delivery_date::text AS next_expected_delivery_date,
+            'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_RECEIVED_MATCHING_ITEM_UOM'::text AS expected_quantity_basis,
+            CASE
+              WHEN s.item_wide_quality_hold THEN 'ITEM_WIDE_QUALITY_HOLD'
+              WHEN COALESCE(c.tracked_identity_count, 0) > 0 THEN 'TRACEABILITY_LOCATION_BALANCES'
+              ELSE 'NO_TRACEABILITY_CONDITION_EVIDENCE'
+            END::text AS condition_evidence_scope,
+            a.order_evidence AS first_affected_production_order
+          FROM selected_item s
+          CROSS JOIN condition_totals c
+          CROSS JOIN allocatable_stock eligible
+          LEFT JOIN expected_supply e ON e.item_id = s.id
+          LEFT JOIN first_affected_order a ON TRUE
+          LIMIT 1
+          
+          `,
+          [itemId.toLowerCase(), tenantId, factoryId],
+        );
+        const exposure = exposureResult.rows[0];
+        if (!exposure) throw new NotFoundException('Inventory item not found in this factory');
+
+        return {
+          ...legacy,
+          quantity_available: exposure.available_quantity,
+          quantity_available_legacy_projection: legacy.quantity_available,
+          available_quantity: exposure.available_quantity,
+          allocated_quantity: exposure.allocated_quantity,
+          quarantined_quantity: exposure.quarantined_quantity,
+          damaged_quantity: exposure.damaged_quantity,
+          expired_quantity: exposure.expired_quantity,
+          expected_quantity: exposure.expected_quantity,
+          expected_quantity_unit_mismatch_line_count: exposure.expected_quantity_unit_mismatch_line_count,
+          next_expected_delivery_date: exposure.next_expected_delivery_date,
+          expected_quantity_basis: exposure.expected_quantity_basis,
+          quantity_expected_basis: 'APPROVED_PO_OPEN_QUANTITY_MINUS_POSTED_GRN_ACCEPTED_LEGACY',
+          condition_evidence_scope: exposure.condition_evidence_scope,
+          available_quantity_basis: 'RESERVATION_ALLOCATOR_ELIGIBLE_PICKING_ENABLED_STOCK',
+          first_affected_production_order_basis: 'LEGACY_PLANNED_START_PRIORITY_STOCK_SHORTFALL_PROJECTION',
+          earliest_due_uncovered_requirement: exposure.first_affected_production_order,
+        };
+      },
     );
-    const row = result.rows[0];
-    if (!row) throw new NotFoundException('Inventory item not found in this factory');
-    return row;
   }
 
+  /**
+   * Compatibility projection retained for the original exposure regression
+   * suite. The HTTP controller exposes only getAvailabilitySummary, so this
+   * does not register a second route or create a second API contract.
+   */
+  async getAvailabilityExposure(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+  ): Promise<InventoryAvailabilityExposure> {
+    const summary = await this.getAvailabilitySummary(userId, tenantId, factoryId, itemId);
+    return {
+      item_id: summary.item_id,
+      sku: summary.sku,
+      name: summary.name,
+      unit: summary.unit,
+      status: summary.status,
+      quantity_on_hand: summary.quantity_on_hand,
+      allocated_quantity: summary.allocated_quantity,
+      available_quantity: summary.available_quantity,
+      quarantined_quantity: summary.quarantined_quantity,
+      damaged_quantity: summary.damaged_quantity,
+      expired_quantity: summary.expired_quantity,
+      expected_quantity: summary.expected_quantity,
+      expected_quantity_unit_mismatch_line_count: summary.expected_quantity_unit_mismatch_line_count,
+      next_expected_delivery_date: summary.next_expected_delivery_date,
+      expected_quantity_basis: summary.expected_quantity_basis,
+      condition_evidence_scope: summary.condition_evidence_scope,
+      first_affected_production_order: summary.earliest_due_uncovered_requirement,
+    };
+  }
   async createItem(
     userId: string,
     tenantId: string,
