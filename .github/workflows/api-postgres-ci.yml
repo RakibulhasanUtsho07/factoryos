@@ -893,6 +893,18 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-role-grants.sql
 
+          echo "Reapplying supplier performance evidence migration after development-role seeds"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/239_supplier_performance_evidence.sql
+
+          echo "Provisioning supplier performance database and application-role grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/security/grant-supplier-performance-report-runtime-access.sql
+
+          echo "Checking supplier performance evidence grants and database contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/supplier-performance-evidence.sql
+
           echo "Reapplying quality disposition inventory balance guard to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
