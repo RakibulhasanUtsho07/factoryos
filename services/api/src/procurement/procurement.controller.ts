@@ -10,6 +10,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
+import { SupplierPerformanceQueryDto } from './dto/supplier-performance-query.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
@@ -17,6 +18,7 @@ import { ListPurchaseOrdersDto } from './dto/list-purchase-orders.dto';
 import { TransitionPurchaseOrderDto } from './dto/transition-purchase-order.dto';
 import { PurchaseOrderStatus } from './purchase-order-lifecycle';
 import { ProcurementService } from './procurement.service';
+import { SupplierPerformanceService } from './supplier-performance.service';
 
 interface ProcurementRequestContext {
   requestId: string | null;
@@ -42,7 +44,10 @@ function requiredFactoryContext(request: ProcurementRequest) {
 
 @Controller('suppliers')
 export class SuppliersController {
-  constructor(private readonly procurementService: ProcurementService) {}
+  constructor(
+    private readonly procurementService: ProcurementService,
+    private readonly supplierPerformanceService: SupplierPerformanceService,
+  ) {}
 
   @Post()
   @UseGuards(PermissionGuard)
@@ -61,6 +66,19 @@ export class SuppliersController {
   async list(@Req() request: ProcurementRequest, @Query() query: ListSuppliersDto) {
     const { tenantId } = requiredUserTenant(request);
     return this.procurementService.listSuppliers(tenantId, query);
+  }
+
+  @Get(':supplierId/performance')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('suppliers.performance.read')
+  @RequireFactoryScope()
+  async performance(
+    @Req() request: ProcurementRequest,
+    @Param('supplierId', new ParseUUIDPipe()) supplierId: string,
+    @Query() query: SupplierPerformanceQueryDto,
+  ) {
+    const { tenantId, factoryId } = requiredFactoryContext(request);
+    return this.supplierPerformanceService.getSupplierPerformance(tenantId, factoryId, supplierId, query);
   }
 
   @Patch(':supplierId')
