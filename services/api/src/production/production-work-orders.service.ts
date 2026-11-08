@@ -614,7 +614,7 @@ export class ProductionWorkOrdersService {
     return this.database.transaction(
       { tenantId, userId, isolationLevel: 'REPEATABLE READ', readOnly: true },
       async (client) => {
-        const demandResult = await client.query<DemandRow>(\`
+        const demandResult = await client.query<DemandRow>(`
           WITH selected_work_orders AS (
             SELECT wo.id, wo.tenant_id, wo.factory_id, wo.work_order_number, wo.status,
               wo.due_date::text AS due_date, wo.planned_start_date::text AS planned_start_date,
@@ -663,7 +663,7 @@ export class ProductionWorkOrdersService {
               AND mr.tenant_id = r.tenant_id AND mr.factory_id = r.factory_id
           ) res ON TRUE
           ORDER BY wo.priority_rank, r.line_number, r.id
-        \`, [tenantId, factoryId, limit]);
+        `, [tenantId, factoryId, limit]);
 
         if (demandResult.rows.length === 0) {
           const today = await client.query<{ as_of_date: string }>(
@@ -677,7 +677,7 @@ export class ProductionWorkOrdersService {
         }
 
         const itemIds = [...new Set(demandResult.rows.map((row) => row.component_item_id))];
-        const stockResult = await client.query<StockRow>(\`
+        const stockResult = await client.query<StockRow>(`
           WITH selected_items AS (
             SELECT i.id, i.unit, i.status, i.sector_code,
               COALESCE(
@@ -775,9 +775,9 @@ export class ProductionWorkOrdersService {
             CURRENT_DATE::text AS as_of_date
           FROM selected_items i
           ORDER BY i.id
-        \`, [tenantId, factoryId, itemIds]);
+        `, [tenantId, factoryId, itemIds]);
 
-        const purchaseResult = await client.query<PurchaseRow>(\`
+        const purchaseResult = await client.query<PurchaseRow>(`
           SELECT pol.inventory_item_id::text AS item_id, i.unit AS inventory_unit,
             po.id::text AS purchase_order_id, po.po_number AS purchase_order_number,
             pol.id::text AS purchase_order_line_id,
@@ -806,7 +806,7 @@ export class ProductionWorkOrdersService {
             AND pol.quantity > COALESCE(received.received_quantity, 0)
           ORDER BY pol.inventory_item_id, po.expected_delivery_date ASC NULLS LAST,
             po.po_number, pol.line_number, pol.id
-        \`, [tenantId, factoryId, itemIds]);
+        `, [tenantId, factoryId, itemIds]);
 
         const stockByItem = new Map<string, StockRow>();
         for (const row of stockResult.rows) stockByItem.set(row.item_id, row);
