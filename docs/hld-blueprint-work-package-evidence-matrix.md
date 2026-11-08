@@ -78,3 +78,8 @@ The utility meter lifecycle now freezes currency/cost-centre snapshots at readin
 - Production material costing can reconcile one immutable WMS consumption-to-LOT/SERIAL allocation to its direct posted-GRN/approved-PO reference rate only; identities created by unsupported transformations fail closed. See `docs/wp02-production-material-cost-reconciliation.md`.
 - Finance can source utility cost only from a live unreversed work-order allocation with capture-time quantity, rate, UOM, currency and cost-centre snapshots. See `docs/utility-work-order-cost-allocation.md`.
 - These are technical source-reconciliation inputs, not landed-cost allocation, complete manufacturing actual cost, WIP/finished-good valuation, GL posting, or finance-owner acceptance. WP02/WP07 remain PARTIAL pending remaining integrations and operational/reviewer evidence.
+
+
+### WP02 material-policy precedence evidence
+
+A new PostgreSQL regression in `services/api/src/inventory/inventory.reservation.integration.spec.ts` pins FACTORY=FEFO and SECTOR=FEFO while MATERIAL=FIFO for a supplier-backed material. Two approved suppliers/POs/POSTED GRNs create equal 3-unit LOTs; the oldest-posted lot has later expiry. Competing 4-unit reservations against 6 units yield one successful 3+1 allocation from oldest-posted LOT, reconciling provenance, BIN and aggregate balances. This proves the top-level material policy override over both sector and factory policies in repository tests only; FR-WMS-04 remains PARTIAL / OPEN / NOT_ACCEPTED pending live provider/site/device and owner/reviewer evidence.
