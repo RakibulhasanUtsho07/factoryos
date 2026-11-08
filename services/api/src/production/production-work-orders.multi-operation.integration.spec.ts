@@ -8,6 +8,8 @@ import { InventoryLocationService } from '../inventory/inventory.location.servic
 import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { TraceabilityService } from '../inventory/traceability.service';
 import { ProductionWorkOrdersService } from './production-work-orders.service';
+import { UtilitiesService } from '../utilities/utilities.service';
+import { UtilityWorkOrderCostAllocationService } from '../utilities/utility-work-order-cost-allocation.service';
 
 const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TARGET_QUANTITY = 3;
@@ -34,6 +36,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   let service: ProductionWorkOrdersService;
   let locationService: InventoryLocationService;
   let traceabilityService: TraceabilityService;
+  let utilitiesService: UtilitiesService;
+  let utilityWorkOrderCostAllocationService: UtilityWorkOrderCostAllocationService;
   let tenantId: string;
   let factoryId: string;
   let approverUserId: string;
@@ -47,6 +51,9 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   const warehouseIds: string[] = [];
   const binIds: string[] = [];
   const workOrderIds: string[] = [];
+  const utilityMeterIds: string[] = [];
+  const utilityReadingIds: string[] = [];
+  const utilityCostAllocationIds: string[] = [];
 
   const audit = { record: async () => undefined } as unknown as AuditService;
 
@@ -236,6 +243,8 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     locationService = new InventoryLocationService(database as never, audit);
     service = new ProductionWorkOrdersService(database as never, audit, inventory);
     traceabilityService = new TraceabilityService(database as never);
+    utilitiesService = new UtilitiesService(database as never);
+    utilityWorkOrderCostAllocationService = new UtilityWorkOrderCostAllocationService(database as never);
   });
 
   afterAll(async () => {
@@ -265,12 +274,59 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       'product_versions',
       'product_definitions',
       'manufacturing_work_centres',
+      'utility_reading_work_order_cost_allocations',
+      'utility_meter_readings',
+      'utility_meters',
+      'utility_audit_events',
     ];
     const client = await adminPool.connect();
     try {
       await client.query('BEGIN');
       for (const table of mutableTables) {
         await client.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      if (utilityReadingIds.length > 0 || workOrderIds.length > 0) {
+        const readingIds = utilityReadingIds;
+        const allocationAuditRows = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM utility_reading_work_order_cost_allocations
+           WHERE reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[])`,
+          [readingIds, workOrderIds],
+        );
+        const utilityAuditEntityIds = [
+          ...utilityMeterIds, ...utilityReadingIds, ...utilityCostAllocationIds,
+          ...allocationAuditRows.rows.map((row) => row.id),
+        ];
+        if (utilityAuditEntityIds.length > 0) {
+          await client.query(
+            'DELETE FROM utility_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND entity_id=ANY($3::uuid[])',
+            [tenantId, factoryId, utilityAuditEntityIds],
+          );
+        }
+        await client.query(
+          `DELETE FROM utility_reading_work_order_cost_allocations
+           WHERE allocation_kind='REVERSAL'
+             AND (reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[]))`,
+          [readingIds, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM utility_reading_work_order_cost_allocations
+           WHERE allocation_kind='ALLOCATE'
+             AND (reading_id=ANY($1::uuid[]) OR work_order_id=ANY($2::uuid[]))`,
+          [readingIds, workOrderIds],
+        );
+      }
+      if (utilityReadingIds.length > 0) {
+        await client.query(
+          'DELETE FROM utility_meter_readings WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])',
+          [tenantId, factoryId, utilityReadingIds],
+        );
+      }
+      if (utilityMeterIds.length > 0) {
+        await client.query(
+          'DELETE FROM utility_meters WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])',
+          [tenantId, factoryId, utilityMeterIds],
+        );
       }
 
       if (workOrderIds.length > 0) {
@@ -505,6 +561,162 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
 
     await sendOperationEvent(draft.id, first.id, { command: 'START' }, 'wo-multi-start-1-' + randomUUID());
     await sendOperationEvent(draft.id, first.id, { command: 'WIP_REPORTED', quantity: TARGET_QUANTITY }, 'wo-multi-wip-1-' + randomUUID());
+    // A real shared meter reading is assigned to the active work order. Exercise the
+    // API transaction, database conservation trigger, idempotent replay and reversal
+    // against PostgreSQL rather than only asserting the schema shape.
+    const utilityContext = {
+      userId: TEST_USER_ID, tenantId, factoryId,
+      requestId: randomUUID(), traceId: randomUUID(),
+    };
+    const utilityMeter = await utilitiesService.createMeter(
+      utilityContext,
+      {
+        meter_code: 'WO-MULTI-UTILITY-' + randomUUID().slice(0, 8),
+        name: 'Three-step work-order electricity sub-meter',
+        utility_type: 'ELECTRICITY',
+        reading_mode: 'INTERVAL',
+        unit_code: 'kWh',
+        multiplier_factor: 1,
+        unit_cost: 0.25,
+        currency_code: 'BDT',
+        cost_center_code: 'CC-WO-UTILITY',
+      },
+      'wo-multi-utility-meter-' + randomUUID(),
+    );
+    utilityMeterIds.push(utilityMeter.id);
+    const utilityReading = await utilitiesService.recordReading(
+      utilityContext,
+      utilityMeter.id,
+      {
+        reading_at: new Date().toISOString(),
+        reading_value: 40,
+        source_type: 'MANUAL',
+        notes: 'PostgreSQL integration shared-meter allocation fixture',
+      } as never,
+      'wo-multi-utility-reading-' + randomUUID(),
+    );
+    utilityReadingIds.push(utilityReading.id);
+    expect(utilityReading).toMatchObject({
+      consumption_quantity: '40.00000000',
+      unit_cost_snapshot: '0.25000000',
+      cost_amount: '10.00000000',
+    });
+    expect(utilityReading).toMatchObject({
+      currency_code_snapshot: 'BDT',
+      cost_center_code_snapshot: 'CC-WO-UTILITY',
+    });
+
+    const allocationInput = {
+      work_order_id: draft.id,
+      allocated_quantity: '10.00000000',
+      reason: 'Shift supervisor assigned the shared meter reading to this active work order',
+    };
+    const allocationKey = 'wo-multi-utility-allocation-' + randomUUID();
+    const utilityAllocation = await utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id, allocationInput, allocationKey,
+    );
+    utilityCostAllocationIds.push(utilityAllocation.id);
+    expect(utilityAllocation).toMatchObject({
+      allocation_kind: 'ALLOCATE',
+      work_order_number: expect.any(String),
+      allocated_quantity: '10.00000000',
+      unit_cost_snapshot: '0.25000000',
+      allocated_cost: '2.50000000',
+      currency_code: 'BDT',
+      cost_center_code: 'CC-WO-UTILITY',
+    });
+
+    const allocationReplay = await utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id, allocationInput, allocationKey,
+    );
+    expect(allocationReplay.replayed).toBe(true);
+    expect(allocationReplay.id).toBe(utilityAllocation.id);
+
+    await expect(utilityWorkOrderCostAllocationService.allocate(
+      utilityContext, utilityMeter.id, utilityReading.id,
+      { ...allocationInput, allocated_quantity: '31.00000000' },
+      'wo-multi-utility-over-allocation-' + randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // Bypass the service-side capacity precheck and prove that PostgreSQL itself
+    // still rejects a competing write that would allocate 10 + 31 > 40 kWh.
+    const databaseGuardClient = await adminPool.connect();
+    let databaseGuardError: unknown;
+    try {
+      await databaseGuardClient.query('BEGIN');
+      await databaseGuardClient.query(
+        "SELECT set_config('app.tenant_id',$1,TRUE),set_config('app.user_id',$2,TRUE)",
+        [tenantId, TEST_USER_ID],
+      );
+      try {
+        await databaseGuardClient.query(
+          `INSERT INTO utility_reading_work_order_cost_allocations(
+            tenant_id,factory_id,reading_id,meter_id,work_order_id,allocation_kind,
+            allocated_quantity,unit_code,unit_cost_snapshot,allocated_cost,currency_code,
+            cost_center_code,reason,idempotency_key,request_hash,created_by_user_id,correlation_id
+          ) VALUES($1,$2,$3,$4,$5,'ALLOCATE',31,'kWh',0.25,7.75,'BDT','CC-WO-UTILITY',
+            'Direct database over-allocation guard fixture','wo-multi-utility-db-over-limit',repeat('d',64),$6,$7)`,
+          [tenantId, factoryId, utilityReading.id, utilityMeter.id, draft.id, TEST_USER_ID, randomUUID()],
+        );
+      } catch (error) {
+        databaseGuardError = error;
+      }
+    } finally {
+      await databaseGuardClient.query('ROLLBACK');
+      databaseGuardClient.release();
+    }
+    expect((databaseGuardError as { code?: string } | undefined)?.code).toBe('23514');
+    expect(String(databaseGuardError)).toContain('Total net work-order allocations cannot exceed source meter consumption');
+
+    const reversal = await utilityWorkOrderCostAllocationService.reverse(
+      utilityContext, utilityMeter.id, utilityReading.id, utilityAllocation.id,
+      { reason: 'Reverse the first assignment to verify append-only capacity restoration' },
+      'wo-multi-utility-reversal-' + randomUUID(),
+    );
+    utilityCostAllocationIds.push(reversal.id);
+    expect(reversal).toMatchObject({
+      allocation_kind: 'REVERSAL',
+      reverses_allocation_id: utilityAllocation.id,
+      allocated_quantity: '10.00000000',
+      allocated_cost: '2.50000000',
+    });
+    await expect(utilityWorkOrderCostAllocationService.reverse(
+      utilityContext, utilityMeter.id, utilityReading.id, utilityAllocation.id,
+      { reason: 'A second full reversal must be blocked' },
+      'wo-multi-utility-reversal-duplicate-' + randomUUID(),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // Same-reading allocations race through two application transactions. The
+    // source-row/advisory lock must allow only one 25 kWh allocation from 40 kWh.
+    const allocationRace = await Promise.allSettled([
+      utilityWorkOrderCostAllocationService.allocate(
+        utilityContext, utilityMeter.id, utilityReading.id,
+        { ...allocationInput, allocated_quantity: '25.00000000', reason: 'Concurrent allocation candidate A' },
+        'wo-multi-utility-race-a-' + randomUUID(),
+      ),
+      utilityWorkOrderCostAllocationService.allocate(
+        utilityContext, utilityMeter.id, utilityReading.id,
+        { ...allocationInput, allocated_quantity: '25.00000000', reason: 'Concurrent allocation candidate B' },
+        'wo-multi-utility-race-b-' + randomUUID(),
+      ),
+    ]);
+    expect(allocationRace.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(allocationRace.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const winningAllocation = allocationRace.find(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<UtilityWorkOrderCostAllocationService['allocate']>>> =>
+        result.status === 'fulfilled',
+    );
+    if (!winningAllocation) throw new Error('Exactly one utility work-order allocation must win the concurrent capacity race');
+    utilityCostAllocationIds.push(winningAllocation.value.id);
+
+    const allocationLedger = await utilityWorkOrderCostAllocationService.list(
+      utilityContext, utilityMeter.id, utilityReading.id,
+    );
+    expect(allocationLedger.source.net_allocated_quantity).toBe('25.00000000');
+    expect(allocationLedger.source.remaining_quantity).toBe('15.00000000');
+    expect(allocationLedger.items.filter((row) => row.allocation_kind === 'ALLOCATE')).toHaveLength(2);
+    expect(allocationLedger.items.filter((row) => row.allocation_kind === 'REVERSAL')).toHaveLength(1);
+
 
     await expect(
       sendOperationEvent(
