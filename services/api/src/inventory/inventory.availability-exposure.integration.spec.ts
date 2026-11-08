@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
+import { InventoryLocationService } from './inventory.location.service';
 import { InventoryService } from './inventory.service';
 
 describe('Inventory WMS availability exposure PostgreSQL integration', () => {
@@ -13,10 +14,13 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
   let appPool!: Pool;
   let database!: ReturnType<typeof createIntegrationDatabase>;
   let service!: InventoryService;
+  let locationService!: InventoryLocationService;
   let tenantId!: string;
   let factoryId!: string;
   const itemIds: string[] = [];
   const qualityInspectionIds: string[] = [];
+  const warehouseIds: string[] = [];
+  const binIds: string[] = [];
 
   const audit = { record: async () => undefined } as unknown as AuditService;
 
@@ -47,6 +51,7 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
 
     database = createIntegrationDatabase(appPool);
     service = new InventoryService(database as never, audit);
+    locationService = new InventoryLocationService(database as never, audit);
   });
 
   afterAll(async () => {
@@ -56,6 +61,8 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
         await adminPool.query('ALTER TABLE quality_inspection_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE quality_audit_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE quality_inspections DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_locations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_stock_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_items DISABLE TRIGGER USER');
@@ -84,16 +91,38 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
               [tenantId, factoryId, qualityInspectionIds],
             );
           }
+          // Location transfers and their item/location outbox rows belong only to
+          // the fixture items; retain unrelated tenant/factory evidence.
+          await adminPool.query(
+            `DELETE FROM outbox_events
+             WHERE tenant_id=$1 AND factory_id=$2 AND (
+               (aggregate_type='INVENTORY_ITEM' AND aggregate_id = ANY($3::uuid[]))
+               OR (aggregate_type='INVENTORY_LOCATION' AND aggregate_id = ANY($4::uuid[]))
+             )`,
+            [tenantId, factoryId, itemIds, [...binIds, ...warehouseIds]],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_location_transfers WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
+            [tenantId, factoryId, itemIds],
+          );
           // Stock-balance INSERT synchronizes the item's initial quantity into
-          // the default UNASSIGNED inventory location. Remove that dependent
-          // location row before its stock/item parents during fixture cleanup.
+          // the default UNASSIGNED inventory location. Remove all item/location
+          // rows and transfers before deleting their item and location parents.
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
+          if (binIds.length > 0) {
+            await adminPool.query('DELETE FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])', [tenantId, factoryId, binIds]);
+          }
+          if (warehouseIds.length > 0) {
+            await adminPool.query('DELETE FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])', [tenantId, factoryId, warehouseIds]);
+          }
         } finally {
           await adminPool.query('ALTER TABLE inventory_items ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_stock_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_location_balances ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_location_transfers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE quality_inspections ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE quality_audit_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE quality_inspection_events ENABLE TRIGGER USER');
@@ -125,12 +154,69 @@ describe('Inventory WMS availability exposure PostgreSQL integration', () => {
       VALUES ($1, $2, $3, 12.0000, 0.0000)
     `, [tenantId, factoryId, itemId]);
 
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        location_code: 'WMS-AVAIL-WH-' + randomUUID().slice(0, 8),
+        name: 'Availability exposure warehouse',
+        location_type: 'WAREHOUSE',
+        putaway_enabled: false,
+        picking_enabled: false,
+      } as never,
+      randomUUID(), randomUUID(),
+    );
+    warehouseIds.push(warehouse.id);
+    const nonPickingBin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        location_code: 'WMS-AVAIL-NOPICK-' + randomUUID().slice(0, 8),
+        name: 'Non-picking availability bin',
+        location_type: 'BIN',
+        parent_location_id: warehouse.id,
+        putaway_enabled: true,
+        picking_enabled: false,
+      } as never,
+      randomUUID(), randomUUID(),
+    );
+    binIds.push(nonPickingBin.id);
+    const defaultLocation = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE
+         AND location_type='VIRTUAL' AND status='ACTIVE' AND picking_enabled=TRUE
+       LIMIT 1`,
+      [tenantId, factoryId],
+    );
+    const unassignedLocationId = defaultLocation.rows[0]?.id;
+    if (!unassignedLocationId) throw new Error('Active pickable UNASSIGNED location is missing');
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        source_location_id: unassignedLocationId,
+        destination_location_id: nonPickingBin.id,
+        quantity: 5,
+        movement_purpose: 'PUT_AWAY',
+      },
+      'wms-availability-non-picking-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
     const result = await service.getAvailabilityExposure(TEST_USER_ID, tenantId, factoryId, itemId);
 
     expect(result.item_id).toBe(itemId);
     expect(result.quantity_on_hand).toBe('12.0000');
     expect(result.allocated_quantity).toBe('0.0000');
-    expect(result.available_quantity).toBe('12.0000');
+    expect(result.available_quantity).toBe('7.0000');
+    const locationBalances = await adminPool.query<{ location_id: string; quantity_on_hand: string }>(
+      `SELECT location_id::text AS location_id, quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND location_id = ANY($4::uuid[])
+       ORDER BY location_id`,
+      [tenantId, factoryId, itemId, [unassignedLocationId, nonPickingBin.id]],
+    );
+    expect(locationBalances.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ location_id: unassignedLocationId, quantity_on_hand: '7.0000' }),
+      expect.objectContaining({ location_id: nonPickingBin.id, quantity_on_hand: '5.0000' }),
+    ]));
     expect(result.quarantined_quantity).toBe('0.0000');
     expect(result.damaged_quantity).toBe('0.0000');
     expect(result.expired_quantity).toBe('0.0000');
