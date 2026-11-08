@@ -458,17 +458,24 @@ jobs:
           echo "Checking production output LOT/SERIAL traceability with ordered migrations"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/198_production_output_lot_genealogy.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/237_production_finished_good_serial_output.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
           echo "Reapplying production output LOT/SERIAL migrations in dependency order to verify idempotency"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/198_production_output_lot_genealogy.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/237_production_finished_good_serial_output.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/production-output-lot-genealogy.sql
 
+          # Migration 199 replaces the base work-order genealogy functions. Migration 240 is a
+          # deliberate multi-SERIAL overlay, so it MUST be reapplied immediately after every
+          # 199 replay; otherwise the older function body would silently remove SERIAL targets.
           echo "Checking WMS consumption-bound work-order output genealogy and transaction-completion guards"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/work-order-genealogy-consumption-guard.sql
           echo "Reapplying WMS genealogy evidence guard and PostgreSQL contract to verify idempotency"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/240_production_multi_serial_output.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/work-order-genealogy-consumption-guard.sql
 
           echo "Checking finished-good lot put-away, pick and transfer traceability guards"
