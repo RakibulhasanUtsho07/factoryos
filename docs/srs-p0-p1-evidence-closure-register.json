@@ -6921,12 +6921,16 @@
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
       "directCodeReferences": [
-        "services/api/src/finance/finance-operational-source.ts",
         "services/api/src/finance/finance.service.ts",
+        "services/api/src/finance/finance-operational-source.ts",
         "services/api/src/finance/finance-supplier-invoice-match.ts",
         "services/api/src/utilities/utility-work-order-cost-allocation.service.ts"
       ],
       "migrationReferences": [
+        "migrations/072_goods_receipt_grn.sql",
+        "migrations/074_lot_serial_product_genealogy.sql",
+        "migrations/114_finance_integration_contract.sql",
+        "migrations/160_wms_fefo_lot_serial_partial_issue.sql",
         "migrations/243_utility_work_order_cost_allocations.sql"
       ],
       "automatedTestReferences": [
@@ -6935,7 +6939,8 @@
         "services/api/test/finance-supplier-invoice-three-way-match.sql",
         "services/api/test/finance-production-material-consumption-reconciliation.sql",
         "services/api/test/finance-utility-work-order-cost-allocation.sql",
-        "services/api/test/utility-work-order-cost-allocation-contract.sql"
+        "services/api/test/utility-work-order-cost-allocation-contract.sql",
+        "services/api/test/utility-lifecycle.sql"
       ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
@@ -6944,7 +6949,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Direct source-backed AP invoice, WMS material-consumption and utility work-order allocation code/tests are present; migration 243 is ordered after current supplier migration 239. Still NOT_ACCEPTED pending exact-head CI, independent finance owner/reviewer, full-cost/landed-cost policy, WIP/finished-goods valuation and operational finance evidence.",
+      "closureNote": "Automated repository evidence covers external AP invoice-to-posted-GRN/approved-PO supplier matching, directly GRN-backed material-consumption reference rates and live unreversed utility work-order allocation snapshots. FR-FIN-08 remains OPEN / NOT_ACCEPTED: this is not landed-cost or complete manufacturing actual-cost/WIP/finished-goods valuation; Finance owner assignment, independent reviewer, live accounting/provider validation and staging evidence remain required.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -13800,20 +13805,22 @@
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
       "directCodeReferences": [
-        "services/api/src/finance/finance-supplier-invoice-match.ts",
-        "services/api/src/finance/finance.service.ts",
         "services/api/src/procurement/supplier-performance.service.ts",
-        "services/api/src/procurement/procurement.controller.ts"
+        "services/api/src/finance/finance.service.ts",
+        "services/api/src/finance/finance-supplier-invoice-match.ts",
+        "services/api/src/finance/finance-operational-source.ts"
       ],
       "migrationReferences": [
+        "migrations/072_goods_receipt_grn.sql",
+        "migrations/114_finance_integration_contract.sql",
         "migrations/239_supplier_performance_evidence.sql"
       ],
       "automatedTestReferences": [
-        "services/api/src/finance/finance-supplier-invoice-match.spec.ts",
-        "services/api/test/finance-supplier-invoice-three-way-match.sql",
-        "services/api/test/goods-receipt.sql",
         "services/api/src/procurement/supplier-performance.service.spec.ts",
-        "services/api/test/supplier-performance-evidence.sql"
+        "services/api/src/finance/finance-supplier-invoice-match.spec.ts",
+        "services/api/test/supplier-performance-evidence.sql",
+        "services/api/test/finance-supplier-invoice-three-way-match.sql",
+        "services/api/test/goods-receipt.sql"
       ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
@@ -13822,7 +13829,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Supplier performance evidence and AP supplier-invoice three-way match code/tests are present. Still NOT_ACCEPTED pending exact-head CI, named supplier/finance owner and independent reviewer, supplier acknowledgements/ASN/certificates, claims/RMA, price scorecards and external AP operational acceptance.",
+      "closureNote": "Read-only supplier delivery/GRN-linked quality evidence and external AP invoice three-way source matching are implemented as repository contracts. FR-SUP-01 remains OPEN / NOT_ACCEPTED: supplier acknowledgement/ASN/certificates, claims/RMA, approved scorecard thresholds, live AP/provider evidence and independent Manufacturing/Quality/Finance owner acceptance remain incomplete.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
