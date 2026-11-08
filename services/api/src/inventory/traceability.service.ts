@@ -12,6 +12,8 @@ import { DatabaseService } from '../database/database.service';
 import {
   ChangeTraceabilityUnitStatusDto,
   CreateGenealogyEventDto,
+  SplitTraceabilityLotDto,
+  MergeTraceabilityLotsDto,
   CreateTraceabilityLabelTemplateDto,
   CreateTraceabilityUnitDto,
   DeclareTraceabilityRecallDto,
@@ -348,6 +350,126 @@ export class TraceabilityService {
     `, [unitId, tenantId, factoryId], { tenantId, userId });
     if (!result.rows[0]) throw new NotFoundException('Traceability unit not found in this factory');
     return result.rows[0];
+  }
+
+
+  async splitLot(
+    userId: string, tenantId: string, factoryId: string, sourceUnitId: string,
+    dto: SplitTraceabilityLotDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const sourceId = this.requiredUuid(sourceUnitId, 'sourceUnitId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const reason = this.requiredText(dto.reason, 'reason', 2000);
+    if (!Array.isArray(dto.outputs) || dto.outputs.length < 2 || dto.outputs.length > 100) {
+      throw new BadRequestException('outputs must contain between 2 and 100 child LOT/SERIAL identities');
+    }
+    const toUnits = (raw: string): bigint => {
+      const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(raw);
+      if (!match) throw new BadRequestException('Transformation quantity must use at most four decimal places');
+      return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+    };
+    const outputs = dto.outputs.map((output, index) => {
+      const unitType = String(output.unit_type ?? '').trim().toUpperCase();
+      if (unitType !== 'LOT' && unitType !== 'SERIAL') {
+        throw new BadRequestException(`outputs[${index}].unit_type must be LOT or SERIAL`);
+      }
+      const unitCode = this.requiredText(output.unit_code, `outputs[${index}].unit_code`, 160).toUpperCase();
+      const barcodeValue = output.barcode_value?.trim().toUpperCase() || unitCode;
+      if (barcodeValue.length > 255) throw new BadRequestException(`outputs[${index}].barcode_value must contain at most 255 characters`);
+      const quantity = this.quantity(output.quantity, `outputs[${index}].quantity`);
+      if (!Array.isArray(output.locations) || output.locations.length < 1 || output.locations.length > 100) {
+        throw new BadRequestException(`outputs[${index}].locations must contain between 1 and 100 location allocations`);
+      }
+      const locations = output.locations.map((location, locationIndex) => ({
+        location_id: this.requiredUuid(location.location_id, `outputs[${index}].locations[${locationIndex}].location_id`),
+        quantity: this.quantity(location.quantity, `outputs[${index}].locations[${locationIndex}].quantity`),
+      }));
+      if (new Set(locations.map((location) => location.location_id)).size !== locations.length) {
+        throw new BadRequestException(`outputs[${index}].locations must not repeat a location`);
+      }
+      const locationUnits = locations.reduce((sum, location) => sum + toUnits(location.quantity), 0n);
+      if (locationUnits !== toUnits(quantity)) {
+        throw new BadRequestException(`outputs[${index}].quantity must exactly equal the sum of its location allocations`);
+      }
+      if (unitType === 'SERIAL' && (quantity !== '1.0000' || locations.length !== 1 || locations[0]?.quantity !== '1.0000')) {
+        throw new BadRequestException(`outputs[${index}] SERIAL must represent exactly one whole unit in one location`);
+      }
+      return { unit_type: unitType, unit_code: unitCode, barcode_value: barcodeValue, quantity, locations };
+    });
+    // Mixed LOT/SERIAL targets are valid under FIFO/FEFO. The PostgreSQL command
+    // evaluates the effective material policy and remains the authoritative guard.
+    const codes = outputs.map((output) => output.unit_code.toLowerCase());
+    if (new Set(codes).size !== codes.length) {
+      throw new BadRequestException('SPLIT output unit_code values must be unique');
+    }
+    const requestHash = this.hash({ operation: 'SPLIT', source_unit_id: sourceId, outputs, reason });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    let command: { transformation_id: string; operation_type: string; target_unit_ids: string[]; replayed: boolean };
+    try {
+      command = await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          const result = await client.query<{ result: typeof command }>(
+            `SELECT factoryos_execute_lot_serial_transformation(
+               'SPLIT', $1::uuid, $2::uuid, $3::uuid, ARRAY[$4::uuid],
+               NULL, $5::jsonb, $6::text, $7::text, $8::text
+             ) AS result`,
+            [tenantId, factoryId, userId, sourceId, JSON.stringify(outputs), reason, idempotencyKey, requestHash],
+          );
+          if (!result.rows[0]?.result) throw new Error('LOT_SERIAL_SPLIT_COMMAND_RETURNED_NO_RESULT');
+          return result.rows[0].result;
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'LOT split conflicts with existing stock, identity or idempotency evidence');
+    }
+    const targets = await Promise.all(command.target_unit_ids.map((id) => this.getUnit(userId, tenantId, factoryId, id)));
+    return { ...command, targets };
+  }
+
+  async mergeLots(
+    userId: string, tenantId: string, factoryId: string,
+    dto: MergeTraceabilityLotsDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const targetUnitCode = this.requiredText(dto.target_unit_code, 'target_unit_code', 160).toUpperCase();
+    const reason = this.requiredText(dto.reason, 'reason', 2000);
+    if (!Array.isArray(dto.source_unit_ids) || dto.source_unit_ids.length < 2 || dto.source_unit_ids.length > 100) {
+      throw new BadRequestException('source_unit_ids must contain between 2 and 100 LOT identities');
+    }
+    const sourceUnitIds = dto.source_unit_ids.map((id, index) => this.requiredUuid(id, `source_unit_ids[${index}]`)).sort();
+    if (new Set(sourceUnitIds).size !== sourceUnitIds.length) {
+      throw new BadRequestException('source_unit_ids must not contain duplicate identities');
+    }
+    const requestHash = this.hash({ operation: 'MERGE', source_unit_ids: sourceUnitIds, target_unit_code: targetUnitCode, reason });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    let command: { transformation_id: string; operation_type: string; target_unit_ids: string[]; replayed: boolean };
+    try {
+      command = await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          const result = await client.query<{ result: typeof command }>(
+            `SELECT factoryos_execute_lot_serial_transformation(
+               'MERGE', $1::uuid, $2::uuid, $3::uuid, $4::uuid[],
+               $5::text, '[]'::jsonb, $6::text, $7::text, $8::text
+             ) AS result`,
+            [tenantId, factoryId, userId, sourceUnitIds, targetUnitCode, reason, idempotencyKey, requestHash],
+          );
+          if (!result.rows[0]?.result) throw new Error('LOT_SERIAL_MERGE_COMMAND_RETURNED_NO_RESULT');
+          return result.rows[0].result;
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'LOT merge conflicts with existing stock, identity or idempotency evidence');
+    }
+    const targets = await Promise.all(command.target_unit_ids.map((id) => this.getUnit(userId, tenantId, factoryId, id)));
+    return { ...command, targets };
   }
 
   async recordGenealogyEvent(
