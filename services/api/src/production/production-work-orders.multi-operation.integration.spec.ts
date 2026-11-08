@@ -47,6 +47,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   const warehouseIds: string[] = [];
   const binIds: string[] = [];
   const workOrderIds: string[] = [];
+  const qualityInspectionIds: string[] = [];
 
   const audit = { record: async () => undefined } as unknown as AuditService;
 
@@ -241,6 +242,12 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
   afterAll(async () => {
     if (!adminPool) return;
     const mutableTables = [
+      'quality_holds',
+      'quality_inspections',
+      'quality_inspection_events',
+      'quality_audit_events',
+      'quality_holds',
+      'quality_inspections',
       'product_genealogy_events',
       'production_output_postings',
       'order_production_reports',
@@ -271,6 +278,32 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       await client.query('BEGIN');
       for (const table of mutableTables) {
         await client.query('ALTER TABLE ' + table + ' DISABLE TRIGGER USER');
+      }
+
+      if (qualityInspectionIds.length > 0) {
+        // General audit_events are append-only evidence; retain the quality-hold quarantine audit rows.
+        await client.query(
+          'DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_INSPECTION'
+             AND aggregate_id = ANY($3::uuid[]) AND event_type='QUALITY.INSPECTION_CHANGED'`,
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_inspection_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
       }
 
       if (workOrderIds.length > 0) {
@@ -485,6 +518,154 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     );
     workOrderIds.push(draft.id);
 
+    const beforeReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const beforeReleaseMaterial = (beforeReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(beforeReleaseMaterial).toMatchObject({
+      required_quantity: '3.0000',
+      allocated_quantity: '0.0000',
+      consumed_quantity: '0.0000',
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_incoming_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
+    const createActiveQualityHold = async (scope: 'ITEM' | 'LOT'): Promise<string> => {
+      const inspectionId = randomUUID();
+      qualityInspectionIds.push(inspectionId);
+      const isItemScope = scope === 'ITEM';
+      const targetType = isItemScope ? 'INVENTORY_ITEM' : 'TRACEABILITY_UNIT';
+      const targetId = isItemScope ? componentItemId : materialLot.id;
+      const heldItemId = isItemScope ? componentItemId : null;
+      const heldUnitId = isItemScope ? null : materialLot.id;
+      const correlationId = randomUUID();
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspections (
+             id, tenant_id, factory_id, inspection_type, target_type, target_id,
+             inventory_item_id, traceability_unit_id, status, idempotency_key, request_hash,
+             created_by_user_id, updated_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INVENTORY',$4,$5,$6::uuid,$7::uuid,'OPEN',$8,repeat('d',64),$9,$9,$10::uuid)`,
+          [
+            inspectionId, tenantId, factoryId, targetType, targetId, heldItemId, heldUnitId,
+            'wo-multi-quality-inspection-' + randomUUID(), TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspection_events (
+             tenant_id, factory_id, inspection_id, version, from_status, to_status, action, reason,
+             idempotency_key, request_hash, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,1,NULL,'OPEN','CREATED',$4,$5,repeat('e',64),$6,$7::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, 'Material quality hold regression inspection',
+            'wo-multi-quality-inspection-created-' + inspectionId, TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_audit_events (
+             tenant_id, factory_id, inspection_id, action_type, payload, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INSPECTION_CREATED',$4::jsonb,$5,$6::uuid)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ target_type: targetType, target_id: targetId, status: 'OPEN' }),
+            TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO outbox_events (
+             tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+           ) VALUES ($1,$2,'QUALITY_INSPECTION',$3,'QUALITY.INSPECTION_CHANGED',$4::jsonb)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ inspection_id: inspectionId, action: 'INSPECTION_CREATED', status: 'OPEN', correlation_id: correlationId }),
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_holds (
+             tenant_id, factory_id, inspection_id, inventory_item_id, traceability_unit_id,
+             reason, created_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6,$7,$8::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, heldItemId, heldUnitId,
+            'Material quality hold regression fixture', TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
+      return inspectionId;
+    };
+
+    const releaseQualityHold = async (inspectionId: string) => {
+      const qualityClient = await adminPool.connect();
+      try {
+        await qualityClient.query('BEGIN');
+        await qualityClient.query(
+          `SELECT set_config('app.tenant_id',$1,TRUE), set_config('app.user_id',$2,TRUE)`,
+          [tenantId, TEST_USER_ID],
+        );
+        const updated = await qualityClient.query(
+          `UPDATE quality_holds
+           SET status='RELEASED', released_by_user_id=$1, released_at=clock_timestamp(),
+               release_reason=$2, updated_at=clock_timestamp()
+           WHERE tenant_id=$3 AND factory_id=$4 AND inspection_id=$5 AND status='ACTIVE'`,
+          [TEST_USER_ID, 'Regression fixture released after eligibility assertion', tenantId, factoryId, inspectionId],
+        );
+        expect(updated.rowCount).toBe(1);
+        await qualityClient.query('COMMIT');
+      } catch (error) {
+        await qualityClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        qualityClient.release();
+      }
+    };
+
+    const readRadarMaterial = async (): Promise<Record<string, unknown>> => {
+      const snapshot = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+      const material = (snapshot.items as Array<Record<string, unknown>>)
+        .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+      if (!material) throw new Error('Quality-hold radar material row disappeared');
+      return material;
+    };
+
+    const lotHoldInspectionId = await createActiveQualityHold('LOT');
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '3.0000',
+    });
+    await releaseQualityHold(lotHoldInspectionId);
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
+    const itemHoldInspectionId = await createActiveQualityHold('ITEM');
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '3.0000',
+    });
+    await releaseQualityHold(itemHoldInspectionId);
+    expect(await readRadarMaterial()).toMatchObject({
+      eligible_on_hand_pool_quantity: '10.0000',
+      projected_on_hand_quantity: '3.0000',
+      projected_shortage_quantity: '0.0000',
+    });
+
     const released = await service.transitionWorkOrder(
       TEST_USER_ID,
       tenantId,
@@ -497,6 +678,17 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       randomUUID(),
     );
     expect(released.status).toBe('RELEASED');
+
+    const afterReleaseRadar = await service.getMaterialShortageRadar(TEST_USER_ID, tenantId, factoryId, 100);
+    const afterReleaseMaterial = (afterReleaseRadar.items as Array<Record<string, unknown>>)
+      .find((entry) => entry.work_order_id === draft.id && entry.component_item_id === componentItemId);
+    expect(afterReleaseMaterial).toMatchObject({
+      allocated_quantity: '3.0000',
+      consumed_quantity: '0.0000',
+      unfulfilled_quantity: '0.0000',
+      projected_on_hand_quantity: '0.0000',
+      projected_shortage_quantity: '0.0000',
+    });
 
     const initial = await readState(draft.id);
     expect(initial.operations.map((operation) => operation.status)).toEqual(['READY', 'PLANNED', 'PLANNED']);
