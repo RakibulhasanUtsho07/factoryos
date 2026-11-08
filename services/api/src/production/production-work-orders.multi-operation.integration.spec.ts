@@ -256,6 +256,7 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       'quality_inspection_events',
       'quality_audit_events',
       'product_genealogy_events',
+      'production_output_posting_serial_units',
       'production_output_postings',
       'order_production_reports',
       'traceability_unit_status_events',
@@ -412,7 +413,56 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
              ))`,
           [tenantId, factoryId, inventoryItemIds],
         );
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE aggregate_type='PRODUCT_GENEALOGY_EVENT'
+             AND aggregate_id IN (
+               SELECT g.id FROM product_genealogy_events g
+               JOIN production_output_postings p
+                 ON p.tenant_id=g.tenant_id AND p.factory_id=g.factory_id
+               WHERE p.tenant_id=$1 AND p.factory_id=$2
+                 AND p.work_order_id=ANY($3::uuid[])
+                 AND g.target_unit_id=p.scrap_traceability_unit_id
+             )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM product_genealogy_events g USING production_output_postings p
+           WHERE p.tenant_id=$1 AND p.factory_id=$2
+             AND p.work_order_id=ANY($3::uuid[])
+             AND g.tenant_id=p.tenant_id AND g.factory_id=p.factory_id
+             AND g.target_unit_id=p.scrap_traceability_unit_id`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM outbox_events WHERE aggregate_id IN (
+             SELECT p.scrap_traceability_unit_id FROM production_output_postings p
+             WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.work_order_id=ANY($3::uuid[])
+               AND p.scrap_traceability_unit_id IS NOT NULL
+           )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          `DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2
+           AND unit_id IN (
+             SELECT p.scrap_traceability_unit_id FROM production_output_postings p
+             WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.work_order_id=ANY($3::uuid[])
+               AND p.scrap_traceability_unit_id IS NOT NULL
+           )`,
+          [tenantId, factoryId, workOrderIds],
+        );
+        await client.query(
+          'DELETE FROM production_output_posting_serial_units WHERE tenant_id=$1 AND factory_id=$2 AND production_output_posting_id IN (SELECT id FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[]))',
+          [tenantId, factoryId, workOrderIds],
+        );
         await client.query('DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id = ANY($3::uuid[])', [tenantId, factoryId, workOrderIds]);
+        await client.query(
+          `DELETE FROM traceability_units
+           WHERE tenant_id=$1 AND factory_id=$2
+             AND attributes->>'kind'='PRODUCTION_SCRAP'
+             AND attributes->>'work_order_id'=ANY($3::text[])`,
+          [tenantId, factoryId, workOrderIds],
+        );
         await client.query(
           'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2 AND unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($3::uuid[]))',
           [tenantId, factoryId, inventoryItemIds],
@@ -999,10 +1049,25 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       operation_id: finalOperation.id,
       expected_work_order_version: outputState.row_version,
       expected_operation_version: finalOperation.row_version,
-      good_quantity: TARGET_QUANTITY,
-      scrap_quantity: 0,
-      notes: 'Three-step final finished-good output',
+      good_quantity: 2,
+      scrap_quantity: 1,
+      scrap_reason: 'Acceptance-test trim loss',
+      finished_good_serial_codes: [
+        'WO-MULTI-FG-' + randomUUID().slice(0, 12).toUpperCase(),
+        'WO-MULTI-FG-' + randomUUID().slice(0, 12).toUpperCase(),
+      ],
+      notes: 'Three-step mixed output with two individually traceable finished-good SERIAL units and one scrap unit',
     };
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, draft.id,
+      { ...outputInput, finished_good_serial_codes: [outputInput.finished_good_serial_codes[0]!] } as never,
+      'wo-multi-serial-count-mismatch-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.reportOutput(
+      TEST_USER_ID, tenantId, factoryId, draft.id,
+      { ...outputInput, finished_good_serial_codes: [outputInput.finished_good_serial_codes[0]!, outputInput.finished_good_serial_codes[0]!] } as never,
+      'wo-multi-serial-duplicate-codes-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toBeInstanceOf(BadRequestException);
     const outputKey = 'wo-multi-final-output-' + randomUUID();
     const outputAttempts = await Promise.all([
       service.reportOutput(
@@ -1017,9 +1082,11 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     expect(outputAttempts.map((attempt) => attempt.replayed).sort()).toEqual([false, true]);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_report_id)).size).toBe(1);
     expect(new Set(outputAttempts.map((attempt) => attempt.production_output_posting_id)).size).toBe(1);
+    expect(new Set(outputAttempts.map((attempt) => JSON.stringify(attempt.finished_good_serial_traceability_unit_ids))).size).toBe(1);
     const output = outputAttempts.find((attempt) => !attempt.replayed);
-    if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id) {
-      throw new Error('Final output did not produce its canonical report, posting and finished-good identity');
+    if (!output?.finished_good_traceability_unit_id || !output.production_output_posting_id || !output.production_report_id
+      || output.finished_good_serial_traceability_unit_ids?.length !== 2 || !output.scrap_traceability_unit_id) {
+      throw new Error('Final mixed output did not produce its canonical posting, two SERIAL identities and a scrap identity');
     }
 
     await sendOperationEvent(
@@ -1145,15 +1212,85 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       material_bin_reserved: '0.0000',
       material_lot_on_hand: '7.0000',
       material_lot_reserved: '0.0000',
-      finished_on_hand: '3.0000',
+      finished_on_hand: '2.0000',
       report_count: '1',
       output_count: '1',
-      output_quantity: '3.0000',
+      output_quantity: '2.0000',
       consumption_count: '1',
       consumed_quantity: '3.0000',
       consumption_allocation_count: '1',
       genealogy_count: '1',
-      genealogy_quantity: '3.0000',
+      genealogy_quantity: '1.0000',
+    }]);
+
+    const serialScrapEvidence = await adminPool.query<{
+      serial_count: string;
+      valid_serial_count: string;
+      serial_sequence_count: string;
+      serial_location_quantity: string;
+      finished_genealogy_count: string;
+      scrap_genealogy_count: string;
+      total_genealogy_quantity: string;
+      scrap_identity_count: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM production_output_posting_serial_units s
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_count,
+         (SELECT count(*)::text FROM production_output_posting_serial_units s
+          JOIN traceability_units u ON u.id=s.traceability_unit_id AND u.tenant_id=s.tenant_id AND u.factory_id=s.factory_id
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3
+            AND u.unit_type='SERIAL' AND u.product_role='FINISHED_GOOD'
+            AND u.quantity=1.0000 AND u.status='ACTIVE' AND u.inventory_item_id=$4) AS valid_serial_count,
+         (SELECT count(DISTINCT s.unit_sequence)::text FROM production_output_posting_serial_units s
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_sequence_count,
+         (SELECT COALESCE(sum(b.quantity_on_hand),0)::text
+          FROM production_output_posting_serial_units s
+          JOIN inventory_traceability_location_balances b
+            ON b.traceability_unit_id=s.traceability_unit_id AND b.tenant_id=s.tenant_id
+           AND b.factory_id=s.factory_id AND b.item_id=s.finished_item_id
+          WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3) AS serial_location_quantity,
+         (SELECT count(*)::text FROM product_genealogy_events g
+          JOIN production_output_posting_serial_units s
+            ON s.traceability_unit_id=g.target_unit_id AND s.tenant_id=g.tenant_id AND s.factory_id=g.factory_id
+          WHERE s.production_output_posting_id=$1 AND g.source_unit_id=$5
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS finished_genealogy_count,
+         (SELECT count(*)::text FROM product_genealogy_events g
+          WHERE g.target_unit_id=$7 AND g.source_unit_id=$5
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS scrap_genealogy_count,
+         (SELECT COALESCE(sum(g.quantity),0)::text FROM product_genealogy_events g
+          WHERE g.source_unit_id=$5
+            AND (g.target_unit_id IN (SELECT s.traceability_unit_id FROM production_output_posting_serial_units s
+               WHERE s.production_output_posting_id=$1 AND s.tenant_id=$2 AND s.factory_id=$3)
+              OR g.target_unit_id=$7)
+            AND g.evidence->>'production_report_id'=$6::text
+            AND g.evidence->>'source'='WORK_ORDER_MATERIAL_CONSUMPTION') AS total_genealogy_quantity,
+         (SELECT count(*)::text FROM traceability_units u
+          WHERE u.id=$7 AND u.tenant_id=$2 AND u.factory_id=$3
+            AND u.unit_type='LOT' AND u.product_role='OTHER'
+            AND u.inventory_item_id IS NULL AND u.quantity=1.0000
+            AND u.attributes->>'kind'='PRODUCTION_SCRAP'
+            AND u.attributes->>'sellable'='false') AS scrap_identity_count`,
+      [
+        output.production_output_posting_id,
+        tenantId,
+        factoryId,
+        finishedItemId,
+        materialLot.id,
+        output.production_report_id,
+        output.scrap_traceability_unit_id,
+      ],
+    );
+    expect(serialScrapEvidence.rows).toEqual([{
+      serial_count: '2',
+      valid_serial_count: '2',
+      serial_sequence_count: '2',
+      serial_location_quantity: '2.0000',
+      finished_genealogy_count: '2',
+      scrap_genealogy_count: '1',
+      total_genealogy_quantity: '3.0000',
+      scrap_identity_count: '1',
     }]);
 
     const evidence = await adminPool.query<{ transfer_count: string; operation_ready_count: string }>(
