@@ -244,6 +244,10 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
     const mutableTables = [
       'quality_holds',
       'quality_inspections',
+      'quality_inspection_events',
+      'quality_audit_events',
+      'quality_holds',
+      'quality_inspections',
       'product_genealogy_events',
       'production_output_postings',
       'order_production_reports',
@@ -277,6 +281,29 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
       }
 
       if (qualityInspectionIds.length > 0) {
+        await client.query(
+          `DELETE FROM audit_events
+           WHERE tenant_id=$1 AND factory_id=$2
+             AND correlation_id IN (
+               SELECT correlation_id FROM quality_inspections
+               WHERE tenant_id=$1 AND factory_id=$2 AND id = ANY($3::uuid[])
+             )`,
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          `DELETE FROM outbox_events
+           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_INSPECTION'
+             AND aggregate_id = ANY($3::uuid[]) AND event_type='QUALITY.INSPECTION_CHANGED'`,
+          [tenantId, factoryId, qualityInspectionIds],
+        );
+        await client.query(
+          'DELETE FROM quality_inspection_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
+          [tenantId, factoryId, qualityInspectionIds],
+        );
         await client.query(
           'DELETE FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id = ANY($3::uuid[])',
           [tenantId, factoryId, qualityInspectionIds],
@@ -537,6 +564,35 @@ describe('ProductionWorkOrdersService three-step PostgreSQL lifecycle', () => {
           [
             inspectionId, tenantId, factoryId, targetType, targetId, heldItemId, heldUnitId,
             'wo-multi-quality-inspection-' + randomUUID(), TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_inspection_events (
+             tenant_id, factory_id, inspection_id, version, from_status, to_status, action, reason,
+             idempotency_key, request_hash, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,1,NULL,'OPEN','CREATED',$4,$5,repeat('e',64),$6,$7::uuid)`,
+          [
+            tenantId, factoryId, inspectionId, 'Material quality hold regression inspection',
+            'wo-multi-quality-inspection-created-' + inspectionId, TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO quality_audit_events (
+             tenant_id, factory_id, inspection_id, action_type, payload, actor_user_id, correlation_id
+           ) VALUES ($1,$2,$3,'INSPECTION_CREATED',$4::jsonb,$5,$6::uuid)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ target_type: targetType, target_id: targetId, status: 'OPEN' }),
+            TEST_USER_ID, correlationId,
+          ],
+        );
+        await qualityClient.query(
+          `INSERT INTO outbox_events (
+             tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+           ) VALUES ($1,$2,'QUALITY_INSPECTION',$3,'QUALITY.INSPECTION_CHANGED',$4::jsonb)`,
+          [
+            tenantId, factoryId, inspectionId,
+            JSON.stringify({ inspection_id: inspectionId, action: 'INSPECTION_CREATED', status: 'OPEN', correlation_id: correlationId }),
           ],
         );
         await qualityClient.query(
