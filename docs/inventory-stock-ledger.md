@@ -38,22 +38,22 @@ The movement payload accepts movement_type, a positive quantity with up to four 
 
 Order creation accepts an optional `inventory_item_id` on each order line. When supplied, the API requires an active item from the order's same tenant/factory and requires its unit to match the line unit (case-insensitive). Legacy/unmapped lines remain valid with a null binding.
 
-## WMS availability projection (SRS v2.1 FR-WMS-05)
+## Canonical WMS availability projection (SRS v2.1 FR-WMS-05)
 
-**GET `/inventory/items/:itemId/availability`** is a read-only, `inventory.read`-protected, factory-scoped projection. It returns the current item balance together with:
+**GET `/inventory/items/:itemId/availability`** is the single read-only, `inventory.read`-protected, factory-scoped availability route. Its legacy and allocator-aware projections are read from one tenant-scoped PostgreSQL `REPEATABLE READ READ ONLY` transaction, so the combined response is based on one database snapshot.
 
-- `quantity_allocated`: authoritative active reservation quantity; it is also returned as `quantity_reserved` for compatibility.
-- `quantity_quarantined`: on-hand quantity classified as quality quarantine by an active quarantining hold, a quarantined traceability identity, or its explicit quarantine attribute.
-- `quantity_quality_held`: on-hand quantity subject to an active quality hold or held traceability condition. This includes quarantined quantity.
-- `quantity_damaged`: on-hand tracked-lot/serial quantity marked damaged, excluding identities already quality-held so this condition bucket does not double-count them.
-- `quantity_expired`: on-hand tracked-lot/serial quantity whose expiry date has passed or whose traceability condition is explicitly `EXPIRED`; expired quantity is blocked from available stock as required by the WMS transfer/pick guards.
-- `quantity_status_blocked`: on-hand tracked quantity in `RECALLED`, `DISPOSED` or `SHIPPED` traceability state. Such identities are not eligible for WMS picking/transfers.
-- `quantity_expected`: outstanding quantities on approved purchase-order lines after accepted quantities from posted goods receipts have been deducted. Draft, submitted, rejected and cancelled POs are not counted as expected supply.
-- `first_affected_production_order`: the earliest scheduled work order whose outstanding material demand crosses the item's available balance. Outstanding demand is calculated from the immutable work-order material requirement less remaining and already-consumed material reservations; order precedence is planned start date, priority, due date, creation time and ID.
+The response preserves the original fields and adds the explicit allocator-aware contract:
 
-The returned condition quantities are operational indicators, not additive stock buckets: quarantine is a subset of quality-held stock, and a traceability unit can be both damaged and expired or overlap an allocation. `quantity_available` is the unallocated usable quantity. It subtracts the unallocated portion of the union of held, damaged, expired and non-active-status tracked stock, so an overlapping condition is subtracted only once. An item-wide active quality hold or a disabled inventory item sets usable availability to zero.
+- `available_quantity` and the compatibility key `quantity_available` both report stock eligible under the reservation allocator. The earlier aggregate-only result is retained only as `quantity_available_legacy_projection` for migration diagnostics; clients must not use it as pickable stock.
+- For untracked stock, availability includes only the active picking-enabled default `VIRTUAL` location or active picking-enabled `BIN` locations under active `WAREHOUSE`/`STAGING` parents. For tracked stock, only active MATERIAL LOT/SERIAL identities in active picking-enabled BINs qualify. Expired, recalled, damaged, held, quarantined and actively quality-held identities are excluded; an item-wide active quality hold or disabled item fails closed to zero.
+- `allocated_quantity` / `quantity_allocated` and `quantity_reserved` remain authoritative reservation quantities. `quarantined_quantity`, `damaged_quantity` and `expired_quantity` describe the disjoint allocator-aware condition buckets; the legacy `quantity_quality_held` and `quantity_status_blocked` fields remain available for existing consumers.
+- `expected_quantity` is the canonical approved-PO residual after subtracting physical `received_quantity` on POSTED GRNs, and only matching item UOM lines contribute. `expected_quantity_unit_mismatch_line_count`, `next_expected_delivery_date` and `expected_quantity_basis` make the exclusion and formula explicit. No implicit UOM conversion is applied.
+- `quantity_expected` is retained unchanged as a compatibility projection using accepted quantities from POSTED GRNs. Its distinct `quantity_expected_basis` label prevents consumers from confusing it with the canonical physical-receipt measure.
+- `first_affected_production_order` retains the prior planned-start → priority → due-date stock-shortfall projection and is explicitly labelled by `first_affected_production_order_basis`. `earliest_due_uncovered_requirement` separately reports the earliest-due RELEASED/IN_PROGRESS/ON_HOLD work-order requirement not yet covered by remaining reservations plus already-consumed material. These are distinct views, not an implicit business-policy substitution.
 
-The endpoint is additive to the legacy aggregate stock summary and does not alter the versioned `INVENTORY.STOCK.SUMMARY` AI tool contract.
+Condition quantities are evidence indicators, not additive stock buckets: the legacy quality-held and quarantine views can overlap, while the allocator-aware classified buckets are disjoint. The endpoint does not create reservations, alter stock, approve POs, post GRNs or perform physical quality inspection.
+
+The canonical contract consolidates the previously duplicated handler into the existing `getAvailability` controller route and one service method. `getAvailabilityExposure` remains an internal compatibility projection for its PostgreSQL regression suite; it is not registered as a second HTTP route.
 
 ## Data integrity and safety guarantees
 
