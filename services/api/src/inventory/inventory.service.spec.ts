@@ -174,8 +174,8 @@ describe('InventoryService', () => {
     expect(allocatorQuery).toContain('JOIN inventory_locations l');
     expect(allocatorQuery).toContain('l.picking_enabled=TRUE');
     expect(allocatorQuery).toContain('received.received_quantity');
-    expect(legacyQuery).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
-    expect(allocatorQuery).not.toMatch(/\\b(?:INSERT|UPDATE|DELETE)\\s+(?:INTO\\s+)?(?:inventory_|public\\.inventory_)/i);
+    expect(legacyQuery).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:inventory_|public\.inventory_)/i);
+    expect(allocatorQuery).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:inventory_|public\.inventory_)/i);
   });
 
   it('rejects an invalid availability item identifier before querying PostgreSQL', async () => {
