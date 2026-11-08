@@ -182,7 +182,8 @@ export class UtilitiesService {
     const result=await this.database.query<Row>(
       `SELECT r.id::text,r.meter_id::text,r.reading_at::text,r.reading_value::text,r.previous_reading_value::text,
         r.consumption_quantity::text,r.unit_code,r.unit_cost_snapshot::text,r.cost_amount::text,
-        r.production_quantity::text,r.intensity_per_unit::text,r.source_type,r.source_event_id,r.notes,r.created_at::text
+        r.production_quantity::text,r.intensity_per_unit::text,r.currency_code_snapshot,r.cost_center_code_snapshot,
+        r.source_type,r.source_event_id,r.notes,r.created_at::text
        FROM utility_meter_readings r JOIN utility_meters m
          ON m.id=r.meter_id AND m.tenant_id=r.tenant_id AND m.factory_id=r.factory_id
        WHERE ${filters.join(' AND ')} ORDER BY r.reading_at DESC,r.id DESC LIMIT $${values.length}`,
@@ -292,7 +293,8 @@ export class UtilitiesService {
     const r=await client.query<Row>(
       `SELECT id::text,meter_id::text,reading_at::text,reading_value::text,previous_reading_value::text,
         consumption_quantity::text,unit_code,unit_cost_snapshot::text,cost_amount::text,production_quantity::text,
-        intensity_per_unit::text,source_type,source_event_id,notes,recorded_by_user_id::text,created_at::text
+        intensity_per_unit::text,currency_code_snapshot,cost_center_code_snapshot,
+        source_type,source_event_id,notes,recorded_by_user_id::text,created_at::text
        FROM utility_meter_readings WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
       [id,c.tenantId,c.factoryId]);
     if(!r.rows[0])throw new NotFoundException('Utility reading was not found');
