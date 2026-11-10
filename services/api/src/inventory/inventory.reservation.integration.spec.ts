@@ -1291,10 +1291,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     if (policy.rows[0]?.id) policyIds.push(policy.rows[0].id);
 
     const databaseDateResult = await adminPool.query<{ current_date: string }>(
-      'SELECT CURRENT_DATE::text AS current_date',
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
     );
     const databaseCurrentDate = databaseDateResult.rows[0]?.current_date;
-    if (!databaseCurrentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(databaseCurrentDate)) {
+    if (!databaseCurrentDate) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO undated LOT fixtures');
     }
     const expiryFromDatabaseDate = (offsetDays: number): string => {
