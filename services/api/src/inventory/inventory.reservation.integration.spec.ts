@@ -2995,6 +2995,31 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'wms-fefo-xform-putaway-newer-' + token, null, randomUUID(),
     );
 
+    // Keep one live reservation on the source before transformation. Migration 242
+    // must remap it to the first child without losing the inherited FEFO receipt order.
+    const preSplitReservation = await service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 1, location_id: bin.id } as CreateInventoryReservationDto,
+      'wms-fefo-xform-pre-split-reserve-' + token,
+      null,
+      randomUUID(),
+    );
+    const preSplitAllocation = await adminPool.query<{
+      id: string; traceability_unit_id: string; allocated_quantity: string; allocation_sequence: number;
+    }>(
+      "SELECT id::text AS id, traceability_unit_id::text AS traceability_unit_id, " +
+      "allocated_quantity::text AS allocated_quantity, allocation_sequence::int AS allocation_sequence " +
+      "FROM inventory_reservation_traceability_allocations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 ORDER BY allocation_sequence",
+      [tenantId, factoryId, preSplitReservation.id],
+    );
+    expect(preSplitAllocation.rows).toHaveLength(1);
+    expect(preSplitAllocation.rows[0]).toMatchObject({
+      traceability_unit_id: sourceLotId,
+      allocated_quantity: '1.0000',
+      allocation_sequence: 1,
+    });
+
     const split = await traceabilityService.splitLot(
       TEST_USER_ID, tenantId, factoryId, sourceLotId,
       {
@@ -3021,6 +3046,43 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(split.targets).toHaveLength(2);
     const childIds = split.targets.map((target) => target.id);
 
+    const remappedPreSplitAllocation = await adminPool.query<{
+      id: string; traceability_unit_id: string; allocated_quantity: string; allocation_sequence: number;
+    }>(
+      "SELECT id::text AS id, traceability_unit_id::text AS traceability_unit_id, " +
+      "allocated_quantity::text AS allocated_quantity, allocation_sequence::int AS allocation_sequence " +
+      "FROM inventory_reservation_traceability_allocations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 " +
+      "AND allocated_quantity>consumed_quantity+released_quantity+remapped_quantity " +
+      "ORDER BY allocation_sequence",
+      [tenantId, factoryId, preSplitReservation.id],
+    );
+    expect(remappedPreSplitAllocation.rows).toHaveLength(1);
+    expect(remappedPreSplitAllocation.rows[0]).toMatchObject({
+      traceability_unit_id: childIds[0],
+      allocated_quantity: '1.0000',
+      allocation_sequence: 1,
+    });
+    const preSplitRemapEvidence = await adminPool.query<{
+      source_allocation_id: string; target_allocation_id: string;
+      source_allocation_sequence: number; target_allocation_sequence: number; quantity: string;
+    }>(
+      "SELECT source_allocation_id::text AS source_allocation_id, " +
+      "target_allocation_id::text AS target_allocation_id, " +
+      "source_allocation_sequence::int AS source_allocation_sequence, " +
+      "target_allocation_sequence::int AS target_allocation_sequence, quantity::text AS quantity " +
+      "FROM inventory_reservation_traceability_allocation_remaps " +
+      "WHERE transformation_id=$1 AND reservation_id=$2",
+      [split.transformation_id, preSplitReservation.id],
+    );
+    expect(preSplitRemapEvidence.rows).toEqual([{
+      source_allocation_id: preSplitAllocation.rows[0]!.id,
+      target_allocation_id: remappedPreSplitAllocation.rows[0]!.id,
+      source_allocation_sequence: 1,
+      target_allocation_sequence: 1,
+      quantity: '1.0000',
+    }]);
+
     const transformed = await adminPool.query<{
       id: string; unit_code: string; status: string; expires_at: string;
       inherited_received_at: string; created_at: string;
@@ -3044,7 +3106,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
     const reservation = await service.createReservation(
       TEST_USER_ID, tenantId, factoryId, itemId,
-      { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
+      { quantity: 3, location_id: bin.id } as CreateInventoryReservationDto,
       'wms-fefo-xform-reserve-' + token,
       null,
       randomUUID(),
@@ -3071,7 +3133,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       .toEqual([childIds[0], childIds[1], newerLotId]);
     expect(allocations.rows.map((row) => row.allocation_sequence)).toEqual([1, 2, 3]);
     expect(allocations.rows.map((row) => row.allocated_quantity))
-      .toEqual(['1.5000', '1.5000', '1.0000']);
+      .toEqual(['0.5000', '1.5000', '1.0000']);
     expect(allocations.rows.every((row) => row.expires_at === sharedExpiry)).toBe(true);
     expect(allocations.rows.slice(0, 2).every((row) =>
       row.effective_received_at === sourceChronology.effective_received_at,
