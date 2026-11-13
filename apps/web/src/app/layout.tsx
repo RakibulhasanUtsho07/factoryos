@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import WorkspaceNavigation from "@/components/workspace-navigation";
+import { WorkspaceNavigation } from "@/components/workspace-navigation";
+import { WorkspaceFooter } from "@/components/workspace-footer";
+import { FactoryOsSessionProvider } from "@/components/auth/factoryos-session-provider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -31,16 +33,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         >
           Skip to content
         </a>
-        <WorkspaceNavigation />
-        <div id="main-content" tabIndex={-1} className="min-h-0 flex-1 outline-none">
-          {children}
-        </div>
-        <footer className="border-t border-slate-200 bg-white">
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-1 px-4 py-4 text-xs text-slate-500 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
-            <span>FactoryOS · Manufacturing operations workspace</span>
-            <span>Access and operational actions remain API-authorized.</span>
+        <FactoryOsSessionProvider>
+          <WorkspaceNavigation />
+          <div id="main-content" tabIndex={-1} className="min-h-0 flex-1 outline-none">
+            {children}
           </div>
-        </footer>
+          <WorkspaceFooter />
+        </FactoryOsSessionProvider>
       </body>
     </html>
   );
