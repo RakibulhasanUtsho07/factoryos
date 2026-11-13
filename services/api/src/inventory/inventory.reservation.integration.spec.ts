@@ -2974,7 +2974,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
     );
     const currentDate = dateResult.rows[0]?.current_date;
-    if (!currentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(currentDate)) {
+    if (!currentDate || currentDate.length !== 10 || currentDate[4] !== '-' || currentDate[7] !== '-') {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for traceability-settings FEFO fixtures');
     }
     const earlierExpiryDate = new Date(currentDate + 'T00:00:00.000Z');
