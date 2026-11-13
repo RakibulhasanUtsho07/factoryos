@@ -2,6 +2,10 @@
 
 FactoryOS Web is the Next.js workspace frontend for manufacturing operations.
 
+## Authentication boundary
+
+The API currently exposes the authenticated identity and access bootstrap at `GET /api/auth/me`, `GET /api/iam/access` and `GET /api/iam/factories`. These routes use the API's global `/api` prefix; the response envelope carries the API version separately. The frontend must treat the verified JWT as the identity source, never send `X-User-Id` as authority, and use `X-Tenant-Id` / `X-Factory-Id` only as requested scope for the backend to verify. Production authentication is OIDC-only with MFA enforcement; the development token endpoint is disabled outside local development. A browser OIDC login flow is not complete until the approved identity-provider client ID, redirect/logout URIs and deployment configuration are supplied.
+
 ## Shared UI system
 
 Shared, server-renderable primitives live in `src/components/ui` and are exported from `@/components/ui`:
