@@ -1,12 +1,14 @@
 # FactoryOS Web
 
-FactoryOS Web is the Next.js workspace frontend for manufacturing operations.
+FactoryOS Web is the Next.js workspace frontend for manufacturing operations. A shared responsive navigation shell connects the operational workspaces and provides an accessible skip-to-content path on every route.
 
 ## Workspaces
 
 - `/` — FactoryOS workspace landing page.
 - `/ai/agents` — governed AI Agent Control Center.
-- `/wms` — warehouse mobile acceptance workbench.
+- `/wms` — warehouse mobile workbench for offline stock movements, labels and scan resolution.
+- `/wms/browser-acceptance` — browser-based offline queue concurrency and recovery acceptance.
+- `/wms/rfid` — USB-serial RFID capture and hardware-in-the-loop acceptance.
 
 ## Requirements
 
