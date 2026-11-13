@@ -1,6 +1,6 @@
 import type { HTMLAttributes } from "react";
 
-import { cx } from "./cx";
+import { cx } from "./cx.mjs";
 
 type SurfaceProps = HTMLAttributes<HTMLDivElement>;
 
