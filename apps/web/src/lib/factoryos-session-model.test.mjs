@@ -51,7 +51,7 @@ test("workspace context rejects a different JWT tenant", () => {
   assert.throws(
     () => createWorkspaceSessionSnapshot({
       authenticated: true,
-      user: { userId, tenantId: "a9999999-9999-4999-8999-999999999999" },
+      user: { ...currentUser.user, tenantId: "a9999999-9999-4999-8999-999999999999" },
     }, access, factories, tenantId),
     /verified identity/i,
   );
