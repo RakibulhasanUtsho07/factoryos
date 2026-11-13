@@ -2934,14 +2934,18 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
 
     const settingsBefore = await traceabilityService.getSettings(TEST_USER_ID, tenantId, scopedFactoryId);
+    const settingsVersion = Number(settingsBefore.version);
+    if (!Number.isInteger(settingsVersion) || settingsVersion < 1) {
+      throw new Error('Traceability-settings version is invalid for FEFO fallback fixture');
+    }
     const settingsAfter = await traceabilityService.updateSettings(
       TEST_USER_ID, tenantId, scopedFactoryId,
-      { expected_version: settingsBefore.version, allocation_policy: 'FEFO' } as never,
+      { expected_version: settingsVersion, allocation_policy: 'FEFO' } as never,
       randomUUID(), randomUUID(),
     );
     expect(settingsAfter).toMatchObject({
       allocation_policy: 'FEFO',
-      version: settingsBefore.version + 1,
+      version: settingsVersion + 1,
       updated_by_user_id: TEST_USER_ID,
     });
 
