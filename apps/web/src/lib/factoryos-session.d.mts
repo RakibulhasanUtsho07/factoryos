@@ -7,6 +7,7 @@ export interface FactoryOsSessionConfig {
 }
 
 export class FactoryOsSessionError extends Error {
+  constructor(message: string, status: number);
   readonly status: number;
   readonly code: "UNAUTHENTICATED" | "ACCESS_DENIED" | "API_REQUEST_FAILED";
 }
