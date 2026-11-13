@@ -92,6 +92,22 @@ export default function Home() {
           </div>
         </section>
 
+        <section className="mt-9 rounded-2xl border border-blue-200 bg-blue-50 p-5 sm:flex sm:items-center sm:justify-between sm:gap-6">
+          <div>
+            <h2 className="text-base font-semibold text-slate-950">Authenticated workspace session</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-700">
+              Connect an existing identity-provider session to load your verified tenant,
+              factory list and IAM permission snapshot.
+            </p>
+          </div>
+          <Link
+            href="/session"
+            className="mt-4 inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white hover:bg-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 sm:mt-0"
+          >
+            Connect session
+          </Link>
+        </section>
+
         <footer className="mt-10 border-t border-slate-200 pt-5 text-xs leading-5 text-slate-500">
           Access to operational data and actions is enforced by the authenticated API,
           tenant/factory scope and server-side permissions. This landing page does not
