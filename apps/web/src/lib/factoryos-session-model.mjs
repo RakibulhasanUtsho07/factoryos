@@ -36,6 +36,8 @@ export function createWorkspaceSessionSnapshot(currentUserValue, accessValue, fa
 
   const identity = asRecord(currentUser.user);
   const identityTenantId = optionalText(identity.tenantId);
+  const identityUserId = requiredText(identity.userId, "user.userId");
+  const identityMembershipId = requiredText(identity.membershipId, "user.membershipId");
   if (identityTenantId && identityTenantId.toLowerCase() !== tenantScope) {
     throw new Error("The verified identity does not match the requested tenant context.");
   }
@@ -44,6 +46,15 @@ export function createWorkspaceSessionSnapshot(currentUserValue, accessValue, fa
   const user = asRecord(access.user);
   const tenant = asRecord(access.tenant);
   const membership = asRecord(access.membership);
+
+  const accessUserId = requiredText(user.id, "user.id");
+  const accessMembershipId = requiredText(membership.id, "membership.id");
+  if (accessUserId !== identityUserId) {
+    throw new Error("The authenticated identity does not match the IAM user.");
+  }
+  if (accessMembershipId !== identityMembershipId) {
+    throw new Error("The authenticated identity does not match the IAM membership.");
+  }
 
   const tenantId = requiredText(tenant.id, "tenant.id");
   if (tenantId.toLowerCase() !== tenantScope) {
@@ -83,7 +94,7 @@ export function createWorkspaceSessionSnapshot(currentUserValue, accessValue, fa
 
   return {
     user: {
-      id: requiredText(user.id, "user.id"),
+      id: accessUserId,
       displayName: typeof user.displayName === "string" && user.displayName.trim()
         ? user.displayName.trim()
         : "FactoryOS user",
@@ -97,7 +108,7 @@ export function createWorkspaceSessionSnapshot(currentUserValue, accessValue, fa
       defaultLocale: typeof tenant.defaultLocale === "string" ? tenant.defaultLocale : "en",
     },
     membership: {
-      id: requiredText(membership.id, "membership.id"),
+      id: accessMembershipId,
       status: String(membership.status),
     },
     roles,

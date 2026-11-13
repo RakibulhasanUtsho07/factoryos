@@ -56,7 +56,7 @@ export function WorkspaceNavigation() {
                   </p>
                 </div>
                 <label className="sr-only" htmlFor="workspace-factory-context">
-                  Active factory context
+                  Display-only factory context
                 </label>
                 <select
                   id="workspace-factory-context"
@@ -134,7 +134,7 @@ export function WorkspaceNavigation() {
       </div>
       {connected && activeFactory ? (
         <div className="border-t border-emerald-100 bg-emerald-50/70 px-4 py-1.5 text-center text-[11px] font-medium text-emerald-900 sm:px-6 lg:px-8">
-          Verified tenant context: {snapshot?.tenant.slug} · Active factory: {activeFactory.code}
+          Display-only context: {snapshot?.tenant.slug} · Selected factory: {activeFactory.code} · Operational pages use their separately configured API scope.
         </div>
       ) : null}
     </header>

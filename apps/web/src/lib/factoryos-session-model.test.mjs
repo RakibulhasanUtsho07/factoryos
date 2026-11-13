@@ -67,6 +67,26 @@ test("workspace context rejects a tenant mismatch in IAM access", () => {
   );
 });
 
+test("workspace context rejects a user ID mismatch between auth and IAM", () => {
+  assert.throws(
+    () => createWorkspaceSessionSnapshot({
+      ...currentUser,
+      user: { ...currentUser.user, userId: "a3999999-9999-4999-8999-999999999999" },
+    }, access, factories, tenantId),
+    /does not match the IAM user/i,
+  );
+});
+
+test("workspace context rejects a membership ID mismatch between auth and IAM", () => {
+  assert.throws(
+    () => createWorkspaceSessionSnapshot({
+      ...currentUser,
+      user: { ...currentUser.user, membershipId: "a3999999-9999-4999-8999-999999999999" },
+    }, access, factories, tenantId),
+    /does not match the IAM membership/i,
+  );
+});
+
 test("workspace context rejects inactive tenant memberships", () => {
   assert.throws(
     () => createWorkspaceSessionSnapshot(currentUser, {
