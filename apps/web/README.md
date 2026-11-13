@@ -2,6 +2,63 @@
 
 FactoryOS Web is the Next.js workspace frontend for manufacturing operations. A shared responsive navigation shell connects the operational workspaces and provides an accessible skip-to-content path on every route.
 
+## Authentication boundary
+
+The API currently exposes the authenticated identity and access bootstrap at `GET /api/auth/me`, `GET /api/iam/access` and `GET /api/iam/factories`. These routes use the API's global `/api` prefix; the response envelope carries the API version separately. The frontend must treat the verified JWT as the identity source, never send `X-User-Id` as authority, and use `X-Tenant-Id` / `X-Factory-Id` only as requested scope for the backend to verify. Production authentication is OIDC-only with MFA enforcement; the development token endpoint is disabled outside local development. A browser OIDC login flow is not complete until the approved identity-provider client ID, redirect/logout URIs and deployment configuration are supplied.
+
+## Shared UI system
+
+Shared, server-renderable primitives live in `src/components/ui` and are exported from `@/components/ui`:
+
+- `Button` — primary, secondary, outline, ghost and danger actions; native `type` defaults to `button`.
+- `Badge` / `StatusBadge` — neutral and semantic status presentation.
+- `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter`.
+- `Field`, `Label`, `Input`, `Select`, `Textarea`, `FieldHint`, `FieldError`.
+- `Alert`, `EmptyState`, `PageHeader` and `Skeleton`.
+
+Example:
+
+```tsx
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Field,
+  FieldHint,
+  Input,
+  Label,
+} from "@/components/ui";
+
+export function SupplierSearch() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Find a supplier</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Field>
+          <Label htmlFor="supplier-code">Supplier code</Label>
+          <Input
+            id="supplier-code"
+            name="supplierCode"
+            autoComplete="off"
+            aria-describedby="supplier-code-hint"
+          />
+          <FieldHint id="supplier-code-hint">
+            Search uses the current authorized tenant scope.
+          </FieldHint>
+        </Field>
+        <Button className="mt-4" type="submit">Search</Button>
+      </CardContent>
+    </Card>
+  );
+}
+```
+
+Use native labels and connect hints/errors with `aria-describedby`. Keep buttons explicit about their form type. Status badges are informational only and never replace API authorization. Global semantic colors and brand tones are defined in `src/app/globals.css`; prefer these shared primitives over one-off controls in new screens. The primitives are Server Component-safe; add client boundaries only around components that actually need browser state or event handlers.
+
 ## Workspaces
 
 - `/` — FactoryOS workspace landing page.
