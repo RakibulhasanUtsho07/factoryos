@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes } from "react";
 
-import { cx } from "./cx";
+import { cx } from "./cx.mjs";
 
 export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg" | "icon";
