@@ -16,7 +16,6 @@ import {
   Label,
   PageHeader,
   Select,
-  StatusBadge,
   Textarea,
 } from "@/components/ui";
 import {
@@ -356,12 +355,12 @@ export default function WmsMobileAcceptancePage() {
           <div className="mt-5 border-t border-zinc-200 pt-4">
             <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Durable queue</h3><Badge tone="neutral">{entries.length} record(s)</Badge></div>
             <div className="mt-3 space-y-3">
-              {entries.length === 0 && <EmptyState title="No queued transactions" description="No records are loaded for this local scope yet." className="min-h-0 py-6" />}
+              {entries.length === 0 && <EmptyState title="No queued transactions" description="No records are loaded for this local scope yet." />}
               {entries.map((entry) => (
                 <article key={entry.transactionId} className="rounded-xl border border-zinc-200 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono text-xs">{entry.transactionId}</span>
-                    <StatusBadge status={entry.status} />
+                    <Badge tone={entry.status === "PENDING" ? "info" : entry.status === "CONFLICT" || entry.status === "REJECTED" ? "warning" : "neutral"}>{entry.status}</Badge>
                   </div>
                   <p className="mt-2 text-sm">{entry.payload.movement_type} {entry.payload.quantity} · balance version {entry.payload.expected_balance_version} · attempts {entry.attemptCount}</p>
                   {entry.receiptId && <p className="mt-1 break-all text-xs text-zinc-500">Server receipt: {entry.receiptId}</p>}
