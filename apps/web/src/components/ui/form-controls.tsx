@@ -1,5 +1,6 @@
 import type {
-  HTMLAttributes,\n  InputHTMLAttributes,
+  HTMLAttributes,
+  InputHTMLAttributes,
   LabelHTMLAttributes,
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
