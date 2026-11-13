@@ -1,16 +1,16 @@
 import type {
-  InputHTMLAttributes,
+  HTMLAttributes,\n  InputHTMLAttributes,
   LabelHTMLAttributes,
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
 
-import { cx } from "./cx";
+import { cx } from "./cx.mjs";
 
 export function Field({
   className,
   ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+}: HTMLAttributes<HTMLDivElement>) {
   return <div {...props} className={cx("grid gap-1.5", className)} />;
 }
 
@@ -88,7 +88,7 @@ export function Textarea({ className, invalid, "aria-invalid": ariaInvalid, ...p
 export function FieldHint({
   className,
   ...props
-}: React.HTMLAttributes<HTMLParagraphElement>) {
+}: HTMLAttributes<HTMLParagraphElement>) {
   return <p {...props} className={cx("text-xs leading-5 text-slate-500", className)} />;
 }
 
