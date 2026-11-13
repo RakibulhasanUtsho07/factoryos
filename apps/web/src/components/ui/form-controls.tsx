@@ -95,7 +95,7 @@ export function FieldHint({
 export function FieldError({
   className,
   ...props
-}: React.HTMLAttributes<HTMLParagraphElement>) {
+}: HTMLAttributes<HTMLParagraphElement>) {
   return (
     <p
       {...props}
