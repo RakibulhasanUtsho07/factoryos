@@ -2943,11 +2943,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       { expected_version: settingsVersion, allocation_policy: 'FEFO' } as never,
       randomUUID(), randomUUID(),
     );
-    expect(settingsAfter).toMatchObject({
-      allocation_policy: 'FEFO',
-      version: settingsVersion + 1,
-      updated_by_user_id: TEST_USER_ID,
-    });
+    expect(settingsAfter.allocation_policy).toBe('FEFO');
+    expect(Number(settingsAfter.version)).toBe(settingsVersion + 1);
+    expect(settingsAfter.updated_by_user_id).toBe(TEST_USER_ID);
 
     const overrides = await adminPool.query<{ count: string }>(
       `SELECT count(*)::text AS count
