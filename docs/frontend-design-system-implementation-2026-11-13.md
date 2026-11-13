@@ -46,5 +46,5 @@ The Web CI workflow runs the frontend unit contracts, independent barcode pixel 
 ## Next phase-1 work
 
 1. Adopt the primitives in the workspace shell and the next dashboard screens.
-2. Build a typed FactoryOS API/session boundary based on `GET /api/v1/auth/me` and `GET /api/v1/iam/access`.
+2. Build a typed FactoryOS API/session boundary based on `GET /api/auth/me` and `GET /api/iam/access`.
 3. Complete the OIDC browser redirect/callback integration only after the approved issuer, client ID, redirect URI, logout URI and deployment configuration are supplied and verified. The development-token endpoint is not a production login method.
