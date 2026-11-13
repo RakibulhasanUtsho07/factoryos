@@ -2,6 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Field,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  Textarea,
+} from "@/components/ui";
+import {
   WmsOfflineQueue,
   createWmsOfflineSyncTransport,
 } from "@/lib/wms-offline-queue.mjs";
@@ -254,91 +271,104 @@ export default function WmsMobileAcceptancePage() {
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 text-zinc-900 md:px-8">
-      <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-700">FactoryOS · WP02</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight md:text-4xl">Mobile warehouse & label workbench</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-600">
-            Offline-first queue, receipt-controlled cleanup, barcode/QR rendering, and factory-scoped scan lookup.
-          </p>
-        </div>
-        <span className={"rounded-full px-3 py-1 text-sm font-semibold " + (online ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900")}>
-          {online ? "Online" : "Offline"}
-        </span>
-      </header>
+      <PageHeader
+        eyebrow="FactoryOS · WP02"
+        title="Mobile warehouse & label workbench"
+        description="Offline-first queue, receipt-controlled cleanup, barcode/QR rendering, and factory-scoped scan lookup."
+        actions={<Badge tone={online ? "success" : "warning"}>{online ? "Online" : "Offline"}</Badge>}
+      />
 
-      <section className="mb-8 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold">Connection & local scope</h2>
-        <p className="mt-1 text-sm text-zinc-600">Scope values partition local browser data only; server authorization still comes from the authenticated session. API origin must be the origin only, e.g. https://factory-api.example.com. The optional bearer token remains in memory and is never stored in IndexedDB.</p>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <label className="text-sm font-medium">API origin
-            <input value={apiOrigin} onChange={(e) => setApiOrigin(e.target.value)} placeholder="https://factory-api.example.com" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-          <label className="text-sm font-medium">Bearer token (optional when cookie auth is used)
-            <input type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoComplete="off" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-          <label className="text-sm font-medium">Tenant UUID
-            <input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="tenant UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-          <label className="text-sm font-medium">Factory UUID
-            <input value={factoryId} onChange={(e) => setFactoryId(e.target.value)} placeholder="factory UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-          <label className="text-sm font-medium">Authenticated user UUID (local partition)
-            <input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-          <label className="text-sm font-medium">Warehouse device ID
-            <input value={deviceId} onChange={(e) => setDeviceId(e.target.value)} placeholder="WMS-HH-01" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-          </label>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <button onClick={() => void refreshQueue()} className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-50">Restore local queue</button>
-          <button onClick={() => void flushQueue()} disabled={busy || !scopeReady || !apiOrigin.trim()} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Syncing…" : "Sync queue now"}</button>
-        </div>
-        <p role="status" className="mt-3 text-sm text-zinc-700">{queueMessage}</p>
-        {queueError && <p role="alert" className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{queueError}</p>}
-        {lastSync && <details className="mt-3"><summary className="cursor-pointer text-sm font-semibold">Last sync receipt summary</summary><pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-100">{lastSync}</pre></details>}
-      </section>
+      <Card className="mb-8">
+        <CardHeader>
+          <CardTitle>Connection & local scope</CardTitle>
+          <CardDescription>
+            Scope values partition local browser data only; server authorization still comes from the authenticated session. API origin must be the origin only, e.g. https://factory-api.example.com. The optional bearer token remains in memory and is never stored in IndexedDB.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field>
+              <Label htmlFor="wms-api-origin">API origin</Label>
+              <Input id="wms-api-origin" value={apiOrigin} onChange={(e) => setApiOrigin(e.target.value)} placeholder="https://factory-api.example.com" />
+            </Field>
+            <Field>
+              <Label htmlFor="wms-access-token">Bearer token (optional when cookie auth is used)</Label>
+              <Input id="wms-access-token" type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoComplete="off" />
+            </Field>
+            <Field>
+              <Label htmlFor="wms-tenant-id">Tenant UUID</Label>
+              <Input id="wms-tenant-id" value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="tenant UUID" />
+            </Field>
+            <Field>
+              <Label htmlFor="wms-factory-id">Factory UUID</Label>
+              <Input id="wms-factory-id" value={factoryId} onChange={(e) => setFactoryId(e.target.value)} placeholder="factory UUID" />
+            </Field>
+            <Field>
+              <Label htmlFor="wms-user-id">Authenticated user UUID (local partition)</Label>
+              <Input id="wms-user-id" value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user UUID" />
+            </Field>
+            <Field>
+              <Label htmlFor="wms-device-id">Warehouse device ID</Label>
+              <Input id="wms-device-id" value={deviceId} onChange={(e) => setDeviceId(e.target.value)} placeholder="WMS-HH-01" />
+            </Field>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Button variant="outline" onClick={() => void refreshQueue()}>Restore local queue</Button>
+            <Button onClick={() => void flushQueue()} disabled={busy || !scopeReady || !apiOrigin.trim()}>{busy ? "Syncing…" : "Sync queue now"}</Button>
+          </div>
+          <Alert tone="info" className="mt-3">{queueMessage}</Alert>
+          {queueError && <Alert tone="danger" className="mt-2">{queueError}</Alert>}
+          {lastSync && <details className="mt-3"><summary className="cursor-pointer text-sm font-semibold">Last sync receipt summary</summary><pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-100">{lastSync}</pre></details>}
+        </CardContent>
+      </Card>
 
       <div className="grid items-start gap-8 lg:grid-cols-2">
-        <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">1. Queue a stock movement</h2>
-          <p className="mt-1 text-sm text-zinc-600">The queue persists before network access. Only a matching APPLIED response with a valid transaction receipt allows automatic cleanup.</p>
-          <form onSubmit={enqueueMovement} className="mt-4 space-y-3">
-            <label className="block text-sm font-medium">Inventory item UUID
-              <input required value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="inventory item UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-sm font-medium">Movement
-                <select value={movementType} onChange={(e) => setMovementType(e.target.value as "RECEIPT" | "ISSUE")} className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal">
-                  <option value="ISSUE">ISSUE / pick</option><option value="RECEIPT">RECEIPT</option>
-                </select>
-              </label>
-              <label className="text-sm font-medium">Quantity
-                <input type="number" min="0.0001" step="0.0001" required value={quantity} onChange={(e) => setQuantity(e.target.value)} className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-              </label>
-            </div>
-            <label className="block text-sm font-medium">Expected balance version
-              <input type="text" inputMode="numeric" pattern="[0-9]{1,19}" required value={expectedVersion} onChange={(e) => setExpectedVersion(e.target.value)} className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
-            </label>
-            <button disabled={!scopeReady || busy} className="w-full rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">Save transaction locally</button>
-          </form>
+        <Card>
+          <CardHeader>
+            <CardTitle>1. Queue a stock movement</CardTitle>
+            <CardDescription>The queue persists before network access. Only a matching APPLIED response with a valid transaction receipt allows automatic cleanup.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={enqueueMovement} className="mt-1 space-y-3">
+              <Field>
+                <Label htmlFor="wms-item-id">Inventory item UUID</Label>
+                <Input id="wms-item-id" required value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="inventory item UUID" />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <Label htmlFor="wms-movement-type">Movement</Label>
+                  <Select id="wms-movement-type" value={movementType} onChange={(e) => setMovementType(e.target.value as "RECEIPT" | "ISSUE")}>
+                    <option value="ISSUE">ISSUE / pick</option><option value="RECEIPT">RECEIPT</option>
+                  </Select>
+                </Field>
+                <Field>
+                  <Label htmlFor="wms-quantity">Quantity</Label>
+                  <Input id="wms-quantity" type="number" min="0.0001" step="0.0001" required value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+                </Field>
+              </div>
+              <Field>
+                <Label htmlFor="wms-expected-version">Expected balance version</Label>
+                <Input id="wms-expected-version" type="text" inputMode="numeric" pattern="[0-9]{1,19}" required value={expectedVersion} onChange={(e) => setExpectedVersion(e.target.value)} />
+              </Field>
+              <Button type="submit" className="w-full" disabled={!scopeReady || busy}>Save transaction locally</Button>
+            </form>
           <div className="mt-5 border-t border-zinc-200 pt-4">
-            <div className="flex items-center justify-between"><h3 className="font-semibold">Durable queue</h3><span className="text-xs text-zinc-500">{entries.length} record(s)</span></div>
+            <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Durable queue</h3><Badge tone="neutral">{entries.length} record(s)</Badge></div>
             <div className="mt-3 space-y-3">
-              {entries.length === 0 && <p className="rounded-lg bg-zinc-50 p-3 text-sm text-zinc-600">No records loaded for this scope.</p>}
+              {entries.length === 0 && <EmptyState title="No queued transactions" description="No records are loaded for this local scope yet." />}
               {entries.map((entry) => (
                 <article key={entry.transactionId} className="rounded-xl border border-zinc-200 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono text-xs">{entry.transactionId}</span>
-                    <span className={"rounded-full px-2 py-1 text-xs font-semibold " + (entry.status === "PENDING" ? "bg-blue-100 text-blue-800" : entry.status === "CONFLICT" || entry.status === "REJECTED" ? "bg-amber-100 text-amber-900" : "bg-zinc-100 text-zinc-700")}>{entry.status}</span>
+                    <Badge tone={entry.status === "PENDING" ? "info" : entry.status === "CONFLICT" || entry.status === "REJECTED" ? "warning" : "neutral"}>{entry.status}</Badge>
                   </div>
                   <p className="mt-2 text-sm">{entry.payload.movement_type} {entry.payload.quantity} · balance version {entry.payload.expected_balance_version} · attempts {entry.attemptCount}</p>
                   {entry.receiptId && <p className="mt-1 break-all text-xs text-zinc-500">Server receipt: {entry.receiptId}</p>}
                   {entry.lastError && <p className="mt-1 text-xs text-amber-800">{entry.lastError}</p>}
                   {(entry.status === "CONFLICT" || entry.status === "REJECTED") && (
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <input aria-label={"New balance version for " + entry.transactionId} value={resolvingVersion[entry.transactionId] ?? ""} onChange={(e) => setResolvingVersion((current) => ({ ...current, [entry.transactionId]: e.target.value }))} placeholder="current balance version" className="min-w-0 flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm" />
-                      <button onClick={() => void resolveEntry(entry)} disabled={busy} className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-semibold hover:bg-zinc-50">Resolve as new transaction</button>
+                      <Input aria-label={"New balance version for " + entry.transactionId} value={resolvingVersion[entry.transactionId] ?? ""} onChange={(e) => setResolvingVersion((current) => ({ ...current, [entry.transactionId]: e.target.value }))} placeholder="current balance version" className="min-w-0 flex-1" />
+                      <Button variant="outline" size="sm" onClick={() => void resolveEntry(entry)} disabled={busy}>Resolve as new transaction</Button>
                     </div>
                   )}
                   {entry.status === "RESOLVED" && entry.resolvedByTransactionId && <p className="mt-1 break-all text-xs text-zinc-500">Replaced by: {entry.resolvedByTransactionId}</p>}
@@ -346,46 +376,57 @@ export default function WmsMobileAcceptancePage() {
               ))}
             </div>
           </div>
-        </section>
+        </CardContent>
+        </Card>
 
-        <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">2. Render and print a label</h2>
-          <p className="mt-1 text-sm text-zinc-600">Paste the persisted response from POST /traceability/labels/issue. The renderer validates the issued value and lifecycle snapshot; demo content is only for checking preview.</p>
-          <label className="mt-4 block text-sm font-medium">Label issue JSON
-            <textarea value={labelIssueJson} onChange={(e) => setLabelIssueJson(e.target.value)} rows={12} spellCheck={false} className="mt-1 w-full rounded-lg border border-zinc-300 p-3 font-mono text-xs" />
-          </label>
-          <label className="mt-3 block text-sm font-medium">Optional latest identity JSON to detect a stale label snapshot
-            <textarea value={currentIdentityJson} onChange={(e) => setCurrentIdentityJson(e.target.value)} rows={4} spellCheck={false} placeholder='{"id":"...","unit_code":"...","status":"RECALLED"}' className="mt-1 w-full rounded-lg border border-zinc-300 p-3 font-mono text-xs" />
-          </label>
-          <div className="mt-3 flex flex-wrap gap-3">
-            <button onClick={renderLabel} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white">Render SVG</button>
-            <button onClick={printLabel} disabled={!renderedLabel} className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold disabled:opacity-40">Print labels</button>
-          </div>
-          {labelError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{labelError}</p>}
+        <Card>
+          <CardHeader>
+            <CardTitle>2. Render and print a label</CardTitle>
+            <CardDescription>Paste the persisted response from POST /traceability/labels/issue. The renderer validates the issued value and lifecycle snapshot; demo content is only for checking preview.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Field>
+              <Label htmlFor="wms-label-issue-json">Label issue JSON</Label>
+              <Textarea id="wms-label-issue-json" value={labelIssueJson} onChange={(e) => setLabelIssueJson(e.target.value)} rows={12} spellCheck={false} className="font-mono text-xs" />
+            </Field>
+            <Field className="mt-3">
+              <Label htmlFor="wms-current-identity-json">Optional latest identity JSON to detect a stale label snapshot</Label>
+              <Textarea id="wms-current-identity-json" value={currentIdentityJson} onChange={(e) => setCurrentIdentityJson(e.target.value)} rows={4} spellCheck={false} placeholder='{"id":"...","unit_code":"...","status":"RECALLED"}' className="font-mono text-xs" />
+            </Field>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <Button onClick={renderLabel}>Render SVG</Button>
+              <Button variant="outline" onClick={printLabel} disabled={!renderedLabel}>Print labels</Button>
+            </div>
+            {labelError && <Alert tone="danger" className="mt-3">{labelError}</Alert>}
           {renderedLabel && (
             <div className="mt-4 rounded-xl border border-zinc-200 p-3">
               <div className="mb-2 flex flex-wrap justify-between gap-2 text-xs text-zinc-600"><span>{renderedLabel.symbology} · {renderedLabel.width_mm} × {renderedLabel.height_mm} mm</span><span>{renderedLabel.copies} copy/copies · {renderedLabel.status}</span></div>
               <iframe ref={labelFrameRef} title="Rendered WMS label print preview" srcDoc={renderedLabel.print_html} sandbox="allow-same-origin allow-modals" className="h-72 w-full rounded-lg border border-zinc-200 bg-white" />
             </div>
           )}
-          <p className="mt-3 text-xs leading-5 text-zinc-500">This workbench emits browser SVG/HTML print payloads for QR and Code 128. Data Matrix and GS1-128 fail closed until their encoders are implemented. Native printer languages and real scanner/printer compatibility require site validation.</p>
-        </section>
+            <p className="mt-3 text-xs leading-5 text-zinc-500">This workbench emits browser SVG/HTML print payloads for QR and Code 128. Data Matrix and GS1-128 fail closed until their encoders are implemented. Native printer languages and real scanner/printer compatibility require site validation.</p>
+          </CardContent>
+        </Card>
       </div>
 
-      <section className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold">3. Scan or resolve a barcode/QR value</h2>
-        <p className="mt-1 text-sm text-zinc-600">Focus the field and scan with a keyboard-wedge scanner, or paste text produced by a camera scanner adapter. The lookup uses the API&apos;s authenticated factory scope and rejects blank, unknown, or ambiguous codes.</p>
-        <form onSubmit={resolveScan} className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <input value={scanCode} onChange={(e) => setScanCode(e.target.value)} autoComplete="off" placeholder="Scan code here…" className="min-w-0 flex-1 rounded-lg border border-zinc-300 px-3 py-2" />
-          <button disabled={!apiOrigin.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Resolve code</button>
-        </form>
-        {scanError && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{scanError}</p>}
-        {scanResult && <pre className="mt-3 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-100">{JSON.stringify(scanResult, null, 2)}</pre>}
-      </section>
+      <Card className="mt-8">
+        <CardHeader>
+          <CardTitle>3. Scan or resolve a barcode/QR value</CardTitle>
+          <CardDescription>Focus the field and scan with a keyboard-wedge scanner, or paste text produced by a camera scanner adapter. The lookup uses the API&apos;s authenticated factory scope and rejects blank, unknown, or ambiguous codes.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={resolveScan} className="mt-1 flex flex-col gap-3 sm:flex-row">
+            <Input aria-label="Barcode or QR value" value={scanCode} onChange={(e) => setScanCode(e.target.value)} autoComplete="off" placeholder="Scan code here…" className="min-w-0 flex-1" />
+            <Button type="submit" disabled={!apiOrigin.trim()}>Resolve code</Button>
+          </form>
+          {scanError && <Alert tone="danger" className="mt-3">{scanError}</Alert>}
+          {scanResult && <pre className="mt-3 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-100">{JSON.stringify(scanResult, null, 2)}</pre>}
+        </CardContent>
+      </Card>
 
-      <footer className="mt-8 rounded-xl bg-zinc-100 p-4 text-sm leading-6 text-zinc-700">
+      <Alert tone="warning" className="mt-8">
         Queue guarantees here are client-side: IndexedDB survives browser reloads on the same origin, not browser-data deletion or device loss. APPLIED cleanup requires a valid server receipt and matching operation; CONFLICT/REJECTED remain for review. Physical printer, scanner/camera, label stock, damaged-label and device reconnect acceptance must be executed on the target warehouse hardware before production sign-off.
-      </footer>
+      </Alert>
     </main>
   );
 }
