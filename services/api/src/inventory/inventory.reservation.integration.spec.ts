@@ -2894,7 +2894,6 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     });
   }, 30000);
 
-});
 
   it('uses traceability_settings FEFO fallback when no material, sector, or factory override exists', async () => {
     const token = randomUUID().slice(0, 8).toUpperCase();
