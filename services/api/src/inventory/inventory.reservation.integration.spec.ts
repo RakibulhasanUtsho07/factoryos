@@ -3046,14 +3046,38 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'wp02-settings-fefo-putaway-newer-' + token, null, randomUUID(),
     );
 
-    const reservation = await service.createReservation(
+    const reserve = (key: string) => service.createReservation(
       TEST_USER_ID, tenantId, scopedFactoryId, itemId,
       { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
-      'wp02-settings-fefo-reserve-' + token,
+      key,
       randomUUID(),
       randomUUID(),
     );
-    expect(reservation).toMatchObject({ status: 'RESERVED', quantity: '4.0000' });
+    const competing = await Promise.allSettled([
+      reserve('wp02-settings-fefo-competitor-a-' + token),
+      reserve('wp02-settings-fefo-competitor-b-' + token),
+    ]);
+    expect(competing.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(competing.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const rejected = competing.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(String(rejected?.reason?.message ?? rejected?.reason))
+      .toContain('Insufficient eligible FEFO lot/serial stock');
+
+    const persistedReservations = await adminPool.query<{
+      id: string; quantity: string; status: string;
+    }>(
+      `SELECT id::text AS id, quantity::text AS quantity, status
+       FROM inventory_reservations
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+       ORDER BY created_at, id`,
+      [tenantId, scopedFactoryId, itemId],
+    );
+    expect(persistedReservations.rows).toHaveLength(1);
+    expect(persistedReservations.rows[0]).toMatchObject({
+      quantity: '4.0000', status: 'RESERVED',
+    });
 
     const allocations = await adminPool.query<{
       traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
@@ -3073,7 +3097,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
          AND a.reservation_id=$4
        ORDER BY a.allocation_sequence`,
-      [tenantId, scopedFactoryId, itemId, reservation.id],
+      [tenantId, scopedFactoryId, itemId, persistedReservations.rows[0]!.id],
     );
     expect(allocations.rows).toHaveLength(2);
     expect(allocations.rows.map((row) => row.traceability_unit_id))
