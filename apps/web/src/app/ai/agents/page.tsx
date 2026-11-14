@@ -487,7 +487,7 @@ export default function AiAgentControlCenterPage() {
 
             <nav aria-label="Agent Control Center sections" className="mt-6 flex flex-wrap gap-2 border-b border-slate-200 pb-3">
               {tabs.map((item) => (
-                <Button variant="primary" size="sm" key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-white hover:text-slate-900"}`}>
+                <Button variant={tab === item.id ? "primary" : "ghost"} size="sm" key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className="rounded-lg">
                   {item.label}
                 </Button>
               ))}
@@ -502,11 +502,11 @@ export default function AiAgentControlCenterPage() {
                   <Metric label="Awaiting approval" value={approvalTasks} hint="Task state from persisted runtime" />
                 </div>
                 <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-                  <Panel title="Recent governed tasks" action={<Button variant="primary" size="sm" type="button" onClick={() => setTab("tasks")} className="text-xs font-semibold text-blue-700 hover:underline">Open task operations</Button>}>
+                  <Panel title="Recent governed tasks" action={<Button variant="ghost" size="sm" type="button" onClick={() => setTab("tasks")}>Open task operations</Button>}>
                     {readErrors.tasks && <Alert tone="danger" className="mb-3">{readErrors.tasks}</Alert>}
                     <div className="space-y-2">
                       {tasks.slice(0, 6).map((task) => (
-                        <Button variant="primary" size="sm" key={task.id} type="button" onClick={() => { setSelectedTaskId(task.id); setTab("tasks"); }} className="flex w-full flex-col gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40 sm:flex-row sm:items-center sm:justify-between">
+                        <Button variant="ghost" size="md" key={task.id} type="button" onClick={() => { setSelectedTaskId(task.id); setTab("tasks"); }} className="flex w-full flex-col justify-start gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40 sm:flex-row sm:items-center sm:justify-between">
                           <span className="min-w-0">
                             <span className="block truncate text-sm font-semibold text-slate-900">{valueText(task.goal, "Untitled governed task")}</span>
                             <span className="mt-1 block truncate font-mono text-[10px] text-slate-500">{task.id}</span>
@@ -521,7 +521,7 @@ export default function AiAgentControlCenterPage() {
                     {readErrors.agents && <Alert tone="danger" className="mb-3">{readErrors.agents}</Alert>}
                     <div className="space-y-2">
                       {agents.slice(0, 6).map((agent) => (
-                        <Button variant="primary" size="sm" key={agent.id} type="button" onClick={() => { setSelectedAgentId(agent.id); setTab("agents"); }} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40">
+                        <Button variant="ghost" size="md" key={agent.id} type="button" onClick={() => { setSelectedAgentId(agent.id); setTab("agents"); }} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40">
                           <span className="min-w-0">
                             <span className="block truncate text-sm font-semibold text-slate-900">{valueText(agent.name, valueText(agent.agentId, "Unnamed agent"))}</span>
                             <span className="mt-1 block text-xs text-slate-500">{valueText(agent.version, "Unversioned")} · {valueText(agent.capability, "Capability not supplied")}</span>
@@ -555,7 +555,7 @@ export default function AiAgentControlCenterPage() {
                   {readErrors.agents && <p className="mb-3 text-xs text-rose-700">{readErrors.agents}</p>}
                   <div className="space-y-2">
                     {agents.map((agent) => (
-                      <Button variant="primary" size="sm" key={agent.id} type="button" onClick={() => setSelectedAgentId(agent.id)} className={`w-full rounded-xl border p-3 text-left transition ${selectedAgentId === agent.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
+                      <Button variant="ghost" size="md" key={agent.id} type="button" onClick={() => setSelectedAgentId(agent.id)} className={`flex w-full justify-start rounded-xl border p-3 text-left transition ${selectedAgentId === agent.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-slate-900">{valueText(agent.name, valueText(agent.agentId, "Unnamed agent"))}</span>
                           <StatusPill value={valueText(agent.status, "UNKNOWN")} />
@@ -615,7 +615,7 @@ export default function AiAgentControlCenterPage() {
                         </FieldHint>
                       </Field>
                     )}
-                    <Button variant="primary" size="sm" type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
+                    <Button variant="primary" size="sm" type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3">
                       {busyAction === "control" ? "Updating…" : "Record operational control"}
                     </Button>
                     <p className="mt-2 text-[11px] leading-5 text-slate-500">The API requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
@@ -635,7 +635,7 @@ export default function AiAgentControlCenterPage() {
                   {readErrors.tasks && <p className="mb-3 text-xs text-rose-700">{readErrors.tasks}</p>}
                   <div className="space-y-2">
                     {tasks.map((task) => (
-                      <Button variant="primary" size="sm" key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)} className={`w-full rounded-xl border p-3 text-left ${selectedTaskId === task.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
+                      <Button variant="ghost" size="md" key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)} className={`flex w-full justify-start rounded-xl border p-3 text-left ${selectedTaskId === task.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
                         <div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold">{valueText(task.goal, "Governed task")}</span><StatusPill value={valueText(task.state, "UNKNOWN")} /></div>
                         <p className="mt-1 break-all font-mono text-[10px] text-slate-500">{task.id}</p>
                         <p className="mt-2 text-xs text-slate-500">Updated {displayDate(task.updatedAt)}</p>
@@ -680,7 +680,7 @@ export default function AiAgentControlCenterPage() {
                                 {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   {canExecute && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</Button>}
-                                  {stepStatus === "AWAITING_APPROVAL" && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</Button>}
+                                  {stepStatus === "AWAITING_APPROVAL" && <Button variant="outline" size="sm" type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</Button>}
                                 </div>
                               </article>
                             );
@@ -688,7 +688,7 @@ export default function AiAgentControlCenterPage() {
                           {taskDetail.steps.length === 0 && <p className="text-sm text-slate-500">This task has no step records.</p>}
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
-                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</Button>}
+                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <Button variant="danger" size="sm" type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</Button>}
                           {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</Button>}
                         </div>
                         <p className="mt-3 text-[11px] leading-5 text-slate-500">A click is only a request. The backend rechecks IAM, policy, planner signature, tool entitlement, dependencies, retry eligibility, idempotency and cancellation/deadline state before execution. Ambiguous side effects stay in the backend reconciliation path.</p>
