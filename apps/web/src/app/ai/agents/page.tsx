@@ -552,7 +552,7 @@ export default function AiAgentControlCenterPage() {
             {tab === "agents" && (
               <section className="mt-6 grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
                 <Panel title="Factory agent definitions">
-                  {readErrors.agents && <p className="mb-3 text-xs text-rose-700">{readErrors.agents}</p>}
+                  {readErrors.agents && <Alert tone="danger" className="mb-3">{readErrors.agents}</Alert>}
                   <div className="space-y-2">
                     {agents.map((agent) => (
                       <Button variant="ghost" size="md" key={agent.id} type="button" onClick={() => setSelectedAgentId(agent.id)} className={`flex w-full justify-start rounded-xl border p-3 text-left transition ${selectedAgentId === agent.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
@@ -564,7 +564,7 @@ export default function AiAgentControlCenterPage() {
                         <p className="mt-2 text-xs leading-5 text-slate-600">{valueText(agent.capability, "No capability description.")}</p>
                       </Button>
                     ))}
-                    {agents.length === 0 && !readErrors.agents && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No agent definitions returned for this scope.</p>}
+                    {agents.length === 0 && !readErrors.agents && <EmptyState title="No agent definitions" description="No agent definitions were returned for this scope." className="min-h-32" />}
                   </div>
                 </Panel>
 
@@ -632,7 +632,7 @@ export default function AiAgentControlCenterPage() {
             {tab === "tasks" && (
               <section className="mt-6 grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
                 <Panel title="Recent factory tasks">
-                  {readErrors.tasks && <p className="mb-3 text-xs text-rose-700">{readErrors.tasks}</p>}
+                  {readErrors.tasks && <Alert tone="danger" className="mb-3">{readErrors.tasks}</Alert>}
                   <div className="space-y-2">
                     {tasks.map((task) => (
                       <Button variant="ghost" size="md" key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)} className={`flex w-full justify-start rounded-xl border p-3 text-left ${selectedTaskId === task.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
@@ -641,7 +641,7 @@ export default function AiAgentControlCenterPage() {
                         <p className="mt-2 text-xs text-slate-500">Updated {displayDate(task.updatedAt)}</p>
                       </Button>
                     ))}
-                    {tasks.length === 0 && !readErrors.tasks && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No task records found in the latest 50 for this factory.</p>}
+                    {tasks.length === 0 && !readErrors.tasks && <EmptyState title="No recent tasks" description="No task records were found in the latest 50 for this factory." className="min-h-32" />}
                   </div>
                 </Panel>
 
@@ -679,17 +679,17 @@ export default function AiAgentControlCenterPage() {
                                 {step.executionEvidence !== null && step.executionEvidence !== undefined && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
                                 {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {canExecute && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</Button>}
+                                  {canExecute && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</Button>}
                                   {stepStatus === "AWAITING_APPROVAL" && <Button variant="outline" size="sm" type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</Button>}
                                 </div>
                               </article>
                             );
                           })}
-                          {taskDetail.steps.length === 0 && <p className="text-sm text-slate-500">This task has no step records.</p>}
+                          {taskDetail.steps.length === 0 && <EmptyState title="No task steps" description="The API returned no persisted step records for this task." className="min-h-32" />}
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
                           {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <Button variant="danger" size="sm" type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</Button>}
-                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</Button>}
+                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</Button>}
                         </div>
                         <p className="mt-3 text-[11px] leading-5 text-slate-500">A click is only a request. The backend rechecks IAM, policy, planner signature, tool entitlement, dependencies, retry eligibility, idempotency and cancellation/deadline state before execution. Ambiguous side effects stay in the backend reconciliation path.</p>
                       </>
@@ -704,7 +704,7 @@ export default function AiAgentControlCenterPage() {
             {tab === "drafts" && (
               <section className="mt-6 grid gap-5 lg:grid-cols-2">
                 <Panel title="Workflow drafts">
-                  {readErrors.drafts && <p className="mb-3 text-xs text-rose-700">{readErrors.drafts}</p>}
+                  {readErrors.drafts && <Alert tone="danger" className="mb-3">{readErrors.drafts}</Alert>}
                   <div className="space-y-2">
                     {drafts.map((draft, index) => (
                       <article key={valueText(draft.id, `draft-${index}`)} className="rounded-xl border border-slate-200 p-3">
@@ -713,11 +713,11 @@ export default function AiAgentControlCenterPage() {
                         <p className="mt-2 text-xs text-slate-500">Updated {displayDate(draft.updatedAt)}</p>
                       </article>
                     ))}
-                    {drafts.length === 0 && !readErrors.drafts && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No workflow drafts were returned.</p>}
+                    {drafts.length === 0 && !readErrors.drafts && <EmptyState title="No workflow drafts" description="No workflow drafts were returned for this IAM scope." className="min-h-32" />}
                   </div>
                 </Panel>
                 <Panel title="Agent Studio templates">
-                  {readErrors.templates && <p className="mb-3 text-xs text-rose-700">{readErrors.templates}</p>}
+                  {readErrors.templates && <Alert tone="danger" className="mb-3">{readErrors.templates}</Alert>}
                   <div className="space-y-2">
                     {templates.map((template, index) => (
                       <article key={valueText(template.id, valueText(template.templateKey, `template-${index}`))} className="rounded-xl border border-slate-200 p-3">
@@ -726,7 +726,7 @@ export default function AiAgentControlCenterPage() {
                         <p className="mt-2 break-all font-mono text-[10px] text-slate-500">{valueText(template.templateKey, valueText(template.id))}</p>
                       </article>
                     ))}
-                    {templates.length === 0 && !readErrors.templates && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No templates were returned.</p>}
+                    {templates.length === 0 && !readErrors.templates && <EmptyState title="No templates" description="No agent Studio templates were returned for this factory." className="min-h-32" />}
                   </div>
                 </Panel>
               </section>
