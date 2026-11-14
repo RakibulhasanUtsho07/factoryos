@@ -23,7 +23,6 @@ import {
   Label,
   PageHeader,
   Select,
-  StatusBadge,
   Textarea,
 } from "@/components/ui";
 
@@ -73,8 +72,21 @@ function displayDate(value: unknown): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+function statusTone(status: string): "success" | "warning" | "danger" | "neutral" {
+  if (["ACTIVE", "ENABLED", "COMPLETED", "SUCCEEDED", "ACCEPTED", "APPROVED"].includes(status)) {
+    return "success";
+  }
+  if (["PAUSED", "AWAITING_APPROVAL", "PENDING", "RESTRICTED", "BLOCKED"].includes(status)) {
+    return "warning";
+  }
+  if (["FAILED", "CANCELLED", "REJECTED", "RETIRED"].includes(status)) {
+    return "danger";
+  }
+  return "neutral";
+}
+
 function StatusPill({ value }: { value: string }) {
-  return <StatusBadge status={value} />;
+  return <Badge tone={statusTone(value)}>{value.replaceAll("_", " ")}</Badge>;
 }
 
 function Panel({
