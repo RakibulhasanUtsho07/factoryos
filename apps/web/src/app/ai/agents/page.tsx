@@ -7,6 +7,25 @@ import {
   isTerminalAgentTaskState,
 } from "@/lib/ai-agent-control-center.mjs";
 import type { AiAgentControlCenterClient } from "@/lib/ai-agent-control-center.mjs";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Field,
+  FieldHint,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui";
 
 type JsonRecord = Record<string, unknown>;
 type Agent = JsonRecord & { id: string };
@@ -54,25 +73,8 @@ function displayDate(value: unknown): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function statusTone(status: string): string {
-  if (["ACTIVE", "ENABLED", "COMPLETED", "SUCCEEDED", "ACCEPTED", "APPROVED"].includes(status)) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  }
-  if (["PAUSED", "AWAITING_APPROVAL", "PENDING", "RESTRICTED", "BLOCKED"].includes(status)) {
-    return "border-amber-200 bg-amber-50 text-amber-900";
-  }
-  if (["FAILED", "CANCELLED", "REJECTED", "RETIRED"].includes(status)) {
-    return "border-rose-200 bg-rose-50 text-rose-800";
-  }
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
 function StatusPill({ value }: { value: string }) {
-  return (
-    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-wide ${statusTone(value)}`}>
-      {value.replaceAll("_", " ")}
-    </span>
-  );
+  return <StatusBadge status={value} />;
 }
 
 function Panel({
@@ -87,13 +89,15 @@ function Panel({
   className?: string;
 }) {
   return (
-    <section className={`rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-bold tracking-wide text-slate-900">{title}</h2>
-        {action}
-      </div>
-      {children}
-    </section>
+    <Card className={className}>
+      <CardHeader className="border-b-0 px-5 pb-0 pt-5 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle>{title}</CardTitle>
+          {action}
+        </div>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-4 sm:px-6">{children}</CardContent>
+    </Card>
   );
 }
 
@@ -107,11 +111,13 @@ function Metric({
   hint: string;
 }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{value}</p>
-      <p className="mt-1 text-xs text-slate-500">{hint}</p>
-    </div>
+    <Card>
+      <CardContent className="p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+        <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{value}</p>
+        <p className="mt-1 text-xs text-slate-500">{hint}</p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -404,78 +410,70 @@ export default function AiAgentControlCenterPage() {
   ];
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
+    <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8">
-        <header className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 md:flex-row md:items-end">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">
-              <span className="inline-block h-2 w-2 rounded-full bg-blue-600" />
-              FactoryOS AI
-            </div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">Agent Control Center</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-              Governed agent catalogue, factory-scoped tasks, policy approvals and evaluation evidence.
-              Write actions remain explicit and are re-authorized by the API.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {client ? (
-              <>
-                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800">Session configured</span>
-                <button type="button" onClick={() => void refresh()} disabled={loadingWorkspace} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100 disabled:opacity-50">
-                  {loadingWorkspace ? "Refreshing…" : "Refresh"}
-                </button>
-                <button type="button" onClick={disconnect} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100">
-                  Disconnect
-                </button>
-              </>
-            ) : (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900">Not connected</span>
-            )}
-          </div>
-        </header>
+        <PageHeader
+          eyebrow="FactoryOS AI"
+          title="Agent Control Center"
+          description="Governed agent catalogue, factory-scoped tasks, policy approvals and evaluation evidence. Write actions remain explicit and are re-authorized by the API."
+          className="border-b border-border pb-6"
+          actions={client ? (
+            <>
+              <Badge tone="success">Session configured</Badge>
+              <Button type="button" variant="outline" size="sm" onClick={() => void refresh()} disabled={loadingWorkspace}>
+                {loadingWorkspace ? "Refreshing…" : "Refresh"}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={disconnect}>
+                Disconnect
+              </Button>
+            </>
+          ) : (
+            <Badge tone="warning">Not connected</Badge>
+          )}
+        />
 
         {!client && (
-          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-sm font-bold text-slate-900">Connect to an authenticated FactoryOS API</h2>
-              <p className="text-xs leading-5 text-slate-600">
+          <Card className="mt-6">
+            <CardHeader className="border-b-0 pb-0">
+              <CardTitle>Connect to an authenticated FactoryOS API</CardTitle>
+              <CardDescription>
                 Paste a short-lived bearer token and the intended tenant/factory scope. The token is kept only in this page&apos;s memory,
                 is not saved to local storage or cookies, and is cleared when you disconnect or close the page.
-              </p>
-            </div>
-            <form onSubmit={connect} className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-xs font-semibold text-slate-700">
-                API origin
-                <input required value={apiOrigin} onChange={(event) => setApiOrigin(event.target.value)} placeholder="https://factory-api.example.com" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Tenant UUID
-                <input required value={tenantId} onChange={(event) => setTenantId(event.target.value)} placeholder="11111111-1111-4111-8111-111111111111" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Factory UUID
-                <input required value={factoryId} onChange={(event) => setFactoryId(event.target.value)} placeholder="22222222-2222-4222-8222-222222222222" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Bearer access token
-                <input required type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="Paste short-lived OIDC access token" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
-                <p className="max-w-2xl text-[11px] leading-5 text-slate-500">
-                  The API derives user identity from the verified JWT. This page sends only X-Tenant-Id and X-Factory-Id scope headers;
-                  it never sends a caller-supplied X-User-Id.
-                </p>
-                <button type="submit" className="rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800">
-                  Connect securely
-                </button>
-              </div>
-            </form>
-          </section>
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <form onSubmit={connect} className="grid gap-4 md:grid-cols-2">
+                <Field>
+                  <Label htmlFor="ai-api-origin">API origin</Label>
+                  <Input id="ai-api-origin" type="url" required value={apiOrigin} onChange={(event) => setApiOrigin(event.target.value)} placeholder="https://factory-api.example.com" />
+                </Field>
+                <Field>
+                  <Label htmlFor="ai-tenant-id">Tenant UUID</Label>
+                  <Input id="ai-tenant-id" required value={tenantId} onChange={(event) => setTenantId(event.target.value)} placeholder="11111111-1111-4111-8111-111111111111" className="font-mono text-xs" />
+                </Field>
+                <Field>
+                  <Label htmlFor="ai-factory-id">Factory UUID</Label>
+                  <Input id="ai-factory-id" required value={factoryId} onChange={(event) => setFactoryId(event.target.value)} placeholder="22222222-2222-4222-8222-222222222222" className="font-mono text-xs" />
+                </Field>
+                <Field>
+                  <Label htmlFor="ai-access-token">Bearer access token</Label>
+                  <Input id="ai-access-token" required type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="Paste short-lived OIDC access token" className="font-mono text-xs" />
+                  <FieldHint>The token is held in memory only and cleared when the connection attempt completes.</FieldHint>
+                </Field>
+                <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
+                  <p className="max-w-2xl text-xs leading-5 text-muted">
+                    The API derives user identity from the verified JWT. This page sends only X-Tenant-Id and X-Factory-Id scope headers;
+                    it never sends a caller-supplied X-User-Id.
+                  </p>
+                  <Button type="submit">Connect securely</Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
         )}
 
-        {pageError && <p role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{pageError}</p>}
-        {message && <p role="status" className="mt-5 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">{message}</p>}
+        {pageError && <Alert tone="danger" className="mt-5">{pageError}</Alert>}
+        {message && <Alert tone="info" className="mt-5">{message}</Alert>}
 
         {client && (
           <>
@@ -489,9 +487,9 @@ export default function AiAgentControlCenterPage() {
 
             <nav aria-label="Agent Control Center sections" className="mt-6 flex flex-wrap gap-2 border-b border-slate-200 pb-3">
               {tabs.map((item) => (
-                <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-white hover:text-slate-900"}`}>
+                <Button variant="primary" size="sm" key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-white hover:text-slate-900"}`}>
                   {item.label}
-                </button>
+                </Button>
               ))}
             </nav>
 
@@ -504,45 +502,45 @@ export default function AiAgentControlCenterPage() {
                   <Metric label="Awaiting approval" value={approvalTasks} hint="Task state from persisted runtime" />
                 </div>
                 <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-                  <Panel title="Recent governed tasks" action={<button type="button" onClick={() => setTab("tasks")} className="text-xs font-semibold text-blue-700 hover:underline">Open task operations</button>}>
-                    {readErrors.tasks && <p className="mb-3 text-xs text-rose-700">{readErrors.tasks}</p>}
+                  <Panel title="Recent governed tasks" action={<Button variant="primary" size="sm" type="button" onClick={() => setTab("tasks")} className="text-xs font-semibold text-blue-700 hover:underline">Open task operations</Button>}>
+                    {readErrors.tasks && <Alert tone="danger" className="mb-3">{readErrors.tasks}</Alert>}
                     <div className="space-y-2">
                       {tasks.slice(0, 6).map((task) => (
-                        <button key={task.id} type="button" onClick={() => { setSelectedTaskId(task.id); setTab("tasks"); }} className="flex w-full flex-col gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40 sm:flex-row sm:items-center sm:justify-between">
+                        <Button variant="primary" size="sm" key={task.id} type="button" onClick={() => { setSelectedTaskId(task.id); setTab("tasks"); }} className="flex w-full flex-col gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40 sm:flex-row sm:items-center sm:justify-between">
                           <span className="min-w-0">
                             <span className="block truncate text-sm font-semibold text-slate-900">{valueText(task.goal, "Untitled governed task")}</span>
                             <span className="mt-1 block truncate font-mono text-[10px] text-slate-500">{task.id}</span>
                           </span>
                           <StatusPill value={valueText(task.state, "UNKNOWN")} />
-                        </button>
+                        </Button>
                       ))}
-                      {tasks.length === 0 && !readErrors.tasks && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No task records returned for this factory scope.</p>}
+                      {tasks.length === 0 && !readErrors.tasks && <EmptyState title="No recent tasks" description="No task records were returned for this factory scope." className="min-h-32" />}
                     </div>
                   </Panel>
                   <Panel title="Agent portfolio">
-                    {readErrors.agents && <p className="mb-3 text-xs text-rose-700">{readErrors.agents}</p>}
+                    {readErrors.agents && <Alert tone="danger" className="mb-3">{readErrors.agents}</Alert>}
                     <div className="space-y-2">
                       {agents.slice(0, 6).map((agent) => (
-                        <button key={agent.id} type="button" onClick={() => { setSelectedAgentId(agent.id); setTab("agents"); }} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40">
+                        <Button variant="primary" size="sm" key={agent.id} type="button" onClick={() => { setSelectedAgentId(agent.id); setTab("agents"); }} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40">
                           <span className="min-w-0">
                             <span className="block truncate text-sm font-semibold text-slate-900">{valueText(agent.name, valueText(agent.agentId, "Unnamed agent"))}</span>
                             <span className="mt-1 block text-xs text-slate-500">{valueText(agent.version, "Unversioned")} · {valueText(agent.capability, "Capability not supplied")}</span>
                           </span>
                           <StatusPill value={valueText(agent.status, "UNKNOWN")} />
-                        </button>
+                        </Button>
                       ))}
-                      {agents.length === 0 && !readErrors.agents && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No agent definitions returned.</p>}
+                      {agents.length === 0 && !readErrors.agents && <EmptyState title="No agent definitions" description="No agent definitions were returned for this factory scope." className="min-h-32" />}
                     </div>
                   </Panel>
                 </div>
                 <div className="grid gap-5 md:grid-cols-2">
                   <Panel title="Drafts awaiting review">
-                    {readErrors.drafts && <p className="mb-3 text-xs text-rose-700">{readErrors.drafts}</p>}
+                    {readErrors.drafts && <Alert tone="danger" className="mb-3">{readErrors.drafts}</Alert>}
                     <p className="text-3xl font-semibold text-slate-950">{drafts.length}</p>
                     <p className="mt-1 text-xs text-slate-500">Workflow drafts visible to the current IAM principal.</p>
                   </Panel>
                   <Panel title="Templates available">
-                    {readErrors.templates && <p className="mb-3 text-xs text-rose-700">{readErrors.templates}</p>}
+                    {readErrors.templates && <Alert tone="danger" className="mb-3">{readErrors.templates}</Alert>}
                     <p className="text-3xl font-semibold text-slate-950">{templates.length}</p>
                     <p className="mt-1 text-xs text-slate-500">Template catalogue returned by the API for this factory.</p>
                   </Panel>
@@ -557,14 +555,14 @@ export default function AiAgentControlCenterPage() {
                   {readErrors.agents && <p className="mb-3 text-xs text-rose-700">{readErrors.agents}</p>}
                   <div className="space-y-2">
                     {agents.map((agent) => (
-                      <button key={agent.id} type="button" onClick={() => setSelectedAgentId(agent.id)} className={`w-full rounded-xl border p-3 text-left transition ${selectedAgentId === agent.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
+                      <Button variant="primary" size="sm" key={agent.id} type="button" onClick={() => setSelectedAgentId(agent.id)} className={`w-full rounded-xl border p-3 text-left transition ${selectedAgentId === agent.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-slate-900">{valueText(agent.name, valueText(agent.agentId, "Unnamed agent"))}</span>
                           <StatusPill value={valueText(agent.status, "UNKNOWN")} />
                         </div>
                         <p className="mt-1 text-xs text-slate-500">{valueText(agent.agentId)} · v{valueText(agent.version)}</p>
                         <p className="mt-2 text-xs leading-5 text-slate-600">{valueText(agent.capability, "No capability description.")}</p>
-                      </button>
+                      </Button>
                     ))}
                     {agents.length === 0 && !readErrors.agents && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No agent definitions returned for this scope.</p>}
                   </div>
@@ -572,7 +570,7 @@ export default function AiAgentControlCenterPage() {
 
                 <div className="space-y-5">
                   <Panel title={selectedAgentName} action={detailsLoading ? <span className="text-xs text-slate-500">Loading details…</span> : undefined}>
-                    {readErrors.agentDetail && <p className="mb-3 text-xs text-rose-700">{readErrors.agentDetail}</p>}
+                    {readErrors.agentDetail && <Alert tone="danger" className="mb-3">{readErrors.agentDetail}</Alert>}
                     {selectedAgent ? (
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase text-slate-500">Authority</p><p className="mt-1 text-sm">{valueText(selectedAgent.authority)}</p></div>
@@ -586,7 +584,7 @@ export default function AiAgentControlCenterPage() {
                   </Panel>
 
                   <Panel title="Operational control">
-                    {readErrors.agentControl && <p className="mb-3 text-xs text-rose-700">{readErrors.agentControl}</p>}
+                    {readErrors.agentControl && <Alert tone="danger" className="mb-3">{readErrors.agentControl}</Alert>}
                     {agentControl && (
                       <div className="mb-4 flex flex-wrap items-center gap-2">
                         <span className="text-xs text-slate-600">Current catalogue state: {valueText(agentControl.catalogueStatus)}</span>
@@ -594,37 +592,37 @@ export default function AiAgentControlCenterPage() {
                       </div>
                     )}
                     <div className="grid gap-3 sm:grid-cols-[1fr_1.3fr]">
-                      <label className="text-xs font-semibold text-slate-700">
-                        Desired control
-                        <select value={desiredControl} onChange={(event) => setDesiredControl(event.target.value as "ENABLED" | "PAUSED" | "RESTRICTED")} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm">
+                      <Field>
+                        <Label htmlFor="ai-agent-control">Desired control</Label>
+                        <Select id="ai-agent-control" value={desiredControl} onChange={(event) => setDesiredControl(event.target.value as "ENABLED" | "PAUSED" | "RESTRICTED")}>
                           <option value="ENABLED">Enabled</option>
                           <option value="PAUSED">Paused</option>
                           <option value="RESTRICTED">Restricted</option>
-                        </select>
-                      </label>
-                      <label className="text-xs font-semibold text-slate-700">
-                        Operator reason (required)
-                        <input value={controlReason} onChange={(event) => setControlReason(event.target.value)} maxLength={1000} placeholder="Incident, safety or operations reason" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" />
-                      </label>
+                        </Select>
+                      </Field>
+                      <Field>
+                        <Label htmlFor="ai-control-reason">Operator reason (required)</Label>
+                        <Input id="ai-control-reason" value={controlReason} onChange={(event) => setControlReason(event.target.value)} maxLength={1000} placeholder="Incident, safety or operations reason" />
+                      </Field>
                     </div>
                     {desiredControl === "RESTRICTED" && (
-                      <label className="mt-3 block text-xs font-semibold text-slate-700">
-                        Allowed execution scopes
-                        <textarea value={controlScopes} onChange={(event) => setControlScopes(event.target.value)} rows={3} placeholder="Enter exact scope identifiers separated by commas" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-normal" />
-                        <span className="mt-1 block font-normal leading-5 text-slate-500">
+                      <Field className="mt-3">
+                        <Label htmlFor="ai-control-scopes">Allowed execution scopes</Label>
+                        <Textarea id="ai-control-scopes" value={controlScopes} onChange={(event) => setControlScopes(event.target.value)} rows={3} placeholder="Enter exact scope identifiers separated by commas" />
+                        <FieldHint>
                           Baseline: {Array.isArray(selectedAgent?.executionScopes) ? selectedAgent.executionScopes.join(", ") || "No baseline scopes" : "Not loaded"}.
                           Use only a subset. The API rejects scope widening. Choose PAUSED to stop all execution.
-                        </span>
-                      </label>
+                        </FieldHint>
+                      </Field>
                     )}
-                    <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
+                    <Button variant="primary" size="sm" type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
                       {busyAction === "control" ? "Updating…" : "Record operational control"}
-                    </button>
+                    </Button>
                     <p className="mt-2 text-[11px] leading-5 text-slate-500">The API requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
                   </Panel>
 
                   <Panel title="Evaluation report">
-                    {readErrors.evaluation && <p className="mb-3 text-xs text-rose-700">{readErrors.evaluation}</p>}
+                    {readErrors.evaluation && <Alert tone="danger" className="mb-3">{readErrors.evaluation}</Alert>}
                     <pre className="max-h-80 overflow-auto rounded-xl bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">{pretty(evaluationReport)}</pre>
                   </Panel>
                 </div>
@@ -637,11 +635,11 @@ export default function AiAgentControlCenterPage() {
                   {readErrors.tasks && <p className="mb-3 text-xs text-rose-700">{readErrors.tasks}</p>}
                   <div className="space-y-2">
                     {tasks.map((task) => (
-                      <button key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)} className={`w-full rounded-xl border p-3 text-left ${selectedTaskId === task.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
+                      <Button variant="primary" size="sm" key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)} className={`w-full rounded-xl border p-3 text-left ${selectedTaskId === task.id ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-blue-300"}`}>
                         <div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold">{valueText(task.goal, "Governed task")}</span><StatusPill value={valueText(task.state, "UNKNOWN")} /></div>
                         <p className="mt-1 break-all font-mono text-[10px] text-slate-500">{task.id}</p>
                         <p className="mt-2 text-xs text-slate-500">Updated {displayDate(task.updatedAt)}</p>
-                      </button>
+                      </Button>
                     ))}
                     {tasks.length === 0 && !readErrors.tasks && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No task records found in the latest 50 for this factory.</p>}
                   </div>
@@ -649,7 +647,7 @@ export default function AiAgentControlCenterPage() {
 
                 <div className="space-y-5">
                   <Panel title="Persisted task and step ledger" action={detailsLoading ? <span className="text-xs text-slate-500">Loading…</span> : undefined}>
-                    {readErrors.taskDetail && <p role="alert" className="mb-3 text-xs text-rose-700">{readErrors.taskDetail}</p>}
+                    {readErrors.taskDetail && <Alert tone="danger" className="mb-3">{readErrors.taskDetail}</Alert>}
                     {taskDetail ? (
                       <>
                         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -681,8 +679,8 @@ export default function AiAgentControlCenterPage() {
                                 {step.executionEvidence !== null && step.executionEvidence !== undefined && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
                                 {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {canExecute && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
-                                  {stepStatus === "AWAITING_APPROVAL" && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
+                                  {canExecute && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</Button>}
+                                  {stepStatus === "AWAITING_APPROVAL" && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</Button>}
                                 </div>
                               </article>
                             );
@@ -690,8 +688,8 @@ export default function AiAgentControlCenterPage() {
                           {taskDetail.steps.length === 0 && <p className="text-sm text-slate-500">This task has no step records.</p>}
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
-                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <button type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</button>}
-                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <button type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</button>}
+                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</Button>}
+                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <Button variant="primary" size="sm" type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</Button>}
                         </div>
                         <p className="mt-3 text-[11px] leading-5 text-slate-500">A click is only a request. The backend rechecks IAM, policy, planner signature, tool entitlement, dependencies, retry eligibility, idempotency and cancellation/deadline state before execution. Ambiguous side effects stay in the backend reconciliation path.</p>
                       </>
