@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 
@@ -148,39 +148,6 @@ export default function OnboardingPage() {
   const allowed = hasPermission("factory.onboarding.manage");
   const activeFactory = snapshot?.factories.find((factory) => factory.id === activeFactoryId);
   const progress = Math.round((savedSteps.size / steps.length) * 100);
-
-  const loadDrafts = useCallback(async () => {
-    if (!connected || !activeFactoryId || !allowed) return;
-    let current = true;
-    setLoading(true);
-    setError("");
-    try {
-      const result = await request("/onboarding/steps") as {
-        items?: Array<{ step_key: string; payload: Record<string, unknown> }>;
-      };
-      if (!current) return;
-      const next = emptyDrafts();
-      const completed = new Set<StepId>();
-      for (const item of result.items ?? []) {
-        if (!isStepId(item.step_key)) continue;
-        const values = next[item.step_key];
-        for (const field of steps.find((step) => step.id === item.step_key)?.fields ?? []) {
-          const value = item.payload?.[field.name];
-          if (typeof value === "string") values[field.name] = value;
-        }
-        completed.add(item.step_key);
-      }
-      setDrafts(next);
-      setSavedSteps(completed);
-    } catch (cause) {
-      if (current) {
-        setError(cause instanceof Error ? cause.message : "Could not load onboarding drafts.");
-      }
-    } finally {
-      if (current) setLoading(false);
-    }
-    return () => { current = false; };
-  }, [connected, activeFactoryId, allowed, request]);
 
   useEffect(() => {
     let active = true;
