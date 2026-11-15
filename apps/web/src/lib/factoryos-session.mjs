@@ -108,20 +108,38 @@ export function createFactoryOsSessionClient({
     throw new Error("Fetch is unavailable in this browser.");
   }
 
-  async function get(path) {
+  async function request(path, options = {}) {
     if (!bearerToken) {
       throw new Error("This FactoryOS session has been cleared. Connect again.");
     }
+    if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) {
+      throw new Error("FactoryOS API paths must be absolute API-relative paths.");
+    }
 
+    const method = options.method ?? "GET";
+    if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      throw new Error("Unsupported FactoryOS API method.");
+    }
+    const factoryId = options.factoryId === undefined || options.factoryId === null
+      ? ""
+      : String(options.factoryId).trim().toLowerCase();
+    if (factoryId && !UUID_PATTERN.test(factoryId)) {
+      throw new Error("Factory context must be a valid UUID.");
+    }
+    const hasBody = options.body !== undefined;
+    const headers = {
+      accept: "application/json",
+      authorization: "Bearer " + bearerToken,
+      "x-tenant-id": selectedTenantId,
+      "x-request-id": idFactory(),
+      "x-trace-id": idFactory(),
+      ...(factoryId ? { "x-factory-id": factoryId } : {}),
+      ...(hasBody ? { "content-type": "application/json" } : {}),
+    };
     const response = await fetchImpl(origin + "/api" + path, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        authorization: "Bearer " + bearerToken,
-        "x-tenant-id": selectedTenantId,
-        "x-request-id": idFactory(),
-        "x-trace-id": idFactory(),
-      },
+      method,
+      headers,
+      ...(hasBody ? { body: JSON.stringify(options.body) } : {}),
       cache: "no-store",
       credentials: "omit",
       redirect: "error",
@@ -133,18 +151,21 @@ export function createFactoryOsSessionClient({
     } catch {
       payload = null;
     }
-
     if (!response.ok) {
       throw new FactoryOsSessionError(responseMessage(payload, response.status), response.status);
     }
-
     return unwrapResponse(payload);
+  }
+
+  async function get(path) {
+    return request(path);
   }
 
   return Object.freeze({
     getCurrentUser: () => get("/auth/me"),
     getAccess: () => get("/iam/access"),
     listFactories: () => get("/iam/factories"),
+    request,
     clear: () => {
       bearerToken = "";
     },
