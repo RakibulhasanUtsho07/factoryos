@@ -202,15 +202,10 @@ export default function ProcurementWorkbenchPage() {
   const canReadPurchaseOrders = connected && hasPermission("purchase_orders.read");
   const canReadSuppliers = connected && hasPermission("suppliers.read");
   const canReadGoodsReceipts = connected && hasPermission("goods_receipts.read");
-  const canReadCurrentView = view === "purchase-orders" ? canReadPurchaseOrders : canReadSuppliers;
-
-  useEffect(() => {
-    if (view === "purchase-orders" && !canReadPurchaseOrders && canReadSuppliers) {
-      setView("suppliers");
-    } else if (view === "suppliers" && !canReadSuppliers && canReadPurchaseOrders) {
-      setView("purchase-orders");
-    }
-  }, [view, canReadPurchaseOrders, canReadSuppliers]);
+  const activeView: ProcurementView = view === "purchase-orders"
+    ? (canReadPurchaseOrders ? "purchase-orders" : canReadSuppliers ? "suppliers" : "purchase-orders")
+    : (canReadSuppliers ? "suppliers" : canReadPurchaseOrders ? "purchase-orders" : "suppliers");
+  const canReadCurrentView = activeView === "purchase-orders" ? canReadPurchaseOrders : canReadSuppliers;
   const activeFactory = snapshot?.factories.find((factory) => factory.id === activeFactoryId);
   const scopeKey = [snapshot?.tenant.id ?? "", activeFactoryId].join(":");
   const selectedRecordId = selection?.scopeKey === scopeKey ? selection.recordId : "";
@@ -220,7 +215,7 @@ export default function ProcurementWorkbenchPage() {
     sessionStatus,
     snapshot?.tenant.id ?? "",
     activeFactoryId,
-    view,
+    activeView,
     canReadPurchaseOrders,
     canReadSuppliers,
     purchaseOrderStatus,
@@ -238,14 +233,14 @@ export default function ProcurementWorkbenchPage() {
   const page = Number(pagination.page ?? 1);
   const totalPages = Number(pagination.total_pages ?? 0);
   const total = Number(pagination.total ?? 0);
-  const selectedPurchaseOrder = view === "purchase-orders"
+  const selectedPurchaseOrder = activeView === "purchase-orders"
     ? items.find((item) => valueText(item.id, "") === selectedRecordId) ?? null
     : null;
-  const selectedSupplier = view === "suppliers"
+  const selectedSupplier = activeView === "suppliers"
     ? items.find((item) => valueText(item.id, "") === selectedRecordId) ?? null
     : null;
   const selectedPurchaseOrderId = selectedPurchaseOrder ? valueText(selectedPurchaseOrder.id, "") : "";
-  const detailKey = JSON.stringify([listKey, view, selectedPurchaseOrderId]);
+  const detailKey = JSON.stringify([listKey, activeView, selectedPurchaseOrderId]);
   const currentDetail = detailResult?.key === detailKey ? detailResult : null;
   const receiptListKey = JSON.stringify([detailKey, selectedPurchaseOrderId, canReadGoodsReceipts]);
   const currentReceiptList = receiptListResult?.key === receiptListKey ? receiptListResult : null;
@@ -254,7 +249,7 @@ export default function ProcurementWorkbenchPage() {
   const currentReceiptDetail = receiptDetailResult?.key === receiptDetailKey ? receiptDetailResult : null;
 
   const loadingList = connected && Boolean(activeFactoryId) && canReadCurrentView && currentList === null;
-  const loadingDetail = view === "purchase-orders" && Boolean(selectedPurchaseOrderId)
+  const loadingDetail = activeView === "purchase-orders" && Boolean(selectedPurchaseOrderId)
     && currentDetail === null;
   const loadingReceipts = Boolean(selectedPurchaseOrderId) && canReadGoodsReceipts
     && currentReceiptList === null;
@@ -267,7 +262,7 @@ export default function ProcurementWorkbenchPage() {
 
     const load = async () => {
       try {
-        const payload = view === "purchase-orders"
+        const payload = activeView === "purchase-orders"
           ? await client.listPurchaseOrders({
             page: purchaseOrderPage,
             limit: 20,
@@ -309,7 +304,7 @@ export default function ProcurementWorkbenchPage() {
     activeFactoryId,
     canReadCurrentView,
     request,
-    view,
+    activeView,
     purchaseOrderPage,
     purchaseOrderStatus,
     purchaseOrderSearch,
@@ -322,7 +317,7 @@ export default function ProcurementWorkbenchPage() {
 
   useEffect(() => {
     if (!connected || !activeFactoryId || !canReadPurchaseOrders
-      || view !== "purchase-orders" || !selectedPurchaseOrderId) return;
+      || activeView !== "purchase-orders" || !selectedPurchaseOrderId) return;
 
     let active = true;
     const client = createProcurementWorkspaceClient({ request });
@@ -345,14 +340,14 @@ export default function ProcurementWorkbenchPage() {
     activeFactoryId,
     canReadPurchaseOrders,
     request,
-    view,
+    activeView,
     selectedPurchaseOrderId,
     detailKey,
   ]);
 
   useEffect(() => {
     if (!connected || !activeFactoryId || !canReadPurchaseOrders
-      || !canReadGoodsReceipts || view !== "purchase-orders" || !selectedPurchaseOrderId) return;
+      || !canReadGoodsReceipts || activeView !== "purchase-orders" || !selectedPurchaseOrderId) return;
 
     let active = true;
     const client = createProcurementWorkspaceClient({ request });
@@ -381,14 +376,14 @@ export default function ProcurementWorkbenchPage() {
     canReadPurchaseOrders,
     canReadGoodsReceipts,
     request,
-    view,
+    activeView,
     selectedPurchaseOrderId,
     receiptListKey,
   ]);
 
   useEffect(() => {
     if (!connected || !activeFactoryId || !canReadGoodsReceipts
-      || view !== "purchase-orders" || !selectedReceiptId) return;
+      || activeView !== "purchase-orders" || !selectedReceiptId) return;
 
     let active = true;
     const client = createProcurementWorkspaceClient({ request });
@@ -411,7 +406,7 @@ export default function ProcurementWorkbenchPage() {
     activeFactoryId,
     canReadGoodsReceipts,
     request,
-    view,
+    activeView,
     selectedReceiptId,
     receiptDetailKey,
   ]);
@@ -526,11 +521,11 @@ export default function ProcurementWorkbenchPage() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "purchase-orders"}
+                aria-selected={activeView === "purchase-orders"}
                 onClick={() => changeView("purchase-orders")}
                 className={[
                   "min-h-10 rounded-lg border px-4 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-600",
-                  view === "purchase-orders"
+                  activeView === "purchase-orders"
                     ? "border-brand-300 bg-brand-50 text-brand-800"
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
                 ].join(" ")}
@@ -542,11 +537,11 @@ export default function ProcurementWorkbenchPage() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "suppliers"}
+                aria-selected={activeView === "suppliers"}
                 onClick={() => changeView("suppliers")}
                 className={[
                   "min-h-10 rounded-lg border px-4 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-600",
-                  view === "suppliers"
+                  activeView === "suppliers"
                     ? "border-brand-300 bg-brand-50 text-brand-800"
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
                 ].join(" ")}
@@ -556,7 +551,7 @@ export default function ProcurementWorkbenchPage() {
             ) : null}
           </div>
 
-          {view === "purchase-orders" && canReadPurchaseOrders ? (
+          {activeView === "purchase-orders" && canReadPurchaseOrders ? (
             <>
               <Card>
                 <CardHeader>
@@ -887,7 +882,7 @@ export default function ProcurementWorkbenchPage() {
             </>
           ) : null}
 
-          {view === "suppliers" && canReadSuppliers ? (
+          {activeView === "suppliers" && canReadSuppliers ? (
             <Card>
               <CardHeader>
                 <div className="flex flex-wrap items-start justify-between gap-2">
