@@ -379,7 +379,7 @@ export default function WorkforceWorkbenchPage() {
                     id="workforce-shift-date"
                     type="date"
                     value={shiftDate}
-                    onChange={(event) => setShiftDate(event.target.value)}
+                    onChange={(event) => { if (event.target.value) setShiftDate(event.target.value); }}
                     className="mt-2 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-600"
                   />
                 </div>
@@ -486,10 +486,11 @@ export default function WorkforceWorkbenchPage() {
                               </div>
                               <Badge tone="warning">Coverage gap</Badge>
                             </div>
-                            <p className="mt-2 text-xs text-slate-600">
-                              Planned: {formatDateTime(gap.planned_start_at)} – {formatDateTime(gap.planned_end_at)}
-                              {gap.required_skill_code ? " · Required skill: " + valueText(gap.required_skill_code) : ""}
-                            </p>
+                            {gap.required_skill_code ? (
+                              <p className="mt-2 text-xs text-slate-600">
+                                Required skill: {valueText(gap.required_skill_code)}
+                              </p>
+                            ) : null}
                             <div className="mt-3 border-t border-amber-200 pt-2">
                               <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
                                 API-returned backfill candidates ({candidates.length})
