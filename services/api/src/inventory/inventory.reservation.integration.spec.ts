@@ -1403,6 +1403,16 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId), bin.id],
     );
     expect(persistedAllocations.rows).toHaveLength(3);
+    expect(persistedAllocations.rows.map((row) => row.allocation_sequence)).toEqual([1, 2, 3]);
+
+    const persistedReservations = await adminPool.query<{ quantity: string; status: string }>(
+      `SELECT quantity::text AS quantity, status
+       FROM inventory_reservations
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND id=ANY($4::uuid[])`,
+      [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId)],
+    );
+    expect(persistedReservations.rows).toEqual([{ quantity: '5.0000', status: 'RESERVED' }]);
     expect(persistedAllocations.rows.map((row) => row.unit_code)).toEqual([
       expect.stringContaining('LOT-FEFO-DATED-EARLY'),
       expect.stringContaining('LOT-FEFO-DATED-LATE'),
