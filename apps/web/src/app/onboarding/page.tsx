@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 
@@ -139,6 +139,11 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const activeFactoryIdRef = useRef(activeFactoryId);
+
+  useEffect(() => {
+    activeFactoryIdRef.current = activeFactoryId;
+  }, [activeFactoryId]);
 
   const currentStep = useMemo(
     () => steps.find((step) => step.id === activeStep) ?? steps[0],
@@ -198,12 +203,15 @@ export default function OnboardingPage() {
     setSaving(true);
     setError("");
     setNotice("");
+    const factoryIdAtSave = activeFactoryId;
+    const stepAtSave = activeStep;
     try {
-      await request("/onboarding/steps/" + activeStep, {
+      await request("/onboarding/steps/" + stepAtSave, {
         method: "PUT",
-        body: { payload: drafts[activeStep] },
+        body: { payload: drafts[stepAtSave] },
       });
-      setSavedSteps((current) => new Set(current).add(activeStep));
+      if (activeFactoryIdRef.current !== factoryIdAtSave) return;
+      setSavedSteps((current) => new Set(current).add(stepAtSave));
       setNotice(locale === "bn" ? "এই ধাপের ড্রাফট সংরক্ষিত হয়েছে।" : "This step draft has been saved.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save this step.");
