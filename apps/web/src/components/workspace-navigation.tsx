@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 
+type NavigationItem = { href: string; label: string; short: string };
+
 const navigationGroups = [
   {
     label: "WORKSPACE",
@@ -22,6 +24,11 @@ const navigationGroups = [
     ],
   },
 ] as const;
+
+const mobileNavigationItems = navigationGroups.reduce<NavigationItem[]>((items, group) => {
+  items.push(...group.items);
+  return items;
+}, []);
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -193,7 +200,7 @@ export function WorkspaceNavigation() {
         ) : null}
         <div className="mt-3 -mx-1 overflow-x-auto px-1 pb-0.5">
           <div className="flex min-w-max gap-1">
-            {navigationGroups.flatMap((group) => group.items).map((item) => {
+            {mobileNavigationItems.map((item) => {
               const active = isActive(pathname, item.href);
               return (
                 <Link
