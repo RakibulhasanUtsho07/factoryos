@@ -123,6 +123,57 @@ test("session client distinguishes unauthenticated and forbidden API responses",
   );
 });
 
+
+test("workspace requests retain server-verified bearer identity and attach only selected factory context", async () => {
+  const calls = [];
+  const client = createFactoryOsSessionClient({
+    apiOrigin: "https://api.factoryos.example",
+    accessToken: token,
+    tenantId,
+    idFactory: (() => {
+      let index = 0;
+      return () => "trace-" + (++index);
+    })(),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ data: { accepted: true } });
+    },
+  });
+
+  const result = await client.request("/v1/ai/tasks?limit=25", {
+    method: "POST",
+    factoryId: "a2000000-0000-4000-8000-000000000002",
+    body: { goal: "read-only test" },
+  });
+  assert.deepEqual(result, { accepted: true });
+  assert.equal(calls[0].url, "https://api.factoryos.example/api/v1/ai/tasks?limit=25");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers.authorization, "Bearer " + token);
+  assert.equal(calls[0].options.headers["x-tenant-id"], tenantId);
+  assert.equal(calls[0].options.headers["x-factory-id"], "a2000000-0000-4000-8000-000000000002");
+  assert.equal(calls[0].options.headers["x-user-id"], undefined);
+  assert.equal(calls[0].options.credentials, "omit");
+  assert.equal(calls[0].options.cache, "no-store");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { goal: "read-only test" });
+});
+
+test("workspace requests reject invalid paths, methods and factory context before network access", async () => {
+  let called = false;
+  const client = createFactoryOsSessionClient({
+    apiOrigin: "https://api.factoryos.example",
+    accessToken: token,
+    tenantId,
+    fetchImpl: async () => {
+      called = true;
+      return response({ data: {} });
+    },
+  });
+  await assert.rejects(client.request("//evil.example/path"), /API-relative paths/);
+  await assert.rejects(client.request("/v1/ai/tasks", { method: "TRACE" }), /Unsupported/);
+  await assert.rejects(client.request("/v1/ai/tasks", { factoryId: "not-a-uuid" }), /factory context/i);
+  assert.equal(called, false);
+});
+
 test("clearing a session removes its in-memory bearer token", async () => {
   const calls = [];
   const client = createFactoryOsSessionClient({
