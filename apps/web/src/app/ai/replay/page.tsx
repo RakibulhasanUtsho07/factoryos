@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
@@ -66,7 +66,7 @@ function SectionCard({
   title: string;
   description?: string;
   count?: number;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <Card>
@@ -156,17 +156,20 @@ export default function AiDecisionReplayPage() {
   const [replayHash, setReplayHash] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const requestSequence = useRef(0);
 
   const connected = sessionStatus === "connected" && snapshot !== null;
   const canRead = connected && hasPermission("ai.replay.read");
   const activeFactory = snapshot?.factories.find((factory) => factory.id === activeFactoryId);
 
   useEffect(() => {
+    requestSequence.current += 1;
+    setLoading(false);
     setReplay(null);
     setReplayHash("");
     setLoadedTraceId("");
     setError("");
-  }, [activeFactoryId, snapshot?.tenant.id]);
+  }, [activeFactoryId, canRead, snapshot?.tenant.id]);
 
   async function handleReplay(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -185,6 +188,8 @@ export default function AiDecisionReplayPage() {
       return;
     }
 
+    const currentRequest = requestSequence.current + 1;
+    requestSequence.current = currentRequest;
     setLoading(true);
     setError("");
     setReplay(null);
@@ -194,6 +199,7 @@ export default function AiDecisionReplayPage() {
     try {
       const client = createAiDecisionReplayClient({ request });
       const response = asRecord(await client.replay(normalizedTraceId));
+      if (requestSequence.current !== currentRequest) return;
       const nextReplay = asRecord(response.replay);
       if (!Object.keys(nextReplay).length) {
         throw new Error("The API response did not contain an AI decision replay.");
@@ -202,9 +208,11 @@ export default function AiDecisionReplayPage() {
       setReplayHash(valueText(response.replayHash, ""));
       setLoadedTraceId(normalizedTraceId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load the AI decision replay.");
+      if (requestSequence.current === currentRequest) {
+        setError(cause instanceof Error ? cause.message : "Could not load the AI decision replay.");
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === currentRequest) setLoading(false);
     }
   }
 
@@ -223,6 +231,15 @@ export default function AiDecisionReplayPage() {
   const blockers = Array.isArray(completeness.blockers)
     ? completeness.blockers.filter((item): item is string => typeof item === "string")
     : [];
+  const decisionFields: Array<[string, unknown]> = [
+    ["Reasoning mode", decision.reasoningMode],
+    ["Risk class", decision.riskClass],
+    ["Output state", decision.outputState],
+    ["Envelope version", decision.envelopeVersion],
+    ["Context version", decision.contextVersion],
+    ["Created", formatDate(decision.createdAt)],
+    ["Updated", formatDate(decision.updatedAt)],
+  ];
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 text-slate-900 sm:px-6 lg:px-8">
@@ -272,6 +289,7 @@ export default function AiDecisionReplayPage() {
                 spellCheck={false}
                 inputMode="text"
                 value={traceId}
+                disabled={loading}
                 onChange={(event) => setTraceId(event.target.value)}
                 placeholder="xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
                 aria-describedby="ai-trace-hint"
@@ -348,15 +366,7 @@ export default function AiDecisionReplayPage() {
           <SectionCard title="Decision envelope" description="Persisted decision metadata; identity and scope are inherited from the authenticated session.">
             <h3 className="text-base font-semibold leading-6 text-slate-950">{valueText(decision.objective, "Objective not recorded")}</h3>
             <dl className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[
-                ["Reasoning mode", decision.reasoningMode],
-                ["Risk class", decision.riskClass],
-                ["Output state", decision.outputState],
-                ["Envelope version", decision.envelopeVersion],
-                ["Context version", decision.contextVersion],
-                ["Created", formatDate(decision.createdAt)],
-                ["Updated", formatDate(decision.updatedAt)],
-              ].map(([label, value]) => (
+              {decisionFields.map(([label, value]) => (
                 <div key={label}>
                   <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
                   <dd className="mt-1 break-words text-sm font-medium text-slate-800">{valueText(value)}</dd>
