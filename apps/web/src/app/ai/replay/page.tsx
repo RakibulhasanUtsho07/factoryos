@@ -49,14 +49,6 @@ function formatDate(value: unknown): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function pretty(value: unknown): string {
-  try {
-    return JSON.stringify(value ?? null, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 function SectionCard({
   title,
   description,
@@ -151,50 +143,77 @@ export default function AiDecisionReplayPage() {
   } = useFactoryOsSession();
 
   const [traceId, setTraceId] = useState("");
-  const [loadedTraceId, setLoadedTraceId] = useState("");
-  const [replay, setReplay] = useState<JsonRecord | null>(null);
-  const [replayHash, setReplayHash] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [resultState, setResultState] = useState<{
+    scopeKey: string;
+    status: "loading" | "success" | "error";
+    traceId: string;
+    replay?: JsonRecord;
+    replayHash?: string;
+    message?: string;
+  } | null>(null);
   const requestSequence = useRef(0);
 
   const connected = sessionStatus === "connected" && snapshot !== null;
   const canRead = connected && hasPermission("ai.replay.read");
   const activeFactory = snapshot?.factories.find((factory) => factory.id === activeFactoryId);
+  const scopeKey = [
+    sessionStatus,
+    snapshot?.tenant.id ?? "",
+    activeFactoryId,
+    canRead ? "read" : "no-read",
+  ].join(":");
 
   useEffect(() => {
     requestSequence.current += 1;
-    setLoading(false);
-    setReplay(null);
-    setReplayHash("");
-    setLoadedTraceId("");
-    setError("");
-  }, [activeFactoryId, canRead, snapshot?.tenant.id]);
+  }, [scopeKey]);
+
+  const currentResult = resultState?.scopeKey === scopeKey ? resultState : null;
+  const loading = currentResult?.status === "loading";
+  const replay = currentResult?.status === "success" ? currentResult.replay ?? null : null;
+  const replayHash = currentResult?.status === "success" ? currentResult.replayHash ?? "" : "";
+  const loadedTraceId = currentResult?.status === "success" ? currentResult.traceId : "";
+  const error = currentResult?.status === "error" ? currentResult.message ?? "" : "";
 
   async function handleReplay(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalizedTraceId = traceId.trim().toLowerCase();
 
     if (!isAiTraceId(normalizedTraceId)) {
-      setError("Enter a valid UUID trace ID.");
+      setResultState({
+        scopeKey,
+        status: "error",
+        traceId: normalizedTraceId,
+        message: "Enter a valid UUID trace ID.",
+      });
       return;
     }
     if (!connected || !activeFactoryId) {
-      setError("Connect an authenticated session and select an active factory first.");
+      setResultState({
+        scopeKey,
+        status: "error",
+        traceId: normalizedTraceId,
+        message: "Connect an authenticated session and select an active factory first.",
+      });
       return;
     }
     if (!hasPermission("ai.replay.read")) {
-      setError("Your IAM permission snapshot does not include ai.replay.read.");
+      setResultState({
+        scopeKey,
+        status: "error",
+        traceId: normalizedTraceId,
+        message: "Your IAM permission snapshot does not include ai.replay.read.",
+      });
       return;
     }
 
     const currentRequest = requestSequence.current + 1;
     requestSequence.current = currentRequest;
-    setLoading(true);
-    setError("");
-    setReplay(null);
-    setReplayHash("");
-    setLoadedTraceId("");
+    const requestScopeKey = scopeKey;
+    setResultState({
+      scopeKey: requestScopeKey,
+      status: "loading",
+      traceId: normalizedTraceId,
+    });
 
     try {
       const client = createAiDecisionReplayClient({ request });
@@ -204,15 +223,22 @@ export default function AiDecisionReplayPage() {
       if (!Object.keys(nextReplay).length) {
         throw new Error("The API response did not contain an AI decision replay.");
       }
-      setReplay(nextReplay);
-      setReplayHash(valueText(response.replayHash, ""));
-      setLoadedTraceId(normalizedTraceId);
+      setResultState({
+        scopeKey: requestScopeKey,
+        status: "success",
+        traceId: normalizedTraceId,
+        replay: nextReplay,
+        replayHash: valueText(response.replayHash, ""),
+      });
     } catch (cause) {
       if (requestSequence.current === currentRequest) {
-        setError(cause instanceof Error ? cause.message : "Could not load the AI decision replay.");
+        setResultState({
+          scopeKey: requestScopeKey,
+          status: "error",
+          traceId: normalizedTraceId,
+          message: cause instanceof Error ? cause.message : "Could not load the AI decision replay.",
+        });
       }
-    } finally {
-      if (requestSequence.current === currentRequest) setLoading(false);
     }
   }
 
