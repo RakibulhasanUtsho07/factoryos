@@ -222,6 +222,9 @@ export default function QualityWorkbenchPage() {
     snapshot?.tenant.id ?? "",
     activeFactoryId,
     canReadQuality,
+    view,
+    inspectionStatus,
+    inspectionType,
     selectedInspectionId,
     refreshVersion,
   ]), [
@@ -229,6 +232,9 @@ export default function QualityWorkbenchPage() {
     snapshot?.tenant.id,
     activeFactoryId,
     canReadQuality,
+    view,
+    inspectionStatus,
+    inspectionType,
     selectedInspectionId,
     refreshVersion,
   ]);
@@ -236,7 +242,8 @@ export default function QualityWorkbenchPage() {
   const currentList = listResult?.key === listKey ? listResult : null;
   const currentDetail = detailResult?.key === detailKey ? detailResult : null;
   const loadingList = connected && Boolean(activeFactoryId) && canReadQuality && currentList === null;
-  const loadingDetail = Boolean(selectedInspectionId) && canReadQuality && currentDetail === null;
+  const loadingDetail = view === "inspections" && Boolean(selectedInspectionId)
+    && canReadQuality && currentDetail === null;
 
   useEffect(() => {
     if (!connected || !activeFactoryId || !canReadQuality) return;
@@ -300,7 +307,8 @@ export default function QualityWorkbenchPage() {
   ]);
 
   useEffect(() => {
-    if (!connected || !activeFactoryId || !canReadQuality || !selectedInspectionId) return;
+    if (!connected || !activeFactoryId || !canReadQuality
+      || view !== "inspections" || !selectedInspectionId) return;
 
     let active = true;
     const client = createQualityWorkspaceClient({ request });
@@ -323,6 +331,7 @@ export default function QualityWorkbenchPage() {
     activeFactoryId,
     canReadQuality,
     request,
+    view,
     selectedInspectionId,
     detailKey,
   ]);
@@ -342,6 +351,7 @@ export default function QualityWorkbenchPage() {
   }
 
   function changeView(next: QualityView) {
+    setSelection(null);
     setView(next);
   }
 
@@ -475,7 +485,10 @@ export default function QualityWorkbenchPage() {
                       <select
                         id="quality-inspection-status"
                         value={inspectionStatus}
-                        onChange={(event) => setInspectionStatus(event.target.value)}
+                        onChange={(event) => {
+                          setSelection(null);
+                          setInspectionStatus(event.target.value);
+                        }}
                         className="mt-2 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
                       >
                         {INSPECTION_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -486,7 +499,10 @@ export default function QualityWorkbenchPage() {
                       <select
                         id="quality-inspection-type"
                         value={inspectionType}
-                        onChange={(event) => setInspectionType(event.target.value)}
+                        onChange={(event) => {
+                          setSelection(null);
+                          setInspectionType(event.target.value);
+                        }}
                         className="mt-2 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
                       >
                         {INSPECTION_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
