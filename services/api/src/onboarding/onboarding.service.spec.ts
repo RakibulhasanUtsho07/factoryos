@@ -53,6 +53,20 @@ describe('OnboardingService', () => {
     expect(database.query).not.toHaveBeenCalled();
   });
 
+  it('does not count a completely blank step as saved', async () => {
+    await expect(service.saveStep(
+      'user-1',
+      'tenant-1',
+      'factory-1',
+      'factory_profile',
+      { name: '   ', code: '' },
+      'request-1',
+      'trace-1',
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('rejects fields that are not part of the selected step contract', async () => {
     await expect(service.saveStep(
       'user-1',
