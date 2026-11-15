@@ -5,5 +5,11 @@ export interface AiDecisionReplayClient {
 export function isAiTraceId(value: unknown): value is string;
 
 export function createAiDecisionReplayClient(input: {
-  request: (path: string, options?: Record<string, unknown>) => Promise<unknown>;
+  request: (
+    path: string,
+    options?: {
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+      body?: unknown;
+    },
+  ) => Promise<unknown>;
 }): AiDecisionReplayClient;
