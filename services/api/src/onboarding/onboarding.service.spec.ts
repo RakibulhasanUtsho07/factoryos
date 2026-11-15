@@ -53,6 +53,34 @@ describe('OnboardingService', () => {
     expect(database.query).not.toHaveBeenCalled();
   });
 
+  it('rejects fields that are not part of the selected step contract', async () => {
+    await expect(service.saveStep(
+      'user-1',
+      'tenant-1',
+      'factory-1',
+      'factory_profile',
+      { name: 'Demo Factory', permission: 'admin' },
+      'request-1',
+      'trace-1',
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-text draft values', async () => {
+    await expect(service.saveStep(
+      'user-1',
+      'tenant-1',
+      'factory-1',
+      'factory_profile',
+      { name: 42 },
+      'request-1',
+      'trace-1',
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('rejects payloads larger than 64 KiB before writing', async () => {
     await expect(service.saveStep(
       'user-1',
