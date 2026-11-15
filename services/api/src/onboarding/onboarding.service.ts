@@ -96,6 +96,9 @@ export class OnboardingService {
     }
 
     validateStepPayload(stepKey as FactoryOnboardingStep, payload);
+    if (!Object.values(payload).some((value) => typeof value === 'string' && value.trim().length > 0)) {
+      throw new BadRequestException('Save at least one non-empty field in this onboarding step');
+    }
 
     const serialized = JSON.stringify(payload);
     if (Buffer.byteLength(serialized, 'utf8') > 65536) {
