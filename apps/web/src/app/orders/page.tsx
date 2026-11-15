@@ -75,6 +75,7 @@ function formatDate(value: unknown): string {
 }
 
 function formatNumber(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number)
     ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(number)
@@ -485,7 +486,7 @@ export default function SalesOrdersPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <StatusBadge status={valueText(selectedOrder.status, "UNKNOWN")} />
-                          <Button size="sm" variant="outline" onClick={() => setSelectedOrderId("")}>Close details</Button>
+                          <Button size="sm" variant="outline" onClick={() => setSelection(null)}>Close details</Button>
                         </div>
                       </div>
                     </CardHeader>
