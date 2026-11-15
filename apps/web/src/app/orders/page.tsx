@@ -115,7 +115,7 @@ export default function SalesOrdersPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [selectedOrderId, setSelectedOrderId] = useState("");
+  const [selection, setSelection] = useState<{ scopeKey: string; orderId: string } | null>(null);
 
   const [listResult, setListResult] = useState<OrderPageResult | null>(null);
   const [detailResult, setDetailResult] = useState<OrderDetailResult | null>(null);
@@ -144,6 +144,8 @@ export default function SalesOrdersPage() {
     refreshVersion,
   ]);
 
+  const activeScopeKey = [snapshot?.tenant.id ?? "", activeFactoryId].join(":");
+  const selectedOrderId = selection?.scopeKey === activeScopeKey ? selection.orderId : "";
   const detailKey = useMemo(() => JSON.stringify([
     sessionStatus,
     snapshot?.tenant.id ?? "",
@@ -248,6 +250,15 @@ export default function SalesOrdersPage() {
     : {};
   const orderLines = asRecords(selectedOrder.lines);
   const reports = currentDetail?.status === "success" ? currentDetail.reports ?? [] : [];
+  const orderMetaFields: Array<[string, unknown]> = [
+    ["Customer reference", selectedOrder.customer_reference],
+    ["Order date", formatDate(selectedOrder.order_date)],
+    ["Requested delivery", formatDate(selectedOrder.requested_delivery_date)],
+    ["Version", selectedOrder.version],
+    ["Currency", selectedOrder.currency],
+    ["Created", formatDate(selectedOrder.created_at)],
+    ["Last updated", formatDate(selectedOrder.updated_at)],
+  ];
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -400,7 +411,7 @@ export default function SalesOrdersPage() {
                         <button
                           type="button"
                           key={valueText(order.id)}
-                          onClick={() => setSelectedOrderId(valueText(order.id, ""))}
+                          onClick={() => setSelection({ scopeKey: activeScopeKey, orderId: valueText(order.id, "") })}
                           aria-pressed={selected}
                           className={[
                             "grid w-full gap-2 px-4 py-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-brand-700",
@@ -480,15 +491,7 @@ export default function SalesOrdersPage() {
                     </CardHeader>
                     <CardContent>
                       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                        {[
-                          ["Customer reference", selectedOrder.customer_reference],
-                          ["Order date", formatDate(selectedOrder.order_date)],
-                          ["Requested delivery", formatDate(selectedOrder.requested_delivery_date)],
-                          ["Version", selectedOrder.version],
-                          ["Currency", selectedOrder.currency],
-                          ["Created", formatDate(selectedOrder.created_at)],
-                          ["Last updated", formatDate(selectedOrder.updated_at)],
-                        ].map(([label, value]) => (
+                        {orderMetaFields.map(([label, value]) => (
                           <div key={label}>
                             <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
                             <dd className="mt-1 break-words text-sm font-medium text-slate-800">{valueText(value)}</dd>
@@ -592,7 +595,7 @@ export default function SalesOrdersPage() {
                                     <td className="px-3 py-3">
                                       {yieldValue === null || yieldValue === undefined
                                         ? "—"
-                                        : <Badge tone={Number(yieldValue) >= 95 ? "success" : "neutral"}>{formatNumber(yieldValue)}%</Badge>}
+                                        : <Badge tone="neutral">{formatNumber(yieldValue)}%</Badge>}
                                     </td>
                                   </tr>
                                 );
