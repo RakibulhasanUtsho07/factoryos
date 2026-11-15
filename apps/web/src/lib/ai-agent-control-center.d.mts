@@ -19,12 +19,10 @@ export interface AiAgentControlCenterClient {
 }
 
 export function createAiAgentControlCenterClient(options: {
-  apiOrigin: string;
-  accessToken: string;
-  tenantId: string;
-  factoryId: string;
-  fetchImpl?: typeof fetch;
-  idFactory?: () => string;
+  request: (path: string, options?: {
+    method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+    body?: unknown;
+  }) => Promise<unknown>;
 }): AiAgentControlCenterClient;
 
 export function isTerminalAgentTaskState(state: unknown): boolean;
