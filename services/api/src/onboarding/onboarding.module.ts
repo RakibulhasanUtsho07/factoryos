@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
 
 import { AuditModule } from '../audit/audit.module';
-import { PermissionGuard } from '../iam/guards/permission.guard';
+import { IamModule } from '../iam/iam.module';
 import { OnboardingController } from './onboarding.controller';
 import { OnboardingService } from './onboarding.service';
 
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, IamModule],
   controllers: [OnboardingController],
-  providers: [OnboardingService, PermissionGuard],
+  providers: [OnboardingService],
 })
 export class OnboardingModule {}
