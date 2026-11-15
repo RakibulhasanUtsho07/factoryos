@@ -17,7 +17,34 @@ export const FACTORY_ONBOARDING_STEPS = [
   'role_set',
 ] as const;
 
+
 export type FactoryOnboardingStep = typeof FACTORY_ONBOARDING_STEPS[number];
+
+const STEP_FIELD_LIMITS: Record<FactoryOnboardingStep, Record<string, number>> = {
+  factory_profile: { name: 200, code: 100, timezone: 80, defaultLocale: 20 },
+  sites: { items: 30000 },
+  lines: { items: 30000 },
+  shifts: { items: 30000 },
+  holiday_calendar: { dates: 30000, notes: 4000 },
+  energy_sources: { items: 30000 },
+  role_set: { roles: 30000 },
+};
+
+function validateStepPayload(stepKey: FactoryOnboardingStep, payload: Record<string, unknown>) {
+  const allowedFields = STEP_FIELD_LIMITS[stepKey];
+  for (const [field, value] of Object.entries(payload)) {
+    const maxLength = allowedFields[field];
+    if (maxLength === undefined) {
+      throw new BadRequestException(`Unsupported field for onboarding step: ${field}`);
+    }
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`Onboarding field ${field} must be text`);
+    }
+    if (value.length > maxLength) {
+      throw new BadRequestException(`Onboarding field ${field} exceeds ${maxLength} characters`);
+    }
+  }
+}
 
 @Injectable()
 export class OnboardingService {
@@ -68,6 +95,8 @@ export class OnboardingService {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new BadRequestException('Onboarding payload must be a JSON object');
     }
+
+    validateStepPayload(stepKey as FactoryOnboardingStep, payload);
 
     const serialized = JSON.stringify(payload);
     if (Buffer.byteLength(serialized, 'utf8') > 65536) {
