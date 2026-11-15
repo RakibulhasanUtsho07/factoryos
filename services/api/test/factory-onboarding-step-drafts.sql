@@ -70,6 +70,17 @@ BEGIN
     RAISE EXCEPTION 'Onboarding drafts are missing direct tenant ownership review evidence';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1
+      FROM role_permissions rp
+      JOIN roles r ON r.id = rp.role_id
+      JOIN permissions p ON p.id = rp.permission_id
+     WHERE r.code = 'ORG_ADMIN'
+       AND p.code = 'factory.onboarding.manage'
+  ) THEN
+    RAISE EXCEPTION 'Development ORG_ADMIN role is missing factory onboarding permission';
+  END IF;
+
   BEGIN
     INSERT INTO factory_onboarding_step_drafts (
       tenant_id, factory_id, step_key, payload, saved_by_user_id
