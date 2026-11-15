@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
@@ -203,6 +203,14 @@ export default function ProcurementWorkbenchPage() {
   const canReadSuppliers = connected && hasPermission("suppliers.read");
   const canReadGoodsReceipts = connected && hasPermission("goods_receipts.read");
   const canReadCurrentView = view === "purchase-orders" ? canReadPurchaseOrders : canReadSuppliers;
+
+  useEffect(() => {
+    if (view === "purchase-orders" && !canReadPurchaseOrders && canReadSuppliers) {
+      setView("suppliers");
+    } else if (view === "suppliers" && !canReadSuppliers && canReadPurchaseOrders) {
+      setView("purchase-orders");
+    }
+  }, [view, canReadPurchaseOrders, canReadSuppliers]);
   const activeFactory = snapshot?.factories.find((factory) => factory.id === activeFactoryId);
   const scopeKey = [snapshot?.tenant.id ?? "", activeFactoryId].join(":");
   const selectedRecordId = selection?.scopeKey === scopeKey ? selection.recordId : "";
@@ -437,7 +445,7 @@ export default function ProcurementWorkbenchPage() {
     setSupplierStatus(value);
   }
 
-  function submitPurchaseOrderSearch(event: React.FormEvent<HTMLFormElement>) {
+  function submitPurchaseOrderSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSelection(null);
     setSelectedReceipt(null);
@@ -445,7 +453,7 @@ export default function ProcurementWorkbenchPage() {
     setPurchaseOrderSearch(purchaseOrderSearchInput.trim());
   }
 
-  function submitSupplierSearch(event: React.FormEvent<HTMLFormElement>) {
+  function submitSupplierSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSelection(null);
     setSupplierPage(1);
