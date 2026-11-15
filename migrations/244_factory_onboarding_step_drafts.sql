@@ -76,6 +76,26 @@ CREATE POLICY factory_onboarding_step_drafts_tenant_isolation
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
+-- Register this late-created tenant relation explicitly. Technical RLS scope
+-- verification does not approve generic export or erasure.
+INSERT INTO factoryos_governance.tenant_relation_inventory (
+  schema_name, relation_name, scope_model, data_category, export_disposition,
+  erasure_disposition, audit_requirement, rationale
+) VALUES (
+  'public', 'factory_onboarding_step_drafts', 'DIRECT_TENANT_ID', 'UNREVIEWED',
+  'EXCLUDED', 'BLOCKED_UNREVIEWED', 'REVIEW_REQUIRED',
+  'Onboarding drafts contain tenant factory-configuration data; generic export and erasure remain blocked pending a category-specific adapter review.'
+) ON CONFLICT (schema_name, relation_name) DO NOTHING;
+
+INSERT INTO factoryos_governance.tenant_relation_ownership_reviews (
+  schema_name, relation_name, ownership_class, evidence_type, evidence_detail,
+  scope_predicate, export_disposition, erasure_disposition, review_status
+) VALUES (
+  'public', 'factory_onboarding_step_drafts', 'DIRECT_TENANT', 'DIRECT_TENANT_COLUMN_AND_RLS',
+  'Migration 244 enforces direct tenant_id scope with forced RLS and a factory-tenant binding trigger. Technical scope verification does not approve generic export or erasure.',
+  'tenant_id=public.factoryos_current_tenant_id()', 'EXCLUDED', 'BLOCKED_UNREVIEWED', 'VERIFIED'
+) ON CONFLICT (schema_name, relation_name) DO NOTHING;
+
 INSERT INTO permissions (code, description)
 VALUES (
   'factory.onboarding.manage',
