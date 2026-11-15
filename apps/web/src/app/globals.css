@@ -2,12 +2,12 @@
 
 :root {
   color-scheme: light;
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #f3f6fb;
+  --foreground: #101828;
   --surface: #ffffff;
-  --muted: #64748b;
-  --border: #e2e8f0;
-  --ring: #1d4ed8;
+  --muted: #66758a;
+  --border: #e3e9f1;
+  --ring: #2563eb;
   --danger: #be123c;
   --success: #047857;
   --warning: #b45309;
@@ -23,16 +23,16 @@
   --color-danger: var(--danger);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --color-brand-50: #eff6ff;
-  --color-brand-100: #dbeafe;
-  --color-brand-200: #bfdbfe;
-  --color-brand-300: #93c5fd;
-  --color-brand-400: #60a5fa;
-  --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
-  --color-brand-800: #1e40af;
-  --color-brand-900: #1e3a8a;
+  --color-brand-50: #effaff;
+  --color-brand-100: #d8f4fb;
+  --color-brand-200: #b4e9f5;
+  --color-brand-300: #7dd8eb;
+  --color-brand-400: #42c2df;
+  --color-brand-500: #19a5c8;
+  --color-brand-600: #1286a8;
+  --color-brand-700: #126b89;
+  --color-brand-800: #15576f;
+  --color-brand-900: #16495d;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -54,8 +54,8 @@ body {
 }
 
 ::selection {
-  background: #dbeafe;
-  color: #1e3a8a;
+  background: #b4e9f5;
+  color: #16495d;
 }
 
 @media (prefers-reduced-motion: reduce) {
