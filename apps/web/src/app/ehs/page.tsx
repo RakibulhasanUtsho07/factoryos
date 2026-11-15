@@ -205,10 +205,7 @@ export default function EhsWorkbenchPage() {
   const selectedIncidentId = view === "incidents" && selectedRecord
     ? valueText(selectedRecord.id, "")
     : "";
-  const actionsKey = useMemo(
-    () => JSON.stringify([listKey, selectedIncidentId]),
-    [listKey, selectedIncidentId],
-  );
+  const actionsKey = JSON.stringify([listKey, selectedIncidentId]);
   const currentActions = actionsResult?.key === actionsKey ? actionsResult : null;
   const loadingList = connected && Boolean(activeFactoryId) && canReadEhs && currentList === null;
   const loadingActions = view === "incidents" && Boolean(selectedIncidentId) && currentActions === null;
