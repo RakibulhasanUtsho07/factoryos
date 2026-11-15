@@ -748,7 +748,7 @@ export default function MaintenanceWorkbenchPage() {
           </Card>
 
           <p className="mt-4 text-xs leading-5 text-slate-500">
-            This workbench is read-only. It does not create assets, activate PM plans, approve or transition work orders, complete checklist tasks, or issue spare parts. All displayed records are returned by the selected factory's authenticated API scope.
+            This workbench is read-only. It does not create assets, activate PM plans, approve or transition work orders, complete checklist tasks, or issue spare parts. All displayed records are returned by the selected factory&apos;s authenticated API scope.
           </p>
         </>
       ) : null}
