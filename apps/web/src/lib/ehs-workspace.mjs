@@ -8,14 +8,6 @@ const INCIDENT_STATUSES = new Set([
   "CLOSED",
   "CANCELLED",
 ]);
-const INCIDENT_TYPES = new Set([
-  "INCIDENT",
-  "NEAR_MISS",
-  "UNSAFE_OBSERVATION",
-  "INJURY",
-  "ENVIRONMENTAL_RELEASE",
-  "AUDIT_FINDING",
-]);
 const SEVERITIES = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
 const PERMIT_STATUSES = new Set([
   "DRAFT",
@@ -26,14 +18,6 @@ const PERMIT_STATUSES = new Set([
   "CLOSED",
   "CANCELLED",
   "EXPIRED",
-]);
-const PERMIT_TYPES = new Set([
-  "HOT_WORK",
-  "ELECTRICAL_LOTO",
-  "CONFINED_SPACE",
-  "WORK_AT_HEIGHT",
-  "CHEMICAL_HANDLING",
-  "GENERAL",
 ]);
 const RISK_LEVELS = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
 
