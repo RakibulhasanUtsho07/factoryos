@@ -156,10 +156,18 @@ export default function AiAgentControlCenterPage() {
   const refreshWorkspace = useCallback(async (apiClient: Client) => {
     setLoadingWorkspace(true);
     const [agentsResult, tasksResult, draftsResult, templatesResult] = await Promise.allSettled([
-      apiClient.listAgents(),
-      apiClient.listTasks(50),
-      apiClient.listWorkflowDrafts(),
-      apiClient.listTemplates(),
+      hasPermission("ai.agents.read")
+        ? apiClient.listAgents()
+        : Promise.reject(new Error("IAM permission ai.agents.read is not present in this session.")),
+      hasPermission("ai.business.read")
+        ? apiClient.listTasks(50)
+        : Promise.reject(new Error("IAM permission ai.business.read is not present in this session.")),
+      hasPermission("ai.agents.draft.read")
+        ? apiClient.listWorkflowDrafts()
+        : Promise.reject(new Error("IAM permission ai.agents.draft.read is not present in this session.")),
+      hasPermission("ai.agents.draft.read")
+        ? apiClient.listTemplates()
+        : Promise.reject(new Error("IAM permission ai.agents.draft.read is not present in this session.")),
     ]);
 
     const errors: Record<string, string> = {};
@@ -210,7 +218,7 @@ export default function AiAgentControlCenterPage() {
         : nextTasks[0]?.id ?? ""
     ));
     setLoadingWorkspace(false);
-  }, []);
+  }, [hasPermission]);
 
   useEffect(() => {
     if (sessionStatus !== "connected" || !activeFactoryId || !sessionSnapshot) {
@@ -250,7 +258,7 @@ export default function AiAgentControlCenterPage() {
   };
 
   useEffect(() => {
-    if (!client || !selectedAgentId) {
+    if (!client || !selectedAgentId || !hasPermission("ai.agents.read")) {
       setSelectedAgent(null);
       setAgentControl(null);
       setEvaluationReport(null);
@@ -291,7 +299,7 @@ export default function AiAgentControlCenterPage() {
     return () => {
       active = false;
     };
-  }, [client, selectedAgentId]);
+  }, [client, selectedAgentId, hasPermission]);
 
   const loadTask = useCallback(async (apiClient: Client, taskId: string) => {
     if (!taskId) {
@@ -320,12 +328,12 @@ export default function AiAgentControlCenterPage() {
   }, []);
 
   useEffect(() => {
-    if (!client || !selectedTaskId) {
+    if (!client || !selectedTaskId || !hasPermission("ai.business.read")) {
       setTaskDetail(null);
       return;
     }
     void loadTask(client, selectedTaskId);
-  }, [client, selectedTaskId, loadTask]);
+  }, [client, selectedTaskId, loadTask, hasPermission]);
 
   const runControlChange = async () => {
     if (!client || !selectedAgentId) return;
