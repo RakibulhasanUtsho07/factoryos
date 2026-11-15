@@ -153,7 +153,7 @@ export default function AiAgentControlCenterPage() {
     return valueText(found?.name, "Selected agent");
   }, [agents, selectedAgentId]);
 
-  const refreshWorkspace = useCallback(async (apiClient: Client) => {
+  const refreshWorkspace = useCallback(async (apiClient: Client, isCurrent: () => boolean = () => true) => {
     setLoadingWorkspace(true);
     const [agentsResult, tasksResult, draftsResult, templatesResult] = await Promise.allSettled([
       hasPermission("ai.agents.read")
@@ -169,6 +169,7 @@ export default function AiAgentControlCenterPage() {
         ? apiClient.listTemplates()
         : Promise.reject(new Error("IAM permission ai.agents.draft.read is not present in this session.")),
     ]);
+    if (!isCurrent()) return;
 
     const errors: Record<string, string> = {};
     let nextAgents: Agent[] = [];
@@ -242,7 +243,7 @@ export default function AiAgentControlCenterPage() {
     setClient(nextClient);
     setPageError("");
     setMessage("Using the authenticated workspace session. API permissions are checked for every request.");
-    void refreshWorkspace(nextClient).catch((error) => {
+    void refreshWorkspace(nextClient, () => active).catch((error) => {
       if (active) setPageError(error instanceof Error ? error.message : "Could not load the AI workspace.");
     });
     return () => {
@@ -301,7 +302,7 @@ export default function AiAgentControlCenterPage() {
     };
   }, [client, selectedAgentId, hasPermission]);
 
-  const loadTask = useCallback(async (apiClient: Client, taskId: string) => {
+  const loadTask = useCallback(async (apiClient: Client, taskId: string, isCurrent: () => boolean = () => true) => {
     if (!taskId) {
       setTaskDetail(null);
       return;
@@ -317,6 +318,7 @@ export default function AiAgentControlCenterPage() {
     setDetailsLoading(true);
     try {
       const result = asRecord(await apiClient.getTask(taskId));
+      if (!isCurrent()) return;
       const task = asRecord(result.task);
       if (typeof task.id !== "string") {
         throw new Error("Task detail response is missing its task identifier.");
@@ -325,13 +327,15 @@ export default function AiAgentControlCenterPage() {
       setTaskDetail({ task: task as Task, steps });
       setReadErrors((current) => ({ ...current, taskDetail: "" }));
     } catch (error) {
-      setTaskDetail(null);
-      setReadErrors((current) => ({
-        ...current,
-        taskDetail: error instanceof Error ? error.message : "Could not load task details.",
-      }));
+      if (isCurrent()) {
+        setTaskDetail(null);
+        setReadErrors((current) => ({
+          ...current,
+          taskDetail: error instanceof Error ? error.message : "Could not load task details.",
+        }));
+      }
     } finally {
-      setDetailsLoading(false);
+      if (isCurrent()) setDetailsLoading(false);
     }
   }, [hasPermission]);
 
@@ -340,7 +344,11 @@ export default function AiAgentControlCenterPage() {
       setTaskDetail(null);
       return;
     }
-    void loadTask(client, selectedTaskId);
+    let active = true;
+    void loadTask(client, selectedTaskId, () => active);
+    return () => {
+      active = false;
+    };
   }, [client, selectedTaskId, loadTask, hasPermission]);
 
   const runControlChange = async () => {
