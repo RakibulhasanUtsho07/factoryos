@@ -306,6 +306,14 @@ export default function AiAgentControlCenterPage() {
       setTaskDetail(null);
       return;
     }
+    if (!hasPermission("ai.business.read")) {
+      setTaskDetail(null);
+      setReadErrors((current) => ({
+        ...current,
+        taskDetail: "IAM permission ai.business.read is not present in this session.",
+      }));
+      return;
+    }
     setDetailsLoading(true);
     try {
       const result = asRecord(await apiClient.getTask(taskId));
@@ -325,7 +333,7 @@ export default function AiAgentControlCenterPage() {
     } finally {
       setDetailsLoading(false);
     }
-  }, []);
+  }, [hasPermission]);
 
   useEffect(() => {
     if (!client || !selectedTaskId || !hasPermission("ai.business.read")) {
