@@ -1140,7 +1140,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     ]);
 
     const actualLotReservations = await adminPool.query<{
-      traceability_unit_id: string; unit_code: string; allocated_quantity: string; allocation_sequence: number;
+      traceability_unit_id: string; unit_code: string; allocated_quantity: string; allocation_sequence: string;
     }>(
       `
       SELECT a.traceability_unit_id::text AS traceability_unit_id,
@@ -1403,7 +1403,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId), bin.id],
     );
     expect(persistedAllocations.rows).toHaveLength(3);
-    expect(persistedAllocations.rows.map((row) => row.allocation_sequence)).toEqual([1, 2, 3]);
+    expect(persistedAllocations.rows.map((row) => row.allocation_sequence)).toEqual(['1', '2', '3']);
 
     const persistedReservations = await adminPool.query<{ quantity: string; status: string }>(
       `SELECT quantity::text AS quantity, status
