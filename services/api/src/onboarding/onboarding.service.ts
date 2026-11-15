@@ -58,11 +58,10 @@ export class OnboardingService {
       step_key: FactoryOnboardingStep;
       payload: Record<string, unknown>;
       version: string;
-      saved_by_user_id: string;
       updated_at: string;
     }>(
       `
-      SELECT step_key, payload, version::text, saved_by_user_id::text, updated_at::text
+      SELECT step_key, payload, version::text, updated_at::text
         FROM factory_onboarding_step_drafts
        WHERE tenant_id = $1
          AND factory_id = $2
