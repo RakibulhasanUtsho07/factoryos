@@ -39,6 +39,7 @@ import { WorkforceModule } from './workforce/workforce.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { OtDeviceModule } from './ot/ot-device.module';
 import { EdgeModule } from './edge/edge.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
@@ -142,6 +143,7 @@ import { ObservabilityModule } from './observability/observability.module';
 
     OtDeviceModule,
     EdgeModule,
+    OnboardingModule,
     ObservabilityModule,
   ],
 
