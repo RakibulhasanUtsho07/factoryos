@@ -329,6 +329,10 @@ export default function AiAgentControlCenterPage() {
 
   const runControlChange = async () => {
     if (!client || !selectedAgentId) return;
+    if (!canControlAgents) {
+      setPageError("Your current IAM permission snapshot does not include ai.agents.control.");
+      return;
+    }
     if (!controlReason.trim()) {
       setPageError("Add an operator reason before changing agent operational control.");
       return;
@@ -363,6 +367,14 @@ export default function AiAgentControlCenterPage() {
     stepId?: string,
   ) => {
     if (!client || !selectedTaskId) return;
+    if ((action === "execute" || action === "resume" || action === "verify") && !canExecuteActions) {
+      setPageError("Your current IAM permission snapshot does not include ai.actions.execute.");
+      return;
+    }
+    if (action === "cancel" && !canAuthorizeActions) {
+      setPageError("Your current IAM permission snapshot does not include ai.actions.authorize.");
+      return;
+    }
     if (action === "cancel" && !window.confirm("Cancel this governed task? Pending steps will be cancelled; a running external side effect is not force-killed.")) {
       return;
     }
@@ -390,6 +402,9 @@ export default function AiAgentControlCenterPage() {
 
   const activeTasks = tasks.filter((task) => !isTerminalAgentTaskState(valueText(task.state, ""))).length;
   const approvalTasks = tasks.filter((task) => valueText(task.state) === "AWAITING_APPROVAL").length;
+  const canControlAgents = hasPermission("ai.agents.control");
+  const canExecuteActions = hasPermission("ai.actions.execute");
+  const canAuthorizeActions = hasPermission("ai.actions.authorize");
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "overview", label: "Overview" },
@@ -590,10 +605,14 @@ export default function AiAgentControlCenterPage() {
                         </span>
                       </label>
                     )}
-                    <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
-                      {busyAction === "control" ? "Updating…" : "Record operational control"}
-                    </button>
-                    <p className="mt-2 text-[11px] leading-5 text-slate-500">The API requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
+                    {canControlAgents ? (
+                      <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
+                        {busyAction === "control" ? "Updating…" : "Record operational control"}
+                      </button>
+                    ) : (
+                      <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">Read-only: IAM permission ai.agents.control is not present in this session.</p>
+                    )}
+                    <p className="mt-2 text-[11px] leading-5 text-slate-500">The API independently requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
                   </Panel>
 
                   <Panel title="Evaluation report">
@@ -654,8 +673,8 @@ export default function AiAgentControlCenterPage() {
                                 {step.executionEvidence !== null && step.executionEvidence !== undefined && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
                                 {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {canExecute && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
-                                  {stepStatus === "AWAITING_APPROVAL" && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
+                                  {canExecute && canExecuteActions && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
+                                  {stepStatus === "AWAITING_APPROVAL" && canExecuteActions && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
                                 </div>
                               </article>
                             );
@@ -663,8 +682,8 @@ export default function AiAgentControlCenterPage() {
                           {taskDetail.steps.length === 0 && <p className="text-sm text-slate-500">This task has no step records.</p>}
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
-                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <button type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</button>}
-                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <button type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</button>}
+                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && canAuthorizeActions && <button type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</button>}
+                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && canExecuteActions && <button type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</button>}
                         </div>
                         <p className="mt-3 text-[11px] leading-5 text-slate-500">A click is only a request. The backend rechecks IAM, policy, planner signature, tool entitlement, dependencies, retry eligibility, idempotency and cancellation/deadline state before execution. Ambiguous side effects stay in the backend reconciliation path.</p>
                       </>
