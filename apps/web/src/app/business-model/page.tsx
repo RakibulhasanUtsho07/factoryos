@@ -1028,7 +1028,7 @@ export default function CbbGovernanceWorkbenchPage() {
               <Card>
                 <CardHeader>
                   <CardTitle>Canonical terminology dictionary</CardTitle>
-                  <CardDescription>Search canonical terms and approved aliases from the active blueprint's governed dictionary.</CardDescription>
+                  <CardDescription>Search canonical terms and approved aliases from the active blueprint&apos;s governed dictionary.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={applyTerminologySearch} className="flex flex-col gap-3 sm:flex-row">
