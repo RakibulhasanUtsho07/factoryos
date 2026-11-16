@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createFactoryOsSessionClient,
   FactoryOsSessionError,
+  readLocalDevelopmentSession,
 } from "./factoryos-session.mjs";
 
 const tenantId = "a1000000-0000-4000-8000-000000000001";
@@ -15,6 +16,35 @@ function response(payload, status = 200) {
     status,
     json: async () => payload,
   };
+}
+
+function makeJwt(expiresInSeconds = 3600) {
+  const payload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
+  })).toString("base64url");
+  return "header." + payload + ".signature";
+}
+
+function withLocalSessionStorage(run) {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousWindow = globalThis.window;
+  const values = new Map();
+  globalThis.window = {
+    sessionStorage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    },
+  };
+  process.env.NODE_ENV = "development";
+  try {
+    return run(values);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 }
 
 test("session client rejects insecure or credential-bearing API origins", () => {
@@ -123,7 +153,6 @@ test("session client distinguishes unauthenticated and forbidden API responses",
   );
 });
 
-
 test("workspace requests retain server-verified bearer identity and attach only selected factory context", async () => {
   const calls = [];
   const client = createFactoryOsSessionClient({
@@ -172,6 +201,60 @@ test("workspace requests reject invalid paths, methods and factory context befor
   await assert.rejects(client.request("/v1/ai/tasks", { method: "TRACE" }), /Unsupported/);
   await assert.rejects(client.request("/v1/ai/tasks", { factoryId: "not-a-uuid" }), /factory context/i);
   assert.equal(called, false);
+});
+
+test("local development sessions survive a page reload in the same tab and are removed on disconnect", () => {
+  withLocalSessionStorage((values) => {
+    const accessToken = makeJwt(12 * 60 * 60);
+    const client = createFactoryOsSessionClient({
+      apiOrigin: "http://localhost:3001",
+      accessToken,
+      tenantId,
+      fetchImpl: async () => response({ data: {} }),
+    });
+
+    const saved = JSON.parse(values.get("factoryos.local-dev-session.v1"));
+    assert.equal(saved.apiOrigin, "http://localhost:3001");
+    assert.equal(saved.tenantId, tenantId);
+    assert.equal(saved.accessToken, accessToken);
+    assert.deepEqual(readLocalDevelopmentSession(), {
+      apiOrigin: "http://localhost:3001",
+      tenantId,
+      accessToken,
+    });
+
+    client.clear();
+    assert.equal(values.has("factoryos.local-dev-session.v1"), false);
+    assert.equal(readLocalDevelopmentSession(), null);
+  });
+});
+
+test("expired local development sessions are discarded instead of restored", () => {
+  withLocalSessionStorage((values) => {
+    const expiredToken = makeJwt(-60);
+    values.set("factoryos.local-dev-session.v1", JSON.stringify({
+      apiOrigin: "http://localhost:3001",
+      tenantId,
+      accessToken: expiredToken,
+      expiresAt: Date.now() - 60_000,
+    }));
+    assert.equal(readLocalDevelopmentSession(), null);
+    assert.equal(values.has("factoryos.local-dev-session.v1"), false);
+  });
+});
+
+test("remote HTTPS sessions are never persisted, even in local development", () => {
+  withLocalSessionStorage((values) => {
+    const client = createFactoryOsSessionClient({
+      apiOrigin: "https://api.factoryos.example",
+      accessToken: makeJwt(),
+      tenantId,
+      fetchImpl: async () => response({ data: {} }),
+    });
+    assert.equal(values.size, 0);
+    client.clear();
+    assert.equal(values.size, 0);
+  });
 });
 
 test("clearing a session removes its in-memory bearer token", async () => {
