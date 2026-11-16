@@ -84,13 +84,13 @@ The frontend runs at `http://localhost:3000`.
 ## Authenticated workspace session
 
 - `/session` — connect an already-issued short-lived bearer token and load the verified current-user, IAM access, tenant membership, roles, permissions and factory context.
-- Session data is kept in the root React provider's memory only. Refreshing or closing the tab clears it; no access token, identity or tenant context is written to localStorage, sessionStorage, cookies or a URL.
-- The session page is not a sign-in provider and never calls the development-token endpoint. Production sign-in remains the approved OIDC Authorization Code + PKCE flow when the customer IdP application values and deployment configuration are available.
+- For local Next.js development with a localhost HTTP API only, the bearer token is retained in sessionStorage for the current browser tab and restored after a page refresh. Local development JWTs expire after 12 hours; explicit Disconnect removes the saved token and closing the tab clears it. Remote HTTPS and production sessions remain memory-only.
+- The session page still requires an existing token and is not a sign-in provider. The tab-scoped persistence is a local testing convenience, not a production sign-in flow. Production sign-in remains the approved OIDC Authorization Code + PKCE flow when customer IdP values and deployment configuration are available.
 - The displayed permission snapshot is for UX only. Backend JWT, tenant, factory and IAM permission guards remain authoritative for every operation.
 
 ## Session-aware application shell
 
-The root layout mounts the in-memory workspace session provider around all routes. The shared top navigation exposes the current verified user/tenant context when connected, allows switching only among ACTIVE factories returned by IAM, and supports explicit disconnect. Without an established session it links to `/session`. Selecting a factory changes presentation context only; it does not grant permissions or replace backend factory authorization. A visible skip-to-content link and shared footer are available across the application.
+The root layout mounts the workspace session provider around all routes. The shared top navigation exposes the current verified user/tenant context when connected, allows switching only among ACTIVE factories returned by IAM, and supports explicit disconnect. Without an established session it links to `/session`. Selecting a factory changes presentation context only; it does not grant permissions or replace backend factory authorization. A visible skip-to-content link and shared footer are available across the application.
 
 ## AI Agent Control Center
 
