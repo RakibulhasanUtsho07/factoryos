@@ -907,8 +907,8 @@ export default function FinanceWorkbenchPage() {
                           <td className="px-3 py-3">
                             <Badge tone={statusTone(ready ? "READY" : "BLOCKED")}>{ready ? "Ready" : "Blocked"}</Badge>
                             <p className="mt-1 text-xs text-slate-500">
-                              {asRecords(readiness.missing_reporting_domains).length
-                                + asRecords(readiness.uninitialized_reporting_domains).length} domain gaps
+                              {(Array.isArray(readiness.missing_reporting_domains) ? readiness.missing_reporting_domains.length : 0)
+                                + (Array.isArray(readiness.uninitialized_reporting_domains) ? readiness.uninitialized_reporting_domains.length : 0)} domain gaps
                             </p>
                           </td>
                           <td className="px-3 py-3 tabular-nums">{formatNumber(readiness.unresolved_reconciliation_count, 0)}</td>
