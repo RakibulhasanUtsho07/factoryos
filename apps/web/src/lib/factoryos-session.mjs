@@ -1,4 +1,5 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LOCAL_DEV_SESSION_KEY = "factoryos.local-dev-session.v1";
 
 function normalizeApiOrigin(value) {
   if (typeof value !== "string" || !value.trim()) {
@@ -24,6 +25,103 @@ function normalizeApiOrigin(value) {
   }
 
   return url.origin;
+}
+
+function isLocalDevelopmentOrigin(apiOrigin) {
+  if (process.env.NODE_ENV !== "development" || typeof window === "undefined") return false;
+  try {
+    const url = new URL(apiOrigin);
+    return url.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function localDevelopmentStorage(apiOrigin) {
+  if (!isLocalDevelopmentOrigin(apiOrigin)) return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function tokenExpiry(token) {
+  const payloadPart = typeof token === "string" ? token.split(".")[1] : "";
+  if (!payloadPart) return 0;
+  try {
+    const normalized = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+    const payload = JSON.parse(decoded);
+    return Number.isFinite(payload.exp) ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function persistLocalDevelopmentSession(apiOrigin, tenantId, accessToken) {
+  const storage = localDevelopmentStorage(apiOrigin);
+  if (!storage) return;
+  const expiresAt = tokenExpiry(accessToken);
+  if (!expiresAt || expiresAt <= Date.now() + 30_000) {
+    storage.removeItem(LOCAL_DEV_SESSION_KEY);
+    return;
+  }
+  try {
+    storage.setItem(LOCAL_DEV_SESSION_KEY, JSON.stringify({
+      apiOrigin,
+      tenantId,
+      accessToken,
+      expiresAt,
+    }));
+  } catch {
+    // Storage may be unavailable or disabled; the current in-memory session still works.
+  }
+}
+
+function clearLocalDevelopmentSession(apiOrigin) {
+  const storage = localDevelopmentStorage(apiOrigin);
+  if (!storage) return;
+  try {
+    storage.removeItem(LOCAL_DEV_SESSION_KEY);
+  } catch {
+    // Ignore storage failures during explicit disconnect.
+  }
+}
+
+/**
+ * Returns a saved session only for local Next.js development and a localhost API.
+ * Production and remote HTTPS sessions are never read from browser storage.
+ */
+export function readLocalDevelopmentSession() {
+  if (process.env.NODE_ENV !== "development" || typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(LOCAL_DEV_SESSION_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    const apiOrigin = normalizeApiOrigin(saved.apiOrigin);
+    const tenantId = String(saved.tenantId ?? "").trim().toLowerCase();
+    const accessToken = typeof saved.accessToken === "string" ? saved.accessToken : "";
+    const expiresAt = tokenExpiry(accessToken);
+    if (
+      !isLocalDevelopmentOrigin(apiOrigin)
+      || !UUID_PATTERN.test(tenantId)
+      || !expiresAt
+      || expiresAt <= Date.now() + 30_000
+    ) {
+      window.sessionStorage.removeItem(LOCAL_DEV_SESSION_KEY);
+      return null;
+    }
+    return { apiOrigin, tenantId, accessToken };
+  } catch {
+    try {
+      window.sessionStorage.removeItem(LOCAL_DEV_SESSION_KEY);
+    } catch {
+      // Ignore unavailable storage.
+    }
+    return null;
+  }
 }
 
 function responseMessage(payload, status) {
@@ -81,9 +179,10 @@ export class FactoryOsSessionError extends Error {
 }
 
 /**
- * Creates an in-memory, read-only session bootstrap client.
- * The caller supplies a short-lived bearer token; this module never persists it.
- * The backend remains authoritative for identity, tenant membership and permissions.
+ * Creates a read-only session client. In local Next.js development only,
+ * localhost bearer sessions are retained in sessionStorage for this tab so
+ * page refreshes do not force another manual token entry. Production and
+ * remote API sessions remain memory-only.
  */
 export function createFactoryOsSessionClient({
   apiOrigin,
@@ -107,6 +206,8 @@ export function createFactoryOsSessionClient({
   if (typeof fetchImpl !== "function") {
     throw new Error("Fetch is unavailable in this browser.");
   }
+
+  persistLocalDevelopmentSession(origin, selectedTenantId, bearerToken);
 
   async function request(path, options = {}) {
     if (!bearerToken) {
@@ -168,6 +269,7 @@ export function createFactoryOsSessionClient({
     request,
     clear: () => {
       bearerToken = "";
+      clearLocalDevelopmentSession(origin);
     },
   });
 }
