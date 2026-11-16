@@ -65,6 +65,7 @@ describe('AuthService development token safety', () => {
 
     const result = await service.issueDevToken('development-only-secret', userId, tenantId);
     expect(result.access_token).toBe('synthetic-dev-token');
+    expect(result.expires_in).toBe(43200);
     expect(query).toHaveBeenCalledTimes(1);
     expect(signAsync).toHaveBeenCalledTimes(1);
   });
