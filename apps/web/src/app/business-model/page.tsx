@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -135,13 +135,6 @@ function formatDateTime(value: unknown): string {
     });
 }
 
-function statusTone(value: unknown): "success" | "warning" | "danger" | "info" | "neutral" {
-  const status = valueText(value, "").toUpperCase();
-  if (["ACTIVE", "VERIFIED", "RESOLVED", "RECONFIRMED"].includes(status)) return "success";
-  if (["OPEN", "INFERRED", "PROPOSED", "PENDING"].includes(status)) return "warning";
-  if (["CONFLICTING", "STALE", "DISMISSED"].includes(status)) return "danger";
-  return "neutral";
-}
 
 function TableShell({ children }: { children: ReactNode }) {
   return (
@@ -500,7 +493,7 @@ export default function CbbGovernanceWorkbenchPage() {
 
   const refresh = () => setRefreshVersion((current) => current + 1);
 
-  function applyTerminologySearch(event: React.FormEvent<HTMLFormElement>) {
+  function applyTerminologySearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setTerminologySearch(terminologyDraft.trim());
   }
