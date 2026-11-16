@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -18,7 +18,12 @@ import {
   Select,
   StatusBadge,
 } from "@/components/ui";
-import { createUtilitiesWorkbenchClient } from "@/lib/utilities-workbench.mjs";
+import {
+  createUtilitiesWorkbenchClient,
+  type UtilityEventStatus,
+  type UtilityMeterStatus,
+  type UtilityType,
+} from "@/lib/utilities-workbench.mjs";
 
 type JsonRecord = Record<string, unknown>;
 type UtilitiesTab = "meters" | "events" | "alerts" | "sources";
@@ -130,7 +135,7 @@ function severityTone(value: unknown): "danger" | "warning" | "info" | "neutral"
   return "neutral";
 }
 
-function TableShell({ children }: { children: React.ReactNode }) {
+function TableShell({ children }: { children: ReactNode }) {
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -140,7 +145,7 @@ function TableShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function TableHead({ children }: { children: React.ReactNode }) {
+function TableHead({ children }: { children: ReactNode }) {
   return (
     <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
       {children}
@@ -162,15 +167,16 @@ function UtilitiesWorkbenchPage() {
   const canReadReadings = connected && hasPermission("utilities.readings.read");
   const canReadEvents = connected && hasPermission("utilities.events.read");
   const canReadAlerts = connected && hasPermission("utilities.alerts.read");
+  const permissionSnapshotKey = snapshot?.permissions.map((permission) => permission.code).sort().join(",") ?? "";
 
   const [requestedTab, setRequestedTab] = useState<UtilitiesTab>("meters");
-  const [utilityType, setUtilityType] = useState("");
-  const [meterStatus, setMeterStatus] = useState("");
+  const [utilityType, setUtilityType] = useState<UtilityType | "">("");
+  const [meterStatus, setMeterStatus] = useState<UtilityMeterStatus | "">("");
   const [selectedMeterId, setSelectedMeterId] = useState("");
   const [readingFrom, setReadingFrom] = useState("");
   const [readingTo, setReadingTo] = useState("");
-  const [eventStatus, setEventStatus] = useState("");
-  const [alertStatus, setAlertStatus] = useState("");
+  const [eventStatus, setEventStatus] = useState<UtilityEventStatus | "">("");
+  const [alertStatus, setAlertStatus] = useState<UtilityEventStatus | "">("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [meterResult, setMeterResult] = useState<ItemsResult | null>(null);
   const [readingResult, setReadingResult] = useState<ItemsResult | null>(null);
@@ -195,6 +201,7 @@ function UtilitiesWorkbenchPage() {
 
   const meterQueryKey = [
     activeFactoryId,
+    permissionSnapshotKey,
     utilityType,
     meterStatus,
     refreshVersion,
@@ -208,6 +215,7 @@ function UtilitiesWorkbenchPage() {
   const effectiveMeterId = selectedMeter ? valueText(selectedMeter.id, "") : "";
   const readingQueryKey = [
     activeFactoryId,
+    permissionSnapshotKey,
     effectiveMeterId,
     readingFrom,
     readingTo,
@@ -215,13 +223,13 @@ function UtilitiesWorkbenchPage() {
   ].join("|");
   const visibleReadingResult = readingResult?.key === readingQueryKey ? readingResult : null;
 
-  const eventQueryKey = [activeFactoryId, eventStatus, refreshVersion].join("|");
+  const eventQueryKey = [activeFactoryId, permissionSnapshotKey, eventStatus, refreshVersion].join("|");
   const visibleEventResult = eventResult?.key === eventQueryKey ? eventResult : null;
 
-  const alertQueryKey = [activeFactoryId, alertStatus, refreshVersion].join("|");
+  const alertQueryKey = [activeFactoryId, permissionSnapshotKey, alertStatus, refreshVersion].join("|");
   const visibleAlertResult = alertResult?.key === alertQueryKey ? alertResult : null;
 
-  const sourceQueryKey = [activeFactoryId, refreshVersion].join("|");
+  const sourceQueryKey = [activeFactoryId, permissionSnapshotKey, refreshVersion].join("|");
   const visibleSourceResult = sourceResult?.key === sourceQueryKey ? sourceResult : null;
 
   useEffect(() => {
@@ -435,13 +443,13 @@ function UtilitiesWorkbenchPage() {
                   <div className="mb-4 grid gap-3 sm:grid-cols-2">
                     <label className="grid gap-1.5 text-sm font-medium">
                       Utility type
-                      <Select value={utilityType} onChange={(event) => setUtilityType(event.target.value)}>
+                      <Select value={utilityType} onChange={(event) => setUtilityType(event.target.value as UtilityType | "")}>
                         {UTILITY_TYPE_OPTIONS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
                       </Select>
                     </label>
                     <label className="grid gap-1.5 text-sm font-medium">
                       Meter status
-                      <Select value={meterStatus} onChange={(event) => setMeterStatus(event.target.value)}>
+                      <Select value={meterStatus} onChange={(event) => setMeterStatus(event.target.value as UtilityMeterStatus | "")}>
                         {METER_STATUS_OPTIONS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
                       </Select>
                     </label>
@@ -585,7 +593,7 @@ function UtilitiesWorkbenchPage() {
                 <div className="mb-4 max-w-sm">
                   <label className="grid gap-1.5 text-sm font-medium">
                     Event status
-                    <Select value={eventStatus} onChange={(event) => setEventStatus(event.target.value)}>
+                    <Select value={eventStatus} onChange={(event) => setEventStatus(event.target.value as UtilityEventStatus | "")}>
                       {EVENT_STATUS_OPTIONS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
                     </Select>
                   </label>
@@ -640,7 +648,7 @@ function UtilitiesWorkbenchPage() {
                   <div className="mb-4 max-w-sm">
                     <label className="grid gap-1.5 text-sm font-medium">
                       Alert status
-                      <Select value={alertStatus} onChange={(event) => setAlertStatus(event.target.value)}>
+                      <Select value={alertStatus} onChange={(event) => setAlertStatus(event.target.value as UtilityEventStatus | "")}>
                         {EVENT_STATUS_OPTIONS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
                       </Select>
                     </label>
