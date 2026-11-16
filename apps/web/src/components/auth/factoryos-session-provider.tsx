@@ -4,14 +4,18 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import {
   createFactoryOsSessionClient,
+  readLocalDevelopmentSession,
   type FactoryOsSessionClient,
+  type FactoryOsSessionRequestOptions,
 } from "@/lib/factoryos-session.mjs";
 import {
   createWorkspaceSessionSnapshot,
@@ -36,6 +40,7 @@ interface WorkspaceSessionContextValue {
   disconnect(): void;
   selectFactory(factoryId: string): void;
   hasPermission(permissionCode: string): boolean;
+  request(path: string, options?: Omit<FactoryOsSessionRequestOptions, "factoryId">): Promise<unknown>;
 }
 
 const WorkspaceSessionContext = createContext<WorkspaceSessionContextValue | null>(null);
@@ -46,6 +51,7 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
   const [snapshot, setSnapshot] = useState<WorkspaceSessionSnapshot | null>(null);
   const [activeFactoryId, setActiveFactoryId] = useState("");
   const [sessionClient, setSessionClient] = useState<FactoryOsSessionClient | null>(null);
+  const restoreAttempted = useRef(false);
 
   const disconnect = useCallback(() => {
     sessionClient?.clear();
@@ -100,6 +106,18 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
     }
   }, [sessionClient]);
 
+  useEffect(() => {
+    if (restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    const savedSession = readLocalDevelopmentSession();
+    if (!savedSession) return;
+    // Defer state updates out of the effect body; only local development
+    // sessions for localhost APIs can be restored by readLocalDevelopmentSession.
+    void Promise.resolve()
+      .then(() => connect(savedSession))
+      .catch(() => undefined);
+  }, [connect]);
+
   const selectFactory = useCallback((factoryId: string) => {
     if (!factoryId) {
       setActiveFactoryId("");
@@ -123,6 +141,19 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
     [permissionSet],
   );
 
+  const request = useCallback((
+    path: string,
+    options: Omit<FactoryOsSessionRequestOptions, "factoryId"> = {},
+  ) => {
+    if (status !== "connected" || !sessionClient || !snapshot) {
+      throw new Error("Connect an authenticated FactoryOS session before using this workspace.");
+    }
+    if (!activeFactoryId || !isActiveWorkspaceFactory(snapshot, activeFactoryId)) {
+      throw new Error("Select an active factory from the authenticated IAM factory list first.");
+    }
+    return sessionClient.request(path, { ...options, factoryId: activeFactoryId });
+  }, [status, sessionClient, snapshot, activeFactoryId]);
+
   const value = useMemo<WorkspaceSessionContextValue>(() => ({
     status,
     error,
@@ -132,7 +163,8 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
     disconnect,
     selectFactory,
     hasPermission,
-  }), [status, error, snapshot, activeFactoryId, connect, disconnect, selectFactory, hasPermission]);
+    request,
+  }), [status, error, snapshot, activeFactoryId, connect, disconnect, selectFactory, hasPermission, request]);
 
   return (
     <WorkspaceSessionContext.Provider value={value}>

@@ -119,8 +119,9 @@ export class AuthService {
       token_type:
         'Bearer',
 
+      // AuthModule configures 12-hour expiry only in local dev mode.
       expires_in:
-        900,
+        43200,
 
       user_id:
         row.user_id,

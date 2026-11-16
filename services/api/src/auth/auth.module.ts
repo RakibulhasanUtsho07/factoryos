@@ -31,9 +31,14 @@ import { JwtStrategy } from './strategies/jwt.strategy';
           configService.get<string>('DEV_AUTH_ENABLED'),
         );
         const secret = configService.get<string>('JWT_SECRET');
+        // Local dev tokens last for one working day to avoid repeated test setup.
+        // Production OIDC tokens are still issued and expired by the configured IdP.
+        const tokenLifetime = nodeEnv === 'development' && authMode === 'dev'
+          ? '12h' as const
+          : '15m' as const;
 
         const signOptions = {
-          expiresIn: '15m' as const,
+          expiresIn: tokenLifetime,
           issuer:
             configService.get<string>('JWT_ISSUER') ||
             'factoryos-api',

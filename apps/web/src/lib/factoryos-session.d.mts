@@ -12,13 +12,22 @@ export class FactoryOsSessionError extends Error {
   readonly code: "UNAUTHENTICATED" | "ACCESS_DENIED" | "API_REQUEST_FAILED";
 }
 
+export interface FactoryOsSessionRequestOptions {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  body?: unknown;
+  factoryId?: string | null;
+}
+
 export interface FactoryOsSessionClient {
   getCurrentUser(): Promise<unknown>;
   getAccess(): Promise<unknown>;
   listFactories(): Promise<unknown>;
+  request(path: string, options?: FactoryOsSessionRequestOptions): Promise<unknown>;
   clear(): void;
 }
 
 export function createFactoryOsSessionClient(
   config: FactoryOsSessionConfig,
 ): FactoryOsSessionClient;
+
+export function readLocalDevelopmentSession(): FactoryOsSessionConfig | null;

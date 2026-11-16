@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   canExecuteAgentStep,
   createAiAgentControlCenterClient,
@@ -116,10 +117,13 @@ function Metric({
 }
 
 export default function AiAgentControlCenterPage() {
-  const [apiOrigin, setApiOrigin] = useState(process.env.NEXT_PUBLIC_FACTORYOS_API_URL ?? "");
-  const [accessToken, setAccessToken] = useState("");
-  const [tenantId, setTenantId] = useState("");
-  const [factoryId, setFactoryId] = useState("");
+  const {
+    status: sessionStatus,
+    snapshot: sessionSnapshot,
+    activeFactoryId,
+    request: sessionRequest,
+    hasPermission,
+  } = useFactoryOsSession();
   const [client, setClient] = useState<Client | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
 
@@ -149,14 +153,23 @@ export default function AiAgentControlCenterPage() {
     return valueText(found?.name, "Selected agent");
   }, [agents, selectedAgentId]);
 
-  const refreshWorkspace = useCallback(async (apiClient: Client) => {
+  const refreshWorkspace = useCallback(async (apiClient: Client, isCurrent: () => boolean = () => true) => {
     setLoadingWorkspace(true);
     const [agentsResult, tasksResult, draftsResult, templatesResult] = await Promise.allSettled([
-      apiClient.listAgents(),
-      apiClient.listTasks(50),
-      apiClient.listWorkflowDrafts(),
-      apiClient.listTemplates(),
+      hasPermission("ai.agents.read")
+        ? apiClient.listAgents()
+        : Promise.reject(new Error("IAM permission ai.agents.read is not present in this session.")),
+      hasPermission("ai.business.read")
+        ? apiClient.listTasks(50)
+        : Promise.reject(new Error("IAM permission ai.business.read is not present in this session.")),
+      hasPermission("ai.agents.draft.read")
+        ? apiClient.listWorkflowDrafts()
+        : Promise.reject(new Error("IAM permission ai.agents.draft.read is not present in this session.")),
+      hasPermission("ai.agents.draft.read")
+        ? apiClient.listTemplates()
+        : Promise.reject(new Error("IAM permission ai.agents.draft.read is not present in this session.")),
     ]);
+    if (!isCurrent()) return;
 
     const errors: Record<string, string> = {};
     let nextAgents: Agent[] = [];
@@ -206,46 +219,37 @@ export default function AiAgentControlCenterPage() {
         : nextTasks[0]?.id ?? ""
     ));
     setLoadingWorkspace(false);
-  }, []);
+  }, [hasPermission]);
 
-  const connect = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setPageError("");
-    setMessage("");
-    try {
-      const nextClient = createAiAgentControlCenterClient({
-        apiOrigin,
-        accessToken,
-        tenantId,
-        factoryId,
-      });
-      setAccessToken("");
-      setClient(nextClient);
-      await refreshWorkspace(nextClient);
-      setMessage("Session configured. Each panel reports its own endpoint response and permission status.");
-    } catch (error) {
+  useEffect(() => {
+    if (sessionStatus !== "connected" || !activeFactoryId || !sessionSnapshot) {
       setClient(null);
-      setPageError(error instanceof Error ? error.message : "Could not connect to FactoryOS.");
+      setAgents([]);
+      setTasks([]);
+      setDrafts([]);
+      setTemplates([]);
+      setSelectedAgentId("");
+      setSelectedTaskId("");
+      setSelectedAgent(null);
+      setAgentControl(null);
+      setEvaluationReport(null);
+      setTaskDetail(null);
+      setReadErrors({});
+      return;
     }
-  };
 
-  const disconnect = () => {
-    setClient(null);
-    setAccessToken("");
-    setAgents([]);
-    setTasks([]);
-    setDrafts([]);
-    setTemplates([]);
-    setSelectedAgentId("");
-    setSelectedTaskId("");
-    setSelectedAgent(null);
-    setAgentControl(null);
-    setEvaluationReport(null);
-    setTaskDetail(null);
-    setReadErrors({});
+    let active = true;
+    const nextClient = createAiAgentControlCenterClient({ request: sessionRequest });
+    setClient(nextClient);
     setPageError("");
-    setMessage("Disconnected. The bearer token was cleared from this page&apos;s memory.");
-  };
+    setMessage("Using the authenticated workspace session. API permissions are checked for every request.");
+    void refreshWorkspace(nextClient, () => active).catch((error) => {
+      if (active) setPageError(error instanceof Error ? error.message : "Could not load the AI workspace.");
+    });
+    return () => {
+      active = false;
+    };
+  }, [sessionStatus, activeFactoryId, sessionSnapshot, sessionRequest, refreshWorkspace]);
 
   const refresh = async () => {
     if (!client) return;
@@ -255,7 +259,7 @@ export default function AiAgentControlCenterPage() {
   };
 
   useEffect(() => {
-    if (!client || !selectedAgentId) {
+    if (!client || !selectedAgentId || !hasPermission("ai.agents.read")) {
       setSelectedAgent(null);
       setAgentControl(null);
       setEvaluationReport(null);
@@ -296,16 +300,25 @@ export default function AiAgentControlCenterPage() {
     return () => {
       active = false;
     };
-  }, [client, selectedAgentId]);
+  }, [client, selectedAgentId, hasPermission]);
 
-  const loadTask = useCallback(async (apiClient: Client, taskId: string) => {
+  const loadTask = useCallback(async (apiClient: Client, taskId: string, isCurrent: () => boolean = () => true) => {
     if (!taskId) {
       setTaskDetail(null);
+      return;
+    }
+    if (!hasPermission("ai.business.read")) {
+      setTaskDetail(null);
+      setReadErrors((current) => ({
+        ...current,
+        taskDetail: "IAM permission ai.business.read is not present in this session.",
+      }));
       return;
     }
     setDetailsLoading(true);
     try {
       const result = asRecord(await apiClient.getTask(taskId));
+      if (!isCurrent()) return;
       const task = asRecord(result.task);
       if (typeof task.id !== "string") {
         throw new Error("Task detail response is missing its task identifier.");
@@ -314,26 +327,36 @@ export default function AiAgentControlCenterPage() {
       setTaskDetail({ task: task as Task, steps });
       setReadErrors((current) => ({ ...current, taskDetail: "" }));
     } catch (error) {
-      setTaskDetail(null);
-      setReadErrors((current) => ({
-        ...current,
-        taskDetail: error instanceof Error ? error.message : "Could not load task details.",
-      }));
+      if (isCurrent()) {
+        setTaskDetail(null);
+        setReadErrors((current) => ({
+          ...current,
+          taskDetail: error instanceof Error ? error.message : "Could not load task details.",
+        }));
+      }
     } finally {
-      setDetailsLoading(false);
+      if (isCurrent()) setDetailsLoading(false);
     }
-  }, []);
+  }, [hasPermission]);
 
   useEffect(() => {
-    if (!client || !selectedTaskId) {
+    if (!client || !selectedTaskId || !hasPermission("ai.business.read")) {
       setTaskDetail(null);
       return;
     }
-    void loadTask(client, selectedTaskId);
-  }, [client, selectedTaskId, loadTask]);
+    let active = true;
+    void loadTask(client, selectedTaskId, () => active);
+    return () => {
+      active = false;
+    };
+  }, [client, selectedTaskId, loadTask, hasPermission]);
 
   const runControlChange = async () => {
     if (!client || !selectedAgentId) return;
+    if (!canControlAgents) {
+      setPageError("Your current IAM permission snapshot does not include ai.agents.control.");
+      return;
+    }
     if (!controlReason.trim()) {
       setPageError("Add an operator reason before changing agent operational control.");
       return;
@@ -368,6 +391,14 @@ export default function AiAgentControlCenterPage() {
     stepId?: string,
   ) => {
     if (!client || !selectedTaskId) return;
+    if ((action === "execute" || action === "resume" || action === "verify") && !canExecuteActions) {
+      setPageError("Your current IAM permission snapshot does not include ai.actions.execute.");
+      return;
+    }
+    if (action === "cancel" && !canAuthorizeActions) {
+      setPageError("Your current IAM permission snapshot does not include ai.actions.authorize.");
+      return;
+    }
     if (action === "cancel" && !window.confirm("Cancel this governed task? Pending steps will be cancelled; a running external side effect is not force-killed.")) {
       return;
     }
@@ -395,6 +426,9 @@ export default function AiAgentControlCenterPage() {
 
   const activeTasks = tasks.filter((task) => !isTerminalAgentTaskState(valueText(task.state, ""))).length;
   const approvalTasks = tasks.filter((task) => valueText(task.state) === "AWAITING_APPROVAL").length;
+  const canControlAgents = hasPermission("ai.agents.control");
+  const canExecuteActions = hasPermission("ai.actions.execute");
+  const canAuthorizeActions = hasPermission("ai.actions.authorize");
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "overview", label: "Overview" },
@@ -425,9 +459,9 @@ export default function AiAgentControlCenterPage() {
                 <button type="button" onClick={() => void refresh()} disabled={loadingWorkspace} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100 disabled:opacity-50">
                   {loadingWorkspace ? "Refreshing…" : "Refresh"}
                 </button>
-                <button type="button" onClick={disconnect} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100">
-                  Disconnect
-                </button>
+                <a href="/session" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100">
+                  Session settings
+                </a>
               </>
             ) : (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900">Not connected</span>
@@ -436,41 +470,17 @@ export default function AiAgentControlCenterPage() {
         </header>
 
         {!client && (
-          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-sm font-bold text-slate-900">Connect to an authenticated FactoryOS API</h2>
-              <p className="text-xs leading-5 text-slate-600">
-                Paste a short-lived bearer token and the intended tenant/factory scope. The token is kept only in this page&apos;s memory,
-                is not saved to local storage or cookies, and is cleared when you disconnect or close the page.
-              </p>
-            </div>
-            <form onSubmit={connect} className="mt-4 grid gap-3 md:grid-cols-2">
-              <label className="text-xs font-semibold text-slate-700">
-                API origin
-                <input required value={apiOrigin} onChange={(event) => setApiOrigin(event.target.value)} placeholder="https://factory-api.example.com" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Tenant UUID
-                <input required value={tenantId} onChange={(event) => setTenantId(event.target.value)} placeholder="11111111-1111-4111-8111-111111111111" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Factory UUID
-                <input required value={factoryId} onChange={(event) => setFactoryId(event.target.value)} placeholder="22222222-2222-4222-8222-222222222222" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">
-                Bearer access token
-                <input required type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="Paste short-lived OIDC access token" className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-mono text-xs font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
-              </label>
-              <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
-                <p className="max-w-2xl text-[11px] leading-5 text-slate-500">
-                  The API derives user identity from the verified JWT. This page sends only X-Tenant-Id and X-Factory-Id scope headers;
-                  it never sends a caller-supplied X-User-Id.
-                </p>
-                <button type="submit" className="rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800">
-                  Connect securely
-                </button>
-              </div>
-            </form>
+          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-sm font-bold text-slate-900">
+              {sessionStatus === "connecting" ? "Verifying workspace session…" : "Connect your FactoryOS workspace"}
+            </h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+              The AI Control Center uses the shared session established through IAM. It does not accept a second bearer token or caller-entered tenant/factory identity.
+              Select an active factory in Workspace Session to continue.
+            </p>
+            <a href="/session" className="mt-4 inline-flex rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800">
+              Open Workspace Session
+            </a>
           </section>
         )}
 
@@ -479,12 +489,14 @@ export default function AiAgentControlCenterPage() {
 
         {client && (
           <>
-            <div className="mt-5 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
-              <span className="font-semibold text-slate-800">Active factory scope</span>
-              <span className="ml-2 font-mono">{tenantId}</span>
-              <span className="mx-2 text-slate-300">/</span>
-              <span className="font-mono">{factoryId}</span>
-              <span className="ml-3 text-slate-400">Bearer token held in memory only</span>
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+              <div>
+                <span className="font-semibold text-slate-800">Verified workspace context</span>
+                <span className="ml-2">{sessionSnapshot?.tenant.name}</span>
+                <span className="mx-2 text-slate-300">/</span>
+                <span>{sessionSnapshot?.factories.find((factory) => factory.id === activeFactoryId)?.name ?? "Active factory"}</span>
+              </div>
+              <a href="/session" className="font-semibold text-blue-700 hover:underline">Change factory</a>
             </div>
 
             <nav aria-label="Agent Control Center sections" className="mt-6 flex flex-wrap gap-2 border-b border-slate-200 pb-3">
@@ -617,10 +629,14 @@ export default function AiAgentControlCenterPage() {
                         </span>
                       </label>
                     )}
-                    <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
-                      {busyAction === "control" ? "Updating…" : "Record operational control"}
-                    </button>
-                    <p className="mt-2 text-[11px] leading-5 text-slate-500">The API requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
+                    {canControlAgents ? (
+                      <button type="button" disabled={!selectedAgentId || busyAction === "control" || !controlReason.trim()} onClick={() => void runControlChange()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-40">
+                        {busyAction === "control" ? "Updating…" : "Record operational control"}
+                      </button>
+                    ) : (
+                      <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">Read-only: IAM permission ai.agents.control is not present in this session.</p>
+                    )}
+                    <p className="mt-2 text-[11px] leading-5 text-slate-500">The API independently requires ai.agents.control and records a reasoned operational-control revision. The immutable agent definition is not edited.</p>
                   </Panel>
 
                   <Panel title="Evaluation report">
@@ -681,8 +697,8 @@ export default function AiAgentControlCenterPage() {
                                 {step.executionEvidence !== null && step.executionEvidence !== undefined && <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-blue-700">Execution evidence</summary><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] text-slate-100">{pretty(step.executionEvidence)}</pre></details>}
                                 {step.error !== null && step.error !== undefined && Object.keys(asRecord(step.error)).length > 0 && <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-rose-50 p-3 text-[10px] text-rose-800">{pretty(step.error)}</pre>}
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {canExecute && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
-                                  {stepStatus === "AWAITING_APPROVAL" && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
+                                  {canExecute && canExecuteActions && <button type="button" onClick={() => void runTaskAction("execute", stepId)} disabled={Boolean(busyAction)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "execute" + stepId ? "Executing…" : "Execute pending step"}</button>}
+                                  {stepStatus === "AWAITING_APPROVAL" && canExecuteActions && <button type="button" onClick={() => void runTaskAction("resume", stepId)} disabled={Boolean(busyAction)} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-40">{busyAction === "resume" + stepId ? "Re-checking…" : "Resume after approval"}</button>}
                                 </div>
                               </article>
                             );
@@ -690,8 +706,8 @@ export default function AiAgentControlCenterPage() {
                           {taskDetail.steps.length === 0 && <p className="text-sm text-slate-500">This task has no step records.</p>}
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
-                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && <button type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</button>}
-                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && <button type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</button>}
+                          {!isTerminalAgentTaskState(valueText(taskDetail.task.state, "")) && canAuthorizeActions && <button type="button" onClick={() => void runTaskAction("cancel")} disabled={Boolean(busyAction)} className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 disabled:opacity-40">{busyAction === "cancel" ? "Cancelling…" : "Request cancellation"}</button>}
+                          {taskDetail.steps.length > 0 && taskDetail.steps.every((step) => valueText(step.status) === "SUCCEEDED") && canExecuteActions && <button type="button" onClick={() => void runTaskAction("verify")} disabled={Boolean(busyAction)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{busyAction === "verify" ? "Verifying…" : "Verify completed task"}</button>}
                         </div>
                         <p className="mt-3 text-[11px] leading-5 text-slate-500">A click is only a request. The backend rechecks IAM, policy, planner signature, tool entitlement, dependencies, retry eligibility, idempotency and cancellation/deadline state before execution. Ambiguous side effects stay in the backend reconciliation path.</p>
                       </>
