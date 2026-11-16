@@ -300,7 +300,7 @@ export default function OtConnectivityWorkbenchPage() {
               <CardContent className="py-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Telemetry exceptions</p>
                 <p className="mt-2 text-2xl font-bold tabular-nums">{canReadTelemetry && visibleTelemetryResult ? lateCount + sequenceGapCount : "—"}</p>
-                <p className="mt-1 text-xs text-slate-500">Late + sequence gaps in selected device's result</p>
+                <p className="mt-1 text-xs text-slate-500">Late + sequence gaps in selected device&apos;s result</p>
               </CardContent>
             </Card>
           </section>
