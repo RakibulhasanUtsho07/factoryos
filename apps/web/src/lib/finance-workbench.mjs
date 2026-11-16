@@ -47,7 +47,7 @@ export function createFinanceWorkbenchClient({ request }) {
   const sessionRequest = requiredRequest(request);
 
   return Object.freeze({
-    readWorkbench({
+    async readWorkbench({
       from: fromInput,
       to: toInput,
       currency: currencyInput,
@@ -75,7 +75,7 @@ export function createFinanceWorkbenchClient({ request }) {
       return sessionRequest("/finance/workbench" + query);
     },
 
-    listClosePeriods({
+    async listClosePeriods({
       status: statusInput,
       currency: currencyInput,
       from: fromInput,
