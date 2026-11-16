@@ -4,13 +4,16 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import {
   createFactoryOsSessionClient,
+  readLocalDevelopmentSession,
   type FactoryOsSessionClient,
   type FactoryOsSessionRequestOptions,
 } from "@/lib/factoryos-session.mjs";
@@ -48,6 +51,7 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
   const [snapshot, setSnapshot] = useState<WorkspaceSessionSnapshot | null>(null);
   const [activeFactoryId, setActiveFactoryId] = useState("");
   const [sessionClient, setSessionClient] = useState<FactoryOsSessionClient | null>(null);
+  const restoreAttempted = useRef(false);
 
   const disconnect = useCallback(() => {
     sessionClient?.clear();
@@ -101,6 +105,18 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
       throw cause instanceof Error ? cause : new Error(message);
     }
   }, [sessionClient]);
+
+  useEffect(() => {
+    if (restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    const savedSession = readLocalDevelopmentSession();
+    if (!savedSession) return;
+    // Defer state updates out of the effect body; only local development
+    // sessions for localhost APIs can be restored by readLocalDevelopmentSession.
+    void Promise.resolve()
+      .then(() => connect(savedSession))
+      .catch(() => undefined);
+  }, [connect]);
 
   const selectFactory = useCallback((factoryId: string) => {
     if (!factoryId) {
