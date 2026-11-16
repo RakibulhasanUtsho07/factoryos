@@ -1,6 +1,6 @@
 # WMS LOT/SERIAL transformation acceptance boundary
 
-**Implementation status: bounded backend LOT/SERIAL commands and PostgreSQL regression coverage are integrated into the current `rakibul-hasan` candidate; SRS product acceptance remains OPEN / NOT_ACCEPTED.**
+**Implementation status: bounded backend LOT/SERIAL commands and PostgreSQL regression coverage are integrated into current `dev`; SRS product acceptance remains OPEN / NOT_ACCEPTED.**
 
 ## Commands and routes
 
@@ -42,8 +42,14 @@ services/api/test/wms-serial-indivisibility.sql and the PostgreSQL reservation i
 
 The API unit contract rejects fractional SERIAL outputs and duplicate merge source IDs before opening a transaction; mixed LOT/SERIAL output shape is accepted by the DTO/service and its effective policy is enforced by PostgreSQL. The WMS SQL contract proves a reserved one-unit allocation remaps to the SERIAL child while the remaining bulk quantity becomes LOT stock. API CI and PostgreSQL CI must pass on the exact PR head. The PostgreSQL workflow applies and replays migrations 239, 240, 241 and 242 before the WMS SQL contract.
 
+## Current-dev FEFO transformed-LOT regression (2026-11-16)
+
+2026-11-16 current-dev PostgreSQL regression: equal-expiry MATERIAL LOTs are seeded in one active picking BIN; a 1.0000 reservation exists before the oldest source LOT is split into two 1.5000 children; migration 242's persisted remap edge preserves the pre-split reservation sequence; migration 241's inherited effective-receipt timestamp keeps the children ahead of the independent newer LOT despite later child created_at values; a subsequent 3.0000 reservation allocates child A 0.5000, child B 1.5000, then the newer LOT 1.0000. The disposed source is zero and child/newer LOT, BIN and aggregate balances reconcile to 6.0000 on-hand / 4.0000 reserved. Test-bearing candidate 6e657fe53aea06a17afb9bc323816709ec551707: API CI PASS (run 43818580713; 203 suites / 1,896 tests) https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/43818580713; API PostgreSQL CI PASS (run 43818580686; 247 suites passed / 2 skipped; 2,109 tests passed / 11 skipped; inventory reservation integration spec passed) https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/43818580686. Repository technical evidence only; FR-WMS-04 remains PARTIAL / OPEN / NOT_ACCEPTED pending live/provider/site/device evidence and authorized owner/reviewer acceptance.
+
+This regression verifies migration 241 receipt-time inheritance and migration 242 active-reservation remapping together. It does not close partial-parent remainder, cross-location move, recall-impact, live-site/provider, physical HIL, capacity/recovery or owner/reviewer acceptance gaps.
+
 ## Remaining SRS acceptance gates
 
 FR-WMS-02 / FR-WMS-04 / FR-WMS-09 remain PARTIAL / OPEN / NOT_ACCEPTED pending: partial-parent remainder support; full forward/reverse recall impact acceptance through transformations; physical cross-location movement/put-away handling; representative external factory/site/provider acceptance of multi-SERIAL mixed good/scrap output; physical barcode/RFID/mobile/printer HIL; capacity/recovery testing; and named independent product/operations owner and reviewer acceptance.
 
-Do not promote this command slice to main or mark the SRS rows PASS based only on code/CI. This integration candidate is based on the current `rakibul-hasan` branch, which already contains the migration 238 generic-transformation safety guard. Keep promotion blocked until this exact head passes its required CI and receives independent review.
+Do not promote this command slice to main or mark the SRS rows PASS based only on code/CI. The stock-conserving transformation commands and migration 238 generic-transformation safety guard are present in current `dev`. The current-dev FEFO regression below is a test-only port; keep product acceptance OPEN until exact-head CI, independent review, and the remaining operational gates are satisfied.
