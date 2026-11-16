@@ -3113,10 +3113,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       randomUUID(),
     );
     const allocations = await adminPool.query<{
-      traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
+      id: string; traceability_unit_id: string; allocation_sequence: number; allocated_quantity: string;
       unit_code: string; expires_at: string; effective_received_at: string;
     }>(
-      "SELECT a.traceability_unit_id::text AS traceability_unit_id, " +
+      "SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id, " +
       "a.allocation_sequence::int AS allocation_sequence, a.allocated_quantity::text AS allocated_quantity, " +
       "tu.unit_code, tu.expires_at::text AS expires_at, " +
       "COALESCE(gr.posted_at, gr.received_at, tu.allocation_received_at_override, tu.created_at)::text AS effective_received_at " +
@@ -3189,6 +3189,133 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(aggregate.rows).toEqual([{
       stock_on_hand: '6.0000', stock_reserved: '4.0000',
       bin_on_hand: '6.0000', bin_reserved: '4.0000',
+    }]);
+
+    // Issue across the transformed FEFO allocation stream. The first two rows
+    // are the split children; the newer independent LOT must remain untouched.
+    const issueKey = 'wms-fefo-xform-partial-issue-' + token;
+    const partialIssue = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
+      { target_status: 'CONSUMED', quantity: 2 } as TransitionInventoryReservationDto,
+      issueKey,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(partialIssue).toMatchObject({
+      status: 'RESERVED',
+      quantity: '3.0000',
+      remaining_quantity: '1.0000',
+      consumed_quantity: '2.0000',
+      released_quantity: '0.0000',
+      consumed_quantity_this_request: '2.0000',
+      replayed: false,
+    });
+
+    const consumption = await adminPool.query<{ id: string; quantity: string }>(
+      "SELECT id::text AS id, quantity::text AS quantity " +
+      "FROM inventory_reservation_consumptions " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 AND idempotency_key=$4",
+      [tenantId, factoryId, reservation.id, issueKey],
+    );
+    expect(consumption.rows).toEqual([{ id: expect.any(String), quantity: '2.0000' }]);
+
+    const consumedAllocations = await adminPool.query<{
+      reservation_allocation_id: string; allocation_sequence: string;
+      traceability_unit_id: string; quantity: string;
+    }>(
+      "SELECT reservation_allocation_id::text AS reservation_allocation_id, " +
+      "allocation_sequence::text AS allocation_sequence, " +
+      "traceability_unit_id::text AS traceability_unit_id, " +
+      "quantity::numeric(18,4)::text AS quantity " +
+      "FROM inventory_reservation_consumption_traceability_allocations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id=$3 ORDER BY allocation_sequence",
+      [tenantId, factoryId, consumption.rows[0]!.id],
+    );
+    expect(consumedAllocations.rows).toEqual([
+      {
+        reservation_allocation_id: allocations.rows[0]!.id,
+        allocation_sequence: '1',
+        traceability_unit_id: childIds[0],
+        quantity: '0.5000',
+      },
+      {
+        reservation_allocation_id: allocations.rows[1]!.id,
+        allocation_sequence: '2',
+        traceability_unit_id: childIds[1],
+        quantity: '1.5000',
+      },
+    ]);
+
+    const consumedReservationAllocations = await adminPool.query<{
+      traceability_unit_id: string; allocation_sequence: string;
+      allocated_quantity: string; consumed_quantity: string; remapped_quantity: string;
+    }>(
+      "SELECT traceability_unit_id::text AS traceability_unit_id, " +
+      "allocation_sequence::text AS allocation_sequence, " +
+      "allocated_quantity::numeric(18,4)::text AS allocated_quantity, " +
+      "consumed_quantity::numeric(18,4)::text AS consumed_quantity, " +
+      "remapped_quantity::numeric(18,4)::text AS remapped_quantity " +
+      "FROM inventory_reservation_traceability_allocations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 ORDER BY allocation_sequence",
+      [tenantId, factoryId, reservation.id],
+    );
+    expect(consumedReservationAllocations.rows).toEqual([
+      {
+        traceability_unit_id: childIds[0], allocation_sequence: '1',
+        allocated_quantity: '0.5000', consumed_quantity: '0.5000', remapped_quantity: '0.0000',
+      },
+      {
+        traceability_unit_id: childIds[1], allocation_sequence: '2',
+        allocated_quantity: '1.5000', consumed_quantity: '1.5000', remapped_quantity: '0.0000',
+      },
+      {
+        traceability_unit_id: newerLotId, allocation_sequence: '3',
+        allocated_quantity: '1.0000', consumed_quantity: '0.0000', remapped_quantity: '0.0000',
+      },
+    ]);
+
+    const balancesAfterIssue = await adminPool.query<{
+      traceability_unit_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      "SELECT traceability_unit_id::text AS traceability_unit_id, " +
+      "quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_traceability_location_balances " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4 " +
+      "AND traceability_unit_id=ANY($5::uuid[])",
+      [tenantId, factoryId, itemId, bin.id, [...childIds, newerLotId]],
+    );
+    expect(balancesAfterIssue.rows).toHaveLength(3);
+    expect(balancesAfterIssue.rows).toEqual(expect.arrayContaining([
+      { traceability_unit_id: childIds[0], quantity_on_hand: '1.0000', quantity_reserved: '1.0000' },
+      { traceability_unit_id: childIds[1], quantity_on_hand: '0.0000', quantity_reserved: '0.0000' },
+      { traceability_unit_id: newerLotId, quantity_on_hand: '3.0000', quantity_reserved: '1.0000' },
+    ]));
+
+    const preSplitReservationState = await adminPool.query<{
+      status: string; remaining_quantity: string;
+    }>(
+      "SELECT status, remaining_quantity::numeric(18,4)::text AS remaining_quantity " +
+      "FROM inventory_reservations WHERE tenant_id=$1 AND factory_id=$2 AND id=$3",
+      [tenantId, factoryId, preSplitReservation.id],
+    );
+    expect(preSplitReservationState.rows).toEqual([{
+      status: 'RESERVED', remaining_quantity: '1.0000',
+    }]);
+
+    const aggregateAfterIssue = await adminPool.query<{
+      stock_on_hand: string; stock_reserved: string; bin_on_hand: string; bin_reserved: string;
+    }>(
+      "SELECT s.quantity_on_hand::text AS stock_on_hand, s.quantity_reserved::text AS stock_reserved, " +
+      "b.quantity_on_hand::text AS bin_on_hand, b.quantity_reserved::text AS bin_reserved " +
+      "FROM inventory_stock_balances s JOIN inventory_location_balances b " +
+      "ON b.tenant_id=s.tenant_id AND b.factory_id=s.factory_id AND b.item_id=s.item_id " +
+      "WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4",
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(aggregateAfterIssue.rows).toEqual([{
+      stock_on_hand: '4.0000', stock_reserved: '2.0000',
+      bin_on_hand: '4.0000', bin_reserved: '2.0000',
     }]);
   }, 30000);
 
