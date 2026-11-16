@@ -97,6 +97,10 @@ VALUES
     'Read permission information'
   ),
   (
+    'factory.onboarding.manage',
+    'Read and save factory onboarding configuration drafts'
+  ),
+  (
     'entitlements.read',
     'Read tenant entitlement configuration'
   ),
@@ -162,6 +166,7 @@ WHERE r.code = 'ORG_ADMIN'
     'iam.users.read',
     'iam.roles.read',
     'iam.permissions.read',
+    'factory.onboarding.manage',
     'entitlements.read',
     'entitlements.write',
     'feature_flags.read',

@@ -11,6 +11,7 @@ const navigation = [
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
   { href: "/wms/rfid", label: "RFID HIL" },
   { href: "/ai/agents", label: "AI Agents" },
+  { href: "/onboarding", label: "Onboarding" },
 ] as const;
 
 export function WorkspaceNavigation() {
