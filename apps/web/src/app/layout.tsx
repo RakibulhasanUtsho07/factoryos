@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "FactoryOS AI | Manufacturing Operations",
-  description: "Governed manufacturing operations and AI workspaces.",
+  description: "A governed workspace for manufacturing operations, warehouse execution and AI-assisted workflows.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -26,19 +26,23 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-slate-50 text-slate-900">
+      <body className="min-h-screen bg-background text-foreground antialiased">
         <a
           href="#main-content"
-          className="sr-only z-50 rounded-lg bg-white px-4 py-3 font-semibold text-slate-950 shadow-lg focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:ring-2 focus:ring-blue-600"
+          className="sr-only z-50 rounded-lg bg-white px-4 py-3 font-semibold text-slate-950 shadow-lg focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:ring-2 focus:ring-brand-600"
         >
           Skip to content
         </a>
         <FactoryOsSessionProvider>
-          <WorkspaceNavigation />
-          <div id="main-content" tabIndex={-1} className="min-h-0 flex-1 outline-none">
-            {children}
+          <div className="flex min-h-screen flex-col md:flex-row">
+            <WorkspaceNavigation />
+            <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+              <div id="main-content" tabIndex={-1} className="min-h-0 flex-1 outline-none">
+                {children}
+              </div>
+              <WorkspaceFooter />
+            </div>
           </div>
-          <WorkspaceFooter />
         </FactoryOsSessionProvider>
       </body>
     </html>
