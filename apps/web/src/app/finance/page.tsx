@@ -20,7 +20,7 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import { createFinanceWorkbenchClient } from "@/lib/finance-workbench.mjs";
-import type { FinanceWorkbenchClient } from "@/lib/finance-workbench.mjs";
+import type { FinanceClosePeriodStatus, FinanceWorkbenchClient } from "@/lib/finance-workbench.mjs";
 
 type JsonRecord = Record<string, unknown>;
 type FinanceTab = "performance" | "working-capital" | "reconciliation" | "close-periods";
@@ -272,7 +272,7 @@ export default function FinanceWorkbenchPage() {
   const [draftCurrency, setDraftCurrency] = useState("");
   const [draftHorizonDays, setDraftHorizonDays] = useState("30");
   const [appliedFilters, setAppliedFilters] = useState<AppliedFilters>(() => initialFilters());
-  const [closeStatus, setCloseStatus] = useState("");
+  const [closeStatus, setCloseStatus] = useState<FinanceClosePeriodStatus | "">("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [reportResult, setReportResult] = useState<ReportResult | null>(null);
   const [closePeriodResult, setClosePeriodResult] = useState<ClosePeriodResult | null>(null);
@@ -875,7 +875,14 @@ export default function FinanceWorkbenchPage() {
                       Status
                       <Select
                         value={closeStatus}
-                        onChange={(event) => setCloseStatus(event.target.value)}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setCloseStatus(
+                            value === "DRAFT" || value === "SUBMITTED" || value === "APPROVED"
+                              ? value
+                              : "",
+                          );
+                        }}
                         className="min-w-36"
                       >
                         <option value="">All statuses</option>
