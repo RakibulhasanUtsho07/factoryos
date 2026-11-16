@@ -29,3 +29,5 @@ export interface FactoryOsSessionClient {
 export function createFactoryOsSessionClient(
   config: FactoryOsSessionConfig,
 ): FactoryOsSessionClient;
+
+export function readLocalDevelopmentSession(): FactoryOsSessionConfig | null;
