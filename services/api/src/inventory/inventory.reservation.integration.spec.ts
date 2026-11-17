@@ -623,13 +623,24 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       ],
     )).rejects.toMatchObject({ code: '23514' });
 
-    await service.transitionReservation(
-      TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
-      { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
-      'wms-trs-release-' + token,
-      randomUUID(),
-      randomUUID(),
-    );
+    const releaseKey = 'wms-trs-release-' + token;
+    const concurrentReleaseResults = await Promise.all([
+      service.transitionReservation(
+        TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
+        { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+        releaseKey,
+        randomUUID(),
+        randomUUID(),
+      ),
+      service.transitionReservation(
+        TEST_USER_ID, tenantId, factoryId, itemId, reservation.id,
+        { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+        releaseKey,
+        randomUUID(),
+        randomUUID(),
+      ),
+    ]);
+    expect(concurrentReleaseResults.map((result) => result.status)).toEqual(['RELEASED', 'RELEASED']);
     const final = await adminPool.query<{
       remaining_quantity: string;
       consumed_quantity: string;
@@ -663,6 +674,34 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(reservedBalances.rows[0]).toMatchObject({
       aggregate_reserved: '0.0000',
       traceability_reserved: '0.0000',
+    });
+    const releaseEvents = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM outbox_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_id=$3
+         AND event_type='INVENTORY.STOCK_RESERVATION_RELEASED'
+         AND payload->'reservation'->>'id'=$4`,
+      [tenantId, factoryId, itemId, reservation.id],
+    );
+    expect(releaseEvents.rows[0]?.count).toBe('1');
+    const releasedReservation = await adminPool.query<{
+      status: string;
+      remaining_quantity: string;
+      consumed_quantity: string;
+      released_quantity: string;
+    }>(
+      `SELECT status, remaining_quantity::numeric(18,4)::text AS remaining_quantity,
+              consumed_quantity::numeric(18,4)::text AS consumed_quantity,
+              released_quantity::numeric(18,4)::text AS released_quantity
+       FROM inventory_reservations
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=$3`,
+      [tenantId, factoryId, reservation.id],
+    );
+    expect(releasedReservation.rows[0]).toEqual({
+      status: 'RELEASED',
+      remaining_quantity: '0.0000',
+      consumed_quantity: '1.0000',
+      released_quantity: '5.0000',
     });
 
     // The same two child LOTs are now independently reserved and merged. A single
