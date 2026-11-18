@@ -797,7 +797,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const mergeIssueKey = 'wms-trs-merge-issue-' + token;
     await service.transitionReservation(
       TEST_USER_ID, tenantId, factoryId, itemId, mergeReservation.id,
-      { target_status: 'CONSUMED', quantity: 3 } as TransitionInventoryReservationDto,
+      { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto,
       mergeIssueKey,
       randomUUID(),
       randomUUID(),
@@ -830,32 +830,173 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
         traceability_unit_id: mergedId,
         quantity: '1.0000',
       },
-      {
+    ]);
+
+    // Race two different terminal commands against the same partially consumed,
+    // transformed-LOT reservation. The item-first lock must serialize them so
+    // exactly one terminal transition wins and the loser cannot mutate stock.
+    const finalConsumeKey = 'wms-trs-merge-final-consume-' + token;
+    const finalReleaseKey = 'wms-trs-merge-final-release-' + token;
+    const terminalRace = await Promise.allSettled([
+      service.transitionReservation(
+        TEST_USER_ID, tenantId, factoryId, itemId, mergeReservation.id,
+        { target_status: 'CONSUMED' } as TransitionInventoryReservationDto,
+        finalConsumeKey,
+        randomUUID(),
+        randomUUID(),
+      ),
+      service.transitionReservation(
+        TEST_USER_ID, tenantId, factoryId, itemId, mergeReservation.id,
+        { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+        finalReleaseKey,
+        randomUUID(),
+        randomUUID(),
+      ),
+    ]);
+    expect(terminalRace.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(terminalRace.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const winningTransition = terminalRace.find((result) => result.status === 'fulfilled');
+    const rejectedTransition = terminalRace.find((result) => result.status === 'rejected');
+    if (winningTransition?.status !== 'fulfilled' || rejectedTransition?.status !== 'rejected') {
+      throw new Error('Exactly one terminal reservation transition must win');
+    }
+    const terminalStatus = winningTransition.value.status;
+    expect(['CONSUMED', 'RELEASED']).toContain(terminalStatus);
+    expect(rejectedTransition.reason?.getStatus?.()).toBe(409);
+
+    const terminalReservation = await adminPool.query<{
+      status: string;
+      remaining_quantity: string;
+      consumed_quantity: string;
+      released_quantity: string;
+    }>(
+      `SELECT status,
+              remaining_quantity::numeric(18,4)::text AS remaining_quantity,
+              consumed_quantity::numeric(18,4)::text AS consumed_quantity,
+              released_quantity::numeric(18,4)::text AS released_quantity
+       FROM inventory_reservations
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=$3`,
+      [tenantId, factoryId, mergeReservation.id],
+    );
+    expect(terminalReservation.rows).toEqual([{
+      status: terminalStatus,
+      remaining_quantity: '0.0000',
+      consumed_quantity: terminalStatus === 'CONSUMED' ? '3.0000' : '1.0000',
+      released_quantity: terminalStatus === 'RELEASED' ? '2.0000' : '0.0000',
+    }]);
+
+    const terminalConsumption = await adminPool.query<{ quantity: string }>(
+      `SELECT quantity::numeric(18,4)::text AS quantity
+       FROM inventory_reservation_consumptions
+       WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 AND idempotency_key=$4`,
+      [tenantId, factoryId, mergeReservation.id, finalConsumeKey],
+    );
+    if (terminalStatus === 'CONSUMED') {
+      expect(terminalConsumption.rows).toEqual([{ quantity: '2.0000' }]);
+      const finalIssueEvidence = await adminPool.query<{
+        reservation_allocation_id: string;
+        allocation_sequence: string;
+        traceability_unit_id: string;
+        quantity: string;
+      }>(
+        `SELECT reservation_allocation_id::text AS reservation_allocation_id,
+                allocation_sequence::text AS allocation_sequence,
+                traceability_unit_id::text AS traceability_unit_id,
+                quantity::numeric(18,4)::text AS quantity
+         FROM inventory_reservation_consumption_traceability_allocations
+         WHERE tenant_id=$1 AND factory_id=$2
+           AND consumption_id=(
+             SELECT id FROM inventory_reservation_consumptions
+             WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 AND idempotency_key=$4
+           )
+         ORDER BY allocation_sequence`,
+        [tenantId, factoryId, mergeReservation.id, finalConsumeKey],
+      );
+      expect(finalIssueEvidence.rows).toEqual([{
         reservation_allocation_id: mergedAllocations.rows[1]!.id,
         allocation_sequence: '2',
         traceability_unit_id: mergedId,
         quantity: '2.0000',
-      },
-    ]);
+      }]);
+    } else {
+      expect(terminalConsumption.rows).toEqual([]);
+    }
+
+    const allocationDisposition = await adminPool.query<{
+      remaining_quantity: string;
+      consumed_quantity: string;
+      released_quantity: string;
+      remapped_quantity: string;
+    }>(
+      `SELECT
+         SUM(allocated_quantity-consumed_quantity-released_quantity-remapped_quantity)::numeric(18,4)::text AS remaining_quantity,
+         SUM(consumed_quantity)::numeric(18,4)::text AS consumed_quantity,
+         SUM(released_quantity)::numeric(18,4)::text AS released_quantity,
+         SUM(remapped_quantity)::numeric(18,4)::text AS remapped_quantity
+       FROM inventory_reservation_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3`,
+      [tenantId, factoryId, mergeReservation.id],
+    );
+    expect(allocationDisposition.rows[0]).toMatchObject({
+      remaining_quantity: '0.0000',
+      consumed_quantity: terminalStatus === 'CONSUMED' ? '3.0000' : '1.0000',
+      released_quantity: terminalStatus === 'RELEASED' ? '2.0000' : '0.0000',
+      remapped_quantity: '3.0000',
+    });
+
+    const terminalEvents = await adminPool.query<{ event_type: string; count: string }>(
+      `SELECT event_type, count(*)::text AS count
+       FROM outbox_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_id=$3
+         AND (
+           (event_type='INVENTORY.STOCK_ISSUED' AND payload->>'reservation_id'=$4)
+           OR (event_type='INVENTORY.STOCK_RESERVATION_RELEASED'
+               AND payload->'reservation'->>'id'=$4)
+         )
+       GROUP BY event_type
+       ORDER BY event_type`,
+      [tenantId, factoryId, itemId, mergeReservation.id],
+    );
+    expect(terminalEvents.rows).toEqual([{
+      event_type: terminalStatus === 'CONSUMED'
+        ? 'INVENTORY.STOCK_ISSUED'
+        : 'INVENTORY.STOCK_RESERVATION_RELEASED',
+      count: '1',
+    }]);
 
     const mergeBalance = await adminPool.query<{
       aggregate_on_hand: string;
       aggregate_reserved: string;
+      location_on_hand: string;
+      location_reserved: string;
       traceability_on_hand: string;
       traceability_reserved: string;
+      merged_on_hand: string;
+      merged_reserved: string;
     }>(
       `SELECT
          (SELECT quantity_on_hand::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_on_hand,
          (SELECT quantity_reserved::numeric(18,4)::text FROM inventory_stock_balances WHERE item_id=$1) AS aggregate_reserved,
+         (SELECT COALESCE(SUM(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_on_hand,
+         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_location_balances WHERE item_id=$1) AS location_reserved,
          (SELECT COALESCE(SUM(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_on_hand,
-         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved`,
-      [itemId],
+         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances WHERE item_id=$1) AS traceability_reserved,
+         (SELECT COALESCE(SUM(quantity_on_hand),0)::numeric(18,4)::text FROM inventory_traceability_location_balances
+          WHERE item_id=$1 AND traceability_unit_id=$2) AS merged_on_hand,
+         (SELECT COALESCE(SUM(quantity_reserved),0)::numeric(18,4)::text FROM inventory_traceability_location_balances
+          WHERE item_id=$1 AND traceability_unit_id=$2) AS merged_reserved`,
+      [itemId, mergedId],
     );
+    const expectedOnHand = terminalStatus === 'CONSUMED' ? '6.0000' : '8.0000';
     expect(mergeBalance.rows[0]).toMatchObject({
-      aggregate_on_hand: '6.0000',
+      aggregate_on_hand: expectedOnHand,
       aggregate_reserved: '0.0000',
-      traceability_on_hand: '6.0000',
+      location_on_hand: expectedOnHand,
+      location_reserved: '0.0000',
+      traceability_on_hand: expectedOnHand,
       traceability_reserved: '0.0000',
+      merged_on_hand: terminalStatus === 'CONSUMED' ? '0.0000' : '2.0000',
+      merged_reserved: '0.0000',
     });
   });
 
