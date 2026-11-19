@@ -8,7 +8,7 @@ import {
   formatMrpQuantity,
   summarizeCapacityOperations,
   summarizeMrpRequirements,
-} from "@/lib/mrp-workbench";
+} from "@/lib/mrp-workbench.mjs";
 
 type Row = Record<string, unknown>;
 type MrpRun = Row & {
