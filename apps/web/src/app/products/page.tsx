@@ -80,7 +80,6 @@ export default function ProductEngineeringWorkbenchPage() {
   const { status, activeFactoryId, snapshot, hasPermission, request } = useFactoryOsSession();
   const canRead = hasPermission("products.master.read");
   const canWrite = hasPermission("products.master.write");
-  const canVersionApprove = hasPermission("products.version.approve");
   const canAlternateApprove = hasPermission("products.alternate.approve");
   const canEcoRead = hasPermission("products.eco.read");
   const canEcoWrite = hasPermission("products.eco.write");
