@@ -10,6 +10,7 @@ const navigation = [
   { href: "/inventory", label: "Inventory" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
+  { href: "/uom", label: "UoM Governance" },
   { href: "/wms", label: "Warehouse" },
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
   { href: "/wms/rfid", label: "RFID HIL" },
