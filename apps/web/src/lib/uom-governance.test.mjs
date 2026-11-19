@@ -42,7 +42,7 @@ test("filters units by searchable code, name and dimension", () => {
 test("filters conversion rules by endpoint, factor, and governance status", () => {
   const rules = [
     { from_unit_code: "KG", to_unit_code: "G", factor_numerator: "1000", factor_denominator: "1", status: "APPROVED" },
-    { from_unit_code: "M", to_unit_code: "CM", factor_numerator: "100", factor_denominator: "1", status: "PENDING_APPROVAL" },
+    { from_unit_code: "M", from_unit_name: "Metre", to_unit_code: "CM", to_unit_name: "Centimetre", factor_numerator: "100", factor_denominator: "1", status: "PENDING_APPROVAL" },
   ];
   assert.equal(filterUomConversions(rules, "centi")[0].from_unit_code, "M");
   assert.equal(filterUomConversions(rules, "", "APPROVED").length, 1);
