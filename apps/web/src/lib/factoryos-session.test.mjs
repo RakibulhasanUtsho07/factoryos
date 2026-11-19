@@ -192,3 +192,30 @@ test("clearing a session removes its in-memory bearer token", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].headers.authorization, "Bearer " + token);
 });
+
+
+test("workspace requests attach idempotency keys without exposing them elsewhere", async () => {
+  const calls = [];
+  const client = createFactoryOsSessionClient({
+    apiOrigin: "https://api.factoryos.example",
+    accessToken: token,
+    tenantId,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ data: { accepted: true } });
+    },
+  });
+
+  await client.request("/inventory/items/a3000000-0000-4000-8000-000000000003/movements", {
+    method: "POST",
+    factoryId: "a2000000-0000-4000-8000-000000000002",
+    idempotencyKey: "inventory-ui-test-001",
+    body: { movement_type: "RECEIPT", quantity: 2 },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.headers["idempotency-key"], "inventory-ui-test-001");
+  assert.equal(calls[0].options.headers.authorization, "Bearer " + token);
+  assert.equal(calls[0].options.headers["x-factory-id"], "a2000000-0000-4000-8000-000000000002");
+  assert.equal(calls[0].options.headers["x-tenant-id"], tenantId);
+});
