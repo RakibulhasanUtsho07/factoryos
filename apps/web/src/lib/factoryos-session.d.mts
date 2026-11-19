@@ -16,6 +16,7 @@ export interface FactoryOsSessionRequestOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   factoryId?: string | null;
+  idempotencyKey?: string;
 }
 
 export interface FactoryOsSessionClient {

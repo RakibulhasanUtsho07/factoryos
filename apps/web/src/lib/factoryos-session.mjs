@@ -135,6 +135,7 @@ export function createFactoryOsSessionClient({
       "x-trace-id": idFactory(),
       ...(factoryId ? { "x-factory-id": factoryId } : {}),
       ...(hasBody ? { "content-type": "application/json" } : {}),
+      ...(options.idempotencyKey ? { "idempotency-key": String(options.idempotencyKey) } : {}),
     };
     const response = await fetchImpl(origin + "/api" + path, {
       method,
