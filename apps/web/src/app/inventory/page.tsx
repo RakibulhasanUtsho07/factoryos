@@ -79,7 +79,15 @@ export default function InventoryControlTowerPage() {
     } finally { setLoading(false); }
   }, [status, activeFactoryId, canRead, request, search]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    async function loadInitial() {
+      await Promise.resolve();
+      if (active) void load();
+    }
+    void loadInitial();
+    return () => { active = false; };
+  }, [load]);
 
   useEffect(() => {
     let cancelled = false;
