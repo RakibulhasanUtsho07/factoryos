@@ -123,7 +123,7 @@ export default function InventoryControlTowerPage() {
     try {
       await request("/inventory/items/" + selectedItem.id + "/movements", {
         method: "POST",
-        headers: { "Idempotency-Key": "inventory-ui-" + crypto.randomUUID() },
+        idempotencyKey: "inventory-ui-" + crypto.randomUUID(),
         body: { movement_type: movementType, quantity: amount, notes: movementNotes.trim() || undefined },
       });
       setMovementOpen(false); setMovementQuantity("1"); setMovementNotes("");
