@@ -8,6 +8,7 @@ import { useFactoryOsSession } from "@/components/auth/factoryos-session-provide
 const navigation = [
   { href: "/", label: "Overview" },
   { href: "/inventory", label: "Inventory" },
+  { href: "/mrp", label: "MRP Planning" },
   { href: "/wms", label: "Warehouse" },
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
   { href: "/wms/rfid", label: "RFID HIL" },
