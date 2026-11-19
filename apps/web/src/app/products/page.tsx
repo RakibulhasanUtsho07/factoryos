@@ -264,7 +264,28 @@ export default function ProductEngineeringWorkbenchPage() {
     const versionsResult = await request("/products/" + encodeURIComponent(productId) + "/versions");
     const nextVersions = list<Version>(versionsResult);
     setVersions(nextVersions);
-    if (!nextVersions.some((version) => version.id === selectedVersionId)) setSelectedVersionId(nextVersions[0]?.id ?? "");
+    const nextVersionId = nextVersions.some((version) => version.id === selectedVersionId)
+      ? selectedVersionId
+      : nextVersions[0]?.id ?? "";
+    setSelectedVersionId(nextVersionId);
+    if (nextVersionId) {
+      const versionDetail = record(await request("/products/" + encodeURIComponent(productId) + "/versions/" + encodeURIComponent(nextVersionId))) as VersionDetail;
+      setDetail(versionDetail);
+      setBomEdits(list<BomLine>(versionDetail.bom_lines).map((line) => ({
+        line_number: String(line.line_number), component_item_id: line.component_item_id,
+        quantity_per: String(line.quantity_per), unit: line.unit,
+        wastage_percent: String(line.wastage_percent ?? "0"),
+        alternate_group_code: String(line.alternate_group_code ?? ""), notes: String(line.notes ?? ""),
+      })));
+      setRoutingEdits(list<RoutingStep>(versionDetail.routing_steps).map((step) => ({
+        step_number: String(step.step_number), operation_code: step.operation_code,
+        operation_name: step.operation_name, work_centre_id: step.work_centre_id,
+        setup_minutes: String(step.setup_minutes ?? "0"), run_minutes_per_unit: String(step.run_minutes_per_unit ?? "0"),
+        queue_minutes: String(step.queue_minutes ?? "0"), transfer_minutes: String(step.transfer_minutes ?? "0"),
+        required_skill: String(step.required_skill ?? ""), instructions: String(step.instructions ?? ""),
+        is_quality_gate: step.is_quality_gate === true,
+      })));
+    }
     if (canEcoRead) {
       const ecoResult = await request("/products/" + encodeURIComponent(productId) + "/change-orders?limit=50");
       const nextEcos = list<ChangeOrder>(ecoResult);
