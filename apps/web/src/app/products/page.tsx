@@ -26,6 +26,7 @@ type Version = Row & {
 type BomLine = Row & {
   id: string; line_number: number; component_item_id: string; component_sku: string; component_name: string;
   quantity_per: string; unit: string; wastage_percent: string; alternate_group_code: string | null; notes: string | null;
+  inventory_base_unit: string; base_quantity_per: string;
 };
 type Alternate = Row & {
   id: string; bom_line_id: string; alternate_item_id: string; alternate_sku: string; alternate_name: string;
