@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -137,7 +137,7 @@ export default function ProductEngineeringWorkbenchPage() {
   const portfolio = useMemo(() => summarizeProductPortfolio(products, versions), [products, versions]);
   const revisionSummary = useMemo(() => summarizeEngineeringRevision(detail ?? {}), [detail]);
 
-  async function loadWorkspace() {
+  const loadWorkspace = useCallback(async () => {
     if (status !== "connected" || !activeFactoryId || !canRead) return;
     setLoading(true);
     setError("");
@@ -157,7 +157,7 @@ export default function ProductEngineeringWorkbenchPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [status, activeFactoryId, canRead, request]);
 
   useEffect(() => {
     let active = true;
@@ -172,7 +172,7 @@ export default function ProductEngineeringWorkbenchPage() {
     }
     void initialLoad();
     return () => { active = false; };
-  }, [status, activeFactoryId, canRead, request]);
+  }, [status, activeFactoryId, canRead, request, loadWorkspace]);
 
   useEffect(() => {
     let active = true;
