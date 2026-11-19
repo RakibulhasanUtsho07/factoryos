@@ -9,6 +9,7 @@ const navigation = [
   { href: "/", label: "Overview" },
   { href: "/inventory", label: "Inventory" },
   { href: "/mrp", label: "MRP Planning" },
+  { href: "/products", label: "Product Engineering" },
   { href: "/wms", label: "Warehouse" },
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
   { href: "/wms/rfid", label: "RFID HIL" },
