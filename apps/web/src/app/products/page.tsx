@@ -8,7 +8,7 @@ import {
   formatEngineeringQuantity,
   summarizeEngineeringRevision,
   summarizeProductPortfolio,
-} from "@/lib/product-engineering";
+} from "@/lib/product-engineering.mjs";
 
 type Row = Record<string, unknown>;
 type Product = Row & {
