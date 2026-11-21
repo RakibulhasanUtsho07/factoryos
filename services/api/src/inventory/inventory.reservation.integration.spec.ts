@@ -3105,7 +3105,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4 " +
       "AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity " +
       "ORDER BY a.allocation_sequence",
-      [tenantId, factoryId, itemId, reservationResult.value.id],
+      [tenantId, factoryId, itemId, reservationResult.id],
     );
     expect(activeAllocations.rows.length).toBeGreaterThanOrEqual(2);
     expect(activeAllocations.rows[activeAllocations.rows.length - 1]?.traceability_unit_id).toBe(laterLotId);
@@ -3134,7 +3134,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "FROM inventory_reservation_traceability_allocation_remaps " +
       "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=$3 " +
       "ORDER BY target_allocation_sequence",
-      [tenantId, factoryId, reservationResult.value.id],
+      [tenantId, factoryId, reservationResult.id],
     );
     if (executionOrder === 'CONCURRENT') {
       expect([0, 2]).toContain(remapEvidence.rows.length);
@@ -3175,7 +3175,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "AND l.tenant_id=h.tenant_id AND l.factory_id=h.factory_id " +
       "WHERE h.id=$1 AND h.tenant_id=$2 AND h.factory_id=$3 " +
       "ORDER BY l.source_unit_id",
-      [mergeResult.value.transformation_id, tenantId, factoryId],
+      [mergeResult.transformation_id, tenantId, factoryId],
     );
     expect(mergeEvidence.rows).toHaveLength(2);
     expect(mergeEvidence.rows.every((row) => row.operation_type === 'MERGE' && row.total_quantity === '3.0000')).toBe(true);
