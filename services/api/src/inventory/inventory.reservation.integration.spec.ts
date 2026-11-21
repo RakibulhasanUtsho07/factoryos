@@ -2894,7 +2894,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   }, 30000);
 
 
-  it('keeps FEFO expiry priority when a LOT merge races reservation creation across competing eligible LOTs', async () => {
+  it.each(['RESERVATION_FIRST', 'MERGE_FIRST', 'CONCURRENT'])(
+    'keeps FEFO expiry priority when a LOT merge and reservation run in %s order across competing eligible LOTs',
+    async (executionOrder) => {
     const itemId = await createItem('6.0000');
     const token = randomUUID().slice(0, 8).toUpperCase();
     const defaultResult = await adminPool.query<{ id: string }>(
@@ -3037,9 +3039,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(childMetadata.rows.map((row) => row.expires_at)).toEqual([earliestExpiry, earliestExpiry]);
     expect(childMetadata.rows[0]?.effective_received_at).toBe(childMetadata.rows[1]?.effective_received_at);
 
-    // MERGE and reservation use the same inventory-item lock. Whichever wins,
-    // the merged earliest-expiry identity must remain ahead of the later LOT.
-    const merge = traceabilityService.mergeLots(
+    // MERGE and reservation use the same inventory-item lock. Exercise both
+    // deterministic lock orders as well as the true concurrent race.
+    const runMerge = () => traceabilityService.mergeLots(
       TEST_USER_ID, tenantId, factoryId,
       {
         source_unit_ids: childIds,
@@ -3050,7 +3052,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       randomUUID(),
       randomUUID(),
     );
-    const reservation = service.createReservation(
+    const runReservation = () => service.createReservation(
       TEST_USER_ID, tenantId, factoryId, itemId,
       { quantity: 4, location_id: bin.id } as CreateInventoryReservationDto,
       'wms-fefo-merge-race-reserve-' + token,
@@ -3058,12 +3060,32 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       randomUUID(),
     );
 
-    const [mergeResult, reservationResult] = await Promise.allSettled([merge, reservation]);
-    if (mergeResult.status !== 'fulfilled') throw mergeResult.reason;
-    if (reservationResult.status !== 'fulfilled') throw reservationResult.reason;
-    expect(reservationResult.value.status).toBe('RESERVED');
-    expect(mergeResult.value.targets).toHaveLength(1);
-    const mergedId = mergeResult.value.targets[0]!.id;
+    const outcome = executionOrder === 'RESERVATION_FIRST'
+      ? await (async () => {
+          const reservationResult = await runReservation();
+          const mergeResult = await runMerge();
+          return { mergeResult, reservationResult };
+        })()
+      : executionOrder === 'MERGE_FIRST'
+        ? await (async () => {
+            const mergeResult = await runMerge();
+            const reservationResult = await runReservation();
+            return { mergeResult, reservationResult };
+          })()
+        : await (async () => {
+            const [mergeSettled, reservationSettled] = await Promise.allSettled([
+              runMerge(),
+              runReservation(),
+            ]);
+            if (mergeSettled.status !== 'fulfilled') throw mergeSettled.reason;
+            if (reservationSettled.status !== 'fulfilled') throw reservationSettled.reason;
+            return { mergeResult: mergeSettled.value, reservationResult: reservationSettled.value };
+          })();
+
+    const { mergeResult, reservationResult } = outcome;
+    expect(reservationResult.status).toBe('RESERVED');
+    expect(mergeResult.targets).toHaveLength(1);
+    const mergedId = mergeResult.targets[0]!.id;
 
     const activeAllocations = await adminPool.query<{
       traceability_unit_id: string;
@@ -3114,7 +3136,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "ORDER BY target_allocation_sequence",
       [tenantId, factoryId, reservationResult.value.id],
     );
-    expect([0, 2]).toContain(remapEvidence.rows.length);
+    if (executionOrder === 'CONCURRENT') {
+      expect([0, 2]).toContain(remapEvidence.rows.length);
+    } else {
+      expect(remapEvidence.rows).toHaveLength(executionOrder === 'RESERVATION_FIRST' ? 2 : 0);
+    }
     if (remapEvidence.rows.length === 2) {
       expect(remapEvidence.rows).toEqual([
         {
