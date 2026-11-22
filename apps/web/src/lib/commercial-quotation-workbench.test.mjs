@@ -100,7 +100,7 @@ test("builds a factory-scoped quotation payload with normalized lines and option
   assert.equal(payload.currency, "USD");
   assert.equal(payload.lines[0].unit_price, 100);
   assert.equal(payload.lines[1].tax_percent, 10);
-  assert.equal(payload.lines[0].discount_percent, undefined);
+  assert.equal(payload.lines[0].discount_percent, 5);
   assert.equal(payload.lines[0].tax_percent, undefined);
 });
 
