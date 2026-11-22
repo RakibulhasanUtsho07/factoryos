@@ -7,6 +7,8 @@ import {
   buildGrowthEvidenceGapDecisionPayload,
   buildGrowthEvidenceGapPayload,
   buildGrowthExperimentPayload,
+  buildGrowthExperimentResultPayload,
+  buildGrowthOutcomePayload,
   buildGrowthOpportunityDecisionPayload,
   buildGrowthOpportunityPayload,
   buildGrowthOwnerPayload,
@@ -207,6 +209,40 @@ test("creates a bounded experiment plan with explicit leading indicators and sto
   assert.equal(result.baseline_measurements.qualified_leads, 10);
   assert.equal(result.leading_indicators.length, 2);
   assert.throws(() => buildGrowthExperimentPayload({ name: "X", baseline_metric_key: "Bad Key" }));
+});
+
+test("records one evidence-backed experiment KPI with a bounded observed timestamp", () => {
+  const payload = buildGrowthExperimentResultPayload({
+    metric_key: "qualified_leads", baseline_value: "10", actual_value: "18",
+    unit: "count", direction: "INCREASE", target_value: "15",
+    evidence_ref: REF, assessment: "POSITIVE", stop_condition_triggered: false,
+    result_notes: "Pilot reached target", observed_at: "2026-11-22T10:00",
+  });
+  assert.deepEqual(payload.pre_measurements, { qualified_leads: 10 });
+  assert.deepEqual(payload.post_measurements, { qualified_leads: 18 });
+  assert.deepEqual(payload.evidence_refs, [REF]);
+  assert.equal(payload.kpi_measurements[0].baseline_evidence_ref, REF);
+  assert.match(payload.observed_at, /Z$/);
+  assert.throws(() => buildGrowthExperimentResultPayload({
+    metric_key: "Bad Key", baseline_value: "10", actual_value: "18", unit: "count",
+    direction: "INCREASE", evidence_ref: REF, assessment: "POSITIVE", observed_at: "2026-11-22T10:00",
+  }));
+});
+
+test("records an outcome whose realized metric equals its KPI actual and carries evidence", () => {
+  const payload = buildGrowthOutcomePayload({
+    metric_key: "revenue", baseline_value: "100", actual_value: "125", target_value: "120",
+    unit: "BDT", direction: "INCREASE", evidence_ref: REF, assessment: "POSITIVE",
+    notes: "Verified invoice result", confidence: "0.8", observed_at: "2026-11-22T12:00",
+  });
+  assert.deepEqual(payload.realized_metrics, { revenue: 125 });
+  assert.equal(payload.kpi_measurements[0].actual_value, payload.realized_metrics.revenue);
+  assert.deepEqual(payload.evidence_refs, [REF]);
+  assert.throws(() => buildGrowthOutcomePayload({
+    metric_key: "Revenue", baseline_value: "100", actual_value: "125",
+    unit: "BDT", direction: "INCREASE", evidence_ref: REF, assessment: "POSITIVE",
+    observed_at: "2026-11-22T12:00",
+  }));
 });
 
 test("builds a risk-ranked validation unknown", () => {
