@@ -121,7 +121,6 @@ const inputClass = "min-h-10 w-full rounded-lg border border-slate-300 bg-white 
 const buttonClass = "inline-flex min-h-10 items-center justify-center rounded-lg px-3.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
 const primaryButton = buttonClass + " bg-slate-950 text-white hover:bg-slate-800";
 const secondaryButton = buttonClass + " border border-slate-300 bg-white text-slate-700 hover:bg-slate-50";
-const dangerButton = buttonClass + " border border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100";
 
 function PerformanceCard({ performance, currency }: { performance: FinanceClosePerformance | null; currency: string }) {
   if (!performance) {
