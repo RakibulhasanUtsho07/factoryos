@@ -48,7 +48,7 @@ function isoDateTime(value, field, { allowFuture = false } = {}) {
   const time = new Date(result);
   if (!result || !Number.isFinite(time.getTime())) throw new Error(field + " must be a valid date/time.");
   if (!allowFuture && time.getTime() > Date.now() + 5 * 60_000) throw new Error(field + " cannot be in the future.");
-  return result;
+  return /(?:Z|[+-]\\d{2}:\\d{2})$/i.test(result) ? result : time.toISOString();
 }
 
 function listValue(value, field, max, minLength = 1) {
@@ -270,8 +270,13 @@ export function buildGrowthScenarioSetPayload(input, evidenceReferences = []) {
   };
   const parameter = clean(input.sensitivity_parameter).toLowerCase();
   if (!SCENARIO_PARAMETERS.includes(parameter)) throw new Error("Select a supported sensitivity parameter.");
-  const low = numberValue(input.sensitivity_low, "Sensitivity low");
-  const high = numberValue(input.sensitivity_high, "Sensitivity high");
+  const bounds = {
+    price_change_pct: [-90, 500], volume_change_pct: [-90, 500],
+    variable_cost_change_pct: [-100, 500], fixed_cost_change_pct: [-100, 500],
+    investment: [0, 1_000_000_000_000], uncertainty_pct: [0, 100],
+  }[parameter];
+  const low = numberValue(input.sensitivity_low, "Sensitivity low", { min: bounds[0], max: bounds[1] });
+  const high = numberValue(input.sensitivity_high, "Sensitivity high", { min: bounds[0], max: bounds[1] });
   if (low >= high) throw new Error("Sensitivity low must be less than sensitivity high.");
   const points = numberValue(input.sensitivity_points, "Sensitivity points", { min: 2, max: 11, decimals: 0 });
   return {
