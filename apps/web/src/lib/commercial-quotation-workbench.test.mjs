@@ -39,10 +39,10 @@ test("normalizes quotation, rule, FX and history response envelopes", () => {
 
 test("calculates line subtotal, discount, tax and base amount with integer precision", () => {
   const result = calculateQuotationPreview(BASE_LINES, "7.5", "10", "1.25");
-  assert.deepEqual(result.lines.map(line => line.line_total), ["261.2500", "55.0000"]);
+  assert.deepEqual(result.lines.map(line => line.line_total), ["255.3125", "55.0000"]);
   assert.deepEqual(result.totals, {
-    subtotal: "300.0000", discount_total: "12.5000", tax_total: "28.7500",
-    total: "316.2500", total_base: "395.3125",
+    subtotal: "300.0000", discount_total: "12.5000", tax_total: "22.8125",
+    total: "310.3125", total_base: "387.8906",
   });
   assert.equal(result.max_line_discount_percent, "5.00");
 });
@@ -100,6 +100,8 @@ test("builds a factory-scoped quotation payload with normalized lines and option
   assert.equal(payload.currency, "USD");
   assert.equal(payload.lines[0].unit_price, 100);
   assert.equal(payload.lines[1].tax_percent, 10);
+  assert.equal(payload.lines[0].discount_percent, undefined);
+  assert.equal(payload.lines[0].tax_percent, undefined);
 });
 
 test("requires an active factory and valid quote identity/customer/lines", () => {
