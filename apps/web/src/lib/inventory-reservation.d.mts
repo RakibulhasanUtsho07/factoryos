@@ -31,7 +31,7 @@ export type ReservationInventoryItem = {
 
 export type ReservationLocation = {
   id: string;
-  code: string;
+  location_code: string;
   name: string;
   location_type: string;
   status: string;
