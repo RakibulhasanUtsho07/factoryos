@@ -285,7 +285,7 @@ export default function CommercialQuotationWorkbenchPage() {
         error: "",
       };
     } catch (cause) {
-      return { value: null, error: errorMessage(cause) };
+      return { value: null, error: messageOf(cause) };
     }
   }, [quoteDraft.lines, quoteDraft.currency, allowedCurrencies, selectedRate, baseCurrency, selectedRule]);
 
@@ -354,7 +354,7 @@ export default function CommercialQuotationWorkbenchPage() {
       setSelectedQuote(detailResult.value as CommercialQuotation);
     } else {
       setSelectedQuote(null);
-      setError(errorMessage(detailResult.reason));
+      setError(messageOf(detailResult.reason));
     }
     if (revisionResult.status === "fulfilled") {
       setRevisions(rows<QuotationRevisionSnapshot>(revisionResult.value, "items"));
@@ -489,7 +489,7 @@ export default function CommercialQuotationWorkbenchPage() {
         setNotice("A new immutable quotation revision was recorded. Previous revision lines, FX and pricing policy snapshots remain unchanged.");
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(messageOf(cause));
     } finally {
       setBusy(false);
     }
@@ -538,7 +538,7 @@ export default function CommercialQuotationWorkbenchPage() {
       await loadWorkspace();
       await loadQuoteDetail(selectedQuote.id);
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(messageOf(cause));
       if (messageOf(cause).toLowerCase().includes("version") || messageOf(cause).includes("409")) {
         await loadQuoteDetail(selectedQuote.id);
       }
@@ -560,7 +560,7 @@ export default function CommercialQuotationWorkbenchPage() {
       setRuleDraft(initialRuleDraft());
       await loadWorkspace();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(messageOf(cause));
     } finally {
       setBusy(false);
     }
@@ -579,7 +579,7 @@ export default function CommercialQuotationWorkbenchPage() {
       setRateDraft(initialRateDraft());
       await loadWorkspace();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(messageOf(cause));
     } finally {
       setBusy(false);
     }
@@ -1004,7 +1004,7 @@ export default function CommercialQuotationWorkbenchPage() {
                   <Field label="Source currency"><input required maxLength={3} className={inputClass} value={rateDraft.currency} onChange={(event) => setRateDraft((current) => ({ ...current, currency: event.target.value.toUpperCase() }))} /></Field>
                   <Field label="Base currency"><input required maxLength={3} className={inputClass} value={rateDraft.base_currency} onChange={(event) => setRateDraft((current) => ({ ...current, base_currency: event.target.value.toUpperCase() }))} /></Field>
                 </div>
-                <Field label="Rate to base"><input required inputMode="decimal" className={inputClass} value={rateDraft.rate_to_base} onChange={(event) => setRateDraft((current) => ({ ...current, rate_to_base: event.target.value }))} placeholder="120.0000000000" hint="Positive, up to ten decimal places." /></Field>
+                <Field label="Rate to base" hint="Positive, up to ten decimal places."><input required inputMode="decimal" className={inputClass} value={rateDraft.rate_to_base} onChange={(event) => setRateDraft((current) => ({ ...current, rate_to_base: event.target.value }))} placeholder="120.0000000000" /></Field>
                 <Field label="Effective on"><input required type="date" className={inputClass} value={rateDraft.effective_on} onChange={(event) => setRateDraft((current) => ({ ...current, effective_on: event.target.value }))} /></Field>
                 <Field label="Source / provenance"><input required maxLength={120} className={inputClass} value={rateDraft.source} onChange={(event) => setRateDraft((current) => ({ ...current, source: event.target.value }))} placeholder="Bank circular, approved treasury rate…" /></Field>
                 <button type="submit" disabled={busy || !rateDraft.rate_to_base || !rateDraft.source.trim()} className={primaryButton + " w-full"}>{busy ? "Recording…" : "Record immutable FX rate"}</button>
