@@ -103,6 +103,8 @@ export function buildGrowthEvidenceGapDecisionPayload(input: Record<string, unkn
 export function buildGrowthOpportunityDecisionPayload(input: Record<string, unknown>): Record<string, unknown>;
 export function buildGrowthScenarioSetPayload(input: Record<string, unknown>, evidenceReferences?: string[]): Record<string, unknown>;
 export function buildGrowthExperimentPayload(input: Record<string, unknown>): Record<string, unknown>;
+export function buildGrowthExperimentResultPayload(input: Record<string, unknown>): Record<string, unknown>;
+export function buildGrowthOutcomePayload(input: Record<string, unknown>): Record<string, unknown>;
 export function buildGrowthValidationUnknownPayload(input: Record<string, unknown>): Record<string, unknown>;
 export function filterGrowthOpportunities<T extends GrowthOpportunity>(rows: T[], search?: string, status?: string, category?: string): T[];
 export function summarizeGrowthOpportunities(rows?: GrowthOpportunity[]): {
