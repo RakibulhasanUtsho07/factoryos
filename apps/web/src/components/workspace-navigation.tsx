@@ -9,6 +9,7 @@ const navigation = [
   { href: "/", label: "Overview" },
   { href: "/inventory", label: "Inventory" },
   { href: "/inventory/cycle-counts", label: "Cycle Counts" },
+  { href: "/inventory/replenishment", label: "Replenishment" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
