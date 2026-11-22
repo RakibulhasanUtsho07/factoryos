@@ -34,10 +34,6 @@ function percentScale(value, fallback, field) {
   return scaled;
 }
 
-function moneyNumber(value, field) {
-  return Number(scaledString(nonNegativeScaled(value, 4, field), 4));
-}
-
 function requiredText(value, field, max) {
   const result = clean(value);
   if (!result || result.length > max) {
@@ -171,17 +167,23 @@ export function calculateQuotationPreview(lines, defaultTaxPercent = 0, maxDisco
 }
 
 function normalizeLines(lines) {
-  return calculateQuotationPreview(lines, 0, 100).lines.map((line) => ({
-    line_number: line.line_number,
-    product_code: line.product_code,
-    product_name: line.product_name,
-    quantity: Number(line.quantity),
-    unit: line.unit,
-    unit_price: Number(line.unit_price),
-    ...(Number(line.discount_percent) ? { discount_percent: Number(line.discount_percent) } : {}),
-    ...(Number(line.tax_percent) ? { tax_percent: Number(line.tax_percent) } : {}),
-    ...(line.notes ? { notes: line.notes } : {}),
-  }));
+  const calculated = calculateQuotationPreview(lines, 0, 100).lines;
+  return calculated.map((line, index) => {
+    const source = lines[index] ?? {};
+    const discount = clean(String(source.discount_percent ?? ""));
+    const tax = clean(String(source.tax_percent ?? ""));
+    return {
+      line_number: line.line_number,
+      product_code: line.product_code,
+      product_name: line.product_name,
+      quantity: Number(line.quantity),
+      unit: line.unit,
+      unit_price: Number(line.unit_price),
+      ...(discount ? { discount_percent: Number(line.discount_percent) } : {}),
+      ...(tax ? { tax_percent: Number(line.tax_percent) } : {}),
+      ...(line.notes ? { notes: line.notes } : {}),
+    };
+  });
 }
 
 export function buildQuotationPayload(input, factoryId) {
