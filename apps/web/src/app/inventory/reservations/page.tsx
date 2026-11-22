@@ -139,7 +139,8 @@ export default function InventoryReservationIssueWorkbenchPage() {
   const activeBins = useMemo(
     () => locations.filter((location) =>
       location.location_type.toUpperCase() === "BIN"
-      && location.status.toUpperCase() === "ACTIVE"),
+      && location.status.toUpperCase() === "ACTIVE"
+      && location.picking_enabled === true),
     [locations],
   );
   const summary = useMemo(() => summarizeReservations(reservations), [reservations]);
