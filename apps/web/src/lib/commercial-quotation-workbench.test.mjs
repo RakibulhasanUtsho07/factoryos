@@ -160,6 +160,14 @@ test("rejects rule currencies that omit the base currency and invalid limits", (
   }, FACTORY));
 });
 
+test("preserves explicit zero tax so it does not inherit the pricing-rule default", () => {
+  const payload = buildQuotationPayload({
+    quote_number: "Q-ZERO", customer_name: "Acme",
+    lines: [{ line_number: 1, product_code: "FG-0", product_name: "Zero rated", quantity: "1", unit: "PCS", unit_price: "100", tax_percent: "0" }],
+  }, FACTORY);
+  assert.equal(payload.lines[0].tax_percent, 0);
+});
+
 test("builds sourced effective-dated FX records and validates positive rates", () => {
   assert.deepEqual(buildExchangeRatePayload({
     currency: "usd", base_currency: "bdt", rate_to_base: "120.125", effective_on: "2026-11-22", source: "Bank circular",
@@ -172,6 +180,9 @@ test("builds sourced effective-dated FX records and validates positive rates", (
   }, FACTORY));
   assert.throws(() => buildExchangeRatePayload({
     currency: "USD", base_currency: "BDT", rate_to_base: "0", effective_on: "2026-11-22", source: "x",
+  }, FACTORY));
+  assert.throws(() => buildExchangeRatePayload({
+    currency: "USD", base_currency: "BDT", rate_to_base: "120", effective_on: "2026-02-31", source: "x",
   }, FACTORY));
 });
 
