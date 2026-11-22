@@ -13,6 +13,7 @@ const navigation = [
   { href: "/inventory/reservations", label: "Reservations & Issue" },
   { href: "/inventory/warehouse-operations", label: "Put-away & Picking" },
   { href: "/traceability", label: "Traceability & Recall" },
+  { href: "/wms/fulfillment", label: "Packing & Dispatch" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
