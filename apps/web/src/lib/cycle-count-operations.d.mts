@@ -66,7 +66,7 @@ export interface CycleCountPolicy {
   status: string;
   blind_count: boolean;
 }
-export function asCycleCountItems(value: unknown, key?: string): any[];
+export function asCycleCountItems(value: unknown, key?: string): unknown[];
 export function cycleCountSummary(tasks?: CycleCountTask[], sessions?: CycleCountSession[], policies?: CycleCountPolicy[], proposals?: CycleCountProposal[]): {
   scheduled: number; inProgress: number; awaitingReview: number; overdue: number;
   activeSessions: number; activePolicies: number; pendingProposals: number; openEscalations: number;
