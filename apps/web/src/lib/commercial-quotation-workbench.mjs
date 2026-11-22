@@ -61,8 +61,10 @@ function currency(value, field = "Currency") {
 function date(value, field) {
   const result = clean(value);
   if (!result) return undefined;
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(result) || !Number.isFinite(new Date(result + "T00:00:00Z").getTime())) {
-    throw new Error(field + " must be a valid date.");
+  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(result)) throw new Error(field + " must be a valid date.");
+  const parsed = new Date(result + "T00:00:00Z");
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== result) {
+    throw new Error(field + " must be a valid calendar date.");
   }
   return result;
 }
@@ -271,7 +273,7 @@ export function buildPricingRulePayload(input, factoryId) {
     allowed_currencies: allowedCurrencies,
     default_tax_percent: Number(percentScale(input.default_tax_percent ?? 0, 0, "Default tax")) / 100,
     max_discount_percent: Number(percentScale(input.max_discount_percent ?? 0, 0, "Maximum discount")) / 100,
-    approval_required: input.approval_required === true,
+    approval_required: input.approval_required !== false,
     approval_discount_threshold_percent: Number(percentScale(input.approval_discount_threshold_percent ?? 0, 0, "Approval discount threshold")) / 100,
     incoterms_required: input.incoterms_required === true,
     payment_terms_required: input.payment_terms_required === true,
