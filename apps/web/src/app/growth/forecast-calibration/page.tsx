@@ -226,61 +226,72 @@ export default function GrowthForecastCalibrationPage() {
   }, [status, activeFactoryId, canRead, request]);
 
   useEffect(() => {
-    void loadPortfolio();
+    const timer = window.setTimeout(() => { void loadPortfolio(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadPortfolio]);
 
   useEffect(() => {
     let active = true;
-    if (status !== "connected" || !activeFactoryId || !canRead || !selectedId) {
-      setSelected(null);
-      setLastEvaluation(null);
-      setEvaluationIdempotencyKey("");
-      return () => { active = false; };
-    }
-    setLoadingDetail(true);
-    setError("");
-    void request("/growth/opportunities/" + selectedId)
-      .then((result) => {
-        if (active) setSelected(result as GrowthForecastOpportunity);
-      })
-      .catch((cause) => {
-        if (active) {
-          setSelected(null);
-          setError(messageOf(cause));
-        }
-      })
-      .finally(() => {
-        if (active) setLoadingDetail(false);
-      });
-    return () => { active = false; };
+    const timer = window.setTimeout(() => {
+      if (status !== "connected" || !activeFactoryId || !canRead || !selectedId) {
+        setSelected(null);
+        setLastEvaluation(null);
+        return;
+      }
+      setLoadingDetail(true);
+      setError("");
+      void request("/growth/opportunities/" + selectedId)
+        .then((result) => {
+          if (active) setSelected(result as GrowthForecastOpportunity);
+        })
+        .catch((cause) => {
+          if (active) {
+            setSelected(null);
+            setError(messageOf(cause));
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingDetail(false);
+        });
+    }, 0);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [status, activeFactoryId, canRead, selectedId, request]);
 
   useEffect(() => {
     let active = true;
-    if (status !== "connected" || !activeFactoryId || !canRead || !selectedId) {
-      setCalibration(null);
-      return () => { active = false; };
-    }
-    setLoadingCalibration(true);
-    const query = domainFilter === "ALL" ? "" : "?domain=" + encodeURIComponent(domainFilter);
-    void request("/growth/opportunities/" + selectedId + "/forecast-evaluations/calibration" + query)
-      .then((result) => {
-        if (active) setCalibration(result as GrowthForecastCalibrationResponse);
-      })
-      .catch((cause) => {
-        if (active) {
-          setCalibration(null);
-          setError(messageOf(cause));
-        }
-      })
-      .finally(() => {
-        if (active) setLoadingCalibration(false);
-      });
-    return () => { active = false; };
+    const timer = window.setTimeout(() => {
+      if (status !== "connected" || !activeFactoryId || !canRead || !selectedId) {
+        setCalibration(null);
+        return;
+      }
+      setLoadingCalibration(true);
+      const query = domainFilter === "ALL" ? "" : "?domain=" + encodeURIComponent(domainFilter);
+      void request("/growth/opportunities/" + selectedId + "/forecast-evaluations/calibration" + query)
+        .then((result) => {
+          if (active) setCalibration(result as GrowthForecastCalibrationResponse);
+        })
+        .catch((cause) => {
+          if (active) {
+            setCalibration(null);
+            setError(messageOf(cause));
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingCalibration(false);
+        });
+    }, 0);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [status, activeFactoryId, canRead, selectedId, domainFilter, request]);
 
   useEffect(() => {
-    void loadPolicies();
+    const timer = window.setTimeout(() => { void loadPolicies(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadPolicies]);
 
   const kpiOptions = useMemo<KpiOption[]>(() => (selected?.outcomes ?? []).flatMap((outcome) =>
@@ -308,7 +319,10 @@ export default function GrowthForecastCalibrationPage() {
   }, [selected]);
 
   const selectedKpi = kpiOptions.find((item) => item.key === outcomeKpiChoice) ?? kpiOptions[0] ?? null;
-  const calibrationRows = calibration?.calibration ?? [];
+  const selectedForecastSource = evidenceOptions.some((item) => item.value === forecastDraft.forecast_source_ref)
+    ? forecastDraft.forecast_source_ref
+    : evidenceOptions[0]?.value ?? "";
+  const calibrationRows = useMemo(() => calibration?.calibration ?? [], [calibration]);
   const calibrationSummary = useMemo(
     () => summarizeGrowthCalibrationBuckets(calibrationRows),
     [calibrationRows],
@@ -317,22 +331,6 @@ export default function GrowthForecastCalibrationPage() {
     () => policies.filter((policy) => policyStatusFilter === "ALL" || policy.status === policyStatusFilter),
     [policies, policyStatusFilter],
   );
-
-  useEffect(() => {
-    if (kpiOptions.length > 0 && !kpiOptions.some((item) => item.key === outcomeKpiChoice)) {
-      setOutcomeKpiChoice(kpiOptions[0].key);
-    }
-    if (kpiOptions.length === 0) setOutcomeKpiChoice("");
-  }, [kpiOptions, outcomeKpiChoice]);
-
-  useEffect(() => {
-    if (evidenceOptions.length > 0 && !evidenceOptions.some((item) => item.value === forecastDraft.forecast_source_ref)) {
-      setForecastDraft((current) => ({ ...current, forecast_source_ref: evidenceOptions[0].value }));
-    }
-    if (evidenceOptions.length === 0 && forecastDraft.forecast_source_ref) {
-      setForecastDraft((current) => ({ ...current, forecast_source_ref: "" }));
-    }
-  }, [evidenceOptions, forecastDraft.forecast_source_ref]);
 
   function updateForecastDraft<K extends keyof ForecastDraft>(key: K, value: ForecastDraft[K]) {
     setEvaluationIdempotencyKey("");
@@ -354,6 +352,7 @@ export default function GrowthForecastCalibrationPage() {
       setEvaluationIdempotencyKey(idempotencyKey);
       const payload = buildGrowthForecastEvaluationPayload({
         ...forecastDraft,
+        forecast_source_ref: selectedForecastSource,
         metric_key: selectedKpi.kpi.metric_key,
         unit: selectedKpi.kpi.unit,
         outcome_id: selectedKpi.outcome.id,
@@ -514,7 +513,7 @@ export default function GrowthForecastCalibrationPage() {
                 </select>
               </Field>
               <Field label="Forecast source evidence">
-                <select className={inputClass} value={forecastDraft.forecast_source_ref} onChange={(event) => updateForecastDraft("forecast_source_ref", event.target.value)} disabled={evidenceOptions.length === 0}>
+                <select className={inputClass} value={selectedForecastSource} onChange={(event) => updateForecastDraft("forecast_source_ref", event.target.value)} disabled={evidenceOptions.length === 0}>
                   {evidenceOptions.length === 0 ? <option value="">No linked source reference</option> : null}
                   {evidenceOptions.map((item) => (
                     <option key={item.value} value={item.value}>
