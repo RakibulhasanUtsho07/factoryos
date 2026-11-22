@@ -27,10 +27,15 @@ export interface GrowthExperimentResult {
   evidence_refs: string[]; result_notes?: string | null; observed_at: string; created_at: string;
   kpi_measurements: Array<Record<string, unknown>>;
 }
+export interface GrowthOutcomeKpi {
+  id: string; outcome_id: string; metric_key: string; baseline_value: string;
+  actual_value: string; target_value?: string | null; unit: string; direction: string;
+  evidence_ref: string; created_at: string;
+}
 export interface GrowthOutcome {
   id: string; experiment_result_id?: string | null; assessment: string;
   realized_metrics: Record<string, unknown>; evidence_refs: string[]; notes?: string | null;
-  observed_at: string; created_at: string; kpi_measurements: Array<Record<string, unknown>>;
+  observed_at: string; created_at: string; kpi_measurements: GrowthOutcomeKpi[];
 }
 export interface GrowthUnknown {
   id: string; question: string; decision_variable: string; impact_if_wrong: string;
@@ -103,4 +108,6 @@ export function filterGrowthOpportunities<T extends GrowthOpportunity>(rows: T[]
 export function summarizeGrowthOpportunities(rows?: GrowthOpportunity[]): {
   total: number; proposed: number; accepted: number; inProgress: number; realized: number; rejected: number; closed: number; other: number;
 };
-export function growthReadinessSummary(governance?: GrowthGovernance | null): { ready: boolean; blockerCount: number; missingEvidence: unknown[] };
+export function growthReadinessSummary(governance?: GrowthGovernance | null): {
+  ready: boolean; blockerCount: number; missingEvidence: Array<{ code: string; subject_id?: string; detail: string }>;
+};
