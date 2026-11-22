@@ -326,21 +326,25 @@ export default function WmsFulfillmentWorkbenchPage() {
   }, [loadWorkspace]);
 
   useEffect(() => {
-    if (!selectedContainerId) {
-      setSelectedContainer(null);
-      return;
-    }
-    const timer = window.setTimeout(() => { void loadContainerDetail(selectedContainerId); }, 0);
+    const timer = window.setTimeout(() => {
+      if (!selectedContainerId) {
+        setSelectedContainer(null);
+        return;
+      }
+      void loadContainerDetail(selectedContainerId);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [selectedContainerId, loadContainerDetail]);
 
   useEffect(() => {
-    if (!selectedShipmentId) {
-      setSelectedShipment(null);
-      setDeliveryEvents([]);
-      return;
-    }
-    const timer = window.setTimeout(() => { void loadShipmentDetail(selectedShipmentId); }, 0);
+    const timer = window.setTimeout(() => {
+      if (!selectedShipmentId) {
+        setSelectedShipment(null);
+        setDeliveryEvents([]);
+        return;
+      }
+      void loadShipmentDetail(selectedShipmentId);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [selectedShipmentId, loadShipmentDetail]);
 
