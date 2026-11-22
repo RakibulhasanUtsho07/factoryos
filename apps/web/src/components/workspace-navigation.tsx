@@ -106,7 +106,14 @@ export function WorkspaceNavigation() {
           {navigation.map((item) => {
             const active = item.href === "/"
               ? pathname === "/"
-              : pathname === item.href || pathname.startsWith(item.href + "/");
+              : pathname === item.href || (
+                pathname.startsWith(item.href + "/")
+                && !navigation.some((nestedItem) =>
+                  nestedItem.href !== item.href
+                  && nestedItem.href.startsWith(item.href + "/")
+                  && (pathname === nestedItem.href || pathname.startsWith(nestedItem.href + "/"))
+                )
+              );
             return (
               <Link
                 key={item.href}
