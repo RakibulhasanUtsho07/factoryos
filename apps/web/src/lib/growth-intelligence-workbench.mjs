@@ -306,6 +306,66 @@ export function buildGrowthExperimentPayload(input) {
   };
 }
 
+export function buildGrowthExperimentResultPayload(input) {
+  const metricKey = textValue(input.metric_key, "KPI metric key", 100);
+  if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey)) throw new Error("KPI metric key must be a lowercase identifier.");
+  const evidenceRef = textValue(input.evidence_ref, "KPI evidence reference", 2000);
+  const baselineValue = numberValue(input.baseline_value, "KPI baseline");
+  const actualValue = numberValue(input.actual_value, "KPI actual");
+  const target = clean(String(input.target_value ?? ""));
+  const direction = clean(input.direction).toUpperCase();
+  if (!["INCREASE", "DECREASE", "TARGET"].includes(direction)) throw new Error("Select a supported KPI direction.");
+  const assessment = clean(input.assessment).toUpperCase();
+  if (!["POSITIVE", "NEUTRAL", "NEGATIVE", "INCONCLUSIVE"].includes(assessment)) throw new Error("Select a supported experiment assessment.");
+  const observedAt = isoDateTime(input.observed_at, "Experiment observation time");
+  const unit = textValue(input.unit, "KPI unit", 40);
+  return {
+    pre_measurements: { [metricKey]: baselineValue },
+    post_measurements: { [metricKey]: actualValue },
+    assessment,
+    stop_condition_triggered: input.stop_condition_triggered === true,
+    ...(clean(input.result_notes) ? { result_notes: textValue(input.result_notes, "Result notes", 4000) } : {}),
+    evidence_refs: [evidenceRef],
+    kpi_measurements: [{
+      metric_key: metricKey, unit, direction,
+      ...(target ? { target_value: numberValue(target, "KPI target") } : {}),
+      evidence_ref: evidenceRef,
+      baseline_evidence_ref: evidenceRef,
+    }],
+    observed_at: observedAt,
+  };
+}
+
+export function buildGrowthOutcomePayload(input) {
+  const metricKey = textValue(input.metric_key, "Outcome KPI metric key", 100);
+  if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey)) throw new Error("Outcome KPI key must be a lowercase identifier.");
+  const evidenceRef = textValue(input.evidence_ref, "Outcome evidence reference", 2000);
+  const baselineValue = numberValue(input.baseline_value, "Outcome baseline");
+  const actualValue = numberValue(input.actual_value, "Outcome actual");
+  const target = clean(String(input.target_value ?? ""));
+  const direction = clean(input.direction).toUpperCase();
+  if (!["INCREASE", "DECREASE", "TARGET"].includes(direction)) throw new Error("Select a supported KPI direction.");
+  const assessment = clean(input.assessment).toUpperCase();
+  if (!["POSITIVE", "NEUTRAL", "NEGATIVE", "INCONCLUSIVE"].includes(assessment)) throw new Error("Select a supported outcome assessment.");
+  const unit = textValue(input.unit, "Outcome KPI unit", 40);
+  const observedAt = isoDateTime(input.observed_at, "Outcome observation time");
+  return {
+    assessment,
+    realized_metrics: { [metricKey]: actualValue },
+    evidence_refs: [evidenceRef],
+    ...(clean(input.notes) ? { notes: textValue(input.notes, "Outcome notes", 4000) } : {}),
+    ...(clean(String(input.confidence ?? "")) ? { confidence: numberValue(input.confidence, "Submitter confidence", { min: 0, max: 1, decimals: 4 }) } : {}),
+    kpi_measurements: [{
+      metric_key: metricKey, unit, direction,
+      baseline_value: baselineValue, actual_value: actualValue,
+      ...(target ? { target_value: numberValue(target, "KPI target") } : {}),
+      evidence_ref: evidenceRef,
+      baseline_evidence_ref: evidenceRef,
+    }],
+    observed_at: observedAt,
+  };
+}
+
 export function buildGrowthValidationUnknownPayload(input) {
   const method = clean(input.validation_method).toUpperCase();
   const methods = ["MEASURE", "DOCUMENT_REVIEW", "CUSTOMER_INTERVIEW", "PILOT", "SUPPLIER_QUOTE", "MARKET_TEST", "EXPERT_REVIEW"];
