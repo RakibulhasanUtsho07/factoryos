@@ -243,7 +243,8 @@ export default function InventoryCycleCountOperationsPage() {
   }, [status, activeFactoryId, canRead, canReadUsers, request, viewerId]);
 
   useEffect(() => {
-    void load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   useEffect(() => {
@@ -276,11 +277,6 @@ export default function InventoryCycleCountOperationsPage() {
     return () => { active = false; };
   }, [selectedItemId, status, canRead, canReview, request, proposalRefresh]);
 
-  useEffect(() => {
-    setEscalation(null);
-    setSessionDetails(null);
-  }, [selectedTaskId, selectedSessionId]);
-
   async function runAction(action: () => Promise<unknown>, success: string, refresh = true) {
     setBusy(true);
     setError("");
@@ -311,6 +307,8 @@ export default function InventoryCycleCountOperationsPage() {
   }
 
   async function startTask(task: CycleCountTask) {
+    setSelectedTaskId(task.id);
+    setEscalation(null);
     await runAction(
       () => request("/inventory/cycle-count-tasks/" + task.id + "/start", { method: "POST" }),
       "Task started. Record the physical quantity when counting is complete.",
@@ -402,6 +400,7 @@ export default function InventoryCycleCountOperationsPage() {
       setCancelTaskOpen(false);
       setCancellationReason("");
       setSelectedTaskId("");
+      setEscalation(null);
     }, "Cycle-count task cancelled.");
   }
 
@@ -416,11 +415,13 @@ export default function InventoryCycleCountOperationsPage() {
       }) as Record<string, unknown>;
       setSessionFormOpen(false);
       setSelectedSessionId(typeof result.id === "string" ? result.id : "");
+      setSessionDetails(null);
     }, "Multi-bin count session created with one task per selected bin.");
   }
 
   async function openSession(session: CycleCountSession) {
     setSelectedSessionId(session.id);
+    setSessionDetails(null);
     await runAction(async () => {
       const result = await request("/inventory/cycle-count-sessions/" + session.id);
       setSessionDetails(result as Record<string, unknown>);
@@ -558,7 +559,7 @@ export default function InventoryCycleCountOperationsPage() {
                         return (
                           <tr key={task.id} className={selectedTaskId === task.id ? "bg-blue-50/70" : "hover:bg-slate-50"}>
                             <td className="px-4 py-3">
-                              <button type="button" onClick={() => setSelectedTaskId(task.id)} className="text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700">
+                              <button type="button" onClick={() => { setSelectedTaskId(task.id); setEscalation(null); }} className="text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-700">
                                 <span className="block font-semibold text-slate-900">{task.item_name || task.item_sku || task.item_id}</span>
                                 <span className="mt-0.5 block text-xs text-slate-500">{task.item_sku || task.id.slice(0, 8)} · {task.location_code || "Aggregate count"}</span>
                               </button>
@@ -569,7 +570,7 @@ export default function InventoryCycleCountOperationsPage() {
                             <td className="px-4 py-3">
                               <div className="flex flex-wrap gap-1.5">
                                 {actions.canStart && canReconcile ? <button type="button" onClick={() => void startTask(task)} disabled={busy} className={primaryButton}>Start</button> : null}
-                                {actions.canSubmit && canReconcile ? <button type="button" onClick={() => { setSelectedTaskId(task.id); setCountFormOpen(true); }} disabled={busy} className={secondaryButton}>Enter count</button> : null}
+                                {actions.canSubmit && canReconcile ? <button type="button" onClick={() => { setSelectedTaskId(task.id); setEscalation(null); setCountFormOpen(true); }} disabled={busy} className={secondaryButton}>Enter count</button> : null}
                                 {task.current_proposal_id && canReview ? <button type="button" onClick={() => { setSelectedItemId(task.item_id); setTab("review"); }} className={secondaryButton}>Review</button> : null}
                               </div>
                             </td>
@@ -694,7 +695,7 @@ export default function InventoryCycleCountOperationsPage() {
                 {sessions.map((session) => <article key={session.id} className={"rounded-xl border p-3 " + (selectedSessionId === session.id ? "border-blue-300 bg-blue-50/60" : "border-slate-200")}>
                   <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-slate-900">{items.find((item) => item.id === session.item_id)?.name || session.item_id}</p><p className="mt-1 font-mono text-[11px] text-slate-500">{session.id.slice(0, 8)}… · {session.expected_bin_count} bins</p></div><StatusTag value={session.status} /></div>
                   <div className="mt-3 grid grid-cols-4 gap-1 text-center text-[11px]"><div className="rounded-lg bg-slate-50 p-2"><strong>{session.scheduled_count}</strong><span className="mt-0.5 block text-slate-500">Queued</span></div><div className="rounded-lg bg-slate-50 p-2"><strong>{session.in_progress_count}</strong><span className="mt-0.5 block text-slate-500">Running</span></div><div className="rounded-lg bg-slate-50 p-2"><strong>{session.awaiting_review_count}</strong><span className="mt-0.5 block text-slate-500">Review</span></div><div className="rounded-lg bg-slate-50 p-2"><strong>{session.completed_count}</strong><span className="mt-0.5 block text-slate-500">Done</span></div></div>
-                  <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void openSession(session)} disabled={busy} className={secondaryButton}>Inspect</button>{session.status === "SCHEDULED" && canReconcile ? <button type="button" onClick={() => void startSession(session)} disabled={busy || session.assigned_to_user_id !== viewerId} className={primaryButton}>Start session</button> : null}{["SCHEDULED", "IN_PROGRESS"].includes(session.status) && canWrite ? <button type="button" onClick={() => { setSelectedSessionId(session.id); setCancellationReason(""); setCancelSessionOpen(true); }} className={dangerButton}>Cancel</button> : null}</div>
+                  <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void openSession(session)} disabled={busy} className={secondaryButton}>Inspect</button>{session.status === "SCHEDULED" && canReconcile ? <button type="button" onClick={() => void startSession(session)} disabled={busy || session.assigned_to_user_id !== viewerId} className={primaryButton}>Start session</button> : null}{["SCHEDULED", "IN_PROGRESS"].includes(session.status) && canWrite ? <button type="button" onClick={() => { setSelectedSessionId(session.id); setSessionDetails(null); setCancellationReason(""); setCancelSessionOpen(true); }} className={dangerButton}>Cancel</button> : null}</div>
                 </article>)}
                 {sessions.length === 0 ? <p className="rounded-xl bg-slate-50 p-6 text-center text-xs text-slate-500">No count sessions have been scheduled.</p> : null}
               </div>
