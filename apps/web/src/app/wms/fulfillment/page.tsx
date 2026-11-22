@@ -6,7 +6,7 @@ import Link from "next/link";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
-  allowedNextDeliveryEvents,
+  supportedDeliveryEventTypes,
   asFulfillmentRows,
   buildCreateContainerPayload,
   buildDeliveryEventPayload,
@@ -572,8 +572,7 @@ export default function WmsFulfillmentWorkbenchPage() {
     [cartonIdentities],
   );
   const latestDeliveryEvent = deliveryEvents[deliveryEvents.length - 1]?.event_type ?? null;
-  const nextDeliveryEvents = allowedNextDeliveryEvents(latestDeliveryEvent);
-  const deliveryChoices = nextDeliveryEvents.length ? nextDeliveryEvents : [];
+  const deliveryChoices = supportedDeliveryEventTypes();
   const currentContainerPercent = selectedContainer && Number(selectedContainer.capacity_quantity) > 0
     ? Math.min(100, Math.max(0, Number(selectedContainer.packed_quantity) / Number(selectedContainer.capacity_quantity) * 100))
     : 0;
@@ -904,7 +903,7 @@ export default function WmsFulfillmentWorkbenchPage() {
             {selectedShipment && canWrite && deliveryChoices.length ? (
               <form onSubmit={recordDeliveryEvent} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-base font-bold text-slate-950">Append delivery update</h2>
-                <p className="mt-1 text-xs leading-5 text-slate-500">Events are manual operator submissions. The backend enforces the shipment event state machine and immutable audit history.</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">Events are manual operator submissions. The API validates supported event types and POD fields, but does not enforce sequence order; record updates against verified carrier evidence.</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <Field label="Next delivery event">
                     <select required className={inputClass} value={deliveryDraft.event_type} onChange={(event) => setDeliveryDraft((current) => ({ ...current, event_type: event.target.value as DeliveryEventType | "" }))}>
@@ -944,7 +943,6 @@ export default function WmsFulfillmentWorkbenchPage() {
               </form>
             ) : null}
             {selectedShipment && !canWrite ? <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-900">Read-only delivery timeline. traceability.write is required to append events.</p> : null}
-            {selectedShipment && !deliveryChoices.length ? <p className="rounded-xl bg-slate-100 p-3 text-xs text-slate-600">This shipment is terminal ({fulfillmentStatusLabel(latestDeliveryEvent)}). No further delivery events can be added.</p> : null}
           </section>
         </div>
       ) : null}
