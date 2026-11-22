@@ -8,6 +8,7 @@ import { useFactoryOsSession } from "@/components/auth/factoryos-session-provide
 const navigation = [
   { href: "/", label: "Overview" },
   { href: "/inventory", label: "Inventory" },
+  { href: "/inventory/cycle-counts", label: "Cycle Counts" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
@@ -105,7 +106,14 @@ export function WorkspaceNavigation() {
           {navigation.map((item) => {
             const active = item.href === "/"
               ? pathname === "/"
-              : pathname === item.href || pathname.startsWith(item.href + "/");
+              : pathname === item.href || (
+                pathname.startsWith(item.href + "/")
+                && !navigation.some((nestedItem) =>
+                  nestedItem.href !== item.href
+                  && nestedItem.href.startsWith(item.href + "/")
+                  && (pathname === nestedItem.href || pathname.startsWith(nestedItem.href + "/"))
+                )
+              );
             return (
               <Link
                 key={item.href}
