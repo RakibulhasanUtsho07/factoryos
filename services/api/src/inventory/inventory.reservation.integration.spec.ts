@@ -2895,7 +2895,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
 
   it.each(['RESERVATION_FIRST', 'MERGE_FIRST', 'CONCURRENT'])(
-    'keeps FEFO expiry priority when a LOT merge and reservation run in %s order across competing eligible LOTs',
+    'keeps FEFO expiry priority across LOT merge and competing post-merge reservations in %s order',
     async (executionOrder) => {
     const itemId = await createItem('6.0000');
     const token = randomUUID().slice(0, 8).toUpperCase();
@@ -3273,9 +3273,6 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId],
     );
     expect(orphaned.rows[0]?.count).toBe('0');
-  }, 30000);
-
-
     // Once the FEFO-preferred LOT has been merged, two independent demands
     // compete for its 3.0000 units. Their combined 4.0000 demand exceeds that
     // LOT but remains within the 6.0000 eligible item balance, so both must
@@ -3460,5 +3457,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, competingDemands.map((reservation) => reservation.id)],
     );
     expect(newDemandRemaps.rows[0]?.count).toBe('0');
+  }, 30000);
+
+
 
 });
