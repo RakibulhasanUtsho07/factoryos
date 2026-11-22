@@ -97,6 +97,35 @@ export interface ExchangeRate {
   created_at: string;
 }
 
+export interface QuotationRevisionSnapshot {
+  quotation_version_id: string;
+  revision_number: number;
+  currency: string;
+  base_currency: string;
+  exchange_rate_to_base: string;
+  exchange_rate_as_of: string;
+  exchange_rate_source: string;
+  requested_delivery_date?: string | null;
+  valid_until?: string | null;
+  incoterms?: string | null;
+  payment_terms?: string | null;
+  notes?: string | null;
+  subtotal: string;
+  discount_total: string;
+  tax_total: string;
+  total: string;
+  total_base: string;
+  approval_required: boolean;
+  approval_total_threshold?: string | null;
+  approval_discount_threshold_percent: string;
+  pricing_rule_code: string;
+  pricing_rule_version?: number | null;
+  pricing_rule_snapshot: Record<string, unknown>;
+  created_by_user_id: string;
+  created_at: string;
+  lines: QuotationLine[];
+}
+
 export interface QuotationListItem {
   id: string;
   quote_number: string;
