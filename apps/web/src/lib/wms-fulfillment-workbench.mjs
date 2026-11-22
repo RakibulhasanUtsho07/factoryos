@@ -176,20 +176,13 @@ export function buildDispatchPayload(input) {
   return payload;
 }
 
-export function allowedNextDeliveryEvents(previousEvent) {
-  const previous = clean(previousEvent).toUpperCase();
-  if (!previous) return ["IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERY_FAILED", "DELIVERED"];
-  if (previous === "IN_TRANSIT") return ["OUT_FOR_DELIVERY", "DELIVERY_FAILED", "DELIVERED", "RETURNED"];
-  if (previous === "OUT_FOR_DELIVERY") return ["DELIVERY_FAILED", "DELIVERED", "RETURNED"];
-  if (previous === "DELIVERY_FAILED") return ["IN_TRANSIT", "OUT_FOR_DELIVERY"];
-  return [];
+export function supportedDeliveryEventTypes() {
+  return [...DELIVERY_EVENTS];
 }
 
 export function buildDeliveryEventPayload(input) {
   const eventType = clean(input.event_type).toUpperCase();
   if (!DELIVERY_EVENTS.includes(eventType)) throw new Error("Choose a supported delivery event.");
-  const allowed = allowedNextDeliveryEvents(input.previous_event_type);
-  if (!allowed.includes(eventType)) throw new Error("This delivery event is not valid after the latest recorded event.");
   const notes = clean(input.notes);
   if (notes.length > 2000) throw new Error("Delivery notes must be 2000 characters or fewer.");
   const payload = { event_type: eventType, ...(notes ? { notes } : {}) };
