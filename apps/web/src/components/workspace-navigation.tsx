@@ -16,6 +16,7 @@ const navigation = [
   { href: "/wms/fulfillment", label: "Packing & Dispatch" },
   { href: "/quotations", label: "Quotations" },
   { href: "/growth", label: "Growth Intelligence" },
+  { href: "/growth/forecast-calibration", label: "Forecast Calibration" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
