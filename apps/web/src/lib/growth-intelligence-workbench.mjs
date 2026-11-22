@@ -17,7 +17,7 @@ function clean(value) {
 
 function numberValue(value, field, { min = -1_000_000_000_000, max = 1_000_000_000_000, decimals = 4 } = {}) {
   const raw = clean(String(value ?? ""));
-  if (!raw || !/^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$/.test(raw)) {
+  if (!raw || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
     throw new Error(field + " must be a valid number.");
   }
   const parsed = Number(raw);
@@ -48,13 +48,13 @@ function isoDateTime(value, field, { allowFuture = false } = {}) {
   const time = new Date(result);
   if (!result || !Number.isFinite(time.getTime())) throw new Error(field + " must be a valid date/time.");
   if (!allowFuture && time.getTime() > Date.now() + 5 * 60_000) throw new Error(field + " cannot be in the future.");
-  return /(?:Z|[+-]\\d{2}:\\d{2})$/i.test(result) ? result : time.toISOString();
+  return /(?:Z|[+-]\d{2}:\d{2})$/i.test(result) ? result : time.toISOString();
 }
 
 function listValue(value, field, max, minLength = 1) {
   const items = Array.isArray(value)
     ? value
-    : String(value ?? "").split(/\\r?\\n|,/);
+    : String(value ?? "").split(/\r?\n|,/);
   const normalized = items.map((item) => clean(String(item))).filter(Boolean);
   if (normalized.length < minLength || normalized.length > max) {
     throw new Error(field + " must contain " + minLength + "–" + max + " entries.");
@@ -324,7 +324,7 @@ export function buildGrowthExperimentResultPayload(input) {
     post_measurements: { [metricKey]: actualValue },
     assessment,
     stop_condition_triggered: input.stop_condition_triggered === true,
-    ...(clean(input.result_notes) ? { result_notes: textValue(input.result_notes, "Result notes", 4000) } : {}),
+    ...(clean(input.notes) ? { result_notes: textValue(input.notes, "Result notes", 4000) } : {}),
     evidence_refs: [evidenceRef],
     kpi_measurements: [{
       metric_key: metricKey, unit, direction,
