@@ -64,6 +64,15 @@ test("builds a scoped growth opportunity with required evidence and assumptions"
   assert.equal(payload.expected_value_low, 100000);
   assert.equal(payload.expected_value_high, 250000);
   assert.equal(payload.evidence[0].reference_ref, REF);
+  const flattenedUiPayload = buildGrowthOpportunityPayload({
+    ...BASE_OPPORTUNITY,
+    evidence: undefined,
+    evidence_type: "MARKET_SIGNAL",
+    evidence_description: "Buyer interview and demand signal",
+    reference_ref: REF,
+    confidence: "0.7",
+  });
+  assert.equal(flattenedUiPayload.evidence[0].description, "Buyer interview and demand signal");
   assert.throws(() => buildGrowthOpportunityPayload({ ...BASE_OPPORTUNITY, expected_value_low: "300000" }));
   assert.throws(() => buildGrowthOpportunityPayload({ ...BASE_OPPORTUNITY, evidence: { description: "No source" } }));
   assert.throws(() => buildGrowthOpportunityPayload({ ...BASE_OPPORTUNITY, assumptions: [] }));
