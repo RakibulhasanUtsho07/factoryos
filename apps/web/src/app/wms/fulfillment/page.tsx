@@ -141,12 +141,6 @@ const buttonClass = "inline-flex min-h-10 items-center justify-center rounded-lg
 const primaryButton = buttonClass + " bg-slate-950 text-white hover:bg-slate-800";
 const secondaryButton = buttonClass + " border border-slate-300 bg-white text-slate-700 hover:bg-slate-50";
 
-function localDateTimeNow() {
-  const now = new Date();
-  const offset = now.getTimezoneOffset();
-  return new Date(now.getTime() - offset * 60_000).toISOString().slice(0, 16);
-}
-
 export default function WmsFulfillmentWorkbenchPage() {
   const { status, snapshot, activeFactoryId, hasPermission, request } = useFactoryOsSession();
 
@@ -349,14 +343,17 @@ export default function WmsFulfillmentWorkbenchPage() {
   }, [selectedShipmentId, loadShipmentDetail]);
 
   useEffect(() => {
-    if (!selectedContainer) return;
-    setDispatchDraft((current) => ({
-      ...current,
-      customer_name: current.customer_name || "",
-      customer_order_reference: current.customer_order_reference || "",
-    }));
-    setContentDraft({ source_unit_id: "", quantity: "" });
-    setSelectedPalletCarton(null);
+    const timer = window.setTimeout(() => {
+      if (!selectedContainer) return;
+      setDispatchDraft((current) => ({
+        ...current,
+        customer_name: current.customer_name || "",
+        customer_order_reference: current.customer_order_reference || "",
+      }));
+      setContentDraft({ source_unit_id: "", quantity: "" });
+      setSelectedPalletCarton(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [selectedContainer?.container_unit_id]);
 
   useEffect(() => {
