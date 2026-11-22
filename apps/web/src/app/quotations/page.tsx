@@ -257,7 +257,10 @@ export default function CommercialQuotationWorkbenchPage() {
     () => resolveCurrentPricingRule(rules, quoteDraft.customer_reference, quoteDraft.pricing_rule_code) as PricingRule | null,
     [rules, quoteDraft.customer_reference, quoteDraft.pricing_rule_code],
   );
-  const allowedCurrencies = selectedRule?.allowed_currencies ?? ["BDT"];
+  const allowedCurrencies = useMemo(
+    () => selectedRule?.allowed_currencies ?? ["BDT"],
+    [selectedRule],
+  );
   const baseCurrency = selectedRule?.base_currency ?? "BDT";
   const today = localDate();
   const selectedRate = useMemo(
@@ -1010,7 +1013,7 @@ export default function CommercialQuotationWorkbenchPage() {
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold text-slate-950">Effective-dated FX register</h2><p className="mt-1 text-xs text-slate-500">A quotation uses the latest rate effective on or before the database's current date; the applied rate is snapshotted.</p></div><span className="text-xs text-slate-500">{visibleRates.length} shown</span></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold text-slate-950">Effective-dated FX register</h2><p className="mt-1 text-xs text-slate-500">A quotation uses the latest rate effective on or before the current database date; the applied rate is snapshotted.</p></div><span className="text-xs text-slate-500">{visibleRates.length} shown</span></div>
             <input className={inputClass + " mt-4"} value={rateSearch} onChange={(event) => setRateSearch(event.target.value)} placeholder="Filter currency pair, source or date…" />
             <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full min-w-[620px] text-left text-xs">
