@@ -65,7 +65,7 @@ test("builds safe customer/site notification intents without contact data", () =
 });
 
 test("rejects URLs and malformed recipient references", () => {
-  for (const value of ["https://example.com", "person@example.com", " ", "bad ref"]) {
+  for (const value of ["https://example.com", "person@example.com", " ", "bad ref", "X".repeat(256)]) {
     assert.throws(() => buildRecallNotificationIntentPayload({
       recipient_type: "CUSTOMER", recipient_reference: value, channel: "EMAIL",
     }));
