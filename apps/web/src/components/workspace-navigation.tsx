@@ -11,6 +11,7 @@ const navigation = [
   { href: "/inventory/cycle-counts", label: "Cycle Counts" },
   { href: "/inventory/replenishment", label: "Replenishment" },
   { href: "/inventory/reservations", label: "Reservations & Issue" },
+  { href: "/inventory/warehouse-operations", label: "Put-away & Picking" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
