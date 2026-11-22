@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
+import Link from "next/link";
+
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   allowedNextDeliveryEvents,
@@ -342,19 +344,16 @@ export default function WmsFulfillmentWorkbenchPage() {
     return () => window.clearTimeout(timer);
   }, [selectedShipmentId, loadShipmentDetail]);
 
+  const selectedContainerUnitId = selectedContainer?.container_unit_id ?? "";
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (!selectedContainer) return;
-      setDispatchDraft((current) => ({
-        ...current,
-        customer_name: current.customer_name || "",
-        customer_order_reference: current.customer_order_reference || "",
-      }));
+      if (!selectedContainerUnitId) return;
       setContentDraft({ source_unit_id: "", quantity: "" });
       setSelectedPalletCarton(null);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [selectedContainer?.container_unit_id]);
+  }, [selectedContainerUnitId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -381,7 +380,7 @@ export default function WmsFulfillmentWorkbenchPage() {
     setError("");
     setNotice("");
     try {
-      const payload = buildCreateContainerPayload(containerDraft);
+      const payload = buildCreateContainerPayload(containerDraft as unknown as Record<string, unknown>);
       const result = await request("/traceability/containers", {
         method: "POST",
         idempotencyKey: "wms-container-" + crypto.randomUUID(),
@@ -478,7 +477,7 @@ export default function WmsFulfillmentWorkbenchPage() {
     setError("");
     setNotice("");
     try {
-      const payload = buildDispatchPayload(dispatchDraft);
+      const payload = buildDispatchPayload(dispatchDraft as unknown as Record<string, unknown>);
       const result = await request("/traceability/containers/" + selectedContainer.container_unit_id + "/dispatch", {
         method: "POST",
         idempotencyKey: "wms-dispatch-" + crypto.randomUUID(),
@@ -527,7 +526,7 @@ export default function WmsFulfillmentWorkbenchPage() {
     try {
       const payload = buildDeliveryEventPayload({
         ...deliveryDraft,
-        previous_event_type: deliveryEvents.at(-1)?.event_type ?? null,
+        previous_event_type: deliveryEvents[deliveryEvents.length - 1]?.event_type ?? null,
         tenant_id: snapshot?.tenant.id ?? "",
         factory_id: activeFactoryId,
         shipment_unit_id: selectedShipment.shipment_unit_id,
@@ -565,11 +564,10 @@ export default function WmsFulfillmentWorkbenchPage() {
     [finishedLots, selectedContainer?.item_id],
   );
   const sealedCartonsForPallet = useMemo(
-    () => cartonIdentities.filter((unit) =>
-      unit.status.toUpperCase() === "ACTIVE" || unit.status.toUpperCase() === "SHIPPED"),
+    () => cartonIdentities.filter((unit) => unit.status.toUpperCase() === "ACTIVE"),
     [cartonIdentities],
   );
-  const latestDeliveryEvent = deliveryEvents.at(-1)?.event_type ?? null;
+  const latestDeliveryEvent = deliveryEvents[deliveryEvents.length - 1]?.event_type ?? null;
   const nextDeliveryEvents = allowedNextDeliveryEvents(latestDeliveryEvent);
   const deliveryChoices = nextDeliveryEvents.length ? nextDeliveryEvents : [];
   const currentContainerPercent = selectedContainer && Number(selectedContainer.capacity_quantity) > 0
@@ -586,7 +584,7 @@ export default function WmsFulfillmentWorkbenchPage() {
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-700">WMS outbound fulfillment</p>
           <h1 className="mt-2 text-2xl font-bold text-slate-950">Packing, dispatch & delivery</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">Connect an authenticated FactoryOS session and select an active factory to use carton/pallet packing, shipment dispatch and delivery evidence.</p>
-          <a href="/session" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-xs font-semibold text-white">Open session setup</a>
+          <Link href="/session" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-xs font-semibold text-white">Open session setup</Link>
         </div>
       </main>
     );
