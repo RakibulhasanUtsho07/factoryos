@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -35,6 +35,7 @@ type InventoryItem = {
 type InventoryLocation = {
   id: string;
   location_code: string;
+  name?: string;
   location_name?: string;
   location_type: string;
   status: string;
@@ -99,7 +100,7 @@ function StatusTag({ value, urgent = false }: { value: string; urgent?: boolean 
   return <span className={"inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold " + tone}>{formatCycleCountStatus(value)}</span>;
 }
 
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
     <label className="block min-w-0">
       <span className="mb-1.5 block text-xs font-semibold text-slate-700">{label}</span>
@@ -124,6 +125,7 @@ export default function InventoryCycleCountOperationsPage() {
   const [sessions, setSessions] = useState<CycleCountSession[]>([]);
   const [policies, setPolicies] = useState<CycleCountPolicy[]>([]);
   const [proposals, setProposals] = useState<CycleCountProposal[]>([]);
+  const [proposalRefresh, setProposalRefresh] = useState(0);
   const [selectedItemId, setSelectedItemId] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [selectedProposalId, setSelectedProposalId] = useState("");
@@ -268,7 +270,7 @@ export default function InventoryCycleCountOperationsPage() {
     }
     void loadProposals();
     return () => { active = false; };
-  }, [selectedItemId, status, canRead, canReview, request]);
+  }, [selectedItemId, status, canRead, canReview, request, proposalRefresh]);
 
   useEffect(() => {
     setEscalation(null);
@@ -355,6 +357,7 @@ export default function InventoryCycleCountOperationsPage() {
       );
       setReviewNote("");
       setSelectedProposalId("");
+      setProposalRefresh((version) => version + 1);
     }, action === "approve"
       ? "Cycle count approved and its stock reconciliation was applied."
       : "Cycle count rejected. The scheduled task is available for recount.");
@@ -674,7 +677,7 @@ export default function InventoryCycleCountOperationsPage() {
                   </div>
                   <Field label="Active bins · choose 2–50">
                     <div className="grid max-h-44 gap-2 overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-2">
-                      {activeBins.map((bin) => <label key={bin.id} className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={sessionForm.location_ids.includes(bin.id)} onChange={(event) => setSessionForm((current) => ({ ...current, location_ids: event.target.checked ? [...current.location_ids, bin.id] : current.location_ids.filter((id) => id !== bin.id) }))} />{bin.location_code}{bin.location_name ? " · " + bin.location_name : ""}</label>)}
+                      {activeBins.map((bin) => <label key={bin.id} className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={sessionForm.location_ids.includes(bin.id)} onChange={(event) => setSessionForm((current) => ({ ...current, location_ids: event.target.checked ? [...current.location_ids, bin.id] : current.location_ids.filter((id) => id !== bin.id) }))} />{bin.location_code}{bin.name || bin.location_name ? " · " + (bin.name || bin.location_name) : ""}</label>)}
                       {activeBins.length === 0 ? <p className="text-xs text-slate-500">No active bin locations are available.</p> : null}
                     </div>
                   </Field>
@@ -714,7 +717,7 @@ export default function InventoryCycleCountOperationsPage() {
                   <Field label="Single bin (optional)"><select value={policyForm.location_id} disabled={policyForm.location_ids.length >= 2} onChange={(event) => setPolicyForm((current) => ({ ...current, location_id: event.target.value }))} className={inputClass}><option value="">Aggregate item count</option>{activeBins.map((bin) => <option key={bin.id} value={bin.id}>{bin.location_code}</option>)}</select></Field>
                   <Field label="Or choose 2–50 bins for a recurring multi-bin session">
                     <div className="grid max-h-36 gap-2 overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-2">
-                      {activeBins.map((bin) => <label key={bin.id} className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={policyForm.location_ids.includes(bin.id)} onChange={(event) => setPolicyForm((current) => ({ ...current, location_id: "", location_ids: event.target.checked ? [...current.location_ids, bin.id] : current.location_ids.filter((id) => id !== bin.id) }))} />{bin.location_code}</label>)}
+                      {activeBins.map((bin) => <label key={bin.id} className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={policyForm.location_ids.includes(bin.id)} onChange={(event) => setPolicyForm((current) => ({ ...current, location_id: "", location_ids: event.target.checked ? [...current.location_ids, bin.id] : current.location_ids.filter((id) => id !== bin.id) }))} />{bin.location_code}{bin.name ? " · " + bin.name : ""}</label>)}
                     </div>
                   </Field>
                   <label className="flex items-start gap-2 text-xs text-slate-700"><input type="checkbox" checked={policyForm.blind_count} onChange={(event) => setPolicyForm((current) => ({ ...current, blind_count: event.target.checked }))} className="mt-0.5" /><span><strong>Blind count</strong> — expected stock is withheld from the counter.</span></label>
