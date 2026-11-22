@@ -515,7 +515,7 @@ export default function InventoryReservationIssueWorkbenchPage() {
                 <Field label="Picking BIN" hint="Optional for ordinary stock; traceability policy may require a compatible active BIN.">
                   <select className={inputClass} value={createDraft.location_id} onChange={(event) => setCreateDraft((current) => ({ ...current, location_id: event.target.value }))}>
                     <option value="">No BIN selected</option>
-                    {activeBins.map((location) => <option key={location.id} value={location.id}>{location.code} · {location.name}</option>)}
+                    {activeBins.map((location) => <option key={location.id} value={location.id}>{location.location_code} · {location.name}</option>)}
                   </select>
                 </Field>
                 <Field label="Reference type" hint="Example: WORK_ORDER, SALES_ORDER or TRANSFER.">
