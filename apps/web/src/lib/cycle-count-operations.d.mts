@@ -11,6 +11,7 @@ export interface CycleCountTask {
   status: string;
   blind_count: boolean;
   current_proposal_id?: string | null;
+  submitted_by_user_id?: string | null;
   variance_escalation_status?: "OPEN" | "RESOLVED" | null;
   overdue: boolean;
   notes?: string | null;
