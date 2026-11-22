@@ -34,14 +34,6 @@ function messageOf(error: unknown) {
   return error instanceof Error ? error.message : "The request could not be completed.";
 }
 
-function statusOf(error: unknown) {
-  if (typeof error === "object" && error !== null && "status" in error) {
-    const value = Number((error as { status?: unknown }).status);
-    return Number.isFinite(value) ? value : null;
-  }
-  return null;
-}
-
 function rowsOf<T>(value: unknown, key: string): T[] {
   return asWarehouseRows(value, key) as T[];
 }
@@ -193,9 +185,14 @@ export default function WarehousePutawayPickingWorkbenchPage() {
     [traceabilityUnits, selectedItemId],
   );
 
+  const historyRows = useMemo(() => transfers.map((row) => ({
+    ...row,
+    source_location_code: locations.find((location) => location.id === row.source_location_id)?.location_code ?? "",
+    destination_location_code: locations.find((location) => location.id === row.destination_location_id)?.location_code ?? "",
+  })), [transfers, locations]);
   const visibleTransfers = useMemo(
-    () => filterWarehouseTransfers(transfers, historySearch, historyPurpose),
-    [transfers, historySearch, historyPurpose],
+    () => filterWarehouseTransfers(historyRows, historySearch, historyPurpose),
+    [historyRows, historySearch, historyPurpose],
   );
 
   const summary = useMemo(
@@ -296,15 +293,18 @@ export default function WarehousePutawayPickingWorkbenchPage() {
   }, [loadOperations]);
 
   useEffect(() => {
-    setDraft((current) => ({
-      ...current,
-      source_location_id: sourceOptions.some((option) => option.id === current.source_location_id)
-        ? current.source_location_id : sourceOptions[0]?.id ?? "",
-      destination_location_id: filteredDestinations.some((option) => option.id === current.destination_location_id)
-        ? current.destination_location_id : filteredDestinations[0]?.id ?? "",
-      traceability_unit_id: effectiveUnits.some((unit) => unit.id === current.traceability_unit_id)
-        ? current.traceability_unit_id : "",
-    }));
+    const timer = window.setTimeout(() => {
+      setDraft((current) => ({
+        ...current,
+        source_location_id: sourceOptions.some((option) => option.id === current.source_location_id)
+          ? current.source_location_id : sourceOptions[0]?.id ?? "",
+        destination_location_id: filteredDestinations.some((option) => option.id === current.destination_location_id)
+          ? current.destination_location_id : filteredDestinations[0]?.id ?? "",
+        traceability_unit_id: effectiveUnits.some((unit) => unit.id === current.traceability_unit_id)
+          ? current.traceability_unit_id : "",
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [sourceOptions, filteredDestinations, effectiveUnits]);
 
   async function refresh() {
