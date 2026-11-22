@@ -25,7 +25,7 @@ import type {
   PricingRule,
   QuotationHistory,
   QuotationListItem,
-  QuotationPreviewLine,
+  QuotationRevisionSnapshot,
 } from "@/lib/commercial-quotation-workbench.mjs";
 
 type Tab = "QUOTATIONS" | "PRICING" | "FX";
@@ -234,7 +234,7 @@ export default function CommercialQuotationWorkbenchPage() {
   const [rates, setRates] = useState<ExchangeRate[]>([]);
   const [selectedQuoteId, setSelectedQuoteId] = useState("");
   const [selectedQuote, setSelectedQuote] = useState<CommercialQuotation | null>(null);
-  const [revisions, setRevisions] = useState<CommercialQuotation[]>([]);
+  const [revisions, setRevisions] = useState<QuotationRevisionSnapshot[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [rateSearch, setRateSearch] = useState("");
@@ -354,7 +354,7 @@ export default function CommercialQuotationWorkbenchPage() {
       setError(errorMessage(detailResult.reason));
     }
     if (revisionResult.status === "fulfilled") {
-      setRevisions(rows<CommercialQuotation>(revisionResult.value, "items"));
+      setRevisions(rows<QuotationRevisionSnapshot>(revisionResult.value, "items"));
     } else {
       setRevisions([]);
       if (detailResult.status === "fulfilled") setError("Quotation loaded, but immutable revision snapshots could not be read: " + messageOf(revisionResult.reason));
@@ -593,10 +593,6 @@ export default function CommercialQuotationWorkbenchPage() {
     if (kind === "CONVERT") return canConvert && quote.status === "ACCEPTED";
     return false;
   }
-
-  const ruleForSelected = selectedQuote
-    ? resolveCurrentPricingRule(rules, selectedQuote.customer_reference ?? "", selectedQuote.pricing_rule_code) as PricingRule | null
-    : null;
 
   if (status !== "connected" || !activeFactoryId) {
     return (
