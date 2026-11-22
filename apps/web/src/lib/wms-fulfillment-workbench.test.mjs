@@ -162,13 +162,13 @@ test("exposes exactly the event types supported by the delivery API without inve
   ]);
 });
 
-test("builds non-terminal delivery tracking events without proof fields", () => {
+test("builds delivery tracking events without adding POD fields to non-DELIVERED events", () => {
   assert.deepEqual(buildDeliveryEventPayload({
     event_type: "in_transit", previous_event_type: null, notes: "Carrier pickup complete",
   }), { event_type: "IN_TRANSIT", notes: "Carrier pickup complete" });
-  assert.throws(() => buildDeliveryEventPayload({
+  assert.equal(buildDeliveryEventPayload({
     event_type: "RETURNED", previous_event_type: "DELIVERED",
-  }));
+  }).event_type, "RETURNED");
 });
 
 test("requires a shipment-scoped uploaded object reference, digest and recipient for DELIVERED", () => {
