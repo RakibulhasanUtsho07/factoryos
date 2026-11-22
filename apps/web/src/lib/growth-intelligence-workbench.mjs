@@ -116,6 +116,21 @@ export function buildGrowthOpportunityPayload(input) {
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Currency must be a three-letter code.");
   const assumptions = listValue(input.assumptions, "Initial assumptions", 30, 1)
     .map((value) => textValue(value, "Assumption", 2000, 5));
+  const evidenceInput = input.evidence && typeof input.evidence === "object"
+    ? input.evidence
+    : {
+      evidence_type: input.evidence_type,
+      description: input.evidence_description,
+      reference_ref: input.reference_ref,
+      citation_url: input.citation_url,
+      confidence: input.confidence,
+      research_claim_id: input.research_claim_id,
+      business_entity_id: input.business_entity_id,
+    };
+  const effort = clean(input.effort).toUpperCase();
+  if (!["SMALL", "MEDIUM", "LARGE", "UNKNOWN"].includes(effort)) throw new Error("Select an opportunity effort.");
+  const implementationRisk = clean(input.implementation_risk).toUpperCase();
+  if (!["LOW", "MEDIUM", "HIGH", "UNKNOWN"].includes(implementationRisk)) throw new Error("Select an implementation risk.");
   return {
     title: textValue(input.title, "Opportunity title", 300),
     category,
@@ -126,10 +141,10 @@ export function buildGrowthOpportunityPayload(input) {
     expected_value_high: high,
     currency,
     uncertainty_pct: numberValue(input.uncertainty_pct, "Uncertainty", { min: 0, max: 100, decimals: 4 }),
-    effort: clean(input.effort).toUpperCase(),
+    effort,
     time_to_impact_days: numberValue(input.time_to_impact_days, "Time to impact", { min: 0, max: 3650, decimals: 0 }),
-    implementation_risk: clean(input.implementation_risk).toUpperCase(),
-    evidence: [normalizeEvidence(input.evidence ?? {})],
+    implementation_risk: implementationRisk,
+    evidence: [normalizeEvidence(evidenceInput)],
   };
 }
 
