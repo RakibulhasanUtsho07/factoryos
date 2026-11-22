@@ -123,7 +123,7 @@ function initialAssumptionDraft(): AssumptionDraft {
 }
 
 function initialConstraintDraft(): ConstraintDraft {
-  return { dimension: "CAPACITY", applicability: "APPLICABLE", constraint_name: "", limit_operator: "MAX", threshold_value: "", observed_value: "", unit: "%", source_evidence_ref: "", source_as_of: localDateTime() + ":00Z", rationale: "" };
+  return { dimension: "CAPACITY", applicability: "APPLICABLE", constraint_name: "", limit_operator: "MAX", threshold_value: "", observed_value: "", unit: "%", source_evidence_ref: "", source_as_of: new Date().toISOString().slice(0, 19) + "Z", rationale: "" };
 }
 
 function initialGapDraft(): GapDraft {
