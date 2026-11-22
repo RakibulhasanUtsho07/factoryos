@@ -345,7 +345,13 @@ export default function TraceabilityRecallWorkbenchPage() {
       setRecallResult(result);
       setNotifications([]);
       setNotice("Recall case declared. Eligible identities were moved to RECALLED; shipped identities remain unchanged and require follow-up.");
-      await loadSelectedUnit();
+      const [unitResult, historyResult] = await Promise.all([
+        request("/traceability/units/" + selectedUnit.id),
+        request("/traceability/units/" + selectedUnit.id + "/status-history"),
+      ]);
+      setSelectedUnit(unitResult as TraceabilityUnit);
+      setStatusEvents(rowsOf<TraceabilityStatusEvent>(historyResult, "events"));
+      await loadUnits();
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
