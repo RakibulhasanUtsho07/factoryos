@@ -175,6 +175,7 @@ export default function InventoryCycleCountOperationsPage() {
   const canReadUsers = hasPermission("iam.users.read");
   const viewerId = snapshot?.user.id ?? "";
   const activeItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const activeItems = items.filter((item) => item.status.toUpperCase() === "ACTIVE");
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedProposal = proposals.find((proposal) => proposal.id === selectedProposalId) ?? null;
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
@@ -225,9 +226,12 @@ export default function InventoryCycleCountOperationsPage() {
       const nextUsers = canReadUsers ? asCycleCountItems(take(5), "items") as TenantUser[] : [];
       setUsers(nextUsers);
       setSelectedItemId((current) => nextItems.some((item) => item.id === current) ? current : nextItems[0]?.id ?? "");
-      setTaskForm((current) => ({ ...current, item_id: nextItems.some((item) => item.id === current.item_id) ? current.item_id : nextItems[0]?.id ?? "" }));
-      setSessionForm((current) => ({ ...current, item_id: nextItems.some((item) => item.id === current.item_id) ? current.item_id : nextItems[0]?.id ?? "", assigned_to_user_id: current.assigned_to_user_id || viewerId }));
-      setPolicyForm((current) => ({ ...current, item_id: nextItems.some((item) => item.id === current.item_id) ? current.item_id : nextItems[0]?.id ?? "", assigned_to_user_id: current.assigned_to_user_id || viewerId }));
+      const nextActiveItems = nextItems.filter((item) => item.status.toUpperCase() === "ACTIVE");
+      const firstActiveItemId = nextActiveItems[0]?.id ?? "";
+      const isActiveItemId = (id: string) => nextActiveItems.some((item) => item.id === id);
+      setTaskForm((current) => ({ ...current, item_id: isActiveItemId(current.item_id) ? current.item_id : firstActiveItemId }));
+      setSessionForm((current) => ({ ...current, item_id: isActiveItemId(current.item_id) ? current.item_id : firstActiveItemId, assigned_to_user_id: current.assigned_to_user_id || viewerId }));
+      setPolicyForm((current) => ({ ...current, item_id: isActiveItemId(current.item_id) ? current.item_id : firstActiveItemId, assigned_to_user_id: current.assigned_to_user_id || viewerId }));
       if (requests.slice(0, 5).some((result) => result.status === "rejected")) {
         setError("Some cycle-count registers could not be loaded. Check your inventory.read access and refresh.");
       }
@@ -614,7 +618,7 @@ export default function InventoryCycleCountOperationsPage() {
                   {items.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
                 </select>
               </Field>
-              <p className="mt-3 text-xs leading-5 text-slate-500">The API only reveals blind-count expected balances in the reviewer projection. The submitter's own blind-count snapshot remains hidden.</p>
+              <p className="mt-3 text-xs leading-5 text-slate-500">The API only reveals blind-count expected balances in the reviewer projection. The submitter&apos;s own blind-count snapshot remains hidden.</p>
               {!canReview ? <div className="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Read-only proposal history. Independent decisions require <code>inventory.cycle-count.review</code>.</div> : null}
             </aside>
             <div className="min-w-0 p-4 sm:p-5">
@@ -670,7 +674,7 @@ export default function InventoryCycleCountOperationsPage() {
               {sessionFormOpen ? (
                 <form onSubmit={(event) => void createSession(event)} className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Inventory item"><select required value={sessionForm.item_id} onChange={(event) => setSessionForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{items.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
+                    <Field label="Inventory item"><select required value={sessionForm.item_id} onChange={(event) => setSessionForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{activeItems.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
                     <Field label="Assigned counter"><select required value={sessionForm.assigned_to_user_id} onChange={(event) => setSessionForm((current) => ({ ...current, assigned_to_user_id: event.target.value }))} className={inputClass}><option value="">Choose user</option>{assignableUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name} · {user.email || user.id.slice(0, 8)}</option>)}</select></Field>
                     <Field label="Due at"><input required type="datetime-local" value={sessionForm.due_at} onChange={(event) => setSessionForm((current) => ({ ...current, due_at: event.target.value }))} className={inputClass} /></Field>
                     <Field label="Priority (lower first)"><input type="number" min="0" max="10000" value={sessionForm.priority} onChange={(event) => setSessionForm((current) => ({ ...current, priority: event.target.value }))} className={inputClass} /></Field>
@@ -707,7 +711,7 @@ export default function InventoryCycleCountOperationsPage() {
               {policyFormOpen ? (
                 <form onSubmit={(event) => void createPolicy(event)} className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Inventory item"><select required value={policyForm.item_id} onChange={(event) => setPolicyForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{items.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
+                    <Field label="Inventory item"><select required value={policyForm.item_id} onChange={(event) => setPolicyForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{activeItems.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
                     <Field label="Assigned counter"><select required value={policyForm.assigned_to_user_id} onChange={(event) => setPolicyForm((current) => ({ ...current, assigned_to_user_id: event.target.value }))} className={inputClass}><option value="">Choose user</option>{assignableUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name} · {user.email || user.id.slice(0, 8)}</option>)}</select></Field>
                     <Field label="Cadence"><select value={policyForm.cadence_unit} onChange={(event) => setPolicyForm((current) => ({ ...current, cadence_unit: event.target.value }))} className={inputClass}><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></select></Field>
                     <Field label="Interval"><input type="number" min="1" max={policyForm.cadence_unit === "DAILY" ? 365 : policyForm.cadence_unit === "WEEKLY" ? 52 : 24} value={policyForm.cadence_interval} onChange={(event) => setPolicyForm((current) => ({ ...current, cadence_interval: event.target.value }))} className={inputClass} /></Field>
@@ -745,7 +749,7 @@ export default function InventoryCycleCountOperationsPage() {
             <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wide text-blue-700">New inventory task</p><h2 id="schedule-count-title" className="mt-1 text-xl font-bold text-slate-950">Schedule a cycle count</h2></div><button type="button" onClick={() => setTaskFormOpen(false)} className={secondaryButton}>Close</button></div>
             <form onSubmit={(event) => void createTask(event)} className="mt-5 space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Inventory item"><select required value={taskForm.item_id} onChange={(event) => setTaskForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{items.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
+                <Field label="Inventory item"><select required value={taskForm.item_id} onChange={(event) => setTaskForm((current) => ({ ...current, item_id: event.target.value }))} className={inputClass}>{activeItems.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></Field>
                 <Field label="Location (optional)"><select value={taskForm.location_id} onChange={(event) => setTaskForm((current) => ({ ...current, location_id: event.target.value }))} className={inputClass}><option value="">Aggregate item balance</option>{activeBins.map((bin) => <option key={bin.id} value={bin.id}>{bin.location_code}</option>)}</select></Field>
                 <Field label="Assign counter (optional)"><select value={taskForm.assigned_to_user_id} onChange={(event) => setTaskForm((current) => ({ ...current, assigned_to_user_id: event.target.value }))} className={inputClass}><option value="">Unassigned</option>{assignableUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name} · {user.email || user.id.slice(0, 8)}</option>)}</select></Field>
                 <Field label="Due at"><input required type="datetime-local" value={taskForm.due_at} onChange={(event) => setTaskForm((current) => ({ ...current, due_at: event.target.value }))} className={inputClass} /></Field>
