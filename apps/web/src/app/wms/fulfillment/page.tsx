@@ -216,7 +216,6 @@ export default function WmsFulfillmentWorkbenchPage() {
     [containerIdentities, shipments],
   );
   const selectedSourceLot = finishedLots.find((unit) => unit.id === contentDraft.source_unit_id) ?? null;
-  const selectedCartonIdentity = cartonIdentities.find((unit) => unit.id === contentDraft.source_unit_id) ?? null;
   const availableOrderLines = (selectedOrder?.lines ?? []).filter((line) =>
     !selectedContainer || (
       (line.inventory_item_id === selectedContainer.item_id || !line.inventory_item_id)
