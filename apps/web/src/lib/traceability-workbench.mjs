@@ -74,7 +74,7 @@ export function buildRecallNotificationIntentPayload(input) {
   const recipientType = clean(input.recipient_type).toUpperCase();
   if (!["CUSTOMER", "SITE"].includes(recipientType)) throw new Error("Choose CUSTOMER or SITE as the recipient type.");
   const recipientReference = clean(input.recipient_reference);
-  if (!SAFE_REFERENCE.test(recipientReference) || /^https?:/i.test(recipientReference)) {
+  if (recipientReference.length > 255 || !SAFE_REFERENCE.test(recipientReference) || /^https?:/i.test(recipientReference)) {
     throw new Error("Recipient reference must be a non-URL customer or site reference.");
   }
   const channel = clean(input.channel).toUpperCase();
