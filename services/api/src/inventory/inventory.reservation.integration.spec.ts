@@ -3275,4 +3275,190 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(orphaned.rows[0]?.count).toBe('0');
   }, 30000);
 
+
+    // Once the FEFO-preferred LOT has been merged, two independent demands
+    // compete for its 3.0000 units. Their combined 4.0000 demand exceeds that
+    // LOT but remains within the 6.0000 eligible item balance, so both must
+    // serialize successfully and spill exactly 1.0000 into the later LOT.
+    const releasedInitial = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, reservationResult.id,
+      { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+      'wms-fefo-merge-race-release-initial-' + token,
+      null,
+      null,
+    );
+    expect(releasedInitial).toMatchObject({
+      id: reservationResult.id,
+      status: 'RELEASED',
+      remaining_quantity: '0.0000',
+      replayed: false,
+    });
+
+    const demandKeys = [
+      'wms-fefo-merged-demand-a-' + token,
+      'wms-fefo-merged-demand-b-' + token,
+    ];
+    const reserveDemand = (key: string) => service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 2, location_id: bin.id } as CreateInventoryReservationDto,
+      key,
+      null,
+      null,
+    );
+    const competingDemands = await Promise.all([
+      reserveDemand(demandKeys[0]!),
+      reserveDemand(demandKeys[1]!),
+    ]);
+    expect(competingDemands).toHaveLength(2);
+    expect(competingDemands.every((reservation) =>
+      reservation.status === 'RESERVED' && reservation.replayed === false,
+    )).toBe(true);
+    expect(new Set(competingDemands.map((reservation) => reservation.id)).size).toBe(2);
+
+    // Replaying one request with its original idempotency key must return the
+    // same reservation without creating another allocation or consuming stock.
+    const replayedDemand = await reserveDemand(demandKeys[0]!);
+    expect(replayedDemand).toMatchObject({
+      id: competingDemands[0]!.id,
+      status: 'RESERVED',
+      replayed: true,
+    });
+
+    const competingRows = await adminPool.query<{
+      reservation_id: string;
+      status: string;
+      quantity: string;
+      idempotency_key: string;
+      allocation_sequence: number;
+      traceability_unit_id: string;
+      allocated_quantity: string;
+      remaining_quantity: string;
+    }>(
+      "SELECT r.id::text AS reservation_id, r.status, " +
+      "r.quantity::numeric(18,4)::text AS quantity, r.idempotency_key, " +
+      "a.allocation_sequence::int AS allocation_sequence, " +
+      "a.traceability_unit_id::text AS traceability_unit_id, " +
+      "a.allocated_quantity::numeric(18,4)::text AS allocated_quantity, " +
+      "(a.allocated_quantity-a.consumed_quantity-a.released_quantity-a.remapped_quantity)::numeric(18,4)::text AS remaining_quantity " +
+      "FROM inventory_reservations r " +
+      "JOIN inventory_reservation_traceability_allocations a ON a.reservation_id=r.id " +
+      "AND a.tenant_id=r.tenant_id AND a.factory_id=r.factory_id " +
+      "WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.item_id=$3 " +
+      "AND r.id=ANY($4::uuid[]) ORDER BY r.id, a.allocation_sequence",
+      [tenantId, factoryId, itemId, competingDemands.map((reservation) => reservation.id)],
+    );
+    expect(competingRows.rows).toHaveLength(3);
+    expect(competingRows.rows.every((row) =>
+      row.status === 'RESERVED' && row.quantity === '2.0000' &&
+      row.allocated_quantity === row.remaining_quantity,
+    )).toBe(true);
+    expect(new Set(competingRows.rows.map((row) => row.idempotency_key)))
+      .toEqual(new Set(demandKeys));
+
+    const demandGroups = competingDemands.map((reservation) => ({
+      reservationId: reservation.id,
+      rows: competingRows.rows.filter((row) => row.reservation_id === reservation.id),
+    })).sort((left, right) => left.rows.length - right.rows.length);
+    expect(demandGroups.map((group) => group.rows.length)).toEqual([1, 2]);
+    expect(demandGroups[0]!.rows[0]).toMatchObject({
+      allocation_sequence: 1,
+      traceability_unit_id: mergedId,
+      allocated_quantity: '2.0000',
+      remaining_quantity: '2.0000',
+    });
+    expect(demandGroups[1]!.rows.map((row) => row.allocation_sequence)).toEqual([1, 2]);
+    expect(demandGroups[1]!.rows.map((row) => row.traceability_unit_id))
+      .toEqual([mergedId, laterLotId]);
+    expect(demandGroups[1]!.rows.map((row) => row.allocated_quantity))
+      .toEqual(['1.0000', '1.0000']);
+    expect(demandGroups[1]!.rows.map((row) => row.remaining_quantity))
+      .toEqual(['1.0000', '1.0000']);
+
+    const persistedDemandCount = await adminPool.query<{ reservation_count: string; allocation_count: string }>(
+      "SELECT count(DISTINCT r.id)::text AS reservation_count, count(a.id)::text AS allocation_count " +
+      "FROM inventory_reservations r " +
+      "JOIN inventory_reservation_traceability_allocations a ON a.reservation_id=r.id " +
+      "AND a.tenant_id=r.tenant_id AND a.factory_id=r.factory_id " +
+      "WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.item_id=$3 " +
+      "AND r.idempotency_key=ANY($4::text[])",
+      [tenantId, factoryId, itemId, demandKeys],
+    );
+    expect(persistedDemandCount.rows[0]).toEqual({
+      reservation_count: '2',
+      allocation_count: '3',
+    });
+
+    const postDemandLotBalances = await adminPool.query<{
+      traceability_unit_id: string;
+      quantity_on_hand: string;
+      quantity_reserved: string;
+    }>(
+      "SELECT traceability_unit_id::text AS traceability_unit_id, " +
+      "quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_traceability_location_balances " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4 " +
+      "AND traceability_unit_id=ANY($5::uuid[]) ORDER BY traceability_unit_id",
+      [tenantId, factoryId, itemId, bin.id, [mergedId, laterLotId]],
+    );
+    expect(postDemandLotBalances.rows).toEqual(expect.arrayContaining([
+      { traceability_unit_id: mergedId, quantity_on_hand: '3.0000', quantity_reserved: '3.0000' },
+      { traceability_unit_id: laterLotId, quantity_on_hand: '3.0000', quantity_reserved: '1.0000' },
+    ]));
+
+    const postDemandBalances = await adminPool.query<{
+      stock_on_hand: string;
+      stock_reserved: string;
+      bin_on_hand: string;
+      bin_reserved: string;
+      traceability_on_hand: string;
+      traceability_reserved: string;
+    }>(
+      "SELECT s.quantity_on_hand::numeric(18,4)::text AS stock_on_hand, " +
+      "s.quantity_reserved::numeric(18,4)::text AS stock_reserved, " +
+      "b.quantity_on_hand::numeric(18,4)::text AS bin_on_hand, " +
+      "b.quantity_reserved::numeric(18,4)::text AS bin_reserved, " +
+      "(SELECT COALESCE(SUM(tlb.quantity_on_hand),0)::numeric(18,4)::text " +
+      " FROM inventory_traceability_location_balances tlb " +
+      " WHERE tlb.tenant_id=s.tenant_id AND tlb.factory_id=s.factory_id " +
+      " AND tlb.item_id=s.item_id AND tlb.location_id=$4) AS traceability_on_hand, " +
+      "(SELECT COALESCE(SUM(tlb.quantity_reserved),0)::numeric(18,4)::text " +
+      " FROM inventory_traceability_location_balances tlb " +
+      " WHERE tlb.tenant_id=s.tenant_id AND tlb.factory_id=s.factory_id " +
+      " AND tlb.item_id=s.item_id AND tlb.location_id=$4) AS traceability_reserved " +
+      "FROM inventory_stock_balances s " +
+      "JOIN inventory_location_balances b ON b.tenant_id=s.tenant_id " +
+      "AND b.factory_id=s.factory_id AND b.item_id=s.item_id " +
+      "WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4",
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(postDemandBalances.rows).toEqual([{
+      stock_on_hand: '6.0000',
+      stock_reserved: '4.0000',
+      bin_on_hand: '6.0000',
+      bin_reserved: '4.0000',
+      traceability_on_hand: '6.0000',
+      traceability_reserved: '4.0000',
+    }]);
+
+    const postDemandOrphans = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count " +
+      "FROM inventory_reservation_traceability_allocations a " +
+      "JOIN traceability_units tu ON tu.id=a.traceability_unit_id " +
+      "AND tu.tenant_id=a.tenant_id AND tu.factory_id=a.factory_id " +
+      "WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 " +
+      "AND a.allocated_quantity>a.consumed_quantity+a.released_quantity+a.remapped_quantity " +
+      "AND tu.status<>'ACTIVE'",
+      [tenantId, factoryId, itemId],
+    );
+    expect(postDemandOrphans.rows[0]?.count).toBe('0');
+
+    const newDemandRemaps = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count " +
+      "FROM inventory_reservation_traceability_allocation_remaps " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND reservation_id=ANY($3::uuid[])",
+      [tenantId, factoryId, competingDemands.map((reservation) => reservation.id)],
+    );
+    expect(newDemandRemaps.rows[0]?.count).toBe('0');
+
 });
