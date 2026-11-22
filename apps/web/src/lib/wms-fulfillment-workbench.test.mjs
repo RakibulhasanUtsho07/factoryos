@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  allowedNextDeliveryEvents,
+  supportedDeliveryEventTypes,
   asFulfillmentRows,
   buildCreateContainerPayload,
   buildDeliveryEventPayload,
@@ -156,13 +156,10 @@ test("rejects incomplete dispatch details, carrier pair and order pair", () => {
   assert.throws(() => buildDispatchPayload({ ...base, customer_name: " " }));
 });
 
-test("exposes only delivery-event transitions permitted by the append-only lifecycle", () => {
-  assert.deepEqual(allowedNextDeliveryEvents(null), ["IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERY_FAILED", "DELIVERED"]);
-  assert.deepEqual(allowedNextDeliveryEvents("IN_TRANSIT"), ["OUT_FOR_DELIVERY", "DELIVERY_FAILED", "DELIVERED", "RETURNED"]);
-  assert.deepEqual(allowedNextDeliveryEvents("OUT_FOR_DELIVERY"), ["DELIVERY_FAILED", "DELIVERED", "RETURNED"]);
-  assert.deepEqual(allowedNextDeliveryEvents("DELIVERY_FAILED"), ["IN_TRANSIT", "OUT_FOR_DELIVERY"]);
-  assert.deepEqual(allowedNextDeliveryEvents("DELIVERED"), []);
-  assert.deepEqual(allowedNextDeliveryEvents("RETURNED"), []);
+test("exposes exactly the event types supported by the delivery API without inventing sequence enforcement", () => {
+  assert.deepEqual(supportedDeliveryEventTypes(), [
+    "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERY_FAILED", "DELIVERED", "RETURNED",
+  ]);
 });
 
 test("builds non-terminal delivery tracking events without proof fields", () => {
