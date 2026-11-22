@@ -429,11 +429,11 @@ export default function CommercialQuotationWorkbenchPage() {
     setNotice("");
   }
 
-  function updateLine(index: number, field: keyof QuoteLineDraft, value: string) {
+  function updateLine(index: number, field: Exclude<keyof QuoteLineDraft, "line_number">, value: string) {
     setQuoteDraft((current) => ({
       ...current,
       lines: current.lines.map((line, lineIndex) => lineIndex === index
-        ? { ...line, [field]: field === "line_number" ? Number(value) : value }
+        ? { ...line, [field]: value } as QuoteLineDraft
         : line),
     }));
   }
@@ -926,7 +926,7 @@ export default function CommercialQuotationWorkbenchPage() {
                     <h3 className="text-xs font-bold text-slate-800">Immutable revision snapshots</h3>
                     <div className="mt-2 space-y-2">
                       {revisions.map((revision) => <article key={revision.quotation_version_id} className="rounded-lg bg-slate-50 p-3 text-xs">
-                        <div className="flex flex-wrap justify-between gap-2"><strong>Revision {revision.current_revision ?? revision.revision_number}</strong><strong>{amount(revision.total, revision.currency)}</strong></div>
+                        <div className="flex flex-wrap justify-between gap-2"><strong>Revision {revision.revision_number}</strong><strong>{amount(revision.total, revision.currency)}</strong></div>
                         <p className="mt-1 text-[10px] text-slate-500">{revision.currency} → {revision.base_currency} · FX {revision.exchange_rate_to_base} · {revision.exchange_rate_as_of} · {revision.exchange_rate_source}</p>
                         <p className="mt-1 text-[10px] text-slate-500">{revision.lines?.length ?? 0} line snapshots · rule {revision.pricing_rule_code} v{revision.pricing_rule_version ?? "fallback"}</p>
                       </article>)}
