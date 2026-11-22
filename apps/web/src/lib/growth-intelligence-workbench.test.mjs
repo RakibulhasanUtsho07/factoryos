@@ -143,6 +143,15 @@ test("builds an authorized opportunity decision reason", () => {
   assert.throws(() => buildGrowthOpportunityDecisionPayload({ decision: "ACCEPT", reason: "" }));
 });
 
+test("normalizes browser-local data vintages and due dates into explicit UTC timestamps", () => {
+  const payload = buildGrowthEvidenceGapPayload({
+    question: "Which buyer must confirm the initial demand forecast?",
+    required_evidence: "A signed buyer forecast or meeting record.",
+    impact: "MEDIUM", due_at: "2026-11-29T10:00",
+  });
+  assert.match(payload.due_at, /Z$/);
+});
+
 test("builds immutable four-case scenario sets with linked baseline and deterministic sensitivity", () => {
   const payload = buildGrowthScenarioSetPayload({
     set_name: "November base planning",
@@ -158,6 +167,12 @@ test("builds immutable four-case scenario sets with linked baseline and determin
   assert.equal(payload.profiles.upside.volume_change_pct, 10);
   assert.equal(payload.profiles.base.projected_constraint_metrics.quality_yield_pct, 98);
   assert.equal(payload.sensitivity[0].points, 5);
+  assert.throws(() => buildGrowthScenarioSetPayload({
+    set_name: "Bad parameter bounds", data_vintage: "2026-11-20T00:00:00Z", baseline_source_ref: REF,
+    currency: "BDT", baseline_revenue: "100", baseline_variable_cost: "20", baseline_fixed_cost: "30",
+    base: scenarioProfile(), upside: scenarioProfile(), downside: scenarioProfile(), stress: scenarioProfile(),
+    sensitivity_parameter: "investment", sensitivity_low: "-1", sensitivity_high: "10", sensitivity_points: "2",
+  }, [REF]));
   assert.throws(() => buildGrowthScenarioSetPayload({
     set_name: "Bad", data_vintage: "2026-11-20T00:00:00Z", baseline_source_ref: "unlinked",
     currency: "BDT", baseline_revenue: "100", baseline_variable_cost: "20", baseline_fixed_cost: "30",
