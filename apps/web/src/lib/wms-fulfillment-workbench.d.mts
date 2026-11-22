@@ -91,6 +91,7 @@ export interface FulfillmentDeliveryEvent {
   proof_sha256?: string | null;
   signed_at?: string | null;
   notes?: string | null;
+  recorded_by_user_id: string;
   created_at: string;
 }
 
