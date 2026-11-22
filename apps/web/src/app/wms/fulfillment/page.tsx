@@ -882,7 +882,7 @@ export default function WmsFulfillmentWorkbenchPage() {
           <section className="space-y-4">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div><h2 className="text-base font-bold text-slate-950">Delivery event register</h2><p className="mt-1 text-xs text-slate-500">Append-only timeline; invalid state transitions are unavailable.</p></div>
+                <div><h2 className="text-base font-bold text-slate-950">Delivery event register</h2><p className="mt-1 text-xs text-slate-500">Append-only manual event log; the API validates event types and POD evidence, but does not enforce event chronology.</p></div>
                 {selectedShipment ? <StatusPill value={latestDeliveryEvent || "DISPATCHED"} /> : null}
               </div>
               {selectedShipment ? <div className="mt-3 rounded-xl bg-slate-50 p-3 text-xs"><p className="font-bold">{selectedShipment.shipment_code} · {selectedShipment.customer_name}</p><p className="mt-1 text-slate-500">{selectedShipment.customer_order_reference} · {amount(selectedShipment.quantity, selectedShipment.unit)}</p></div> : null}
@@ -905,7 +905,7 @@ export default function WmsFulfillmentWorkbenchPage() {
                 <h2 className="text-base font-bold text-slate-950">Append delivery update</h2>
                 <p className="mt-1 text-xs leading-5 text-slate-500">Events are manual operator submissions. The API validates supported event types and POD fields, but does not enforce sequence order; record updates against verified carrier evidence.</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <Field label="Next delivery event">
+                  <Field label="Delivery event">
                     <select required className={inputClass} value={deliveryDraft.event_type} onChange={(event) => setDeliveryDraft((current) => ({ ...current, event_type: event.target.value as DeliveryEventType | "" }))}>
                       <option value="">Choose next event</option>
                       {deliveryChoices.map((eventType) => <option key={eventType} value={eventType}>{fulfillmentStatusLabel(eventType)}</option>)}
