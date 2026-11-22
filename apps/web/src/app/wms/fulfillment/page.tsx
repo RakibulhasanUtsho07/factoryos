@@ -260,14 +260,17 @@ export default function WmsFulfillmentWorkbenchPage() {
         ? (results[index] as PromiseFulfilledResult<unknown>).value : null;
       setItems(rows<FulfillmentInventoryItem>(valueAt(0), "items"));
       setLocations(rows<FulfillmentLocation>(valueAt(1), "locations"));
-      setCartonIdentities(rows<FulfillmentIdentity>(valueAt(2), "units"));
-      setPalletIdentities(rows<FulfillmentIdentity>(valueAt(3), "units"));
+      const nextCartons = rows<FulfillmentIdentity>(valueAt(2), "units");
+      const nextPallets = rows<FulfillmentIdentity>(valueAt(3), "units");
+      setCartonIdentities(nextCartons);
+      setPalletIdentities(nextPallets);
       setFinishedLots(rows<FulfillmentIdentity>(valueAt(4), "units"));
       const nextShipments = rows<FulfillmentShipment>(valueAt(5), "shipments");
       setShipments(nextShipments);
       setOrders(rows<FulfillmentOrder>(valueAt(6), "items"));
+      const nextContainerIds = [...nextCartons, ...nextPallets];
       setSelectedContainerId((current) =>
-        containerIdentities.some((unit) => unit.id === current) ? current : "");
+        nextContainerIds.some((unit) => unit.id === current) ? current : "");
       setSelectedShipmentId((current) =>
         nextShipments.some((shipment) => shipment.shipment_unit_id === current)
           ? current : nextShipments[0]?.shipment_unit_id ?? "");
@@ -779,7 +782,7 @@ export default function WmsFulfillmentWorkbenchPage() {
                   ) : null}
                   <div className="mt-4 flex flex-wrap gap-2">
                     {selectedContainer.status === "OPEN" && canWrite ? <button type="button" onClick={() => { void sealContainer(); }} disabled={busy || Number(selectedContainer.packed_quantity) <= 0} className={secondaryButton}>Seal non-empty container</button> : null}
-                    {selectedContainer.status === "SEALED" && canWrite ? <button type="button" onClick={() => { setDispatchDraft({ shipment_code: "", customer_name: "", customer_order_reference: "", carrier_name: "", tracking_reference: "", order_id: "", order_line_id: "" }); setTab("SHIPMENTS"); }} className={primaryButton}>Prepare dispatch</button> : null}
+                    {selectedContainer.status === "SEALED" && canWrite ? <button type="button" onClick={() => { setDispatchDraft({ shipment_code: "", customer_name: "", customer_order_reference: "", carrier_name: "", tracking_reference: "", order_id: "", order_line_id: "" }); setSelectedOrder(null); setTab("SHIPMENTS"); }} className={primaryButton}>Prepare dispatch</button> : null}
                     {selectedContainer.status === "DISPATCHED" ? <span className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">Dispatched {dateTime(selectedContainer.dispatched_at)}</span> : null}
                   </div>
                 </>
