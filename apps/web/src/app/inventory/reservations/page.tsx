@@ -211,11 +211,13 @@ export default function InventoryReservationIssueWorkbenchPage() {
   }, [status, activeFactoryId, canRead, selectedItemId, request]);
 
   useEffect(() => {
-    void loadItems();
+    const timer = window.setTimeout(() => { void loadItems(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadItems]);
 
   useEffect(() => {
-    void loadReservations();
+    const timer = window.setTimeout(() => { void loadReservations(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadReservations]);
 
   async function refresh() {
