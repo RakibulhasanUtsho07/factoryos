@@ -662,7 +662,6 @@ export default function GrowthIntelligenceWorkbenchPage() {
   const requiredDimensions = ["CAPACITY", "QUALITY", "CASH", "DELIVERY"];
   const missingDimensions = requiredDimensions.filter((dimension) => !currentConstraints.some((item) => item.dimension === dimension));
   const allExperiments = selected?.experiments ?? [];
-  const allScenarios = selected?.scenarios ?? [];
   const allOutcomes = selected?.outcomes ?? [];
 
   if (status !== "connected" || !activeFactoryId) {
