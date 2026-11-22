@@ -127,6 +127,6 @@ export function buildCreateContainerPayload(input: Record<string, unknown>): {
 };
 export function buildPackingContentPayload(input: Record<string, unknown>): { source_unit_id: string; quantity: number };
 export function buildDispatchPayload(input: Record<string, unknown>): Record<string, string>;
-export function allowedNextDeliveryEvents(previousEvent?: string | null): WmsDeliveryEvent[];
+export function supportedDeliveryEventTypes(): WmsDeliveryEvent[];
 export function buildDeliveryEventPayload(input: Record<string, unknown>): Record<string, string>;
 export function fulfillmentStatusLabel(value: string): string;
