@@ -30,10 +30,10 @@ export interface AllocationPolicy {
   sector_code?: string | null;
   inventory_item_id?: string | null;
   allocation_policy: "FIFO" | "FEFO" | "LOT" | "SERIAL" | null;
-  require_traceability: boolean;
+  require_traceability: boolean | null;
   version: number | null;
   updated_at?: string;
-  source?: string;
+  source: "MATERIAL" | "SECTOR" | "FACTORY" | "SYSTEM_DEFAULT";
   inherited?: boolean;
 }
 export interface InventoryMaterial {
