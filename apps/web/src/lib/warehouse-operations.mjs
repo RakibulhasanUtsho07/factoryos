@@ -7,7 +7,7 @@ function text(value) {
 
 function units(value, field) {
   const source = text(String(value ?? ""));
-  const match = /^(?:0|[1-9]\\d*)(?:\\.(\\d{1,4}))?$/.exec(source);
+  const match = /^(?:0|[1-9]\d*)(?:\.(\d{1,4}))?$/.exec(source);
   if (!match) throw new Error(field + " must use at most four decimal places.");
   const [whole, fraction = ""] = source.split(".");
   return BigInt(whole) * 10000n + BigInt(fraction.padEnd(4, "0"));
