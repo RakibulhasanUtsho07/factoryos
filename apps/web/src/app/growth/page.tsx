@@ -11,6 +11,8 @@ import {
   buildGrowthEvidenceGapDecisionPayload,
   buildGrowthEvidenceGapPayload,
   buildGrowthExperimentPayload,
+  buildGrowthExperimentResultPayload,
+  buildGrowthOutcomePayload,
   buildGrowthOpportunityDecisionPayload,
   buildGrowthOpportunityPayload,
   buildGrowthOwnerPayload,
@@ -70,6 +72,11 @@ type ScenarioDraft = {
 type ExperimentDraft = {
   name: string; objective: string; hypothesis: string; leading_indicators: string;
   duration_days: string; baseline_metric_key: string; baseline_value: string; unit: string; stop_conditions: string;
+};
+type ObservationDraft = {
+  metric_key: string; baseline_value: string; actual_value: string; target_value: string;
+  unit: string; direction: string; evidence_ref: string; assessment: string;
+  stop_condition_triggered: boolean; notes: string; observed_at: string; confidence: string;
 };
 
 function messageOf(error: unknown) {
@@ -159,6 +166,14 @@ function initialExperimentDraft(): ExperimentDraft {
   };
 }
 
+function initialObservationDraft(): ObservationDraft {
+  return {
+    metric_key: "qualified_leads", baseline_value: "", actual_value: "", target_value: "",
+    unit: "count", direction: "INCREASE", evidence_ref: "", assessment: "POSITIVE",
+    stop_condition_triggered: false, notes: "", observed_at: localDateTime(), confidence: "0.5",
+  };
+}
+
 function StatusPill({ value }: { value: string }) {
   const status = value.toUpperCase();
   const tone = ["ACCEPTED", "IN_PROGRESS", "REALIZED", "READY", "COMPLETED"].includes(status)
@@ -236,6 +251,8 @@ export default function GrowthIntelligenceWorkbenchPage() {
   const [gapDraft, setGapDraft] = useState<GapDraft>(initialGapDraft);
   const [scenarioDraft, setScenarioDraft] = useState<ScenarioDraft>(initialScenarioDraft);
   const [experimentDraft, setExperimentDraft] = useState<ExperimentDraft>(initialExperimentDraft);
+  const [observationDraft, setObservationDraft] = useState<ObservationDraft>(initialObservationDraft);
+  const [activeObservation, setActiveObservation] = useState<{ kind: "EXPERIMENT" | "OUTCOME"; id?: string } | null>(null);
 
   const [opportunityFormOpen, setOpportunityFormOpen] = useState(false);
   const [governanceForm, setGovernanceForm] = useState<"OWNER" | "ASSUMPTION" | "CONSTRAINT" | "GAP" | null>(null);
@@ -567,6 +584,49 @@ export default function GrowthIntelligenceWorkbenchPage() {
       setExperimentDraft(initialExperimentDraft());
       setNotice("Experiment " + result.name + " planned. It remains PLANNED until a user with growth.review starts it.");
       await loadOpportunity(selected.id);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function beginExperimentResult(experiment: GrowthExperiment) {
+    setObservationDraft({
+      ...initialObservationDraft(),
+      metric_key: String(Object.keys(experiment.baseline_measurements ?? {}).find((key) => key !== "unit") ?? "qualified_leads"),
+      unit: String(experiment.baseline_measurements?.unit ?? "count"),
+      baseline_value: String(experiment.baseline_measurements?.[String(Object.keys(experiment.baseline_measurements ?? {}).find((key) => key !== "unit") ?? "qualified_leads")] ?? ""),
+      evidence_ref: evidenceReferences[0] ?? "",
+    });
+    setActiveObservation({ kind: "EXPERIMENT", id: experiment.id });
+  }
+
+  function beginOpportunityOutcome() {
+    setObservationDraft({ ...initialObservationDraft(), evidence_ref: evidenceReferences[0] ?? "" });
+    setActiveObservation({ kind: "OUTCOME" });
+  }
+
+  async function submitObservation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !activeObservation || !canWrite) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      if (activeObservation.kind === "EXPERIMENT" && activeObservation.id) {
+        const payload = buildGrowthExperimentResultPayload(observationDraft as unknown as Record<string, unknown>);
+        const result = await request("/growth/experiments/" + activeObservation.id + "/results", { method: "POST", body: payload }) as { experiment_status: string; assessment: string };
+        setNotice("Experiment result recorded with KPI evidence. Experiment status is now " + result.experiment_status + ".");
+      } else {
+        const payload = buildGrowthOutcomePayload(observationDraft as unknown as Record<string, unknown>);
+        await request("/growth/opportunities/" + selected.id + "/outcomes", { method: "POST", body: payload });
+        setNotice("Realized outcome and KPI measurement recorded. The opportunity lifecycle has advanced to REALIZED.");
+      }
+      setActiveObservation(null);
+      setObservationDraft(initialObservationDraft());
+      await loadOpportunity(selected.id);
+      await loadPortfolio();
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -970,6 +1030,7 @@ export default function GrowthIntelligenceWorkbenchPage() {
                       <p className="mt-2 text-xs text-slate-600">{experiment.objective}</p><p className="mt-1 text-xs text-slate-500">Hypothesis: {experiment.hypothesis}</p>
                       <div className="mt-2 flex flex-wrap gap-2">{experiment.leading_indicators.map((indicator) => <span key={indicator} className="rounded-full bg-slate-100 px-2 py-1 text-[10px]">{indicator}</span>)}</div>
                       {experiment.status === "PLANNED" && canReview ? <button type="button" onClick={() => startExperiment(experiment)} disabled={busy} className={primaryButton + " mt-3"}>Start experiment</button> : null}
+                      {experiment.status === "RUNNING" && canWrite ? <button type="button" onClick={() => beginExperimentResult(experiment)} className={secondaryButton + " mt-3"}>Record observed result</button> : null}
                       {(experiment.results ?? []).map((result) => <div key={result.id} className="mt-3 rounded-lg bg-slate-50 p-3"><div className="flex justify-between gap-2"><strong className="text-xs">Result assessment: {result.assessment}</strong><StatusPill value={result.stop_condition_triggered ? "STOP TRIGGERED" : "RECORDED"} /></div><p className="mt-1 text-[10px] text-slate-500">{dateTime(result.observed_at)} · evidence {result.evidence_refs.join(", ")}</p></div>)}
                     </article>)}
                     {!allExperiments.length ? <p className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500">No experiments planned yet.</p> : null}
@@ -978,10 +1039,29 @@ export default function GrowthIntelligenceWorkbenchPage() {
                   <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <h2 className="text-sm font-bold text-slate-950">Recorded opportunity outcomes</h2>
                     <p className="mt-1 text-[11px] text-slate-500">Realized outcomes and KPI measurements remain separate from proposals and scenario sensitivities.</p>
+                    {["ACCEPTED", "IN_PROGRESS", "REALIZED"].includes(selected.status) && canWrite ? <button type="button" onClick={beginOpportunityOutcome} className={secondaryButton + " mt-3"}>Record realized KPI outcome</button> : null}
                     <div className="mt-3 space-y-2">{allOutcomes.map((outcome) => <article key={outcome.id} className="rounded-xl border border-slate-200 p-3 text-xs"><div className="flex flex-wrap justify-between gap-2"><strong>{outcome.assessment}</strong><span className="text-[10px] text-slate-500">{dateTime(outcome.observed_at)}</span></div><p className="mt-1 text-[10px] text-slate-500">Evidence: {outcome.evidence_refs.join(", ")}</p>{outcome.kpi_measurements.map((kpi) => <p key={kpi.id} className="mt-2 text-xs">{kpi.metric_key}: {kpi.baseline_value} → {kpi.actual_value} {kpi.unit} · {kpi.direction}</p>)}</article>)}
                       {!allOutcomes.length ? <p className="text-xs text-slate-500">No realized outcome has been recorded.</p> : null}
                     </div>
                   </section>
+                  {activeObservation ? <section className="rounded-2xl border border-blue-200 bg-blue-50/40 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-bold">{activeObservation.kind === "EXPERIMENT" ? "Record experiment result" : "Record realized opportunity outcome"}</h2><button type="button" onClick={() => setActiveObservation(null)} className={secondaryButton}>Close</button></div>
+                    <p className="mt-1 text-[11px] text-slate-600">Use one explicit KPI measurement and a provenance reference already attached to this opportunity. API checks all KPI/evidence relationships.</p>
+                    <form onSubmit={submitObservation} className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      <Field label="Metric key"><input required className={inputClass} value={observationDraft.metric_key} onChange={(event) => setObservationDraft((current) => ({ ...current, metric_key: event.target.value }))} /></Field>
+                      <Field label="Unit"><input required maxLength={40} className={inputClass} value={observationDraft.unit} onChange={(event) => setObservationDraft((current) => ({ ...current, unit: event.target.value }))} /></Field>
+                      <Field label="Direction"><select className={inputClass} value={observationDraft.direction} onChange={(event) => setObservationDraft((current) => ({ ...current, direction: event.target.value }))}>{["INCREASE", "DECREASE", "TARGET"].map((value) => <option key={value}>{value}</option>)}</select></Field>
+                      <Field label="Baseline value"><input required inputMode="decimal" className={inputClass} value={observationDraft.baseline_value} onChange={(event) => setObservationDraft((current) => ({ ...current, baseline_value: event.target.value }))} /></Field>
+                      <Field label="Actual / realized value"><input required inputMode="decimal" className={inputClass} value={observationDraft.actual_value} onChange={(event) => setObservationDraft((current) => ({ ...current, actual_value: event.target.value }))} /></Field>
+                      <Field label="Target value (optional)"><input inputMode="decimal" className={inputClass} value={observationDraft.target_value} onChange={(event) => setObservationDraft((current) => ({ ...current, target_value: event.target.value }))} /></Field>
+                      <Field label="Assessment"><select className={inputClass} value={observationDraft.assessment} onChange={(event) => setObservationDraft((current) => ({ ...current, assessment: event.target.value }))}>{["POSITIVE", "NEUTRAL", "NEGATIVE", "INCONCLUSIVE"].map((value) => <option key={value}>{value}</option>)}</select></Field>
+                      <Field label="Observed at"><input required type="datetime-local" className={inputClass} value={observationDraft.observed_at} onChange={(event) => setObservationDraft((current) => ({ ...current, observed_at: event.target.value }))} /></Field>
+                      <Field label="Evidence reference"><select className={inputClass} value={observationDraft.evidence_ref} onChange={(event) => setObservationDraft((current) => ({ ...current, evidence_ref: event.target.value }))}><option value="">Select attached evidence</option>{evidenceReferences.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field>
+                      {activeObservation.kind === "EXPERIMENT" ? <div className="sm:col-span-2 xl:col-span-3"><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={observationDraft.stop_condition_triggered} onChange={(event) => setObservationDraft((current) => ({ ...current, stop_condition_triggered: event.target.checked }))} /> A declared stop condition was triggered (experiment will move to STOPPED)</label></div> : <Field label="Submitter confidence (0–1)"><input inputMode="decimal" className={inputClass} value={observationDraft.confidence} onChange={(event) => setObservationDraft((current) => ({ ...current, confidence: event.target.value }))} /></Field>}
+                      <div className="sm:col-span-2 xl:col-span-3"><Field label="Observation notes"><textarea rows={2} maxLength={4000} className={inputClass + " py-2"} value={observationDraft.notes} onChange={(event) => setObservationDraft((current) => ({ ...current, notes: event.target.value }))} /></Field></div>
+                      <div className="sm:col-span-2 xl:col-span-3 flex flex-wrap gap-2"><button type="submit" className={primaryButton} disabled={busy || !observationDraft.evidence_ref}>{busy ? "Recording…" : "Save observed evidence"}</button><button type="button" onClick={() => setActiveObservation(null)} className={secondaryButton}>Cancel</button></div>
+                    </form>
+                  </section> : null}
                 </div>
               ) : null}
             </>
