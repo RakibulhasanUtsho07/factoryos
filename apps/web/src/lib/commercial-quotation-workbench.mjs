@@ -57,7 +57,7 @@ function currency(value, field = "Currency") {
 function date(value, field) {
   const result = clean(value);
   if (!result) return undefined;
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(result)) throw new Error(field + " must be a valid date.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(result)) throw new Error(field + " must be a valid date.");
   const parsed = new Date(result + "T00:00:00Z");
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== result) {
     throw new Error(field + " must be a valid calendar date.");
