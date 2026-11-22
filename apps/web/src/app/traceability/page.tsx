@@ -252,7 +252,6 @@ export default function TraceabilityRecallWorkbenchPage() {
         ? rowsOf<TraceabilityStatusEvent>(results[1].value, "events") : []);
       setTraceWalk(null);
       setImpact(null);
-      setRecallResult(null);
       setNotifications([]);
       setAcknowledgingId("");
     } catch (cause) {
