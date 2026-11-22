@@ -21,11 +21,16 @@ export interface GrowthExperiment {
   stop_conditions: string[]; status: string; started_at?: string | null; ended_at?: string | null;
   created_at: string; results?: GrowthExperimentResult[];
 }
+export interface GrowthKpiMeasurement {
+  id: string; metric_key: string; baseline_value: string; actual_value: string;
+  target_value?: string | null; unit: string; direction: string;
+  evidence_ref: string; baseline_evidence_ref?: string | null; created_at: string;
+}
 export interface GrowthExperimentResult {
   id: string; experiment_id: string; assessment: string; stop_condition_triggered: boolean;
   pre_measurements: Record<string, unknown>; post_measurements: Record<string, unknown>;
   evidence_refs: string[]; result_notes?: string | null; observed_at: string; created_at: string;
-  kpi_measurements: Array<Record<string, unknown>>;
+  kpi_measurements: GrowthKpiMeasurement[];
 }
 export interface GrowthOutcomeKpi {
   id: string; outcome_id: string; metric_key: string; baseline_value: string;
