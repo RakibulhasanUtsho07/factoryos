@@ -24,7 +24,6 @@ import {
 } from "@/lib/growth-intelligence-workbench.mjs";
 import type {
   GrowthAssumption,
-  GrowthConstraint,
   GrowthDecisionOwner,
   GrowthEvidence,
   GrowthEvidenceGap,
@@ -1084,7 +1083,7 @@ export default function GrowthIntelligenceWorkbenchPage() {
         <h2 className="font-bold text-slate-900">Model and governance boundaries</h2>
         <ul className="mt-2 list-disc space-y-1 pl-5">
           <li>All reads and writes use the shared authenticated FactoryOS session and its selected active factory. Tenant, user and factory context are supplied by the API session rather than editable tenant identifiers.</li>
-          <li>Opportunity acceptance requires the named active DECISION_OWNER, independent of the creator, and the API's deterministic completeness gate across evidence, blocking assumptions, CAPACITY/QUALITY/CASH/DELIVERY constraints and blocking evidence gaps.</li>
+          <li>Opportunity acceptance requires the named active DECISION_OWNER, independent of the creator, and the API&apos;s deterministic completeness gate across evidence, blocking assumptions, CAPACITY/QUALITY/CASH/DELIVERY constraints and blocking evidence gaps.</li>
           <li>Governance READY is a completeness checklist, not an approval, forecast, probability or causal conclusion. The assigned decision owner must explicitly accept or reject the proposal.</li>
           <li>Scenario sets use fixed assumptions, a versioned deterministic sensitivity model and immutable input hashes. They are not statistical forecasts, Monte Carlo simulations, calibrated confidence intervals or causal estimates.</li>
           <li>Scenario ranking is withheld when model, baseline source, data vintage, financial baseline or constraint gates are not comparable. The API remains authoritative for readiness.</li>
