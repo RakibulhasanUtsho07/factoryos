@@ -26,13 +26,13 @@ export interface ReplenishmentSignal {
   estimated_replenishment_date: string;
 }
 export interface AllocationPolicy {
-  policy_scope: "FACTORY" | "SECTOR" | "MATERIAL";
-  sector_code: string | null;
-  inventory_item_id: string | null;
-  allocation_policy: "FIFO" | "FEFO" | "LOT" | "SERIAL";
+  policy_scope: "FACTORY" | "SECTOR" | "MATERIAL" | "INHERITED";
+  sector_code?: string | null;
+  inventory_item_id?: string | null;
+  allocation_policy: "FIFO" | "FEFO" | "LOT" | "SERIAL" | null;
   require_traceability: boolean;
-  version: number;
-  updated_at: string;
+  version: number | null;
+  updated_at?: string;
   source?: string;
   inherited?: boolean;
 }
