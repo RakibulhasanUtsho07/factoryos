@@ -469,7 +469,7 @@ export default function InventoryReservationIssueWorkbenchPage() {
                   <div className="rounded-xl bg-slate-100 p-3"><p className="text-[11px] text-slate-600">Released</p><p className="mt-1 text-base font-bold text-slate-900 tabular-nums">{amount(selectedReservation.released_quantity, selectedItem?.unit)}</p></div>
                 </div>
                 <dl className="mt-5 space-y-3 text-xs">
-                  <div className="flex justify-between gap-3"><dt className="text-slate-500">BIN location</dt><dd className="text-right font-semibold text-slate-800">{locations.find((location) => location.id === selectedReservation.location_id)?.code ?? (selectedReservation.location_id ? shortId(selectedReservation.location_id) : "Not specified")}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">BIN location</dt><dd className="text-right font-semibold text-slate-800">{locations.find((location) => location.id === selectedReservation.location_id)?.location_code ?? (selectedReservation.location_id ? shortId(selectedReservation.location_id) : "Not specified")}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-slate-500">Created</dt><dd className="text-right text-slate-700">{dateTime(selectedReservation.created_at)}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-slate-500">Updated</dt><dd className="text-right text-slate-700">{dateTime(selectedReservation.updated_at)}</dd></div>
                   <div><dt className="text-slate-500">Notes</dt><dd className="mt-1 whitespace-pre-wrap break-words text-slate-800">{selectedReservation.notes || "No notes recorded"}</dd></div>
