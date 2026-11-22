@@ -537,7 +537,7 @@ export default function TraceabilityRecallWorkbenchPage() {
                 <button
                   key={unit.id}
                   type="button"
-                  onClick={() => setSelectedUnitId(unit.id)}
+                  onClick={() => { setSelectedUnitId(unit.id); setRecallResult(null); setNotifications([]); setImpact(null); setTraceWalk(null); setAcknowledgingId(""); }}
                   aria-pressed={selectedUnitId === unit.id}
                   className={[
                     "w-full rounded-xl border p-3 text-left transition",
