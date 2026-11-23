@@ -19,6 +19,7 @@ const navigation = [
   { href: "/growth/forecast-calibration", label: "Forecast Calibration" },
   { href: "/finance/close", label: "Finance Close" },
   { href: "/research", label: "Research & Evidence" },
+  { href: "/should-cost", label: "Should-Cost Governance" },
   { href: "/operations/recovery", label: "Operations Recovery" },
   { href: "/integrations", label: "Integration Reliability" },
   { href: "/mrp", label: "MRP Planning" },
