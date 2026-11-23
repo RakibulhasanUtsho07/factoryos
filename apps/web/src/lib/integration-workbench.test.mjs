@@ -182,6 +182,7 @@ test("rejects reversed and malformed reconciliation filters and unsupported case
   assert.throws(() => buildIntegrationQuery({ delivery_class: "FAILED" }, "events"), /ON_TIME or LATE/);
   assert.throws(() => buildIntegrationQuery({ status: "PENDING" }, "cases"), /Case status is invalid/);
   assert.throws(() => buildIntegrationQuery({ case_type: "UNKNOWN_CASE" }, "cases"), /Case type is invalid/);
+  assert.throws(() => buildIntegrationQuery({ limit: 201 }, "events"), /between 1 and 200/);
 });
 
 test("filters connectors without searching secret references or payload schemas", () => {
