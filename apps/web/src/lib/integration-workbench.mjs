@@ -249,7 +249,7 @@ export function buildIntegrationQuery(filters = {}, kind = "report") {
       params.set("source_system", source);
     }
     const limit = filters.limit === undefined ? 100 : Number(filters.limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Event limit must be between 1 and 500.");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Event limit must be between 1 and 200.");
     params.set("limit", String(limit));
   } else if (kind === "cases") {
     const status = clean(filters.status).toUpperCase();
@@ -263,7 +263,7 @@ export function buildIntegrationQuery(filters = {}, kind = "report") {
       params.set("case_type", caseType);
     }
     const limit = filters.limit === undefined ? 100 : Number(filters.limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Case limit must be between 1 and 500.");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Case limit must be between 1 and 200.");
     params.set("limit", String(limit));
   }
   const query = params.toString();
