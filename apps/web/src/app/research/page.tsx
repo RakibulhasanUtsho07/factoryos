@@ -87,31 +87,31 @@ export default function ResearchWorkbenchPage(){
  }
  async function registerSource(e:FormEvent<HTMLFormElement>){
   e.preventDefault();let body:Row;try{body=buildResearchSourcePayload(sourceDraft) as Row}catch(cause){setError(msg(cause));return}
-  await run(()=>request("/research/sources",{method:"POST",body}),"Source registered; rights approval is still pending.");setSourceOpen(false);setSourceDraft(initialSource());
+  const saved=await run(()=>request("/research/sources",{method:"POST",body}),"Source registered; rights approval is still pending.");if(!saved)return;setSourceOpen(false);setSourceDraft(initialSource());
  }
  async function saveWatchlist(e:FormEvent<HTMLFormElement>){
   e.preventDefault();let body:Row;try{body=buildResearchWatchlistPayload(watchDraft) as Row}catch(cause){setError(msg(cause));return}
-  await run(()=>request("/research/watchlists",{method:"POST",body}),"Watchlist created. Activation is a separate review action.");setWatchOpen(false);setWatchDraft(initialWatch());
+  const saved=await run(()=>request("/research/watchlists",{method:"POST",body}),"Watchlist created. Activation is a separate review action.");if(!saved)return;setWatchOpen(false);setWatchDraft(initialWatch());
  }
  async function queueJob(e:FormEvent<HTMLFormElement>){
   e.preventDefault();const s=sources.find((x)=>x.id===jobDraft.source_id);
   if(!s||s.namespace!=="TENANT"||s.access_status!=="APPROVED"){setError("Choose an approved tenant-owned source.");return}
   if(jobDraft.mode==="FULL_TEXT"&&!canResearchStoreFullText(s)){setError("Current source rights do not permit full-text ingestion.");return}
   let body:Row;try{body=buildResearchIngestionJobPayload(jobDraft.mode,newKey()) as Row}catch(cause){setError(msg(cause));return}
-  await run(()=>request("/research/sources/"+s.id+"/ingestion-jobs",{method:"POST",body}),"Durable ingestion job queued. No crawler or extractor was run.");setJobOpen(false);
+  const saved=await run(()=>request("/research/sources/"+s.id+"/ingestion-jobs",{method:"POST",body}),"Durable ingestion job queued. No crawler or extractor was run.");if(!saved)return;setJobOpen(false);
  }
  async function saveFreshness(e:FormEvent<HTMLFormElement>){
   e.preventDefault();if(!selectedSource||selectedSource.namespace!=="TENANT"){setError("Freshness policies can only be created for tenant-owned sources.");return}
   let body:Row;try{body=buildResearchFreshnessPayload(freshnessDraft.mode,freshnessDraft.interval_minutes,freshnessDraft.max_attempts) as Row}catch(cause){setError(msg(cause));return}
   if(freshnessDraft.mode==="FULL_TEXT"&&!canResearchStoreFullText(selectedSource)){setError("Current rights do not permit full-text freshness.");return}
-  await run(()=>request("/research/sources/"+selectedSource.id+"/freshness-policy",{method:"POST",body}),"Freshness policy created; schedules only enqueue jobs.",selectedSource.id);setFreshnessOpen(false);
+  const saved=await run(()=>request("/research/sources/"+selectedSource.id+"/freshness-policy",{method:"POST",body}),"Freshness policy created; schedules only enqueue jobs.",selectedSource.id);if(!saved)return;setFreshnessOpen(false);
  }
  async function saveClaim(e:FormEvent<HTMLFormElement>){
   e.preventDefault();
   if(!selectedSource||selectedSource.namespace!=="TENANT"||selectedSource.access_status!=="APPROVED"){setError("Create claims only from an approved tenant-owned source.");return}
   let body:Row;try{body=buildResearchClaimPayload(claimDraft) as Row}catch(cause){setError(msg(cause));return}
   if(claimDraft.stored_excerpt.trim()&&!canResearchStoreFullText(selectedSource)){setError("This source does not permit excerpt storage. Record a locator only.");return}
-  await run(()=>request("/research/sources/"+selectedSource.id+"/claims",{method:"POST",body}),"Proposed claim saved with source provenance.");setClaimOpen(false);setClaimDraft(initialClaim());
+  const saved=await run(()=>request("/research/sources/"+selectedSource.id+"/claims",{method:"POST",body}),"Proposed claim saved with source provenance.");if(!saved)return;setClaimOpen(false);setClaimDraft(initialClaim());
  }
  async function loadAssessments(id:string){const a=await request("/research/claims/"+id+"/evidence-assessments?limit=20");setAssessments((p)=>({...p,[id]:normalizeResearchRows(a) as Row[]}))}
  async function assessClaim(c:ResearchClaim){await run(async()=>{await request("/research/claims/"+c.id+"/assess-evidence",{method:"POST"});await loadAssessments(c.id)},"Evidence assessment stored. Its score is not an approval or probability.");}
@@ -126,15 +126,16 @@ export default function ResearchWorkbenchPage(){
  }
  async function createRelease(e:FormEvent<HTMLFormElement>){
   e.preventDefault();let body:Row;try{body=buildResearchReleasePayload(releaseDraft,nextVersion,releaseClaimIds) as Row}catch(cause){setError(msg(cause));return}
-  await run(()=>request("/research/releases",{method:"POST",body}),"Knowledge release draft created. Evaluation is a separate step.");setReleaseOpen(false);setReleaseDraft({release_key:"",title:"",evidence_grade:"MIXED"});setReleaseClaimIds([]);
+  const saved=await run(()=>request("/research/releases",{method:"POST",body}),"Knowledge release draft created. Evaluation is a separate step.");if(!saved)return;setReleaseOpen(false);setReleaseDraft({release_key:"",title:"",evidence_grade:"MIXED"});setReleaseClaimIds([]);
  }
  async function evaluateRelease(r:ResearchRelease){await run(()=>request("/research/releases/"+r.id+"/evaluate",{method:"POST"}),"Release evaluation recorded; backend rules remain authoritative.");}
  async function promoteRelease(e:FormEvent<HTMLFormElement>){
   e.preventDefault();if(!selectedRelease?.evaluation_id){setError("Evaluate this release before promotion.");return}
   const effective=new Date(promotion.effective_at);if(Number.isNaN(effective.getTime())){setError("Choose a valid effective date.");return}
   const body={evaluation_id:selectedRelease.evaluation_id,safety_review_summary:promotion.safety_review_summary.trim(),regression_evidence_ref:promotion.regression_evidence_ref.trim(),effective_at:effective.toISOString()};
-  await run(()=>request("/research/releases/"+selectedRelease.id+"/promote",{method:"POST",body}),"Knowledge release promotion recorded.");
+  const saved=await run(()=>request("/research/releases/"+selectedRelease.id+"/promote",{method:"POST",body}),"Knowledge release promotion recorded.");if(!saved)return;
   setPromotion({safety_review_summary:"",regression_evidence_ref:"",effective_at:localDate()});
+  await inspectRelease(selectedRelease);
  }
  async function materializeDue(){await run(()=>request("/research/freshness-schedules/materialize-due?limit=25",{method:"POST"}),"Due freshness policies checked and eligible jobs enqueued.")}
  function begin(kind:Decision["kind"],id:string,decisionValue:string,parentId?:string){setDecision({kind,id,decision:decisionValue,reason:"",...(parentId?{parentId}:{}),...(kind==="CLAIM"&&decisionValue==="APPROVE"?{grade:"C"}:{})})}
@@ -142,6 +143,7 @@ export default function ResearchWorkbenchPage(){
   e.preventDefault();if(!decision)return;const d=decision,reason=d.reason.trim();
   if(!reason){setError("A decision reason is required.");return}
   if(["SAFETY","EXTRACTION","AUTHENTICITY"].includes(d.kind)&&reason.length<10){setError("This review reason must contain at least 10 characters.");return}
+  if(d.kind==="FRESHNESS"&&reason.length<8){setError("Freshness policy reasons must contain at least 8 characters.");return}
   const action=async()=>{
    if(d.kind==="SOURCE")return request("/research/sources/"+d.id+"/decision",{method:"POST",body:{decision:d.decision,reason}});
    if(d.kind==="WATCHLIST")return request("/research/watchlists/"+d.id+"/decision",{method:"POST",body:{decision:d.decision,reason}});
