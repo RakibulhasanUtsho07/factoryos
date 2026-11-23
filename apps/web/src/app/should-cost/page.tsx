@@ -20,7 +20,6 @@ import type {
   ShouldCostCategory,
   ShouldCostMethod,
   ShouldCostProfile,
-  ShouldCostProfileComponent,
 } from "@/lib/should-cost-workbench.mjs";
 
 type Row = Record<string, unknown>;
@@ -266,8 +265,6 @@ export default function ShouldCostWorkbenchPage() {
     () => filterShouldCostProfiles(profiles, profileSearch, "ALL"),
     [profiles, profileSearch],
   );
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
-  const selectedAssessment = assessments.find((assessment) => assessment.id === selectedAssessmentId) ?? null;
   const approvedProfiles = profiles.filter((profile) =>
     profile.status === "APPROVED" && profile.is_current === true,
   );
