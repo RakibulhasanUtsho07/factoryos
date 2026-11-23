@@ -100,11 +100,11 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
   );
 }
 
-function Metric({ label, value, detail }: { label: string; value: number; detail: string }) {
+function Metric({ label, value, detail }: { label: string; value: number | string; detail: string }) {
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-bold tabular-nums text-slate-950">{value.toLocaleString()}</p>
+      <p className="mt-2 text-2xl font-bold tabular-nums text-slate-950">{typeof value === "number" ? value.toLocaleString() : value}</p>
       <p className="mt-1 text-[10px] text-slate-500">{detail}</p>
     </article>
   );
@@ -195,7 +195,7 @@ export default function IntegrationsWorkbenchPage() {
   } | null>(null);
 
   const visibleConnectors = useMemo(
-    () => filterIntegrationConnectors(connectors as unknown as Row[], connectorSearch, connectorStatus) as unknown as IntegrationConnector[],
+    () => filterIntegrationConnectors(connectors, connectorSearch, connectorStatus),
     [connectors, connectorSearch, connectorStatus],
   );
   const selectedConnector = connectors.find((connector) => connector.id === selectedConnectorId) ?? null;
@@ -385,10 +385,10 @@ export default function IntegrationsWorkbenchPage() {
           </div>
         </div>
         <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Metric label="Connectors" value={summary.connectors} detail={summary.activeConnectors + " active · " + summary.pendingConnectors + " pending review"} />
-          <Metric label="Paused connectors" value={summary.pausedConnectors} detail="Paused pending a controlled resume or key change" />
-          <Metric label="Late events" value={summary.lateEvents} detail={summary.events + " events in the selected view"} />
-          <Metric label="Open cases" value={summary.openCases} detail={summary.errorCases + " open cases classified as errors"} />
+          <Metric label="Connectors" value={loading ? "…" : canReadConnectors ? summary.connectors : "—"} detail={canReadConnectors ? summary.activeConnectors + " active · " + summary.pendingConnectors + " pending review" : "Connector read access not granted"} />
+          <Metric label="Paused connectors" value={loading ? "…" : canReadConnectors ? summary.pausedConnectors : "—"} detail="Paused pending a controlled resume or key change" />
+          <Metric label="Late events" value={loading ? "…" : canReadReconciliation ? summary.lateEvents : "—"} detail={canReadReconciliation ? summary.events + " events in the selected view" : "Reconciliation read access not granted"} />
+          <Metric label="Open cases" value={loading ? "…" : canReadReconciliation ? summary.openCases : "—"} detail={canReadReconciliation ? summary.errorCases + " open cases classified as errors" : "Reconciliation read access not granted"} />
         </div>
       </section>
 
