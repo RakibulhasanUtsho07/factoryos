@@ -183,6 +183,18 @@ export default function WorkforceOperationsPage() {
     selfRead: hasPermission("workforce.self.read"),
   };
   const canRead = Object.values(permissions).some(Boolean);
+  const tabAccess: Record<Tab, boolean> = {
+    PEOPLE: permissions.workersRead || permissions.workersManage || permissions.skillsRead || permissions.skillsManage,
+    SCHEDULE: permissions.shiftsRead || permissions.shiftsManage || permissions.staffingRead || permissions.staffingManage,
+    ATTENDANCE: permissions.attendanceRead || permissions.attendanceCapture || permissions.attendanceCorrect,
+    OVERTIME: permissions.overtimeRead || permissions.overtimeRequest || permissions.overtimeApprove,
+    PRODUCTIVITY: permissions.productivityRead || permissions.productivityCapture,
+    SELF: permissions.selfRead,
+  };
+  const defaultTab: Tab = tabAccess.PEOPLE ? "PEOPLE" : tabAccess.SCHEDULE ? "SCHEDULE"
+    : tabAccess.ATTENDANCE ? "ATTENDANCE" : tabAccess.OVERTIME ? "OVERTIME"
+      : tabAccess.PRODUCTIVITY ? "PRODUCTIVITY" : "SELF";
+  const visibleTab = tabAccess[tab] ? tab : defaultTab;
 
   const [tab, setTab] = useState<Tab>("PEOPLE");
   const [loadedFactoryId, setLoadedFactoryId] = useState("");
@@ -558,26 +570,23 @@ export default function WorkforceOperationsPage() {
         {!hasSession ? (
           <Empty>Connect an authenticated FactoryOS session and select an active factory to open workforce records.</Empty>
         ) : !canRead ? (
-          <Empty>Your session does not include a Workforce read permission. Ask a factory administrator to grant the specific workforce permissions required for your role.</Empty>
+          <Empty>Your session does not include a Workforce permission. Ask a factory administrator to grant the specific workforce permissions required for your role.</Empty>
+        ) : loadedFactoryId !== activeFactoryId ? (
+          <Empty>{loading ? "Loading records for the selected factory…" : "No current-factory snapshot is available. Refresh to retry the selected factory data."}</Empty>
         ) : (
           <>
             <nav aria-label="Workforce workspaces" className="flex gap-2 overflow-x-auto pb-1">
               {TABS.map((item) => {
-                const enabled = item.id === "PEOPLE" ? permissions.workersRead || permissions.workersManage || permissions.skillsRead || permissions.skillsManage
-                  : item.id === "SCHEDULE" ? permissions.shiftsRead || permissions.shiftsManage || permissions.staffingRead || permissions.staffingManage
-                    : item.id === "ATTENDANCE" ? permissions.attendanceRead || permissions.attendanceCapture || permissions.attendanceCorrect
-                      : item.id === "OVERTIME" ? permissions.overtimeRead || permissions.overtimeRequest || permissions.overtimeApprove
-                        : item.id === "PRODUCTIVITY" ? permissions.productivityRead || permissions.productivityCapture
-                          : permissions.selfRead;
+                const enabled = tabAccess[item.id];
                 return enabled ? (
-                  <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-pressed={tab === item.id} className={"min-w-max rounded-xl px-4 py-3 text-left transition " + (tab === item.id ? "bg-slate-950 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
+                  <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-pressed={visibleTab === item.id} className={"min-w-max rounded-xl px-4 py-3 text-left transition " + (tab === item.id ? "bg-slate-950 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
                     <span className="block text-xs font-bold">{item.label}</span><span className={"mt-1 block text-[10px] " + (tab === item.id ? "text-slate-300" : "text-slate-400")}>{item.description}</span>
                   </button>
                 ) : null;
               })}
             </nav>
 
-            {tab === "PEOPLE" ? (
+            {visibleTab === "PEOPLE" ? (
               <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
                 <div className="space-y-5">
                   <Section title="Worker roster" subtitle="Employee identifiers and factory-scoped status. Linked user accounts are optional and must already belong to this tenant." action={<span className="text-[10px] text-slate-500">{activeWorkers.length} visible · {workers.length} loaded</span>}>
@@ -646,7 +655,7 @@ export default function WorkforceOperationsPage() {
               </div>
             ) : null}
 
-            {tab === "SCHEDULE" ? (
+            {visibleTab === "SCHEDULE" ? (
               <div className="space-y-5">
                 <div className="grid gap-5 xl:grid-cols-2">
                   {permissions.shiftsRead ? <Section title="Shift templates" subtitle="Local shift windows, timezone and policy defaults. Overnight shifts are resolved by the API.">
@@ -718,7 +727,7 @@ export default function WorkforceOperationsPage() {
               </div>
             ) : null}
 
-            {tab === "ATTENDANCE" ? (
+            {visibleTab === "ATTENDANCE" ? (
               <div className="space-y-5">
                 <Section title="Daily attendance" subtitle="Effective events and computed shift summaries for the selected factory-local day." action={<Field label="Shift date"><input type="date" className={INPUT} value={shiftDate} onChange={(event) => setShiftDate(event.target.value)} /></Field>}>
                   <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -745,7 +754,12 @@ export default function WorkforceOperationsPage() {
 
                 {permissions.attendanceCapture && permissions.staffingRead && permissions.attendanceRead ? <Section title="Capture attendance event" subtitle="Capture an event against a shift assignment. Device/QR source identifiers are optional; API validates assignment chronology and duplicate source events.">
                   <form onSubmit={createAttendance} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    <Field label="Shift assignment"><select required className={INPUT} value={attendanceDraft.shift_assignment_id} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, shift_assignment_id: event.target.value })}><option value="">Select assignment</option>{attendanceShifts.map((row) => <option key={String(row.shift_assignment_id)} value={String(row.shift_assignment_id)}>{display(row.employee_code)} · {display(row.shift_name)} · {display(row.assignment_status)}</option>)}</select></Field>
+                    <Field label="Shift assignment"><select required className={INPUT} value={attendanceDraft.shift_assignment_id} onChange={(event) => {
+                      const nextId = event.target.value;
+                      const nextShift = attendanceShifts.find((row) => row.shift_assignment_id === nextId);
+                      const nextWorker = workers.find((row) => row.id === nextShift?.worker_id);
+                      setAttendanceDraft({ ...attendanceDraft, shift_assignment_id: nextId, source_type: attendanceDraft.source_type === "BIOMETRIC" && !hasBiometricConsent(nextWorker) ? "MANUAL" : attendanceDraft.source_type });
+                    }}><option value="">Select assignment</option>{attendanceShifts.map((row) => <option key={String(row.shift_assignment_id)} value={String(row.shift_assignment_id)}>{display(row.employee_code)} · {display(row.shift_name)} · {display(row.assignment_status)}</option>)}</select></Field>
                     <Field label="Event type"><select className={INPUT} value={attendanceDraft.event_type} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, event_type: event.target.value })}>{["CLOCK_IN","CLOCK_OUT","BREAK_START","BREAK_END","ABSENCE_RECORDED"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></Field>
                     <Field label="Capture source"><select className={INPUT} value={attendanceDraft.source_type} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, source_type: event.target.value })}><option value="MANUAL">Manual</option><option value="QR">QR reader</option>{hasBiometricConsent(workers.find((row) => row.id === attendanceShifts.find((shift) => shift.shift_assignment_id === attendanceDraft.shift_assignment_id)?.worker_id)) ? <option value="BIOMETRIC">Biometric (worker consent active)</option> : null}<option value="API">API integration</option></select></Field>
                     <Field label="Occurred at (local browser time)"><input required type="datetime-local" className={INPUT} value={attendanceDraft.occurred_at} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, occurred_at: event.target.value })} /></Field>
@@ -754,7 +768,7 @@ export default function WorkforceOperationsPage() {
                   </form>
                 </Section> : null}
 
-                {permissions.attendanceCorrect ? <Section title="Append attendance correction" subtitle="Corrections append a new correction record; the original attendance event is never edited or deleted.">
+                {permissions.attendanceCorrect && permissions.attendanceRead ? <Section title="Append attendance correction" subtitle="Corrections append a new correction record; the original attendance event is never edited or deleted.">
                   {correctionDraft ? <form onSubmit={correctAttendance} className="grid gap-3 sm:grid-cols-3">
                     <Field label="Selected event"><input readOnly className={INPUT} value={correctionDraft.eventLabel} /></Field>
                     <Field label="Corrected clock-out (local browser time)"><input required type="datetime-local" className={INPUT} value={correctionDraft.occurredAt} onChange={(event) => setCorrectionDraft({ ...correctionDraft, occurredAt: event.target.value })} /></Field>
@@ -766,7 +780,7 @@ export default function WorkforceOperationsPage() {
               </div>
             ) : null}
 
-            {tab === "OVERTIME" ? (
+            {visibleTab === "OVERTIME" ? (
               <div className="space-y-5">
                 <Section title="Overtime request register" subtitle="Requests are versioned. Only a different reviewer can approve or reject a pending request." action={<div className="grid grid-cols-2 gap-2"><Field label="From"><input type="date" className={INPUT} value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></Field><Field label="To"><input type="date" className={INPUT} value={toDate} onChange={(event) => setToDate(event.target.value)} /></Field></div>}>
                   {overtimeRows.length ? <Table headers={["Worker / Date", "Requested", "Approved", "Status", "Decision", "Review"]}>
@@ -798,7 +812,7 @@ export default function WorkforceOperationsPage() {
               </div>
             ) : null}
 
-            {tab === "PRODUCTIVITY" ? (
+            {visibleTab === "PRODUCTIVITY" ? (
               <div className="space-y-5">
                 <Section title="Productivity evidence" subtitle="The API validates output/WIP event provenance, work-order operation and released routing standard.">
                   <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -835,7 +849,7 @@ export default function WorkforceOperationsPage() {
               </div>
             ) : null}
 
-            {tab === "SELF" ? (
+            {visibleTab === "SELF" ? (
               <div className="space-y-5">
                 <Section title="My workforce records" subtitle="Personal records are resolved by the API from your authenticated user-to-worker link.">
                   <div className="mb-4 flex flex-wrap items-end gap-3">
