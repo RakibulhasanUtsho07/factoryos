@@ -72,6 +72,19 @@ function dateTime(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
 }
 
+function pagination(value: unknown, fallbackOffset = 0) {
+  const page = object(object(value).pagination);
+  const limit = Number(page.limit);
+  const offset = Number(page.offset);
+  const total = Number(page.total);
+  return {
+    limit: Number.isInteger(limit) && limit >= 1 ? limit : 50,
+    offset: Number.isInteger(offset) && offset >= 0 ? offset : fallbackOffset,
+    total: Number.isInteger(total) && total >= 0 ? total : 0,
+    has_more: page.has_more === true,
+  };
+}
+
 function number(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toLocaleString() : "—";
@@ -198,15 +211,15 @@ export default function OperationsRecoveryWorkbenchPage() {
   const selectedBroker = brokerEvents.find((row) => row.id === selectedBrokerId) ?? null;
 
   const visibleNotifications = useMemo(
-    () => filterOperationsNotifications(notifications as unknown as Row[], notificationSearch, notificationSeverity) as unknown as OperationalNotification[],
+    () => filterOperationsNotifications(notifications, notificationSearch, notificationSeverity),
     [notifications, notificationSearch, notificationSeverity],
   );
   const visibleOutbox = useMemo(
-    () => filterOperationsDeadLetters(outboxEvents as unknown as Row[], outboxSearch) as unknown as QuarantinedOutboxEvent[],
+    () => filterOperationsDeadLetters(outboxEvents, outboxSearch) as QuarantinedOutboxEvent[],
     [outboxEvents, outboxSearch],
   );
   const visibleBroker = useMemo(
-    () => filterOperationsDeadLetters(brokerEvents as unknown as Row[], brokerSearch) as unknown as BrokerDeadLetter[],
+    () => filterOperationsDeadLetters(brokerEvents, brokerSearch) as BrokerDeadLetter[],
     [brokerEvents, brokerSearch],
   );
 
@@ -241,12 +254,8 @@ export default function OperationsRecoveryWorkbenchPage() {
       setNotifications(rows(inboxResponse) as OperationalNotification[]);
       setOutboxEvents(rows(outboxResponse) as QuarantinedOutboxEvent[]);
       setBrokerEvents(rows(brokerResponse) as BrokerDeadLetter[]);
-      setOutboxPagination(object(outboxResponse).pagination as typeof outboxPagination ?? {
-        limit: 50, offset: outboxPagination.offset, total: 0, has_more: false,
-      });
-      setBrokerPagination(object(brokerResponse).pagination as typeof brokerPagination ?? {
-        limit: 50, offset: brokerPagination.offset, total: 0, has_more: false,
-      });
+      setOutboxPagination(pagination(outboxResponse, outboxPagination.offset));
+      setBrokerPagination(pagination(brokerResponse, brokerPagination.offset));
       setLoadedFactoryId(activeFactoryId);
     } catch (cause) {
       setError(messageOf(cause));
@@ -357,10 +366,10 @@ export default function OperationsRecoveryWorkbenchPage() {
           </div>
         </div>
         <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Metric label="Unread notifications" value={loading ? "…" : canReadNotifications ? summary.unreadNotifications : "—"} detail={canReadNotifications ? summary.actionRequired + " require action" : "Inbox read permission not granted"} />
-          <Metric label="Quarantined outbox" value={loading ? "…" : canReadDlq ? summary.quarantinedEvents : "—"} detail="Application outbox events awaiting replay" />
-          <Metric label="Broker dead letters" value={loading ? "…" : canReadDlq ? summary.brokerQuarantined : "—"} detail={summary.brokerRedrivePending + " pending · " + summary.brokerRedriven + " redriven"} />
-          <Metric label="Acknowledged" value={loading ? "…" : canReadNotifications ? summary.acknowledgedNotifications : "—"} detail="Notifications acknowledged in this inbox view" />
+          <Metric label="Unread notifications" value={loading || factoryChanged ? "…" : canReadNotifications ? summary.unreadNotifications : "—"} detail={canReadNotifications ? summary.actionRequired + " require action" : "Inbox read permission not granted"} />
+          <Metric label="Quarantined outbox" value={loading || factoryChanged ? "…" : canReadDlq ? summary.quarantinedEvents : "—"} detail="Application outbox events on this page awaiting replay" />
+          <Metric label="Broker dead letters" value={loading || factoryChanged ? "…" : canReadDlq ? summary.brokerQuarantined : "—"} detail={canReadDlq ? summary.brokerRedrivePending + " pending · " + summary.brokerRedriven + " redriven on this page" : "Outbox read permission not granted"} />
+          <Metric label="Acknowledged" value={loading || factoryChanged ? "…" : canReadNotifications ? summary.acknowledgedNotifications : "—"} detail="Notifications acknowledged in this inbox view" />
         </div>
       </section>
 
@@ -388,7 +397,7 @@ export default function OperationsRecoveryWorkbenchPage() {
       ) : null}
       {notice ? <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{notice}</div> : null}
 
-      {canRead && hasSession ? (
+      {canRead && hasSession && !factoryChanged ? (
         <>
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-200">
             {TABS.map((item) => (
