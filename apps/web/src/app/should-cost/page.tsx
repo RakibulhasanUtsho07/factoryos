@@ -598,7 +598,7 @@ export default function ShouldCostWorkbenchPage() {
                   <h2 className="text-sm font-bold text-slate-950">Profile configuration & approval</h2>
                   <p className="mt-1 text-[11px] text-slate-500">Profile transitions use an optimistic row version and an explicit reason.</p>
                 </div>
-                {!selectedProfile ? <Empty>Select a profile version to inspect its seven formulas and governance history.</Empty> : profileDetailLoading ? <Empty>Loading full profile and history…</Empty> : !profileDetail ? <Empty>Profile detail is not available.</Empty> : (
+                {!selectedProfileId ? <Empty>Select a profile version to inspect its seven formulas and governance history.</Empty> : profileDetailLoading ? <Empty>Loading full profile and history…</Empty> : !profileDetail ? <Empty>Profile detail is not available.</Empty> : (
                   <>
                     <div className="rounded-xl bg-slate-50 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -710,7 +710,7 @@ export default function ShouldCostWorkbenchPage() {
                   <h2 className="text-sm font-bold text-slate-950">Assessment result & evidence</h2>
                   <p className="mt-1 text-[11px] text-slate-500">Calculated amounts come from the backend fixed-precision formula engine.</p>
                 </div>
-                {!selectedAssessment ? <Empty>Select an assessment to inspect cost breakdown, revenue and traceable evidence.</Empty> : assessmentDetailLoading ? <Empty>Loading full assessment and evidence…</Empty> : !assessmentDetail ? <Empty>Assessment detail is not available.</Empty> : (
+                {!selectedAssessmentId ? <Empty>Select an assessment to inspect cost breakdown, revenue and traceable evidence.</Empty> : assessmentDetailLoading ? <Empty>Loading full assessment and evidence…</Empty> : !assessmentDetail ? <Empty>Assessment detail is not available.</Empty> : (
                   <>
                     <div className="rounded-xl bg-slate-50 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
