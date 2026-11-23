@@ -13,3 +13,14 @@ test("claims require a precise source locator",()=>{assert.throws(()=>buildResea
 test("releases require approved claim IDs and a positive version",()=>{assert.throws(()=>buildResearchReleasePayload({release_key:"market",title:"Outlook",evidence_grade:"MIXED"},1,[]),/approved research claim/);const body=buildResearchReleasePayload({release_key:"market",title:"Outlook",evidence_grade:"MIXED"},2,["123e4567-e89b-12d3-a456-426614174000"]);assert.equal(body.version,2);assert.equal(body.claim_ids.length,1);});
 test("workspace counts and filters preserve backend statuses",()=>{const s=summarizeResearchWorkspace({sources:[{access_status:"APPROVED"},{access_status:"PENDING"}],watchlists:[{status:"ACTIVE"}],jobs:[{status:"QUEUED"},{status:"RUNNING"}],claims:[{status:"PROPOSED"},{status:"APPROVED"}],releases:[{status:"PROMOTED"}]});assert.equal(s.approvedSources,1);assert.equal(s.pendingClaims,1);assert.equal(s.promotedReleases,1);assert.equal(filterResearchRows([{title:"Steel outlook",status:"ACTIVE"},{title:"Energy",status:"PAUSED"}],"steel","ACTIVE").length,1);});
 test("full-text guard needs approved source, permitted license and storage flag",()=>{assert.equal(canResearchStoreFullText({access_status:"APPROVED",license_status:"LICENSED",rights_basis:"Contract",full_text_storage_allowed:true}),true);assert.equal(canResearchStoreFullText({access_status:"APPROVED",license_status:"UNKNOWN",rights_basis:"Contract",full_text_storage_allowed:true}),false);assert.equal(canResearchStoreFullText({access_status:"PENDING",license_status:"LICENSED",rights_basis:"Contract",full_text_storage_allowed:true}),false);});
+
+test("source and watchlist payloads enforce backend string length limits",()=>{
+ assert.throws(()=>buildResearchSourcePayload({title:"T".repeat(1001),source_type:"DOI_METADATA",doi:"10.1/test",license_status:"UNKNOWN"}),/Source title.*1000/);
+ assert.throws(()=>buildResearchWatchlistPayload({watchlist_key:"valid-key",title:"T".repeat(301),topic_type:"TECHNOLOGY",topic_terms:"steel",source_types:["DOI_METADATA"]}),/Watchlist title.*300/);
+});
+test("claim and release payloads enforce API text limits",()=>{
+ assert.throws(()=>buildResearchClaimPayload({claim_text:"C".repeat(8001),page:"1"}),/Claim text.*8000/);
+ assert.throws(()=>buildResearchClaimPayload({claim_text:"valid",page:"1",methodology:"M".repeat(4001)}),/Methodology.*4000/);
+ assert.throws(()=>buildResearchClaimPayload({claim_text:"valid",page:"1",stored_excerpt:"E".repeat(4001)}),/Stored excerpt.*4000/);
+ assert.throws(()=>buildResearchReleasePayload({release_key:"key",title:"R".repeat(501),evidence_grade:"B"},1,["123e4567-e89b-12d3-a456-426614174000"]),/Release title.*500/);
+});

@@ -1,6 +1,9 @@
 const LICENSES = new Set(["OPEN_ACCESS","LICENSED","USER_PROVIDED_AUTHORIZED"]);
 const SOURCE_TYPES = ["DOI_METADATA","OPEN_ACCESS_REPOSITORY","PUBLISHER_FEED","INSTITUTIONAL_REPOSITORY","CUSTOMER_PROVIDED","STANDARD","VENDOR_MATERIAL","SURVEY","PREPRINT","OPINION"];
 const TOPIC_TYPES = ["SECTOR","TECHNOLOGY","PROCESS","MARKET","SUSTAINABILITY","STRATEGIC_QUESTION"];
+function enforceMaxLength(value, maximum, label) {
+  if (String(value ?? "").length > maximum) throw new Error(label + " must be no longer than " + maximum + " characters.");
+}
 
 export function normalizeResearchRows(value, key = "") {
   if (Array.isArray(value)) return value;
@@ -29,6 +32,13 @@ export function buildResearchSourcePayload(draft) {
   const rights = String(draft.rights_basis ?? "").trim();
   const fullText = Boolean(draft.full_text_storage_allowed);
   if (!title) throw new Error("A source title is required.");
+  enforceMaxLength(title, 1000, "Source title");
+  enforceMaxLength(doi, 255, "DOI");
+  enforceMaxLength(sourceUrl, 4000, "Source URL");
+  enforceMaxLength(draft.venue, 500, "Venue");
+  enforceMaxLength(draft.abstract, 10000, "Abstract");
+  enforceMaxLength(rights, 2000, "Rights basis");
+  enforceMaxLength(draft.license_reference, 2000, "License reference");
   if (!doi && !sourceUrl) throw new Error("Provide a DOI or source URL.");
   if (!SOURCE_TYPES.includes(draft.source_type)) throw new Error("Choose a supported source type.");
   if (!["OPEN_ACCESS","LICENSED","USER_PROVIDED_AUTHORIZED","RESTRICTED","UNKNOWN"].includes(license)) throw new Error("Choose a valid license status.");
@@ -61,6 +71,8 @@ export function buildResearchWatchlistPayload(draft) {
   const sourceTypes=[...new Set((draft.source_types??[]).filter((item)=>SOURCE_TYPES.includes(item)))];
   if(!/^[a-z0-9][a-z0-9._-]{1,159}$/.test(key))throw new Error("Use a 2-160 character watchlist key.");
   if(!title)throw new Error("A watchlist title is required.");
+  enforceMaxLength(title, 300, "Watchlist title");
+  enforceMaxLength(draft.description, 2000, "Watchlist description");
   if(!TOPIC_TYPES.includes(draft.topic_type))throw new Error("Choose a valid topic type.");
   if(!sourceTypes.length)throw new Error("Select at least one source type.");
   return {watchlist_key:key,title,topic_type:draft.topic_type,...(String(draft.description??"").trim()?{description:String(draft.description).trim()}:{}),topic_terms:topics,inclusion_terms:include,exclusion_terms:exclude,source_types:sourceTypes};
@@ -84,6 +96,12 @@ export function buildResearchClaimPayload(draft) {
   for(const key of ["section","paragraph","url_fragment"]){const text=String(draft[key]??"").trim();if(text)locator[key]=text;}
   const claim=String(draft.claim_text??"").trim();
   if(!claim)throw new Error("Claim text is required.");
+  enforceMaxLength(claim, 8000, "Claim text");
+  enforceMaxLength(draft.methodology, 4000, "Methodology");
+  enforceMaxLength(draft.dataset_description, 4000, "Dataset description");
+  enforceMaxLength(draft.limitations, 4000, "Limitations");
+  enforceMaxLength(draft.practical_implication, 4000, "Practical implication");
+  enforceMaxLength(draft.stored_excerpt, 4000, "Stored excerpt");
   if(!Object.keys(locator).length)throw new Error("Add at least one precise source locator.");
   return {claim_text:claim,...(String(draft.methodology??"").trim()?{methodology:String(draft.methodology).trim()}:{}),...(String(draft.dataset_description??"").trim()?{dataset_description:String(draft.dataset_description).trim()}:{}),...(String(draft.limitations??"").trim()?{limitations:String(draft.limitations).trim()}:{}),...(String(draft.practical_implication??"").trim()?{practical_implication:String(draft.practical_implication).trim()}:{}),evidence_grade:"UNASSESSED",evidence_strength:draft.evidence_strength||"UNASSESSED",topic_tags:splitResearchTerms(draft.topic_tags??"",50),provenance_ref:locator,...(String(draft.stored_excerpt??"").trim()?{stored_excerpt:String(draft.stored_excerpt).trim()}:{})};
 }
@@ -92,6 +110,7 @@ export function buildResearchReleasePayload(draft,version,claimIds) {
   const ids=[...new Set((claimIds??[]).map((id)=>String(id).toLowerCase()))];
   if(!key||key.length>160)throw new Error("A release key of up to 160 characters is required.");
   if(!title)throw new Error("A release title is required.");
+  enforceMaxLength(title, 500, "Release title");
   if(!Number.isInteger(Number(version))||Number(version)<1)throw new Error("Release version must be a positive integer.");
   if(!ids.length)throw new Error("Select at least one approved research claim.");
   if(!["A","B","C","D","MIXED"].includes(draft.evidence_grade))throw new Error("Choose a valid release evidence grade.");
