@@ -144,7 +144,7 @@ export function normalizeIntegrationRows(value, preferredKey = "") {
 
 export function buildIntegrationConnectorPayload(input) {
   const displayName = clean(input.display_name);
-  const sourceSystem = clean(input.source_system).toUpperCase();
+  const sourceSystem = clean(input.source_system);
   const secretReference = clean(input.secret_reference);
   const schemaVersion = Number(input.schema_version);
   if (displayName.length < 2 || displayName.length > 160) {
@@ -162,7 +162,7 @@ export function buildIntegrationConnectorPayload(input) {
   const rawEvents = Array.isArray(input.allowed_event_types)
     ? input.allowed_event_types
     : String(input.allowed_event_types ?? "").split(/[\r\n,]+/);
-  const eventTypes = rawEvents.map((item) => clean(item).toUpperCase()).filter(Boolean);
+  const eventTypes = rawEvents.map((item) => clean(item)).filter(Boolean);
   if (eventTypes.length < 1 || eventTypes.length > 100 ||
     eventTypes.some((item) => !EVENT_TYPE.test(item)) ||
     new Set(eventTypes).size !== eventTypes.length) {
