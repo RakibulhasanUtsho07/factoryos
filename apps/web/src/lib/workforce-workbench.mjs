@@ -1,6 +1,6 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DATE = /^\\d{4}-\\d{2}-\\d{2}$/;
-const CLOCK = /^(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
 const EVENT_TYPES = new Set(["CLOCK_IN", "CLOCK_OUT", "BREAK_START", "BREAK_END", "ABSENCE_RECORDED"]);
 const EVENT_SOURCES = new Set(["MANUAL", "BIOMETRIC", "QR", "API"]);
 const ASSIGNMENT_ACTIONS = new Set(["CONFIRM", "CANCEL", "COMPLETE"]);
@@ -39,7 +39,7 @@ function dateOnly(value, field) {
 
 function timestamp(value, field) {
   const result = text(value);
-  if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(result)) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(result)) {
     throw new Error(field + " must be an ISO-8601 timestamp with an explicit UTC offset.");
   }
   if (!Number.isFinite(Date.parse(result))) throw new Error(field + " must be a valid timestamp.");
