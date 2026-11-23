@@ -274,5 +274,5 @@ test("formats work durations without changing source minutes", () => {
 test("validates request idempotency keys", () => {
   assert.equal(validateWorkforceIdempotencyKey("workforce:create:one"), "workforce:create:one");
   assert.throws(() => validateWorkforceIdempotencyKey(""), /1 to 255/);
-  assert.throws(() => validateWorkforceIdempotencyKey("bad\\nkey"), /single-line/);
+  assert.throws(() => validateWorkforceIdempotencyKey("bad\nkey"), /single-line/);
 });
