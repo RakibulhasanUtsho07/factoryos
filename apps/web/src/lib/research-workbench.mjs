@@ -101,9 +101,17 @@ export function summarizeResearchWorkspace({sources=[],watchlists=[],jobs=[],cla
   const count=(rows,fn)=>rows.filter(fn).length;
   return {sources:sources.length,approvedSources:count(sources,(r)=>r.access_status==="APPROVED"),pendingSources:count(sources,(r)=>r.access_status==="PENDING"),activeWatchlists:count(watchlists,(r)=>r.status==="ACTIVE"),queuedJobs:count(jobs,(r)=>["QUEUED","RETRY_WAIT"].includes(r.status)),runningJobs:count(jobs,(r)=>r.status==="RUNNING"),pendingClaims:count(claims,(r)=>r.status==="PROPOSED"),approvedClaims:count(claims,(r)=>r.status==="APPROVED"),promotedReleases:count(releases,(r)=>r.status==="PROMOTED")};
 }
-export function filterResearchRows(rows,search,status="ALL") {
-  const term=String(search??"").trim().toLocaleLowerCase();
-  return rows.filter((row)=>{if(status!=="ALL"&&String(row.status??row.access_status??"UNKNOWN")!==status)return false;if(!term)return true;return Object.values(row).some((value)=>typeof value==="string"?value.toLocaleLowerCase().includes(term):Array.isArray(value)&&value.some((item)=>String(item).toLocaleLowerCase().includes(term));});
+export function filterResearchRows(rows, search, status = "ALL") {
+  const term = String(search ?? "").trim().toLocaleLowerCase();
+  return rows.filter((row) => {
+    if (status !== "ALL" && String(row.status ?? row.access_status ?? "UNKNOWN") !== status) return false;
+    if (!term) return true;
+    return Object.values(row).some((value) => {
+      if (typeof value === "string") return value.toLocaleLowerCase().includes(term);
+      if (Array.isArray(value)) return value.some((item) => String(item).toLocaleLowerCase().includes(term));
+      return false;
+    });
+  });
 }
 export function canResearchStoreFullText(source) {
   return source?.access_status==="APPROVED"&&LICENSES.has(source?.license_status)&&Boolean(String(source?.rights_basis??"").trim())&&source?.full_text_storage_allowed===true;
