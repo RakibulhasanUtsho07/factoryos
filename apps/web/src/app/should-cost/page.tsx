@@ -319,10 +319,14 @@ export default function ShouldCostWorkbenchPage() {
   useEffect(() => {
     if (!selectedProfileId || !canReadProfiles || loadedFactoryId !== activeFactoryId) return;
     let current = true;
-    setProfileDetailLoading(true);
-    void request("/should-cost/profiles/" + selectedProfileId)
+    void Promise.resolve()
+      .then(() => {
+        if (!current) return undefined;
+        setProfileDetailLoading(true);
+        return request("/should-cost/profiles/" + selectedProfileId);
+      })
       .then((value) => {
-        if (current) setProfileDetail(object(value) as ShouldCostProfile);
+        if (current && value !== undefined) setProfileDetail(object(value) as ShouldCostProfile);
       })
       .catch((cause) => {
         if (current) setError(messageOf(cause));
@@ -336,10 +340,14 @@ export default function ShouldCostWorkbenchPage() {
   useEffect(() => {
     if (!selectedAssessmentId || !canReadAssessments || loadedFactoryId !== activeFactoryId) return;
     let current = true;
-    setAssessmentDetailLoading(true);
-    void request("/should-cost/assessments/" + selectedAssessmentId)
+    void Promise.resolve()
+      .then(() => {
+        if (!current) return undefined;
+        setAssessmentDetailLoading(true);
+        return request("/should-cost/assessments/" + selectedAssessmentId);
+      })
       .then((value) => {
-        if (current) setAssessmentDetail(object(value) as ShouldCostAssessment);
+        if (current && value !== undefined) setAssessmentDetail(object(value) as ShouldCostAssessment);
       })
       .catch((cause) => {
         if (current) setError(messageOf(cause));
@@ -351,12 +359,8 @@ export default function ShouldCostWorkbenchPage() {
   }, [selectedAssessmentId, canReadAssessments, loadedFactoryId, activeFactoryId, request]);
 
   useEffect(() => {
-    if (!createAssessmentOpen || !newAssessment.profile_id || !canReadProfiles) {
-      setAssessmentProfileDetail(null);
-      return;
-    }
+    if (!createAssessmentOpen || !newAssessment.profile_id || !canReadProfiles) return;
     let current = true;
-    setAssessmentProfileDetail(null);
     void request("/should-cost/profiles/" + newAssessment.profile_id)
       .then((value) => {
         if (current) {
@@ -664,7 +668,7 @@ export default function ShouldCostWorkbenchPage() {
                     <h2 className="text-sm font-bold text-slate-950">Deterministic cost assessment register</h2>
                     <p className="mt-1 text-[11px] text-slate-500">Each assessment locks its profile version and evidence snapshot.</p>
                   </div>
-                  {canCalculateAssessments && canReadProfiles ? <button type="button" className={PRIMARY} onClick={() => { setNewAssessment(assessmentDraft()); setCreateAssessmentOpen(true); }}>Calculate assessment</button> : null}
+                  {canCalculateAssessments && canReadProfiles ? <button type="button" className={PRIMARY} onClick={() => { setNewAssessment(assessmentDraft()); setAssessmentProfileDetail(null); setCreateAssessmentOpen(true); }}>Calculate assessment</button> : null}
                 </div>
                 <div className="grid gap-2 border-b border-slate-100 p-4 sm:grid-cols-[190px_1fr_auto]">
                   <select aria-label="Assessment scope filter" className={INPUT} value={assessmentScopeFilter} onChange={(event) => setAssessmentScopeFilter(event.target.value)}>
@@ -909,7 +913,7 @@ export default function ShouldCostWorkbenchPage() {
                 <h2 className="text-lg font-bold text-slate-950">Calculate should-cost assessment</h2>
                 <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">The backend calculates seven-category costs using the selected current approved profile. Evidence snapshots and effective FX rates are stored with the assessment.</p>
               </div>
-              <button type="button" className={SECONDARY} onClick={() => setCreateAssessmentOpen(false)}>Close</button>
+              <button type="button" className={SECONDARY} onClick={() => { setCreateAssessmentOpen(false); setAssessmentProfileDetail(null); }}>Close</button>
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <Field label="Target scope">
@@ -923,7 +927,7 @@ export default function ShouldCostWorkbenchPage() {
                 <input required className={INPUT} value={newAssessment.target_id} onChange={(event) => setNewAssessment({ ...newAssessment, target_id: event.target.value })} />
               </Field>
               <Field label="Approved profile">
-                <select required className={INPUT} value={newAssessment.profile_id} onChange={(event) => setNewAssessment({ ...newAssessment, profile_id: event.target.value })}>
+                <select required className={INPUT} value={newAssessment.profile_id} onChange={(event) => { setAssessmentProfileDetail(null); setNewAssessment({ ...newAssessment, profile_id: event.target.value }); }}>
                   <option value="">Select current approved profile</option>
                   {eligibleApprovedProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.profile_code} v{profile.version} · {profile.currency}/{profile.output_unit}</option>)}
                 </select>
@@ -1039,7 +1043,7 @@ export default function ShouldCostWorkbenchPage() {
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
               <p className="max-w-2xl text-[10px] leading-4 text-slate-500">Calculation is performed only when submitted. The API checks target existence/state, profile current-version status, source dates, quantity lineage, formula compatibility and applicable FX records.</p>
               <div className="flex flex-wrap justify-end gap-2">
-                <button type="button" className={SECONDARY} onClick={() => setCreateAssessmentOpen(false)}>Cancel</button>
+                <button type="button" className={SECONDARY} onClick={() => { setCreateAssessmentOpen(false); setAssessmentProfileDetail(null); }}>Cancel</button>
                 <button type="submit" className={PRIMARY} disabled={busy || !assessmentProfileDetail || assessmentProfileDetail.status !== "APPROVED" || assessmentProfileDetail.is_current !== true}>{busy ? "Calculating…" : "Calculate & store assessment"}</button>
               </div>
             </div>
