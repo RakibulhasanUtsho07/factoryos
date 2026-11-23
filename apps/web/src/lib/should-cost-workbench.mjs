@@ -161,6 +161,7 @@ export function buildShouldCostAssessmentPayload(input, profile) {
   const targetId = uuid(input.target_id, "Target ID");
   const profileId = uuid(input.profile_id, "Profile ID");
   const targetQuantity = positiveDecimal(input.target_quantity, "Target quantity", 4, false);
+  if (targetQuantity > 99999999999999) throw new Error("Target quantity exceeds the API maximum.");
   const targetUnit = clean(input.target_unit).toUpperCase();
   if (!targetUnit || targetUnit.length > 50) throw new Error("Target unit must contain 1 to 50 characters.");
   if (!profile || profile.id !== profileId || profile.status !== "APPROVED" || profile.is_current !== true) {
@@ -215,18 +216,16 @@ export function buildShouldCostAssessmentPayload(input, profile) {
       result.unit_code = clean(line.unit_code).toUpperCase();
       if (!result.unit_code || result.unit_code.length > 50) throw new Error(category + " unit code is required for direct-rate evidence.");
       result.unit_rate = positiveDecimal(line.unit_rate, category + " unit rate", 8, true);
+      result.input_quantity = positiveDecimal(line.input_quantity, category + " input quantity", 6, true);
       result.source_currency = clean(line.source_currency).toUpperCase();
       if (!/^[A-Z]{3}$/.test(result.source_currency)) throw new Error(category + " source currency must be a three-letter code.");
       if (["MATERIAL", "LABOUR", "ENERGY"].includes(category)) {
-        result.input_quantity = positiveDecimal(line.input_quantity, category + " input quantity", 6, true);
         result.quantity_source_type = "MANUAL_APPROVED";
         result.quantity_source_reference = clean(line.quantity_source_reference);
         if (!result.quantity_source_reference || result.quantity_source_reference.length > 500) {
           throw new Error(category + " quantity source reference is required.");
         }
         result.quantity_source_snapshot = record(line.quantity_source_snapshot, category + " quantity source snapshot");
-      } else if (line.input_quantity !== "" && line.input_quantity !== undefined && line.input_quantity !== null) {
-        result.input_quantity = positiveDecimal(line.input_quantity, category + " input quantity", 6, true);
       }
     } else if (method === "FIXED_PER_BATCH") {
       result.fixed_amount = positiveDecimal(line.fixed_amount, category + " fixed amount", 4, true);
