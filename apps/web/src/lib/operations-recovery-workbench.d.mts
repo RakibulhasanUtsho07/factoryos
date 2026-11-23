@@ -47,4 +47,5 @@ export function buildNotificationAcknowledgePayload(expectedVersion: unknown, re
 export function validateOperationsIdempotencyKey(value: string): string;
 export function summarizeOperationsRecovery(notifications?: OperationalNotification[], quarantined?: QuarantinedOutboxEvent[], brokerDeadLetters?: BrokerDeadLetter[]): Record<string, number>;
 export function filterOperationsNotifications(rows?: OperationalNotification[], search?: string, severity?: string): OperationalNotification[];
-export function filterOperationsDeadLetters(rows?: Array<QuarantinedOutboxEvent | BrokerDeadLetter>, search?: string): Array<QuarantinedOutboxEvent | BrokerDeadLetter>;
+export function filterOperationsDeadLetters(rows?: QuarantinedOutboxEvent[], search?: string): QuarantinedOutboxEvent[];
+export function filterOperationsDeadLetters(rows?: BrokerDeadLetter[], search?: string): BrokerDeadLetter[];
