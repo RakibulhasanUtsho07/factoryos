@@ -89,7 +89,7 @@ test("builds worker status transitions with optimistic version and mandatory rea
     expected_version: 4, status: "INACTIVE", reason: "Assignment completed",
   });
   assert.throws(() => buildWorkforceWorkerStatusPayload("REMOVED", 2, "Reason"), /ACTIVE or INACTIVE/);
-  assert.throws(() => buildWorkforceWorkerStatusPayload("ACTIVE", 0, "Reason"), /positive integer/);
+  assert.throws(() => buildWorkforceWorkerStatusPayload("ACTIVE", 0, "Reason"), /between 1 and 2147483647/);
   assert.throws(() => buildWorkforceWorkerStatusPayload("ACTIVE", 2, "no"), /Reason/);
 });
 
