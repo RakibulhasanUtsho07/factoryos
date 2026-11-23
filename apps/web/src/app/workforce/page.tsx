@@ -14,6 +14,7 @@ import {
   buildWorkforceProductivityPayload,
   buildWorkforceQuery,
   buildWorkforceShiftPayload,
+  buildWorkforceShiftUpdatePayload,
   buildWorkforceSkillAssignmentPayload,
   buildWorkforceSkillPayload,
   buildWorkforceWorkerPayload,
@@ -27,8 +28,9 @@ type Row = Record<string, unknown>;
 type Tab = "PEOPLE" | "SCHEDULE" | "ATTENDANCE" | "OVERTIME" | "PRODUCTIVITY" | "SELF";
 type NoticeState = { tone: "success" | "error"; message: string };
 type DraftAssignment = { id: string; row_version: number; status: string; employee_code: string; shift_date: string };
+type ShiftEditDraft = { shift: Row; name: string; starts_at_local: string; ends_at_local: string; timezone_name: string; unpaid_break_minutes: string; late_grace_minutes: string; overtime_threshold_minutes: string; status: string; reason: string };
 type AttendanceCorrection = { eventId: string; eventLabel: string; occurredAt: string; reason: string };
-type OvertimeDecision = { id: string; rowVersion: number; action: "APPROVE" | "REJECT"; requestedMinutes: number; label: string };
+type OvertimeDecision = { id: string; rowVersion: number; action: "APPROVE" | "REJECT"; requestedMinutes: number; approvedMinutes: string; label: string };
 
 const TABS: { id: Tab; label: string; description: string }[] = [
   { id: "PEOPLE", label: "People & skills", description: "Worker roster, competency and consent" },
@@ -59,6 +61,13 @@ function messageOf(error: unknown) {
 
 function display(value: unknown, fallback = "—") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function hasBiometricConsent(worker: Row | undefined) {
+  if (!worker?.biometric_consent_at) return false;
+  if (!worker.biometric_consent_withdrawn_at) return true;
+  return new Date(String(worker.biometric_consent_withdrawn_at)).getTime()
+    < new Date(String(worker.biometric_consent_at)).getTime();
 }
 
 function dateTime(value: unknown) {
@@ -151,7 +160,8 @@ function Table({ headers, children }: { headers: string[]; children: ReactNode }
 }
 
 export default function WorkforceOperationsPage() {
-  const { status: sessionStatus, activeFactoryId, hasPermission, request } = useFactoryOsSession();
+  const { status: sessionStatus, activeFactoryId, snapshot, hasPermission, request } = useFactoryOsSession();
+  const currentUserId = snapshot?.user.id ?? "";
 
   const permissions = {
     workersRead: hasPermission("workforce.workers.read"),
@@ -203,6 +213,7 @@ export default function WorkforceOperationsPage() {
   const [consentDraft, setConsentDraft] = useState<{ worker: Row; consent_granted: boolean; purpose: string; reason: string } | null>(null);
 
   const [shiftDraft, setShiftDraft] = useState({ shift_code: "", name: "", starts_at_local: "08:00", ends_at_local: "17:00", timezone_name: "Asia/Dhaka", unpaid_break_minutes: "60", late_grace_minutes: "10", overtime_threshold_minutes: "0" });
+  const [shiftEditDraft, setShiftEditDraft] = useState<ShiftEditDraft | null>(null);
   const [assignmentDraft, setAssignmentDraft] = useState({ shift_template_id: "", worker_id: "", shift_date: today, work_order_id: "", work_order_operation_id: "", operation_code: "", required_skill_code: "" });
   const [lastAssignment, setLastAssignment] = useState<DraftAssignment | null>(null);
   const [assignmentTransitionReason, setAssignmentTransitionReason] = useState("");
@@ -368,6 +379,32 @@ export default function WorkforceOperationsPage() {
     if (saved) setShiftDraft({ ...shiftDraft, shift_code: "", name: "" });
   }
 
+  async function updateShift(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!shiftEditDraft) return;
+    let body: Row;
+    try {
+      body = buildWorkforceShiftUpdatePayload({
+        expected_version: shiftEditDraft.shift.row_version,
+        name: shiftEditDraft.name,
+        starts_at_local: shiftEditDraft.starts_at_local,
+        ends_at_local: shiftEditDraft.ends_at_local,
+        timezone_name: shiftEditDraft.timezone_name,
+        unpaid_break_minutes: shiftEditDraft.unpaid_break_minutes,
+        late_grace_minutes: shiftEditDraft.late_grace_minutes,
+        overtime_threshold_minutes: shiftEditDraft.overtime_threshold_minutes,
+        status: shiftEditDraft.status,
+        reason: shiftEditDraft.reason,
+      }) as Row;
+    } catch (cause) { setNotice({ tone: "error", message: messageOf(cause) }); return; }
+    const id = String(shiftEditDraft.shift.id);
+    const saved = await perform(
+      () => request("/workforce/shifts/" + id + "/update", { method: "POST", body, idempotencyKey: newKey() }),
+      "Shift template updated using the observed row version.",
+    );
+    if (saved) setShiftEditDraft(null);
+  }
+
   async function createAssignment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     let body: Row;
@@ -451,7 +488,7 @@ export default function WorkforceOperationsPage() {
       body = buildWorkforceOvertimeDecisionPayload({
         expected_version: overtimeDecision.rowVersion,
         action: overtimeDecision.action,
-        approved_minutes: overtimeDecision.action === "APPROVE" ? overtimeDecision.requestedMinutes : undefined,
+        approved_minutes: overtimeDecision.action === "APPROVE" ? overtimeDecision.approvedMinutes : undefined,
         requested_minutes: overtimeDecision.requestedMinutes,
         reason: overtimeDecisionReason,
       }) as Row;
@@ -526,9 +563,9 @@ export default function WorkforceOperationsPage() {
           <>
             <nav aria-label="Workforce workspaces" className="flex gap-2 overflow-x-auto pb-1">
               {TABS.map((item) => {
-                const enabled = item.id === "PEOPLE" ? permissions.workersRead || permissions.skillsRead
-                  : item.id === "SCHEDULE" ? permissions.shiftsRead || permissions.staffingRead
-                    : item.id === "ATTENDANCE" ? permissions.attendanceRead || permissions.attendanceCapture
+                const enabled = item.id === "PEOPLE" ? permissions.workersRead || permissions.workersManage || permissions.skillsRead || permissions.skillsManage
+                  : item.id === "SCHEDULE" ? permissions.shiftsRead || permissions.shiftsManage || permissions.staffingRead || permissions.staffingManage
+                    : item.id === "ATTENDANCE" ? permissions.attendanceRead || permissions.attendanceCapture || permissions.attendanceCorrect
                       : item.id === "OVERTIME" ? permissions.overtimeRead || permissions.overtimeRequest || permissions.overtimeApprove
                         : item.id === "PRODUCTIVITY" ? permissions.productivityRead || permissions.productivityCapture
                           : permissions.selfRead;
@@ -552,7 +589,7 @@ export default function WorkforceOperationsPage() {
                         </div>
                         {activeWorkers.length ? <Table headers={["Employee", "Status", "Skills", "Consent", "Actions"]}>
                           {activeWorkers.map((worker) => {
-                            const consentActive = Boolean(worker.biometric_consent_at) && (!worker.biometric_consent_withdrawn_at || new Date(String(worker.biometric_consent_withdrawn_at)).getTime() < new Date(String(worker.biometric_consent_at)).getTime());
+                            const consentActive = hasBiometricConsent(worker);
                             return <tr key={String(worker.id)} className="align-top">
                               <td className="px-3 py-3"><p className="font-bold text-slate-900">{display(worker.employee_code)}</p><p className="mt-1 text-[11px] text-slate-500">{display(worker.display_name)}</p></td>
                               <td className="px-3 py-3"><StatusPill value={worker.status} /></td>
@@ -613,13 +650,19 @@ export default function WorkforceOperationsPage() {
               <div className="space-y-5">
                 <div className="grid gap-5 xl:grid-cols-2">
                   {permissions.shiftsRead ? <Section title="Shift templates" subtitle="Local shift windows, timezone and policy defaults. Overnight shifts are resolved by the API.">
-                    {shifts.length ? <Table headers={["Shift", "Local window", "Timezone", "Policy", "Status"]}>
+                    {shifts.length ? <Table headers={["Shift", "Local window", "Timezone", "Policy", "Status", "Actions"]}>
                       {shifts.map((shift) => <tr key={String(shift.id)}>
                         <td className="px-3 py-3"><p className="font-bold">{display(shift.shift_code)}</p><p className="text-[11px] text-slate-500">{display(shift.name)}</p></td>
                         <td className="whitespace-nowrap px-3 py-3 tabular-nums">{display(shift.starts_at_local)}–{display(shift.ends_at_local)}</td>
                         <td className="px-3 py-3">{display(shift.timezone_name)}</td>
                         <td className="px-3 py-3 text-[11px] text-slate-500">Break {display(shift.unpaid_break_minutes, "0")}m · Grace {display(shift.late_grace_minutes, "0")}m</td>
                         <td className="px-3 py-3"><StatusPill value={shift.status} /></td>
+                        <td className="px-3 py-3">{permissions.shiftsManage ? <button type="button" className={SECONDARY} onClick={() => setShiftEditDraft({
+                          shift, name: String(shift.name ?? ""), starts_at_local: String(shift.starts_at_local ?? "").slice(0,5),
+                          ends_at_local: String(shift.ends_at_local ?? "").slice(0,5), timezone_name: String(shift.timezone_name ?? "Asia/Dhaka"),
+                          unpaid_break_minutes: String(shift.unpaid_break_minutes ?? 0), late_grace_minutes: String(shift.late_grace_minutes ?? 0),
+                          overtime_threshold_minutes: String(shift.overtime_threshold_minutes ?? 0), status: String(shift.status ?? "ACTIVE"), reason: "",
+                        })}>Edit</button> : <span className="text-slate-400">—</span>}</td>
                       </tr>)}
                     </Table> : <Empty>No shift templates found.</Empty>}
                   </Section> : null}
@@ -651,7 +694,7 @@ export default function WorkforceOperationsPage() {
                   </article>)}</div> : <Empty>No uncovered assignments were returned for {shiftDate}.</Empty>}
                 </Section> : null}
 
-                {permissions.staffingManage ? <Section title="Create staffing assignment" subtitle="Connect an active worker to an active shift. Optional work-order operation references are validated against the factory routing.">
+                {permissions.staffingManage && permissions.workersRead && permissions.shiftsRead ? <Section title="Create staffing assignment" subtitle="Connect an active worker to an active shift. Optional work-order operation references are validated against the factory routing.">
                   <form onSubmit={createAssignment} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <Field label="Shift template"><select required className={INPUT} value={assignmentDraft.shift_template_id} onChange={(event) => setAssignmentDraft({ ...assignmentDraft, shift_template_id: event.target.value })}><option value="">Select shift</option>{shiftOptions.map((row) => <option key={String(row.id)} value={String(row.id)}>{display(row.shift_code)} · {display(row.name)}</option>)}</select></Field>
                     <Field label="Worker"><select required className={INPUT} value={assignmentDraft.worker_id} onChange={(event) => setAssignmentDraft({ ...assignmentDraft, worker_id: event.target.value })}><option value="">Select active worker</option>{workerOptions.map((row) => <option key={String(row.id)} value={String(row.id)}>{display(row.employee_code)} · {display(row.display_name)}</option>)}</select></Field>
@@ -700,11 +743,11 @@ export default function WorkforceOperationsPage() {
                   </div>
                 </Section>
 
-                {permissions.attendanceCapture && permissions.staffingRead ? <Section title="Capture attendance event" subtitle="Capture an event against a shift assignment. Device/QR source identifiers are optional; API validates assignment chronology and duplicate source events.">
+                {permissions.attendanceCapture && permissions.staffingRead && permissions.attendanceRead ? <Section title="Capture attendance event" subtitle="Capture an event against a shift assignment. Device/QR source identifiers are optional; API validates assignment chronology and duplicate source events.">
                   <form onSubmit={createAttendance} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <Field label="Shift assignment"><select required className={INPUT} value={attendanceDraft.shift_assignment_id} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, shift_assignment_id: event.target.value })}><option value="">Select assignment</option>{attendanceShifts.map((row) => <option key={String(row.shift_assignment_id)} value={String(row.shift_assignment_id)}>{display(row.employee_code)} · {display(row.shift_name)} · {display(row.assignment_status)}</option>)}</select></Field>
                     <Field label="Event type"><select className={INPUT} value={attendanceDraft.event_type} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, event_type: event.target.value })}>{["CLOCK_IN","CLOCK_OUT","BREAK_START","BREAK_END","ABSENCE_RECORDED"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></Field>
-                    <Field label="Capture source"><select className={INPUT} value={attendanceDraft.source_type} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, source_type: event.target.value })}><option value="MANUAL">Manual</option><option value="QR">QR reader</option>{workers.some((row) => Boolean(row.biometric_consent_at) && !row.biometric_consent_withdrawn_at) ? <option value="BIOMETRIC">Biometric (consent recorded)</option> : null}<option value="API">API integration</option></select></Field>
+                    <Field label="Capture source"><select className={INPUT} value={attendanceDraft.source_type} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, source_type: event.target.value })}><option value="MANUAL">Manual</option><option value="QR">QR reader</option>{hasBiometricConsent(workers.find((row) => row.id === attendanceShifts.find((shift) => shift.shift_assignment_id === attendanceDraft.shift_assignment_id)?.worker_id)) ? <option value="BIOMETRIC">Biometric (worker consent active)</option> : null}<option value="API">API integration</option></select></Field>
                     <Field label="Occurred at (local browser time)"><input required type="datetime-local" className={INPUT} value={attendanceDraft.occurred_at} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, occurred_at: event.target.value })} /></Field>
                     <Field label="Device event ID (optional)"><input maxLength={255} className={INPUT} value={attendanceDraft.source_event_id} onChange={(event) => setAttendanceDraft({ ...attendanceDraft, source_event_id: event.target.value })} /></Field>
                     <div className="flex items-end"><button type="submit" className={PRIMARY} disabled={busy || !attendanceShifts.length}>Capture event</button></div>
@@ -731,11 +774,11 @@ export default function WorkforceOperationsPage() {
                       <td className="px-3 py-3"><p className="font-bold">{display(row.employee_code)} · {display(row.display_name)}</p><p className="mt-1 text-[10px] text-slate-500">{display(row.shift_date)}</p><p className="mt-1 max-w-xs text-[10px] text-slate-500">{display(row.reason)}</p></td>
                       <td className="px-3 py-3 tabular-nums">{display(row.requested_minutes)}m</td><td className="px-3 py-3 tabular-nums">{display(row.approved_minutes, "—")}m</td><td className="px-3 py-3"><StatusPill value={row.status} /></td>
                       <td className="px-3 py-3 text-[10px] text-slate-500">{display(row.decision_reason)}</td>
-                      <td className="px-3 py-3">{permissions.overtimeApprove && row.status === "PENDING" ? <div className="flex gap-1"><button type="button" className={PRIMARY} onClick={() => { setOvertimeDecision({ id: String(row.id), rowVersion: Number(row.row_version), action: "APPROVE", requestedMinutes: Number(row.requested_minutes), label: display(row.employee_code) }); setOvertimeDecisionReason(""); }}>Review</button><button type="button" className={DANGER} onClick={() => { setOvertimeDecision({ id: String(row.id), rowVersion: Number(row.row_version), action: "REJECT", requestedMinutes: Number(row.requested_minutes), label: display(row.employee_code) }); setOvertimeDecisionReason(""); }}>Reject</button></div> : <span className="text-[10px] text-slate-400">—</span>}</td>
+                      <td className="px-3 py-3">{permissions.overtimeApprove && row.status === "PENDING" && String(row.requested_by_user_id ?? "") !== currentUserId ? <div className="flex gap-1"><button type="button" className={PRIMARY} onClick={() => { setOvertimeDecision({ id: String(row.id), rowVersion: Number(row.row_version), action: "APPROVE", requestedMinutes: Number(row.requested_minutes), approvedMinutes: String(row.requested_minutes), label: display(row.employee_code) }); setOvertimeDecisionReason(""); }}>Review</button><button type="button" className={DANGER} onClick={() => { setOvertimeDecision({ id: String(row.id), rowVersion: Number(row.row_version), action: "REJECT", requestedMinutes: Number(row.requested_minutes), approvedMinutes: "0", label: display(row.employee_code) }); setOvertimeDecisionReason(""); }}>Reject</button></div> : permissions.overtimeApprove && row.status === "PENDING" && String(row.requested_by_user_id ?? "") === currentUserId ? <span className="text-[10px] font-semibold text-amber-700">Self-request · cannot review</span> : <span className="text-[10px] text-slate-400">—</span>}</td>
                     </tr>)}
                   </Table> : <Empty>No overtime requests in this date range.</Empty>}
                 </Section>
-                {permissions.overtimeRequest && permissions.staffingRead ? <Section title="Submit overtime request" subtitle="Request 1–1,440 minutes for an active or completed assignment; cancelled assignments are rejected by the API.">
+                {permissions.overtimeRequest && permissions.staffingRead && permissions.attendanceRead ? <Section title="Submit overtime request" subtitle="Request 1–1,440 minutes for an active or completed assignment; cancelled assignments are rejected by the API.">
                   <form onSubmit={createOvertime} className="grid gap-3 sm:grid-cols-3">
                     <Field label="Shift assignment"><select required className={INPUT} value={overtimeDraft.shift_assignment_id} onChange={(event) => setOvertimeDraft({ ...overtimeDraft, shift_assignment_id: event.target.value })}><option value="">Select assignment</option>{attendanceShifts.map((row) => <option key={String(row.shift_assignment_id)} value={String(row.shift_assignment_id)}>{display(row.employee_code)} · {display(row.shift_name)} · {display(row.shift_date)}</option>)}</select></Field>
                     <Field label="Requested minutes"><input type="number" min="1" max="1440" className={INPUT} value={overtimeDraft.requested_minutes} onChange={(event) => setOvertimeDraft({ ...overtimeDraft, requested_minutes: event.target.value })} /></Field>
@@ -747,6 +790,7 @@ export default function WorkforceOperationsPage() {
                   <div className="grid gap-3 sm:grid-cols-3">
                     <Field label="Request"><input readOnly className={INPUT} value={overtimeDecision.label + " · " + overtimeDecision.requestedMinutes + " minutes"} /></Field>
                     <Field label="Decision"><input readOnly className={INPUT} value={overtimeDecision.action} /></Field>
+                    {overtimeDecision.action === "APPROVE" ? <Field label="Approved minutes"><input type="number" min="1" max={overtimeDecision.requestedMinutes} className={INPUT} value={overtimeDecision.approvedMinutes} onChange={(event) => setOvertimeDecision({ ...overtimeDecision, approvedMinutes: event.target.value })} /></Field> : null}
                     <Field label="Decision reason"><input className={INPUT} value={overtimeDecisionReason} onChange={(event) => setOvertimeDecisionReason(event.target.value)} /></Field>
                   </div>
                   <div className="mt-3 flex gap-2"><button type="button" className={PRIMARY} disabled={busy} onClick={() => void decideOvertime()}>Record decision</button><button type="button" className={SECONDARY} onClick={() => setOvertimeDecision(null)}>Cancel</button></div>
