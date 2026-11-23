@@ -348,7 +348,7 @@ export function formatWorkforceMinutes(value) {
 
 export function validateWorkforceIdempotencyKey(value) {
   const result = text(value);
-  if (!result || result.length > 255 || /[\\r\\n]/.test(result)) {
+  if (!result || result.length > 255 || /[\r\n]/.test(result)) {
     throw new Error("Idempotency key must contain 1 to 255 single-line characters.");
   }
   return result;
