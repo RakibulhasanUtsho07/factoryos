@@ -254,16 +254,6 @@ export default function IntegrationsWorkbenchPage() {
     return () => window.clearTimeout(timer);
   }, [sessionStatus, activeFactoryId, canRead, load]);
 
-  const loadConnectorDetail = useCallback(async (connectorId: string) => {
-    if (!connectorId || !canReadConnectors) return;
-    const [detail, history] = await Promise.all([
-      request("/integrations/connectors/" + connectorId),
-      request("/integrations/connectors/" + connectorId + "/history"),
-    ]);
-    setConnectorDetail(object(detail));
-    setConnectorHistory(safeHistoryRows(history));
-  }, [canReadConnectors, request]);
-
   useEffect(() => {
     if (!selectedConnectorId || !canReadConnectors || loadedFactoryId !== activeFactoryId) return;
     let current = true;
