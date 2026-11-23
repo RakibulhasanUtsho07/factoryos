@@ -871,6 +871,27 @@ export default function WorkforceOperationsPage() {
         </div>
       ) : null}
 
+      {shiftEditDraft ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={updateShift} className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 className="text-sm font-bold">Edit shift template</h2>
+            <p className="mt-1 text-xs text-slate-500">{display(shiftEditDraft.shift.shift_code)} · observed row version {display(shiftEditDraft.shift.row_version)}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <Field label="Name"><input required className={INPUT} value={shiftEditDraft.name} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, name: event.target.value })} /></Field>
+              <Field label="Status"><select className={INPUT} value={shiftEditDraft.status} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, status: event.target.value })}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select></Field>
+              <Field label="Starts at (local)"><input required type="time" className={INPUT} value={shiftEditDraft.starts_at_local} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, starts_at_local: event.target.value })} /></Field>
+              <Field label="Ends at (local)"><input required type="time" className={INPUT} value={shiftEditDraft.ends_at_local} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, ends_at_local: event.target.value })} /></Field>
+              <Field label="IANA timezone"><input required className={INPUT} value={shiftEditDraft.timezone_name} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, timezone_name: event.target.value })} /></Field>
+              <Field label="Unpaid break minutes"><input type="number" min="0" max="360" className={INPUT} value={shiftEditDraft.unpaid_break_minutes} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, unpaid_break_minutes: event.target.value })} /></Field>
+              <Field label="Late grace minutes"><input type="number" min="0" max="180" className={INPUT} value={shiftEditDraft.late_grace_minutes} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, late_grace_minutes: event.target.value })} /></Field>
+              <Field label="Overtime threshold minutes"><input type="number" min="0" max="1440" className={INPUT} value={shiftEditDraft.overtime_threshold_minutes} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, overtime_threshold_minutes: event.target.value })} /></Field>
+              <div className="sm:col-span-2"><Field label="Mandatory change reason"><textarea required minLength={3} maxLength={2000} className={AREA} value={shiftEditDraft.reason} onChange={(event) => setShiftEditDraft({ ...shiftEditDraft, reason: event.target.value })} /></Field></div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2"><button type="button" className={SECONDARY} onClick={() => setShiftEditDraft(null)}>Cancel</button><button type="submit" className={PRIMARY} disabled={busy}>Save shift revision</button></div>
+          </form>
+        </div>
+      ) : null}
+
       {consentDraft ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
           <form onSubmit={(event) => { event.preventDefault(); void recordConsent(); }} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
