@@ -18,6 +18,7 @@ const navigation = [
   { href: "/growth", label: "Growth Intelligence" },
   { href: "/growth/forecast-calibration", label: "Forecast Calibration" },
   { href: "/finance/close", label: "Finance Close" },
+  { href: "/research", label: "Research & Evidence" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
   { href: "/uom", label: "UoM Governance" },
