@@ -23,15 +23,11 @@ import {
   normalizeWorkforceRows,
   summarizeWorkforceWorkspace,
 } from "@/lib/workforce-workbench.mjs";
-import type {
-  buildWorkforceAssignmentPayload as AssignmentPayload,
-} from "@/lib/workforce-workbench.mjs";
-
 type Row = Record<string, unknown>;
 type Tab = "PEOPLE" | "SCHEDULE" | "ATTENDANCE" | "OVERTIME" | "PRODUCTIVITY" | "SELF";
 type NoticeState = { tone: "success" | "error"; message: string };
 type DraftAssignment = { id: string; row_version: number; status: string; employee_code: string; shift_date: string };
-type AttendanceCorrection = { eventId: string; eventLabel: string; occurredAt: string };
+type AttendanceCorrection = { eventId: string; eventLabel: string; occurredAt: string; reason: string };
 type OvertimeDecision = { id: string; rowVersion: number; action: "APPROVE" | "REJECT"; requestedMinutes: number; label: string };
 
 const TABS: { id: Tab; label: string; description: string }[] = [
@@ -426,7 +422,7 @@ export default function WorkforceOperationsPage() {
       body = buildWorkforceAttendanceCorrectionPayload({
         corrected_event_type: "CLOCK_OUT",
         corrected_occurred_at: timestampFromLocal(correctionDraft.occurredAt),
-        reason: correctionDraft.eventLabel,
+        reason: correctionDraft.reason,
       }) as Row;
     } catch (cause) { setNotice({ tone: "error", message: messageOf(cause) }); return; }
     const saved = await perform(
@@ -719,10 +715,10 @@ export default function WorkforceOperationsPage() {
                   {correctionDraft ? <form onSubmit={correctAttendance} className="grid gap-3 sm:grid-cols-3">
                     <Field label="Selected event"><input readOnly className={INPUT} value={correctionDraft.eventLabel} /></Field>
                     <Field label="Corrected clock-out (local browser time)"><input required type="datetime-local" className={INPUT} value={correctionDraft.occurredAt} onChange={(event) => setCorrectionDraft({ ...correctionDraft, occurredAt: event.target.value })} /></Field>
-                    <Field label="Audit reason"><input required minLength={3} maxLength={2000} className={INPUT} value={correctionDraft.eventLabel} onChange={(event) => setCorrectionDraft({ ...correctionDraft, eventLabel: event.target.value })} /></Field>
+                    <Field label="Audit reason"><input required minLength={3} maxLength={2000} className={INPUT} value={correctionDraft.reason} onChange={(event) => setCorrectionDraft({ ...correctionDraft, reason: event.target.value })} /></Field>
                     <div className="flex gap-2"><button className={PRIMARY} disabled={busy} type="submit">Append correction</button><button className={SECONDARY} type="button" onClick={() => setCorrectionDraft(null)}>Cancel</button></div>
                   </form> : <Empty>Select a CLOCK_OUT event below to start a correction. The current page only offers a correction workflow for the selected effective event.</Empty>}
-                  {attendanceEvents.filter((row) => row.event_type === "CLOCK_OUT").length ? <div className="mt-3 flex flex-wrap gap-2">{attendanceEvents.filter((row) => row.event_type === "CLOCK_OUT").map((row) => <button key={String(row.id)} type="button" className={SECONDARY} onClick={() => setCorrectionDraft({ eventId: String(row.id), eventLabel: display(row.employee_code) + " · " + dateTime(row.occurred_at), occurredAt: localDateTimeValue() })}>Correct {display(row.employee_code)} clock-out</button>)}</div> : null}
+                  {attendanceEvents.filter((row) => row.event_type === "CLOCK_OUT").length ? <div className="mt-3 flex flex-wrap gap-2">{attendanceEvents.filter((row) => row.event_type === "CLOCK_OUT").map((row) => <button key={String(row.id)} type="button" className={SECONDARY} onClick={() => setCorrectionDraft({ eventId: String(row.id), eventLabel: display(row.employee_code) + " · " + dateTime(row.occurred_at), occurredAt: localDateTimeValue(), reason: "" })}>Correct {display(row.employee_code)} clock-out</button>)}</div> : null}
                 </Section> : null}
               </div>
             ) : null}
