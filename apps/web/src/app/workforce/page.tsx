@@ -185,9 +185,9 @@ export default function WorkforceOperationsPage() {
   const canRead = Object.values(permissions).some(Boolean);
   const tabAccess: Record<Tab, boolean> = {
     PEOPLE: permissions.workersRead || permissions.workersManage || permissions.skillsRead || permissions.skillsManage,
-    SCHEDULE: permissions.shiftsRead || permissions.shiftsManage || permissions.staffingRead || permissions.staffingManage,
-    ATTENDANCE: permissions.attendanceRead || permissions.attendanceCapture || permissions.attendanceCorrect,
-    OVERTIME: permissions.overtimeRead || permissions.overtimeRequest || permissions.overtimeApprove,
+    SCHEDULE: permissions.shiftsRead || permissions.shiftsManage || permissions.staffingRead,
+    ATTENDANCE: permissions.attendanceRead,
+    OVERTIME: permissions.overtimeRead || (permissions.overtimeRequest && permissions.staffingRead && permissions.attendanceRead),
     PRODUCTIVITY: permissions.productivityRead || permissions.productivityCapture,
     SELF: permissions.selfRead,
   };
@@ -579,7 +579,7 @@ export default function WorkforceOperationsPage() {
               {TABS.map((item) => {
                 const enabled = tabAccess[item.id];
                 return enabled ? (
-                  <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-pressed={visibleTab === item.id} className={"min-w-max rounded-xl px-4 py-3 text-left transition " + (tab === item.id ? "bg-slate-950 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
+                  <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-pressed={visibleTab === item.id} className={"min-w-max rounded-xl px-4 py-3 text-left transition " + (visibleTab === item.id ? "bg-slate-950 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
                     <span className="block text-xs font-bold">{item.label}</span><span className={"mt-1 block text-[10px] " + (tab === item.id ? "text-slate-300" : "text-slate-400")}>{item.description}</span>
                   </button>
                 ) : null;
