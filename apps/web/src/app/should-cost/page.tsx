@@ -271,6 +271,9 @@ export default function ShouldCostWorkbenchPage() {
   const approvedProfiles = profiles.filter((profile) =>
     profile.status === "APPROVED" && profile.is_current === true,
   );
+  const eligibleApprovedProfiles = approvedProfiles.filter((profile) =>
+    newAssessment.scope_type === "PRODUCT_VERSION" || !profile.product_id,
+  );
   const summary = useMemo(() => summarizeShouldCost(profiles, assessments), [profiles, assessments]);
 
   const load = useCallback(async () => {
@@ -356,6 +359,7 @@ export default function ShouldCostWorkbenchPage() {
       return;
     }
     let current = true;
+    setAssessmentProfileDetail(null);
     void request("/should-cost/profiles/" + newAssessment.profile_id)
       .then((value) => {
         if (current) {
@@ -663,7 +667,7 @@ export default function ShouldCostWorkbenchPage() {
                     <h2 className="text-sm font-bold text-slate-950">Deterministic cost assessment register</h2>
                     <p className="mt-1 text-[11px] text-slate-500">Each assessment locks its profile version and evidence snapshot.</p>
                   </div>
-                  {canCalculateAssessments ? <button type="button" className={PRIMARY} onClick={() => { setNewAssessment(assessmentDraft()); setCreateAssessmentOpen(true); }}>Calculate assessment</button> : null}
+                  {canCalculateAssessments && canReadProfiles ? <button type="button" className={PRIMARY} onClick={() => { setNewAssessment(assessmentDraft()); setCreateAssessmentOpen(true); }}>Calculate assessment</button> : null}
                 </div>
                 <div className="grid gap-2 border-b border-slate-100 p-4 sm:grid-cols-[190px_1fr_auto]">
                   <select aria-label="Assessment scope filter" className={INPUT} value={assessmentScopeFilter} onChange={(event) => setAssessmentScopeFilter(event.target.value)}>
@@ -924,7 +928,7 @@ export default function ShouldCostWorkbenchPage() {
               <Field label="Approved profile">
                 <select required className={INPUT} value={newAssessment.profile_id} onChange={(event) => setNewAssessment({ ...newAssessment, profile_id: event.target.value })}>
                   <option value="">Select current approved profile</option>
-                  {approvedProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.profile_code} v{profile.version} · {profile.currency}/{profile.output_unit}</option>)}
+                  {eligibleApprovedProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.profile_code} v{profile.version} · {profile.currency}/{profile.output_unit}</option>)}
                 </select>
               </Field>
               <Field label="Target quantity">
