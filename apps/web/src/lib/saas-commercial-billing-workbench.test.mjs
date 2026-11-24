@@ -96,6 +96,10 @@ test("billing account follows Stripe collection and tax constraints", () => {
     automatic_tax_enabled: false, expected_version: 0, idempotency_key: key,
   }), /days_until_due/);
   assert.throws(() => buildSaasBillingAccountPayload({
+    provider_customer_id: "not-a-customer", currency: "BDT", collection_method: "charge_automatically",
+    automatic_tax_enabled: false, expected_version: 0, idempotency_key: key,
+  }), /Stripe customer ID/);
+  assert.throws(() => buildSaasBillingAccountPayload({
     provider_customer_id: "cus_123456", currency: "BDT", collection_method: "charge_automatically",
     days_until_due: 10, automatic_tax_enabled: false, expected_version: 0, idempotency_key: key,
   }), /must be omitted/);
