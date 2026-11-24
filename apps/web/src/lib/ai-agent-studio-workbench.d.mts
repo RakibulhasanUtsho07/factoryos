@@ -1,6 +1,6 @@
 export type AiStudioOutcome = "ALLOWED" | "APPROVAL_REQUIRED" | "DENIED";
 export type AiStudioEvaluationKind = "EXPECTED_TOOL_CALL" | "EXPECTED_REFUSAL" | "RED_TEAM_POLICY_BYPASS" | "EXPECTED_COMPENSATION" | "PRIVACY_NO_SECRET_LEAKAGE";
-export interface AiStudioRequestOptions { method?: string; body?: unknown; }
+export interface AiStudioRequestOptions { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; }
 export interface AiAgentStudioClient {
   listAgents(): Promise<unknown>;
   listTemplates(): Promise<unknown>;
