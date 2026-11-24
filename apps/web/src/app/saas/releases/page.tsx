@@ -293,7 +293,7 @@ export default function SaasReleaseControlPlanePage() {
     try {
       const payload = buildCreateReleasePayload({
         ...releaseDraft,
-        factory_id: releaseDraft.scope_type === "FACTORY" || releaseDraft.module_key || releaseDraft.agent_key ? activeFactoryId || "" : "",
+        factory_id: releaseDraft.scope_type === "FACTORY" ? activeFactoryId || "" : releaseDraft.factory_id,
         idempotency_key: globalThis.crypto.randomUUID(),
       });
       const result = row(await client.createRelease(payload));
@@ -314,7 +314,7 @@ export default function SaasReleaseControlPlanePage() {
     try {
       const payload = buildReleasePromotionPayload({
         ...promotionDraft, expected_version: Number(selectedRelease.version),
-        rollout_percentage: Number(promotionDraft.rollout_percentage), idempotency_key: globalThis.crypto.randomUUID(),
+        rollout_percentage: targetPromotionStage === "PRODUCTION" ? 100 : Number(promotionDraft.rollout_percentage), idempotency_key: globalThis.crypto.randomUUID(),
       });
       const result = row(await client.promoteRelease(selectedReleaseKey, payload));
       const next = row(result.rollout);
@@ -405,7 +405,7 @@ export default function SaasReleaseControlPlanePage() {
     finally { setBusy(false); }
   };
 
-  const confirmPhysical = async (event: FormEvent<HTMLFormElement>) => {
+  const confirmPhysical = async () => {
     event.preventDefault();
     if (!physicalTarget || !physicalAcknowledged) return;
     setBusy(true); setNotice(null);
@@ -446,6 +446,12 @@ export default function SaasReleaseControlPlanePage() {
     && ((selectedReleaseStage === "DRAFT") || selectedReleaseStage === "CANARY"));
   const selectedReleaseCanPauseResume = Boolean(selectedRelease && canReleaseControl
     && (selectedReleaseStage === "CANARY" || selectedReleaseStage === "PRODUCTION" || selectedReleaseStage === "PAUSED"));
+  const targetPromotionStage = selectedReleaseStage === "CANARY" ? "PRODUCTION" : "CANARY";
+  const releaseTransitionActions = selectedReleaseStage === "PAUSED" ? ["RESUME", "RETIRE"] : ["PAUSE", "RETIRE"];
+  const effectiveReleaseTransitionAction = releaseTransitionActions.includes(releaseTransitionDraft.action)
+    ? releaseTransitionDraft.action : releaseTransitionActions[0] ?? "RETIRE";
+  const effectiveProfileTransitionAction = profileTransitionOptions.includes(profileTransitionDraft.action)
+    ? profileTransitionDraft.action : profileTransitionOptions[0] ?? "RETIRE";
   const selectedReleaseCanRetire = Boolean(selectedRelease && canReleaseControl && selectedReleaseStage !== "RETIRED");
   const canProvisionSelectedProfile = Boolean(selectedProfile && canProfileControl
     && ["PLANNED", "PROVISIONING", "FAILED"].includes(selectedProfileStatus));
@@ -542,8 +548,8 @@ export default function SaasReleaseControlPlanePage() {
                               <h4 className="text-xs font-bold text-slate-900">Promote release stage</h4>
                               <p className="mt-1 text-[11px] leading-5 text-slate-500">The control plane enforces DRAFT → CANARY → PRODUCTION. Production requires exactly 100%; physical deploy/health evidence is a separate operation.</p>
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                                <Field label="Target stage"><select className={INPUT} value={promotionDraft.stage} onChange={(event) => setPromotionDraft((current) => ({ ...current, stage: event.currentTarget.value as "CANARY" | "PRODUCTION", rollout_percentage: event.currentTarget.value === "PRODUCTION" ? "100" : "10" }))}><option value="CANARY" disabled={selectedReleaseStage !== "DRAFT"}>CANARY</option><option value="PRODUCTION" disabled={selectedReleaseStage !== "CANARY"}>PRODUCTION</option></select></Field>
-                                <Field label="Rollout percentage" hint="Canary: 1–99; production: fixed at 100."><input className={INPUT} type="number" min={promotionDraft.stage === "CANARY" ? 1 : 100} max={promotionDraft.stage === "CANARY" ? 99 : 100} value={promotionDraft.rollout_percentage} onChange={(event) => setPromotionDraft((current) => ({ ...current, rollout_percentage: event.currentTarget.value }))} disabled={promotionDraft.stage === "PRODUCTION"} /></Field>
+                                <Field label="Target stage"><select className={INPUT} value={targetPromotionStage} disabled><option value="CANARY">CANARY</option><option value="PRODUCTION">PRODUCTION</option></select></Field>
+                                <Field label="Rollout percentage" hint="Canary: 1–99; production: fixed at 100."><input className={INPUT} type="number" min={promotionDraft.stage === "CANARY" ? 1 : 100} max={promotionDraft.stage === "CANARY" ? 99 : 100} value={targetPromotionStage === "PRODUCTION" ? "100" : promotionDraft.rollout_percentage} onChange={(event) => setPromotionDraft((current) => ({ ...current, rollout_percentage: event.currentTarget.value }))} disabled={targetPromotionStage === "PRODUCTION"} /></Field>
                                 <div className="sm:col-span-2"><Field label="Promotion reason"><textarea className={AREA} required maxLength={1000} value={promotionDraft.reason} onChange={(event) => setPromotionDraft((current) => ({ ...current, reason: event.currentTarget.value }))} /></Field></div>
                               </div>
                               <button type="submit" className={PRIMARY + " mt-3"} disabled={busy}>{busy ? "Promoting..." : "Record promotion"}</button>
@@ -553,10 +559,8 @@ export default function SaasReleaseControlPlanePage() {
                             <form className="rounded-xl border border-slate-200 p-3" onSubmit={submitReleaseTransition}>
                               <h4 className="text-xs font-bold text-slate-900">Lifecycle control</h4>
                               <div className="mt-3 grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)]">
-                                <Field label="Action"><select className={INPUT} value={releaseTransitionDraft.action} onChange={(event) => setReleaseTransitionDraft((current) => ({ ...current, action: event.currentTarget.value as "PAUSE" | "RESUME" | "RETIRE" }))}>
-                                  {selectedReleaseCanPauseResume && selectedReleaseStage !== "PAUSED" ? <option value="PAUSE">Pause</option> : null}
-                                  {selectedReleaseStage === "PAUSED" && canReleaseControl ? <option value="RESUME">Resume</option> : null}
-                                  {selectedReleaseCanRetire ? <option value="RETIRE">Retire</option> : null}
+                                <Field label="Action"><select className={INPUT} value={effectiveReleaseTransitionAction} onChange={(event) => setReleaseTransitionDraft((current) => ({ ...current, action: event.currentTarget.value as "PAUSE" | "RESUME" | "RETIRE" }))}>
+                                  {releaseTransitionActions.map((action) => <option key={action} value={action}>{action}</option>)}
                                 </select></Field>
                                 <Field label="Reason"><input className={INPUT} required maxLength={1000} value={releaseTransitionDraft.reason} onChange={(event) => setReleaseTransitionDraft((current) => ({ ...current, reason: event.currentTarget.value }))} /></Field>
                               </div>
@@ -684,7 +688,7 @@ export default function SaasReleaseControlPlanePage() {
                             <form className="rounded-xl border border-slate-200 p-3" onSubmit={submitProfileTransition}>
                               <h4 className="text-xs font-bold text-slate-900">Profile lifecycle transition</h4>
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                                <Field label="Action"><select className={INPUT} value={profileTransitionDraft.action} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, action: event.currentTarget.value }))}>{profileTransitionOptions.map((action) => <option key={action} value={action}>{action.replaceAll("_", " ")}</option>)}</select></Field>
+                                <Field label="Action"><select className={INPUT} value={effectiveProfileTransitionAction} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, action: event.currentTarget.value }))}>{profileTransitionOptions.map((action) => <option key={action} value={action}>{action.replaceAll("_", " ")}</option>)}</select></Field>
                                 {profileTransitionDraft.action === "START_MIGRATION" ? <>
                                   <Field label="Target topology"><select className={INPUT} value={profileTransitionDraft.target_profile_type} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, target_profile_type: event.currentTarget.value as ProfileType }))}>{(["SHARED_SAAS", "SINGLE_TENANT", "DEDICATED_VPC", "HYBRID_EDGE_CLOUD"] as const).map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>
                                   <Field label="Target deployment reference"><input className={INPUT} value={profileTransitionDraft.target_deployment_reference} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, target_deployment_reference: event.currentTarget.value }))} maxLength={200} /></Field>
@@ -788,8 +792,7 @@ export default function SaasReleaseControlPlanePage() {
             {physicalTarget.kind === "RELEASE" ? <Field label="Failure policy"><select className={INPUT + " mt-2"} value={physicalPolicy} onChange={(event) => setPhysicalPolicy(event.currentTarget.value as "HALT" | "ROLLBACK")}><option value="HALT" disabled={!canReleaseControl}>HALT and pause control plane</option><option value="ROLLBACK" disabled={!canReleaseRollback}>Rollback to prior production artifact</option></select></Field> : null}
             <Field label="Health timeout (seconds)"><input className={INPUT + " mt-2"} type="number" min={5} max={300} value={healthTimeout} onChange={(event) => setHealthTimeout(event.currentTarget.value)} /></Field>
             <label className="mt-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-900"><input type="checkbox" className="mt-1" checked={physicalAcknowledged} onChange={(event) => setPhysicalAcknowledged(event.currentTarget.checked)} /><span>I explicitly authorize this infrastructure provider operation for the selected resource and exact version. I understand that failure or timeout may require manual recovery using the run evidence.</span></label>
-            <div className="mt-5 flex justify-end gap-2"><button type="button" className={SECONDARY} onClick={() => { setPhysicalTarget(null); setPhysicalAcknowledged(false); }} disabled={busy}>Cancel</button><button type="button" className={DANGER} onClick={(event) => { const form = event.currentTarget.form; if (form) form.requestSubmit(); }} disabled={!physicalAcknowledged || busy}>Authorize operation</button></div>
-            <form className="hidden" onSubmit={confirmPhysical}><button type="submit">Hidden submit</button></form>
+            <div className="mt-5 flex justify-end gap-2"><button type="button" className={SECONDARY} onClick={() => { setPhysicalTarget(null); setPhysicalAcknowledged(false); }} disabled={busy}>Cancel</button><button type="button" className={DANGER} onClick={() => void confirmPhysical()} disabled={!physicalAcknowledged || busy}>{busy ? "Submitting provider operation..." : "Authorize operation"}</button></div>
           </div>
         </div>
       ) : null}
