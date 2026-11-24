@@ -937,31 +937,39 @@ export default function QualityManagementWorkbenchPage() {
                   <button type="button" className={SECONDARY} onClick={() => void loadAnalytics()}>Refresh analytics</button>
                 </div>
                 {pareto.length ? (
-                  <Table headers={["Dimension", "Count", "Affected quantity", "Other evidence"]}>
-                    {pareto.map((item, index) => <tr key={String(item.id ?? item.key ?? index)}>
-                      <td className="px-3 py-3 font-semibold">{display(item.label, display(item.defect_code, display(item.dimension_value, JSON.stringify(item))))}</td>
-                      <td className="px-3 py-3">{display(item.defect_count, display(item.count, display(item.occurrences)))}</td>
+                  <Table headers={["Dimension", "Defects", "Affected", "Critical", "Unresolved", "Cumulative"]}>
+                    {pareto.map((item, index) => <tr key={String(item.dimension_value ?? index)}>
+                      <td className="px-3 py-3 font-semibold">{display(item.dimension_value)}</td>
+                      <td className="px-3 py-3">{display(item.defect_count, "0")}</td>
                       <td className="px-3 py-3">{display(item.affected_quantity)}</td>
-                      <td className="px-3 py-3 text-[10px] text-slate-500">{display(item.line_code, display(item.operation_code, display(item.style_code, display(item.shift_code))))}</td>
+                      <td className="px-3 py-3">{display(item.critical_count, "0")}</td>
+                      <td className="px-3 py-3">{display(item.unresolved_count, "0")}</td>
+                      <td className="px-3 py-3">{display(item.cumulative_defect_percent, "0")}%</td>
                     </tr>)}
                   </Table>
                 ) : <Empty>No defect Pareto rows are currently returned.</Empty>}
               </Section>
               <div className="grid gap-5 xl:grid-cols-2">
                 <Section title="Supplier quality" subtitle="Supplier quality evidence is reported separately from inspection count; no supplier score is calculated in the browser.">
-                  {supplierQuality.length ? <Table headers={["Supplier", "Inspections", "Defects", "Quality evidence"]}>{supplierQuality.map((item, index) => <tr key={String(item.supplier_id ?? item.id ?? index)}>
-                    <td className="px-3 py-3"><p className="font-semibold">{display(item.supplier_name, display(item.supplier_code, display(item.supplier_id)))}</p></td>
-                    <td className="px-3 py-3">{display(item.inspection_count, display(item.total_inspections))}</td>
-                    <td className="px-3 py-3">{display(item.defect_count, display(item.total_defects))}</td>
-                    <td className="px-3 py-3 text-[10px] text-slate-500">{display(item.last_inspection_at, display(item.period))}</td>
+                  {supplierQuality.length ? <Table headers={["Supplier", "Defects", "Critical / major / minor", "Receipts", "Affected qty", "Rework", "Latest event"]}>{supplierQuality.map((item, index) => <tr key={String(item.supplier_id ?? index)}>
+                    <td className="px-3 py-3"><p className="font-semibold">{display(item.supplier_name, display(item.supplier_code))}</p><p className="mt-1 font-mono text-[10px] text-slate-500">{display(item.supplier_code)}</p></td>
+                    <td className="px-3 py-3">{display(item.defect_count, "0")}</td>
+                    <td className="px-3 py-3">{display(item.critical_event_count, "0")} / {display(item.major_event_count, "0")} / {display(item.minor_event_count, "0")}</td>
+                    <td className="px-3 py-3">{display(item.affected_receipts, "0")} <span className="text-slate-400">({display(item.affected_receipt_lines, "0")} lines)</span></td>
+                    <td className="px-3 py-3">{display(item.reported_affected_quantity, "0")}</td>
+                    <td className="px-3 py-3">{display(item.linked_rework_task_count, "0")}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">{dateTime(item.latest_quality_event_at)}</td>
                   </tr>)}</Table> : <Empty>No supplier-quality evidence is currently returned.</Empty>}
                 </Section>
                 <Section title="Repeat-defect alerts" subtitle="Signals are based on the selected lookback window and API minimum-occurrence threshold.">
-                  {repeatAlerts.length ? <Table headers={["Defect", "Occurrences", "Last observed", "Context"]}>{repeatAlerts.map((item, index) => <tr key={String(item.id ?? item.defect_code ?? index)}>
-                    <td className="px-3 py-3 font-semibold">{display(item.defect_code, display(item.key))}</td>
-                    <td className="px-3 py-3"><StatusPill value={item.occurrences ?? item.occurrence_count} /></td>
-                    <td className="px-3 py-3 whitespace-nowrap">{dateTime(item.last_occurred_at ?? item.last_seen_at)}</td>
-                    <td className="px-3 py-3 text-[10px] text-slate-500">{display(item.line_code, display(item.operation_code, display(item.style_code)))}</td>
+                  {repeatAlerts.length ? <Table headers={["Defect", "Supplier", "Occurrences", "Critical", "Affected", "Alert", "Latest"]}>{repeatAlerts.map((item, index) => <tr key={String(item.defect_code ?? index)}>
+                    <td className="px-3 py-3 font-semibold">{display(item.defect_code)}</td>
+                    <td className="px-3 py-3">{display(item.supplier_code)}</td>
+                    <td className="px-3 py-3">{display(item.occurrence_count, "0")}</td>
+                    <td className="px-3 py-3">{display(item.critical_count, "0")}</td>
+                    <td className="px-3 py-3">{display(item.affected_quantity, "0")}</td>
+                    <td className="px-3 py-3"><StatusPill value={item.alert_level} /></td>
+                    <td className="px-3 py-3 whitespace-nowrap">{dateTime(item.latest_occurrence_at)}</td>
                   </tr>)}</Table> : <Empty>No repeat-defect alerts meet the selected threshold.</Empty>}
                 </Section>
               </div>
