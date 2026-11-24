@@ -77,6 +77,11 @@ test("external target rejects URL or credential-like references and validates tr
   });
   assert.equal(payload.target_id, "archive-01");
   assert.throws(() => buildExternalTargetPayload({
+    target_id: "archive-02", store_kind: "DATABASE", adapter_key: "db",
+    config_reference: "vault.refs.archive", categories: ["EVIDENCE"],
+    registration_reason: common.reason, idempotency_key: "data-protection-20261124-002",
+  }), /store_kind/);
+  assert.throws(() => buildExternalTargetPayload({
     target_id: "archive-01", store_kind: "OBJECT_STORAGE", adapter_key: "s3",
     config_reference: "https://example.com", categories: ["EVIDENCE"],
     registration_reason: common.reason, idempotency_key: common.idempotency_key,
