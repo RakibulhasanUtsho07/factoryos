@@ -684,10 +684,9 @@ export default function ProcurementSupplierOperationsPage() {
                     </tr></thead>
                     <tbody>
                       {visibleOrders.map((po) => (
-                        <tr key={po.id} className={"cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 " + (po.id === selectedPoId ? "bg-blue-50/70" : "")}
-                          onClick={() => setSelectedPoId(po.id)}>
+                        <tr key={po.id} className={"border-b border-slate-100 last:border-0 hover:bg-slate-50 " + (po.id === selectedPoId ? "bg-blue-50/70" : "")}>
                           <td className="py-3 pr-3">
-                            <p className="font-bold text-slate-950">{po.po_number}</p>
+                            <button type="button" onClick={() => setSelectedPoId(po.id)} className="text-left font-bold text-slate-950 hover:text-blue-700">{po.po_number}</button>
                             <p className="mt-0.5 text-[11px] text-slate-500">{po.supplier_code} · {po.supplier_name}</p>
                           </td>
                           <td className="py-3 pr-3 text-slate-600">{dateLabel(po.expected_delivery_date)}</td>
@@ -825,8 +824,8 @@ export default function ProcurementSupplierOperationsPage() {
                     <thead><tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-500"><th className="py-2 pr-3">Supplier</th><th className="py-2 pr-3">Country / currency</th><th className="py-2 pr-3">Payment terms</th><th className="py-2">Status</th></tr></thead>
                     <tbody>
                       {visibleSuppliers.map((supplier) => (
-                        <tr key={supplier.id} onClick={() => setSelectedSupplierId(supplier.id)} className={"cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 " + (supplier.id === selectedSupplierId ? "bg-blue-50/70" : "")}>
-                          <td className="py-3 pr-3"><p className="font-bold text-slate-950">{supplier.name}</p><p className="mt-0.5 text-[11px] text-slate-500">{supplier.code} · {supplier.email ?? "No email"}</p></td>
+                        <tr key={supplier.id} className={"border-b border-slate-100 last:border-0 hover:bg-slate-50 " + (supplier.id === selectedSupplierId ? "bg-blue-50/70" : "")}>
+                          <td className="py-3 pr-3"><button type="button" onClick={() => setSelectedSupplierId(supplier.id)} className="text-left font-bold text-slate-950 hover:text-blue-700">{supplier.name}</button><p className="mt-0.5 text-[11px] text-slate-500">{supplier.code} · {supplier.email ?? "No email"}</p></td>
                           <td className="py-3 pr-3 text-slate-600">{supplier.country_code} · {supplier.currency}</td>
                           <td className="py-3 pr-3 text-slate-600">{supplier.payment_terms_days} days</td>
                           <td className="py-3"><StatusPill value={supplier.status} /></td>
@@ -967,7 +966,7 @@ export default function ProcurementSupplierOperationsPage() {
       ) : null}
 
       {supplierEditorOpen ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setSupplierEditorOpen(false); }}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation">
           <section role="dialog" aria-modal="true" aria-labelledby="supplier-editor-title" className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-2xl sm:p-6">
             <div className="flex items-start justify-between gap-3"><div><h2 id="supplier-editor-title" className="text-lg font-bold text-slate-950">{supplierEditingId ? "Edit supplier profile" : "Register supplier"}</h2><p className="mt-1 text-xs text-slate-500">Tenant-scoped supplier master data</p></div><button type="button" className={secondaryButton} onClick={() => setSupplierEditorOpen(false)} disabled={busy}>Close</button></div>
             <form onSubmit={saveSupplier} className="mt-5 space-y-4">
@@ -990,7 +989,7 @@ export default function ProcurementSupplierOperationsPage() {
       ) : null}
 
       {poEditorOpen ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setPoEditorOpen(false); }}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation">
           <section role="dialog" aria-modal="true" aria-labelledby="po-editor-title" className="max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-2xl sm:p-6">
             <div className="flex items-start justify-between gap-3"><div><h2 id="po-editor-title" className="text-lg font-bold text-slate-950">{poEditingId ? "Edit draft purchase order" : "Create purchase order"}</h2><p className="mt-1 text-xs text-slate-500">Persisted totals and lifecycle versions are calculated by the server</p></div><button type="button" className={secondaryButton} onClick={() => setPoEditorOpen(false)} disabled={busy}>Close</button></div>
             <form onSubmit={savePurchaseOrder} className="mt-5 space-y-5">
@@ -1026,7 +1025,7 @@ export default function ProcurementSupplierOperationsPage() {
       ) : null}
 
       {receiptEditorOpen && poDetail && receiptDraft ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setReceiptEditorOpen(false); }}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-5" role="presentation">
           <section role="dialog" aria-modal="true" aria-labelledby="receipt-editor-title" className="max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-2xl sm:p-6">
             <div className="flex items-start justify-between gap-3"><div><h2 id="receipt-editor-title" className="text-lg font-bold text-slate-950">Post goods receipt · {poDetail.po_number}</h2><p className="mt-1 text-xs text-slate-500">Only an approved purchase order can receive stock</p></div><button type="button" className={secondaryButton} disabled={busy} onClick={() => setReceiptEditorOpen(false)}>Close</button></div>
             <form onSubmit={postGoodsReceipt} className="mt-5 space-y-4">

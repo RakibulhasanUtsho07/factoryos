@@ -138,14 +138,16 @@ test("filters operational lists and summarizes only loaded supplier and PO value
     { code: "SUP-2", name: "Dye House", status: "DISABLED" },
   ];
   const orders = [
-    { po_number: "PO-1", supplier_name: "Cotton", status: "APPROVED", total_amount: "100" },
-    { po_number: "PO-2", supplier_name: "Dye House", status: "DRAFT", total_amount: "50" },
-    { po_number: "PO-3", supplier_name: "Cotton", status: "CANCELLED", total_amount: "500" },
+    { po_number: "PO-1", supplier_name: "Cotton", status: "APPROVED", currency: "BDT", total_amount: "100" },
+    { po_number: "PO-2", supplier_name: "Dye House", status: "DRAFT", currency: "BDT", total_amount: "50" },
+    { po_number: "PO-3", supplier_name: "Cotton", status: "CANCELLED", currency: "USD", total_amount: "500" },
   ];
   assert.deepEqual(filterProcurementRows(suppliers, { search: "dye" }, "suppliers").map((row) => row.code), ["SUP-2"]);
   assert.deepEqual(filterProcurementRows(orders, { status: "DRAFT" }, "purchase-orders").map((row) => row.po_number), ["PO-2"]);
   assert.deepEqual(summarizeProcurement(suppliers, orders), {
     activeSuppliers: 1, supplierCount: 2, purchaseOrderCount: 3,
-    draftCount: 1, submittedCount: 0, approvedCount: 1, totalOpenValue: 150,
+    draftCount: 1, submittedCount: 0, approvedCount: 1,
+    openCurrencyCount: 1, openValueCurrency: "BDT", totalOpenValue: 150,
+    openValueByCurrency: { BDT: 150 },
   });
 });
