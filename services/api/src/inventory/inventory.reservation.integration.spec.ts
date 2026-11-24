@@ -3842,7 +3842,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
     );
     const currentDate = dateResult.rows[0]?.current_date;
-    if (!currentDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(currentDate)) {
+    if (!currentDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate)) {
       throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO quality-scope fixtures');
     }
     const expiryAt = (offsetDays: number): string => {
@@ -3960,7 +3960,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'wms-fefo-quality-held-bin-reject-' + token,
       null,
       randomUUID(),
-    )).rejects.toThrow(/Insufficient eligible FEFO lot\\/serial stock/i);
+    )).rejects.toThrow(/Insufficient eligible FEFO lot\/serial stock/i);
 
     const afterHoldReservation = await service.createReservation(
       TEST_USER_ID, tenantId, factoryId, itemId,
