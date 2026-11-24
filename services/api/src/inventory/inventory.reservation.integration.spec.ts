@@ -3899,7 +3899,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
 
     // Reserve the sibling LOT before placing a hold on the earlier-expiry LOT.
-    // Its later issue must remain valid after the unrelated identity is held.
+    // A later reservation against the sibling must remain eligible after that hold.
     const beforeHoldReservation = await service.createReservation(
       TEST_USER_ID, tenantId, factoryId, itemId,
       { quantity: 1, location_id: siblingBin.id } as CreateInventoryReservationDto,
