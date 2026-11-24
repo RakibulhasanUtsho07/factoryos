@@ -138,7 +138,7 @@ export default function AiAgentStudioGovernancePage() {
   const [reviewNotes, setReviewNotes] = useState("");
   const [sandboxName, setSandboxName] = useState("Agent Studio simulation");
   const [agentSpecJson, setAgentSpecJson] = useState("{\n  \"agent_id\": \"your-agent-id\",\n  \"version\": \"1.0.0\",\n  \"goal\": \"Describe the bounded agent objective\",\n  \"risk_ceiling\": \"L1\",\n  \"execution_scopes\": [],\n  \"tools\": [\n    { \"tool_id\": \"REGISTERED.TOOL.ID\", \"version\": \"1.0.0\", \"action_type\": \"REGISTERED.ACTION\" }\n  ]\n}");
-  const [planStepJson, setPlanStepJson] = useState("{\n  \"step_key\": \"step-1\",\n  \"tool_id\": \"REGISTERED.TOOL.ID\",\n  \"tool_version\": \"1.0.0\",\n  \"action_type\": \"REGISTERED.ACTION\",\n  \"input\": {}\n}");
+  const [planStepJson, setPlanStepJson] = useState("[\n  {\n    \"step_key\": \"step-1\",\n    \"tool_id\": \"REGISTERED.TOOL.ID\",\n    \"tool_version\": \"1.0.0\",\n    \"action_type\": \"REGISTERED.ACTION\",\n    \"input\": {}\n  }\n]");
   const [simulatedResponsesJson, setSimulatedResponsesJson] = useState("{\n  \"REGISTERED.TOOL.ID@1.0.0\": { \"fixture\": true }\n}");
   const [inputSnapshotJson, setInputSnapshotJson] = useState("{}");
   const [policySnapshotJson, setPolicySnapshotJson] = useState("{}");
@@ -147,7 +147,7 @@ export default function AiAgentStudioGovernancePage() {
   const [replayTo, setReplayTo] = useState("");
   const [branchSource, setBranchSource] = useState("");
   const [branchIndex, setBranchIndex] = useState("0");
-  const [branchPlanJson, setBranchPlanJson] = useState("{\n  \"step_key\": \"alternative-step\",\n  \"tool_id\": \"REGISTERED.TOOL.ID\",\n  \"tool_version\": \"1.0.0\",\n  \"action_type\": \"REGISTERED.ACTION\",\n  \"input\": {}\n}");
+  const [branchPlanJson, setBranchPlanJson] = useState("[\n  {\n    \"step_key\": \"alternative-step\",\n    \"tool_id\": \"REGISTERED.TOOL.ID\",\n    \"tool_version\": \"1.0.0\",\n    \"action_type\": \"REGISTERED.ACTION\",\n    \"input\": {}\n  }\n]");
   const [branchResponsesJson, setBranchResponsesJson] = useState("{}");
   const [leftRunId, setLeftRunId] = useState("");
   const [rightRunId, setRightRunId] = useState("");
@@ -173,7 +173,7 @@ export default function AiAgentStudioGovernancePage() {
   const visibleDrafts = loadedFactoryId === activeFactoryId ? drafts : [];
   const visibleEvaluationCases = evaluationScopeId === selectedAgentId ? evaluationCases : [];
   const visibleEvaluationReport = evaluationScopeId === selectedAgentId ? evaluationReport : null;
-  const selectedCase = evaluationCases.find((item) => String(item.id ?? item.caseId ?? item.case_id ?? "") === selectedCaseId);
+  const selectedCase = evaluationScopeId === selectedAgentId ? evaluationCases.find((item) => String(item.id ?? item.caseId ?? item.case_id ?? "") === selectedCaseId) : undefined;
   const factoryName = snapshot?.factories.find((factory) => factory.id === activeFactoryId)?.name ?? activeFactoryId;
 
   useEffect(() => {
@@ -246,8 +246,9 @@ export default function AiAgentStudioGovernancePage() {
           setEvaluationCases(nextCases);
           setSelectedCaseId((current) => current && nextCases.some((item) => String(item.id ?? item.caseId ?? item.case_id) === current)
             ? current : String(nextCases[0]?.id ?? nextCases[0]?.caseId ?? nextCases[0]?.case_id ?? ""));
-        }
+        } else setEvaluationCases([]);
         if (results[1].status === "fulfilled") setEvaluationReport(record(results[1].value));
+        else setEvaluationReport(null);
         setEvaluationScopeId(selectedAgentId);
       });
     }, 0);
@@ -466,7 +467,7 @@ export default function AiAgentStudioGovernancePage() {
               <Metric label="Tool grants created" value={label(record(draftDetail.validation).toolGrantsCreated, "0")} hint="Registry and IAM review is separate" />
             </div>
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{label(Array.isArray(record(draftDetail.validation).reasons) ? record(draftDetail.validation).reasons[0] : undefined, "Publication remains blocked until the separately governed catalogue and simulation requirements are met.")}</p>
-            <Json title="Generated specification and validation" value={{ generatedSpec: visibleDraftDetail.generatedSpec, validation: draftDetail.validation, reviewNotes: visibleDraftDetail.reviewNotes, reviewedAt: visibleDraftDetail.reviewedAt }} />
+            <Json title="Generated specification and validation" value={{ generatedSpec: visibleDraftDetail.generatedSpec, validation: visibleDraftDetail.validation, reviewNotes: visibleDraftDetail.reviewNotes, reviewedAt: visibleDraftDetail.reviewedAt }} />
             {canDraftWrite && draftDetail.status === "DRAFT" ? <div className="space-y-2 border-t border-slate-100 pt-3">
               <Field label="Review notes"><textarea className={AREA} value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} placeholder="Explain the decision for the next governed step…" /></Field>
               <div className="flex flex-wrap gap-2">
@@ -482,7 +483,7 @@ export default function AiAgentStudioGovernancePage() {
     {tab === "SIMULATION" ? <div className="space-y-4">
       <Panel title="Create isolated sandbox simulation" subtitle="Use a catalogue-backed agent specification. Every tool id, version and action type must match the registered tool definition. Responses are simulation fixtures, not tool invocations.">
         {canAgentsWrite ? <form className="space-y-3" onSubmit={(event) => onSubmit(event, "Sandbox creation", () => api().createSandbox(buildAiStudioSandboxPayload({
-          name: sandboxName, agent_spec: agentSpecJson, plan: "[" + planStepJson + "]",
+          name: sandboxName, agent_spec: agentSpecJson, plan: planStepJson,
           simulated_tool_responses: simulatedResponsesJson, input_snapshot: inputSnapshotJson, policy_snapshot: policySnapshotJson,
         })), (value) => {
           const result = record(value);
@@ -503,7 +504,7 @@ export default function AiAgentStudioGovernancePage() {
             <Field label="Agent specification JSON" hint="Required fields: agent_id, version, goal, risk_ceiling L0–L4, execution_scopes and tools [{tool_id,version,action_type}].">
               <textarea className={AREA + " min-h-64"} value={agentSpecJson} onChange={(event) => setAgentSpecJson(event.target.value)} />
             </Field>
-            <Field label="One simulation plan step object" hint="The form wraps this object in the required plan array. The tool/version/action must match agent_spec.tools.">
+            <Field label="Simulation plan JSON array" hint="Enter 1–100 ordered step objects. Every tool/version/action must match agent_spec.tools.">
               <textarea className={AREA + " min-h-64"} value={planStepJson} onChange={(event) => setPlanStepJson(event.target.value)} />
             </Field>
           </div>
@@ -548,10 +549,10 @@ export default function AiAgentStudioGovernancePage() {
             <div className="border-t border-slate-100 pt-3">
               <Field label="Branch source run UUID"><input className={INPUT} value={branchSource} onChange={(event) => setBranchSource(event.target.value)} /></Field>
               <Field label="Branch from step"><input type="number" min="0" max="99" className={INPUT} value={branchIndex} onChange={(event) => setBranchIndex(event.target.value)} /></Field>
-              <Field label="Alternative plan step object JSON"><textarea className={AREA} value={branchPlanJson} onChange={(event) => setBranchPlanJson(event.target.value)} /></Field>
+              <Field label="Alternative plan JSON array"><textarea className={AREA} value={branchPlanJson} onChange={(event) => setBranchPlanJson(event.target.value)} /></Field>
               <Field label="Alternative simulated response JSON"><textarea className={AREA} value={branchResponsesJson} onChange={(event) => setBranchResponsesJson(event.target.value)} /></Field>
               <button type="button" className={SECONDARY} disabled={busy || !canAgentsWrite || !sandboxId} onClick={() => void perform("Simulation branch", async () => {
-                const result = await api().branchRun(sandboxId, buildAiStudioBranchPayload({ source_run_id: branchSource, branch_from_step_index: branchIndex, plan: "[" + branchPlanJson + "]", simulated_tool_responses: branchResponsesJson }));
+                const result = await api().branchRun(sandboxId, buildAiStudioBranchPayload({ source_run_id: branchSource, branch_from_step_index: branchIndex, plan: branchPlanJson, simulated_tool_responses: branchResponsesJson }));
                 const simulation = record(record(result).simulation);
                 if (simulation.id) { setRunId(String(simulation.id)); setRunDetail(record(result)); }
                 return result;
