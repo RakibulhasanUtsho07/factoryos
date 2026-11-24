@@ -178,8 +178,10 @@ export function buildMaintenanceAssetUpdatePayload(input = {}) {
   for (const field of ["commissioned_on", "warranty_expires_on"]) {
     if (input[field] !== undefined) changes[field] = text(input[field]) ? dateOnly(input[field], field) : null;
   }
-  const commissioned = changes.commissioned_on ?? input.current_commissioned_on;
-  const warranty = changes.warranty_expires_on ?? input.current_warranty_expires_on;
+  const commissioned = Object.prototype.hasOwnProperty.call(changes, "commissioned_on")
+    ? changes.commissioned_on : input.current_commissioned_on;
+  const warranty = Object.prototype.hasOwnProperty.call(changes, "warranty_expires_on")
+    ? changes.warranty_expires_on : input.current_warranty_expires_on;
   if (commissioned && warranty && String(warranty) < String(commissioned)) throw new Error("Warranty expiry cannot be before commissioning.");
   if (!Object.keys(changes).length) throw new Error("At least one asset field must change.");
   return { expected_version: expected, ...changes, reason };
