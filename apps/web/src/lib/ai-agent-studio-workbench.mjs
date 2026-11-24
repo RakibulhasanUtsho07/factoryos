@@ -229,10 +229,10 @@ export function buildAiStudioBranchPayload(input = {}) {
 }
 
 export function buildAiStudioComparePayload(input = {}) {
-  return {
-    left_run_id: uuid(input.left_run_id, "left_run_id"),
-    right_run_id: uuid(input.right_run_id, "right_run_id"),
-  };
+  const left_run_id = uuid(input.left_run_id, "left_run_id");
+  const right_run_id = uuid(input.right_run_id, "right_run_id");
+  if (left_run_id === right_run_id) throw new Error("left_run_id and right_run_id must be different.");
+  return { left_run_id, right_run_id };
 }
 
 function assertNoSecretKeys(value, path = "expected_input_subset") {
@@ -291,11 +291,17 @@ export function buildAiStudioEvaluationRunPayload(input = {}) {
 
 export function buildAiStudioPublishRequestPayload(input = {}) {
   if (!["CANARY", "PRODUCTION"].includes(input.target_stage)) throw new Error("target_stage must be CANARY or PRODUCTION.");
+  const policy_simulation_run_id = input.policy_simulation_run_id?.trim()
+    ? uuid(input.policy_simulation_run_id, "policy_simulation_run_id")
+    : undefined;
+  if (input.target_stage === "PRODUCTION" && !policy_simulation_run_id) {
+    throw new Error("PRODUCTION publication requires a completed policy simulation run ID.");
+  }
   return {
     agent_definition_id: uuid(input.agent_definition_id, "agent_definition_id"),
     sandbox_id: uuid(input.sandbox_id, "sandbox_id"),
     simulation_run_id: uuid(input.simulation_run_id, "simulation_run_id"),
-    ...(input.policy_simulation_run_id?.trim() ? { policy_simulation_run_id: uuid(input.policy_simulation_run_id, "policy_simulation_run_id") } : {}),
+    ...(policy_simulation_run_id ? { policy_simulation_run_id } : {}),
     target_stage: input.target_stage,
     ...(input.reason?.trim() ? { reason: asText(input.reason, "reason", 1, 2000) } : {}),
   };
