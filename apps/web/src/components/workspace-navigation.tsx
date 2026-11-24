@@ -18,6 +18,7 @@ const navigation = [
   { href: "/growth", label: "Growth Intelligence" },
   { href: "/growth/forecast-calibration", label: "Forecast Calibration" },
   { href: "/finance/close", label: "Finance Close" },
+  { href: "/procurement", label: "Procurement & Suppliers" },
   { href: "/research", label: "Research & Evidence" },
   { href: "/should-cost", label: "Should-Cost Governance" },
   { href: "/maintenance", label: "Maintenance & Assets" },
