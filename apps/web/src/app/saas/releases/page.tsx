@@ -84,9 +84,6 @@ function Metric({ label, value, hint }: { label: string; value: number | string;
 function Empty({ children }: { children: ReactNode }) {
   return <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-xs leading-5 text-slate-500">{children}</div>;
 }
-function readObject(value: unknown): Row {
-  return row(value);
-}
 function safeEvidenceSummary(value: unknown): string[] {
   const evidence = row(value);
   const lines: string[] = [];
@@ -441,17 +438,15 @@ export default function SaasReleaseControlPlanePage() {
     } finally { setBusy(false); }
   };
 
-  const canChangeSelectedRelease = Boolean(selectedRelease && canReleasePromote && ["CANARY", "PRODUCTION"].includes(selectedReleaseStage));
   const selectedReleaseCanPromote = Boolean(selectedRelease && canReleasePromote
     && ((selectedReleaseStage === "DRAFT") || selectedReleaseStage === "CANARY"));
   const selectedReleaseCanPauseResume = Boolean(selectedRelease && canReleaseControl
     && (selectedReleaseStage === "CANARY" || selectedReleaseStage === "PRODUCTION" || selectedReleaseStage === "PAUSED"));
   const targetPromotionStage = selectedReleaseStage === "CANARY" ? "PRODUCTION" : "CANARY";
-  const releaseTransitionActions = selectedReleaseStage === "PAUSED" ? ["RESUME", "RETIRE"] : ["PAUSE", "RETIRE"];
+  const releaseTransitionActions = ["CANARY", "PRODUCTION"].includes(selectedReleaseStage)
+    ? ["PAUSE", "RETIRE"] : selectedReleaseStage === "PAUSED" ? ["RESUME", "RETIRE"] : selectedReleaseStage !== "RETIRED" ? ["RETIRE"] : [];
   const effectiveReleaseTransitionAction = releaseTransitionActions.includes(releaseTransitionDraft.action)
     ? releaseTransitionDraft.action : releaseTransitionActions[0] ?? "RETIRE";
-  const effectiveProfileTransitionAction = profileTransitionOptions.includes(profileTransitionDraft.action)
-    ? profileTransitionDraft.action : profileTransitionOptions[0] ?? "RETIRE";
   const selectedReleaseCanRetire = Boolean(selectedRelease && canReleaseControl && selectedReleaseStage !== "RETIRED");
   const canProvisionSelectedProfile = Boolean(selectedProfile && canProfileControl
     && ["PLANNED", "PROVISIONING", "FAILED"].includes(selectedProfileStatus));
@@ -464,6 +459,8 @@ export default function SaasReleaseControlPlanePage() {
         : selectedProfileStatus === "RETIRED"
           ? []
           : ["RETIRE"];
+  const effectiveProfileTransitionAction = profileTransitionOptions.includes(profileTransitionDraft.action)
+    ? profileTransitionDraft.action : profileTransitionOptions[0] ?? "RETIRE";
 
   return (
     <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
@@ -549,7 +546,7 @@ export default function SaasReleaseControlPlanePage() {
                               <p className="mt-1 text-[11px] leading-5 text-slate-500">The control plane enforces DRAFT → CANARY → PRODUCTION. Production requires exactly 100%; physical deploy/health evidence is a separate operation.</p>
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                 <Field label="Target stage"><select className={INPUT} value={targetPromotionStage} disabled><option value="CANARY">CANARY</option><option value="PRODUCTION">PRODUCTION</option></select></Field>
-                                <Field label="Rollout percentage" hint="Canary: 1–99; production: fixed at 100."><input className={INPUT} type="number" min={promotionDraft.stage === "CANARY" ? 1 : 100} max={promotionDraft.stage === "CANARY" ? 99 : 100} value={targetPromotionStage === "PRODUCTION" ? "100" : promotionDraft.rollout_percentage} onChange={(event) => setPromotionDraft((current) => ({ ...current, rollout_percentage: event.currentTarget.value }))} disabled={targetPromotionStage === "PRODUCTION"} /></Field>
+                                <Field label="Rollout percentage" hint="Canary: 1–99; production: fixed at 100."><input className={INPUT} type="number" min={targetPromotionStage === "CANARY" ? 1 : 100} max={targetPromotionStage === "CANARY" ? 99 : 100} value={targetPromotionStage === "PRODUCTION" ? "100" : promotionDraft.rollout_percentage} onChange={(event) => setPromotionDraft((current) => ({ ...current, rollout_percentage: event.currentTarget.value }))} disabled={targetPromotionStage === "PRODUCTION"} /></Field>
                                 <div className="sm:col-span-2"><Field label="Promotion reason"><textarea className={AREA} required maxLength={1000} value={promotionDraft.reason} onChange={(event) => setPromotionDraft((current) => ({ ...current, reason: event.currentTarget.value }))} /></Field></div>
                               </div>
                               <button type="submit" className={PRIMARY + " mt-3"} disabled={busy}>{busy ? "Promoting..." : "Record promotion"}</button>
