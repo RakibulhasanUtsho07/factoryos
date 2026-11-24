@@ -197,7 +197,10 @@ export function parseQualityCriteriaDraft(input) {
     if (operator === "IN" && values.length === 0) throw new Error("IN requires a non-empty allowed_values list.");
     if (!["BETWEEN", "IN"].includes(operator) && !target) throw new Error("target_value is required for this comparison operator.");
     if (valueType === "BOOLEAN" && !["true", "false"].includes(target.toLowerCase())) throw new Error("BOOLEAN target_value must be true or false.");
-    if (valueType === "NUMERIC" && target && !Number.isFinite(Number(target))) throw new Error("NUMERIC target_value must be numeric.");
+    if (valueType === "NUMERIC" && target) quantity(target, "target_value", -999999999999, 999999999999, 6);
+    if (valueType === "NUMERIC" && values.some((entry) => !Number.isFinite(Number(entry)) || Math.abs(Number(entry) * 1e6 - Math.round(Number(entry) * 1e6)) > 0.000001)) {
+      throw new Error("NUMERIC allowed_values must contain numbers with at most six decimal places.");
+    }
     const sequence = integer(row.sequence_number, "sequence_number", 1, 2147483647, index + 1);
     if (seenSequences.has(sequence)) throw new Error("Criterion sequence numbers must be unique.");
     seenSequences.add(sequence);
@@ -257,7 +260,7 @@ export function buildQualityDefectPayload(input = {}) {
   return {
     defect_code: bounded(input.defect_code, "Defect code", 1, 100, true),
     severity,
-    affected_quantity: quantity(input.affected_quantity || 1, "affected_quantity", 0.0001),
+    affected_quantity: quantity(input.affected_quantity === undefined || input.affected_quantity === null || input.affected_quantity === "" ? 1 : input.affected_quantity, "affected_quantity", 0.0001),
     description: bounded(input.description, "Description", 3, 4000),
     ...(evidence ? { evidence: { reference: bounded(evidence, "Evidence reference", 1, 1000) } } : {}),
   };
@@ -266,7 +269,7 @@ export function buildQualityDefectPayload(input = {}) {
 export function buildQualityResultPayload(input = {}) {
   const evidence = text(input.evidence_reference);
   return {
-    criterion_code: bounded(input.criterion_code, "Criterion code", 1, 100, true),
+    criterion_code: bounded(input.criterion_code, "criterion_code", 1, 100, true),
     observed_value: bounded(input.observed_value, "Observed value", 1, 1000),
     ...(text(input.notes) ? { notes: bounded(input.notes, "Notes", 1, 2000) } : {}),
     ...(evidence ? { evidence: { reference: bounded(evidence, "Evidence reference", 1, 1000) } } : {}),
@@ -304,7 +307,9 @@ export function buildQualityNcrTransitionPayload(input = {}) {
   const action = text(input.action).toUpperCase();
   if (!NCR_ACTION_TRANSITIONS.has(action)) throw new Error("Choose START or COMPLETE.");
   const evidence = input.evidence === undefined ? {} : record(input.evidence, "Evidence");
-  if (action === "COMPLETE" && Object.keys(evidence).length === 0) throw new Error("Completion requires non-empty evidence.");
+  if (action === "COMPLETE" && (Object.keys(evidence).length === 0 || Object.values(evidence).every((value) => text(value) === ""))) {
+    throw new Error("Completion requires non-empty evidence.");
+  }
   return {
     expected_version: integer(input.expected_version, "expected_version", 1, 2147483647),
     action,
@@ -317,7 +322,9 @@ export function buildQualityNcrVerificationPayload(input = {}) {
   const decision = text(input.decision).toUpperCase();
   if (!NCR_VERIFICATIONS.has(decision)) throw new Error("Choose PASS or FAIL.");
   const evidence = record(input.evidence, "Verification evidence");
-  if (Object.keys(evidence).length === 0) throw new Error("Verification requires non-empty evidence.");
+  if (Object.keys(evidence).length === 0 || Object.values(evidence).every((value) => text(value) === "")) {
+    throw new Error("Verification requires non-empty evidence.");
+  }
   return {
     expected_version: integer(input.expected_version, "expected_version", 1, 2147483647),
     decision,
