@@ -310,7 +310,7 @@ export default function SaasReleaseControlPlanePage() {
     setBusy(true); setNotice(null);
     try {
       const payload = buildReleasePromotionPayload({
-        ...promotionDraft, expected_version: Number(selectedRelease.version),
+        ...promotionDraft, stage: targetPromotionStage, expected_version: Number(selectedRelease.version),
         rollout_percentage: targetPromotionStage === "PRODUCTION" ? 100 : Number(promotionDraft.rollout_percentage), idempotency_key: globalThis.crypto.randomUUID(),
       });
       const result = row(await client.promoteRelease(selectedReleaseKey, payload));
@@ -377,7 +377,7 @@ export default function SaasReleaseControlPlanePage() {
     setBusy(true); setNotice(null);
     try {
       const payload = buildDeploymentProfileTransitionPayload({
-        ...profileTransitionDraft, current_profile_type: textOf(selectedProfile.profileType),
+        ...profileTransitionDraft, action: effectiveProfileTransitionAction, current_profile_type: textOf(selectedProfile.profileType),
         expected_version: Number(selectedProfile.version), idempotency_key: globalThis.crypto.randomUUID(),
       });
       const scope = textOf(selectedProfile.scopeType);
