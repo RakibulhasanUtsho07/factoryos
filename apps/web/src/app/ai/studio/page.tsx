@@ -117,6 +117,8 @@ export default function AiAgentStudioGovernancePage() {
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [evaluationCases, setEvaluationCases] = useState<Row[]>([]);
   const [evaluationReport, setEvaluationReport] = useState<Row | null>(null);
+  const [evaluationScopeId, setEvaluationScopeId] = useState("");
+  const [loadedFactoryId, setLoadedFactoryId] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState("");
   const [sandboxId, setSandboxId] = useState("");
   const [runId, setRunId] = useState("");
@@ -166,19 +168,23 @@ export default function AiAgentStudioGovernancePage() {
   }
 
   const selectedDraft = drafts.find((draft) => String(draft.draftId ?? draft.draft_id ?? "") === selectedDraftId);
+  const visibleDraftDetail = draftDetail && String(draftDetail.draftId ?? draftDetail.draft_id ?? "") === selectedDraftId ? draftDetail : null;
+  const visibleAgents = loadedFactoryId === activeFactoryId ? agents : [];
+  const visibleTemplates = loadedFactoryId === activeFactoryId ? templates : [];
+  const visibleDrafts = loadedFactoryId === activeFactoryId ? drafts : [];
+  const visibleEvaluationCases = evaluationScopeId === selectedAgentId ? evaluationCases : [];
+  const visibleEvaluationReport = evaluationScopeId === selectedAgentId ? evaluationReport : null;
   const selectedCase = evaluationCases.find((item) => String(item.id ?? item.caseId ?? item.case_id ?? "") === selectedCaseId);
   const factoryName = snapshot?.factories.find((factory) => factory.id === activeFactoryId)?.name ?? activeFactoryId;
 
   useEffect(() => {
     let cancelled = false;
-    if (!connected || !canRead) {
-      setAgents([]);
-      setTemplates([]);
-      setDrafts([]);
-      setLoading(false);
-      return () => { cancelled = true; };
-    }
     async function load() {
+      if (!connected || !canRead) {
+        setLoading(false);
+        setLoadedFactoryId("");
+        return;
+      }
       setLoading(true);
       const apiClient = createAiAgentStudioClient((path, options = {}) => request(path, options));
       const definitions = [
@@ -205,48 +211,48 @@ export default function AiAgentStudioGovernancePage() {
       setSelectedTemplateKey((current) => current && nextTemplates.some((item) => String(item.key) === current) ? current : String(nextTemplates[0]?.key ?? ""));
       setSelectedDraftId((current) => current && nextDrafts.some((item) => String(item.draftId ?? item.draft_id) === current) ? current : String(nextDrafts[0]?.draftId ?? nextDrafts[0]?.draft_id ?? ""));
       setSelectedAgentId((current) => current && nextAgents.some((item) => String(item.id) === current) ? current : String(nextAgents[0]?.id ?? ""));
+      setLoadedFactoryId(activeFactoryId);
       setLoading(false);
     }
-    void load().catch((cause) => {
-      if (!cancelled) { setReadErrors({ workspace: messageOf(cause) }); setLoading(false); }
-    });
-    return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      void load().catch((cause) => {
+        if (!cancelled) { setReadErrors({ workspace: messageOf(cause) }); setLoading(false); }
+      });
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [connected, activeFactoryId, canRead, canAgentsRead, canDraftRead, request, refreshTick]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!connected || !canDraftRead || !selectedDraftId) {
-      setDraftDetail(null);
-      return () => { cancelled = true; };
-    }
-    void api().getDraft(selectedDraftId).then((result) => {
-      if (!cancelled) setDraftDetail(record(result));
-    }).catch((cause) => {
-      if (!cancelled) setNotice({ tone: "error", message: messageOf(cause) });
-    });
-    return () => { cancelled = true; };
+    if (!connected || !canDraftRead || !selectedDraftId) return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      void api().getDraft(selectedDraftId).then((result) => {
+        if (!cancelled) setDraftDetail(record(result));
+      }).catch((cause) => {
+        if (!cancelled) setNotice({ tone: "error", message: messageOf(cause) });
+      });
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [connected, activeFactoryId, canDraftRead, selectedDraftId, request]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!connected || !canAgentsRead || !selectedAgentId) {
-      setEvaluationCases([]);
-      setEvaluationReport(null);
-      return () => { cancelled = true; };
-    }
-    const apiClient = api();
-    void Promise.allSettled([apiClient.listEvaluationCases(selectedAgentId), apiClient.getEvaluationReport(selectedAgentId)]).then((results) => {
-      if (cancelled) return;
-      if (results[0].status === "fulfilled") {
-        const nextCases = rows(results[0].value);
-        setEvaluationCases(nextCases);
-        setSelectedCaseId((current) => current && nextCases.some((item) => String(item.id ?? item.caseId ?? item.case_id) === current)
-          ? current : String(nextCases[0]?.id ?? nextCases[0]?.caseId ?? nextCases[0]?.case_id ?? ""));
-      } else setEvaluationCases([]);
-      if (results[1].status === "fulfilled") setEvaluationReport(record(results[1].value));
-      else setEvaluationReport(null);
-    });
-    return () => { cancelled = true; };
+    if (!connected || !canAgentsRead || !selectedAgentId) return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      const apiClient = api();
+      void Promise.allSettled([apiClient.listEvaluationCases(selectedAgentId), apiClient.getEvaluationReport(selectedAgentId)]).then((results) => {
+        if (cancelled) return;
+        if (results[0].status === "fulfilled") {
+          const nextCases = rows(results[0].value);
+          setEvaluationCases(nextCases);
+          setSelectedCaseId((current) => current && nextCases.some((item) => String(item.id ?? item.caseId ?? item.case_id) === current)
+            ? current : String(nextCases[0]?.id ?? nextCases[0]?.caseId ?? nextCases[0]?.case_id ?? ""));
+        }
+        if (results[1].status === "fulfilled") setEvaluationReport(record(results[1].value));
+        setEvaluationScopeId(selectedAgentId);
+      });
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [connected, activeFactoryId, canAgentsRead, selectedAgentId, request, refreshTick]);
 
   async function perform(title: string, action: () => Promise<unknown>, onSuccess?: (value: unknown) => void): Promise<unknown> {
@@ -333,7 +339,7 @@ export default function AiAgentStudioGovernancePage() {
     </header>
 
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Metric label="Agent definitions" value={canAgentsRead ? agents.length : "—"} hint={canAgentsRead ? "Catalogue rows returned" : "ai.agents.read required"} />
+      <Metric label="Agent definitions" value={canAgentsRead ? visibleAgents.length : "—"} hint={canAgentsRead ? "Catalogue rows returned" : "ai.agents.read required"} />
       <Metric label="Workflow drafts" value={canDraftRead ? drafts.length : "—"} hint={canDraftRead ? "Latest draft versions" : "Draft read permission required"} />
       <Metric label="Simulation run" value={runId ? "Selected" : "Not selected"} hint={runId ? "A simulation run UUID is available" : "Create or load a run"} />
       <Metric label="Publication status" value={label(publishRequest?.status, "Not started")} hint="Current-page request record only" />
@@ -407,7 +413,7 @@ export default function AiAgentStudioGovernancePage() {
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Template catalogue" subtitle="Templates generate reviewable drafts only. They do not grant tool entitlements or issue action tokens.">
           {canDraftRead && templates.length ? <div className="space-y-2">
-            {templates.map((entry) => <button key={String(entry.key)} type="button" onClick={() => setSelectedTemplateKey(String(entry.key))} className={"w-full rounded-xl border p-3 text-left " + (selectedTemplateKey === entry.key ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:bg-slate-50")}>
+            {visibleTemplates.map((entry) => <button key={String(entry.key)} type="button" onClick={() => setSelectedTemplateKey(String(entry.key))} className={"w-full rounded-xl border p-3 text-left " + (selectedTemplateKey === entry.key ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:bg-slate-50")}>
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold text-slate-900">{label(entry.title, label(entry.key))}</span><State value={entry.category ?? "TEMPLATE"} /></div>
               <p className="mt-1 text-[11px] text-slate-500">{label(entry.description, label(entry.summary, "Factory workflow template"))}</p>
               <p className="mt-2 font-mono text-[10px] text-slate-400">{label(entry.key)} · v{label(entry.version)}</p>
@@ -442,8 +448,8 @@ export default function AiAgentStudioGovernancePage() {
       </div>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <Panel title="Latest workflow drafts" subtitle="The API returns the latest version of each draft, up to 100 records.">
-          {canDraftRead && drafts.length ? <div className="space-y-2">
-            {drafts.map((draft) => {
+          {canDraftRead && visibleDrafts.length ? <div className="space-y-2">
+            {visibleDrafts.map((draft) => {
               const id = String(draft.draftId ?? draft.draft_id ?? "");
               return <button key={id} type="button" onClick={() => setSelectedDraftId(id)} className={"w-full rounded-xl border p-3 text-left " + (selectedDraftId === id ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:bg-slate-50")}>
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold text-slate-900">{label(draft.title, "Untitled workflow")}</span><State value={draft.status} /></div>
@@ -454,14 +460,14 @@ export default function AiAgentStudioGovernancePage() {
           </div> : <Empty>Select a factory with readable workflow drafts, or create a new draft above.</Empty>}
         </Panel>
         <Panel title="Draft version detail" subtitle="APPROVE creates READY_FOR_PUBLISH only; a separate catalogue definition and simulation are still required.">
-          {draftDetail ? <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-bold text-slate-900">{label(draftDetail.title)}</p><p className="mt-1 break-all font-mono text-[10px] text-slate-400">{label(draftDetail.draftId ?? draftDetail.draft_id)} · v{label(draftDetail.version)}</p></div><State value={draftDetail.status} /></div>
+          {visibleDraftDetail ? <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-bold text-slate-900">{label(visibleDraftDetail.title)}</p><p className="mt-1 break-all font-mono text-[10px] text-slate-400">{label(visibleDraftDetail.draftId ?? visibleDraftDetail.draft_id)} · v{label(visibleDraftDetail.version)}</p></div><State value={visibleDraftDetail.status} /></div>
             <div className="grid gap-2 sm:grid-cols-2">
-              <Metric label="Permissions granted" value={label(record(draftDetail.validation).permissionsGranted, "0")} hint="Draft generation must not grant authority" />
+              <Metric label="Permissions granted" value={label(record(visibleDraftDetail.validation).permissionsGranted, "0")} hint="Draft generation must not grant authority" />
               <Metric label="Tool grants created" value={label(record(draftDetail.validation).toolGrantsCreated, "0")} hint="Registry and IAM review is separate" />
             </div>
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{label(Array.isArray(record(draftDetail.validation).reasons) ? record(draftDetail.validation).reasons[0] : undefined, "Publication remains blocked until the separately governed catalogue and simulation requirements are met.")}</p>
-            <Json title="Generated specification and validation" value={{ generatedSpec: draftDetail.generatedSpec, validation: draftDetail.validation, reviewNotes: draftDetail.reviewNotes, reviewedAt: draftDetail.reviewedAt }} />
+            <Json title="Generated specification and validation" value={{ generatedSpec: visibleDraftDetail.generatedSpec, validation: draftDetail.validation, reviewNotes: visibleDraftDetail.reviewNotes, reviewedAt: visibleDraftDetail.reviewedAt }} />
             {canDraftWrite && draftDetail.status === "DRAFT" ? <div className="space-y-2 border-t border-slate-100 pt-3">
               <Field label="Review notes"><textarea className={AREA} value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} placeholder="Explain the decision for the next governed step…" /></Field>
               <div className="flex flex-wrap gap-2">
@@ -608,7 +614,7 @@ export default function AiAgentStudioGovernancePage() {
         <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
           <Field label="Agent definition"><select className={INPUT} value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
             <option value="">Select an agent definition</option>
-            {agents.map((entry) => <option key={String(entry.id)} value={String(entry.id)}>{label(entry.name, label(entry.agentId ?? entry.agent_id))} · {label(entry.version)}</option>)}
+            {visibleAgents.map((entry) => <option key={String(entry.id)} value={String(entry.id)}>{label(entry.name, label(entry.agentId ?? entry.agent_id))} · {label(entry.version)}</option>)}
           </select></Field>
           <div className="flex items-end"><button type="button" className={SECONDARY} disabled={busy || !selectedAgentId} onClick={() => void refreshCaseEvidence()}>Refresh evidence</button></div>
         </div>
@@ -624,8 +630,8 @@ export default function AiAgentStudioGovernancePage() {
           </form> : <Empty>Select an agent and grant ai.agents.write to add an evaluation case.</Empty>}
         </Panel>
         <Panel title="Evaluation cases" subtitle="Evaluate against a simulation_run_id only. Live task evaluation is not available on this page.">
-          {evaluationCases.length ? <div className="space-y-2">
-            {evaluationCases.map((entry) => {
+          {visibleEvaluationCases.length ? <div className="space-y-2">
+            {visibleEvaluationCases.map((entry) => {
               const id = String(entry.id ?? entry.caseId ?? entry.case_id ?? "");
               return <button key={id} type="button" onClick={() => setSelectedCaseId(id)} className={"w-full rounded-lg border p-3 text-left " + (id === selectedCaseId ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:bg-slate-50")}>
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold">{label(entry.name, label(entry.caseKey ?? entry.case_key))}</span><State value={entry.latestStatus ?? entry.status} /></div>
@@ -643,7 +649,7 @@ export default function AiAgentStudioGovernancePage() {
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Acceptance report" subtitle="PASS, FAIL and INCONCLUSIVE totals are returned directly by the evaluation service.">
-          {evaluationReport ? <Json title="Catalogue evaluation report" value={evaluationReport} /> : <Empty>Select an agent with ai.agents.read permission to view the report.</Empty>}
+          {visibleEvaluationReport ? <Json title="Catalogue evaluation report" value={visibleEvaluationReport} /> : <Empty>Select an agent with ai.agents.read permission to view the report.</Empty>}
           {evaluationResult ? <div className="mt-3"><Json title="Latest evaluation result" value={evaluationResult} /></div> : null}
         </Panel>
         <Panel title="Evidence interpretation" subtitle="The service restricts what synthetic evidence is allowed to prove.">
