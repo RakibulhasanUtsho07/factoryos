@@ -183,7 +183,7 @@ export default function MaintenanceAssetReliabilityPage() {
     ASSETS: permissions.assetsRead || permissions.assetsManage,
     PM: permissions.pmRead || permissions.pmManage,
     WORK_ORDERS: permissions.workOrdersRead || permissions.workOrdersManage || permissions.workOrdersExecute,
-    SPARE_PARTS: permissions.partsManage && (permissions.workOrdersRead || permissions.workOrdersExecute),
+    SPARE_PARTS: permissions.partsManage && permissions.workOrdersRead,
   };
   const canRead = permissions.assetsRead || permissions.pmRead || permissions.workOrdersRead;
 
@@ -280,7 +280,7 @@ export default function MaintenanceAssetReliabilityPage() {
   async function refreshSelectedDetails() {
     const tasks: Promise<void>[] = [];
     if (selectedAssetId && permissions.assetsRead) {
-      tasks.push(request("/maintenance/assets/" + selectedAssetId).then((value) => setAssetDetail(object(value).asset ? object(object(value).asset) : object(value))));
+      tasks.push(request("/maintenance/assets/" + selectedAssetId).then((value) => setAssetDetail(object(value))));
     }
     if (selectedPlanId && permissions.pmRead) {
       tasks.push(request("/maintenance/pm-plans/" + selectedPlanId).then((value) => setPlanDetail(object(value))));
@@ -314,7 +314,7 @@ export default function MaintenanceAssetReliabilityPage() {
     setAssetDetail(null);
     try {
       const result = object(await request("/maintenance/assets/" + id));
-      setAssetDetail(object(result.asset ?? result));
+      setAssetDetail(result);
     } catch (cause) {
       setNotice({ tone: "error", message: messageOf(cause) });
     }
@@ -422,11 +422,20 @@ export default function MaintenanceAssetReliabilityPage() {
     let body: Row;
     try { body = buildMaintenanceGenerateDuePayload({ expected_version: plan.row_version, reason: pmGenerateReason }) as Row; }
     catch (cause) { setNotice({ tone: "error", message: messageOf(cause) }); return; }
+    let generatedWorkOrderId = "";
     const saved = await perform(
-      () => request("/maintenance/pm-plans/" + String(plan.id) + "/generate-due", { method: "POST", body, idempotencyKey: newIdempotencyKey() }),
+      async () => {
+        const result = object(await request("/maintenance/pm-plans/" + String(plan.id) + "/generate-due", { method: "POST", body, idempotencyKey: newIdempotencyKey() }));
+        generatedWorkOrderId = String(object(result.work_order).id ?? result.id ?? "");
+        return result;
+      },
       "Due preventive-maintenance work order generated.",
     );
-    if (saved) { setPmGenerateReason(""); setTab("WORK_ORDERS"); }
+    if (saved) {
+      setPmGenerateReason("");
+      setTab("WORK_ORDERS");
+      if (generatedWorkOrderId) await openWorkOrder(generatedWorkOrderId);
+    }
   }
 
   async function createBreakdownWorkOrder(event: FormEvent<HTMLFormElement>) {
