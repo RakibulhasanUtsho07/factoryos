@@ -180,7 +180,7 @@ export default function SalesOrderLifecycleWorkbenchPage() {
   const [reports, setReports] = useState<Row[]>([]);
   const [searchInput, setSearchInput] = useState("");
   const [submittedSearch, setSubmittedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState<SalesOrderStatus | "ALL">("ALL");
   const [page, setPage] = useState(1);
   const [refreshTick, setRefreshTick] = useState(0);
   const [detailRefreshTick, setDetailRefreshTick] = useState(0);
@@ -518,7 +518,7 @@ export default function SalesOrderLifecycleWorkbenchPage() {
               action={<span className="text-[10px] font-semibold text-slate-500">20 records per page</span>}>
               <form className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={applySearch}>
                 <input className={INPUT} value={searchInput} onChange={(event) => setSearchInput(event.currentTarget.value)} maxLength={100} placeholder="Search order number, customer or reference" />
-                <select className={INPUT} value={statusFilter} onChange={(event) => { setStatusFilter(event.currentTarget.value); setPage(1); setLoading(true); }}>
+                <select className={INPUT} value={statusFilter} onChange={(event) => { setStatusFilter(event.currentTarget.value as SalesOrderStatus | "ALL"); setPage(1); setLoading(true); }}>
                   <option value="ALL">All statuses</option>
                   {STATUS_OPTIONS.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
                 </select>
