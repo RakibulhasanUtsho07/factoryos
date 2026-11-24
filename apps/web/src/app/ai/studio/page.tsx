@@ -469,11 +469,11 @@ export default function AiAgentStudioGovernancePage() {
             <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-bold text-slate-900">{label(visibleDraftDetail.title)}</p><p className="mt-1 break-all font-mono text-[10px] text-slate-400">{label(visibleDraftDetail.draftId ?? visibleDraftDetail.draft_id)} · v{label(visibleDraftDetail.version)}</p></div><State value={visibleDraftDetail.status} /></div>
             <div className="grid gap-2 sm:grid-cols-2">
               <Metric label="Permissions granted" value={label(record(visibleDraftDetail.validation).permissionsGranted, "0")} hint="Draft generation must not grant authority" />
-              <Metric label="Tool grants created" value={label(record(draftDetail.validation).toolGrantsCreated, "0")} hint="Registry and IAM review is separate" />
+              <Metric label="Tool grants created" value={label(record(visibleDraftDetail.validation).toolGrantsCreated, "0")} hint="Registry and IAM review is separate" />
             </div>
-            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{label(Array.isArray(record(draftDetail.validation).reasons) ? record(draftDetail.validation).reasons[0] : undefined, "Publication remains blocked until the separately governed catalogue and simulation requirements are met.")}</p>
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{label(firstItem(record(visibleDraftDetail.validation).reasons), "Publication remains blocked until the separately governed catalogue and simulation requirements are met.")}</p>
             <Json title="Generated specification and validation" value={{ generatedSpec: visibleDraftDetail.generatedSpec, validation: visibleDraftDetail.validation, reviewNotes: visibleDraftDetail.reviewNotes, reviewedAt: visibleDraftDetail.reviewedAt }} />
-            {canDraftWrite && draftDetail.status === "DRAFT" ? <div className="space-y-2 border-t border-slate-100 pt-3">
+            {canDraftWrite && visibleDraftDetail.status === "DRAFT" ? <div className="space-y-2 border-t border-slate-100 pt-3">
               <Field label="Review notes"><textarea className={AREA} value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} placeholder="Explain the decision for the next governed step…" /></Field>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={PRIMARY} disabled={busy} onClick={() => void perform("Draft review approval", () => api().reviewDraft(selectedDraftId, buildAiStudioDraftReviewPayload({ decision: "APPROVE", notes: reviewNotes })), (value) => setDraftDetail(record(value)))}>Mark ready for next step</button>
