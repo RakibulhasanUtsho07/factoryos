@@ -3898,6 +3898,18 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       'wms-fefo-quality-putaway-sibling-' + token, null, randomUUID(),
     );
 
+    // Create a reservation against the LOT that will be held. Once the hold is
+    // active, issuing this exact identity must remain blocked; release it afterward
+    // so the sibling-consumption balance assertions stay isolated.
+    const beforeHoldHeldReservation = await service.createReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { quantity: 1, location_id: heldBin.id } as CreateInventoryReservationDto,
+      'wms-fefo-quality-held-before-hold-' + token,
+      null,
+      randomUUID(),
+    );
+    expect(beforeHoldHeldReservation).toMatchObject({ status: 'RESERVED', replayed: false });
+
     // Reserve the sibling LOT before placing a hold on the earlier-expiry LOT.
     // A later reservation against the sibling must remain eligible after that hold.
     const beforeHoldReservation = await service.createReservation(
@@ -3953,6 +3965,22 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       inventory_item_id: itemId,
       traceability_unit_id: heldLotId,
     }]);
+
+    await expect(service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, beforeHoldHeldReservation.id,
+      { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto,
+      'wms-fefo-quality-held-consume-reject-' + token,
+      randomUUID(),
+      randomUUID(),
+    )).rejects.toThrow(/inventory item is on quality hold/i);
+    const releasedHeldReservation = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, beforeHoldHeldReservation.id,
+      { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+      'wms-fefo-quality-held-release-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(releasedHeldReservation).toMatchObject({ status: 'RELEASED' });
 
     await expect(service.createReservation(
       TEST_USER_ID, tenantId, factoryId, itemId,
@@ -4087,7 +4115,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
     const heldLotAllocationCount = await adminPool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM inventory_reservation_traceability_allocations " +
-      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4",
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 " +
+      "AND allocated_quantity > consumed_quantity + released_quantity + remapped_quantity",
       [tenantId, factoryId, itemId, heldLotId],
     );
     expect(heldLotAllocationCount.rows[0]?.count).toBe('0');
