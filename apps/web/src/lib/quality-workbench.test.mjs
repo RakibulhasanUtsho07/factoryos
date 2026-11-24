@@ -74,7 +74,7 @@ test("builds validated inspection payload and enforces required inspection plans
   }), /valid UUID/);
   assert.throws(() => buildQualityInspectionPayload({
     inspection_type: "FINAL", target_type: "WORK_ORDER", target_id: id, plan_code: "F", sample_quantity: "1.12345",
-  }), /four decimal places/);
+  }), /at most 4 decimal places/);
 });
 
 test("parses and validates plan criteria with numeric bounds and unique codes", () => {
@@ -90,7 +90,7 @@ test("parses and validates plan criteria with numeric bounds and unique codes", 
 test("enforces criterion value type and comparison operator compatibility", () => {
   assert.throws(() => parseQualityCriteriaDraft([{
     criterion_code: "BOOL", name: "Switch", value_type: "BOOLEAN", comparison_operator: "GT", target_value: "true",
-  }]), /BOOLEAN criteria support only/);
+  }]), /Range comparison operators require a NUMERIC/);
   assert.throws(() => parseQualityCriteriaDraft([{
     criterion_code: "TEXT", name: "Label", value_type: "TEXT", comparison_operator: "BETWEEN", lower_limit: 1, upper_limit: 4,
   }]), /require a NUMERIC/);
@@ -178,6 +178,9 @@ test("CAPA completion and verification require evidence", () => {
   assert.throws(() => buildQualityNcrTransitionPayload({
     expected_version: 2, action: "COMPLETE", reason: "Completed",
   }), /non-empty evidence/);
+  assert.throws(() => buildQualityNcrTransitionPayload({
+    expected_version: 2, action: "COMPLETE", reason: "Completed", evidence: { reference: " " },
+  }), /non-empty evidence/);
   assert.deepEqual(buildQualityNcrVerificationPayload({
     expected_version: 3, decision: "PASS", reason: "Independent audit passed", evidence: { audit_ref: "AUD-8" },
   }), {
@@ -185,6 +188,9 @@ test("CAPA completion and verification require evidence", () => {
   });
   assert.throws(() => buildQualityNcrVerificationPayload({
     expected_version: 1, decision: "PASS", reason: "Passed", evidence: {},
+  }), /non-empty evidence/);
+  assert.throws(() => buildQualityNcrVerificationPayload({
+    expected_version: 1, decision: "PASS", reason: "Passed", evidence: { reference: "" },
   }), /non-empty evidence/);
 });
 
