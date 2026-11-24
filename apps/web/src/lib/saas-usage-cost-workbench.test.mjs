@@ -51,7 +51,7 @@ test("normalizes direct arrays, nested envelopes and API-specific collection key
 
 test("creates effective-dated meter rates with supported metric and currency", () => {
   assert.deepEqual(buildSaasRateCardPayload(rateBase), {
-    ...rateBase, effective_from: "2026-11-01T00:00:00.000Z",
+    ...rateBase, block_quantity: 1000, effective_from: "2026-11-01T00:00:00.000Z",
   });
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, metric_code: "UNKNOWN" }), /metric_code/);
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, currency: "bdt" }), /currency/);
@@ -224,7 +224,7 @@ test("provider reconciliation calculates for exact invoice scope within the supp
   assert.equal(payload.reconciliation_version, 2);
   assert.equal(payload.invoiced_provider_cost_minor, 25000);
   assert.throws(() => buildSaasProviderReconciliationPayload({
-    provider_code: "openai", invoice_reference: "INV", reconciliation_version: 1,
+    provider_code: "openai", invoice_reference: "", reconciliation_version: 1,
     period_start: "2026-11-01", period_end: "2026-11-30", currency: "USD",
     invoiced_provider_cost_minor: 100, idempotency_key: "provider-recon-bad",
   }), /invoice_reference/);
