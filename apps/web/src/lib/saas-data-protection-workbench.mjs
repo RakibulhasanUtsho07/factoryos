@@ -39,14 +39,16 @@ function reason(value) {
   return text(value, "reason", 3, 1000);
 }
 function uuid(value, field) {
-  const normalized = text(value, field, 36, 36);
-  if (!UUID.test(normalized)) throw new Error(field + " must be a valid UUID.");
-  return normalized;
+  if (typeof value !== "string" || !UUID.test(value.trim())) {
+    throw new Error(field + " must be a valid UUID.");
+  }
+  return value.trim().toLowerCase();
 }
 function digest(value, field) {
-  const normalized = text(value, field, 64, 64);
-  if (!DIGEST.test(normalized)) throw new Error(field + " must be a SHA-256 hex digest.");
-  return normalized.toLowerCase();
+  if (typeof value !== "string" || !DIGEST.test(value.trim())) {
+    throw new Error(field + " must be a SHA-256 hex digest.");
+  }
+  return value.trim().toLowerCase();
 }
 function schemaVersion(value, field) {
   const normalized = text(value, field, 5, 32);
