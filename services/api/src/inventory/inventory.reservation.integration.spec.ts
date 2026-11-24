@@ -4025,10 +4025,27 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "ORDER BY traceability_unit_id",
       [tenantId, factoryId, itemId, [heldLotId, siblingLotId]],
     );
-    expect(lotBalances.rows).toEqual([
+    expect(lotBalances.rows).toHaveLength(2);
+    expect(lotBalances.rows).toEqual(expect.arrayContaining([
       { traceability_unit_id: heldLotId, quantity_on_hand: '2.0000', quantity_reserved: '0.0000' },
       { traceability_unit_id: siblingLotId, quantity_on_hand: '1.0000', quantity_reserved: '1.0000' },
-    ]);
+    ]));
+
+    const binBalances = await adminPool.query<{
+      location_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      "SELECT location_id::text AS location_id, " +
+      "quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_location_balances WHERE tenant_id=$1 AND factory_id=$2 " +
+      "AND item_id=$3 AND location_id=ANY($4::uuid[]) ORDER BY location_id",
+      [tenantId, factoryId, itemId, [heldBin.id, siblingBin.id]],
+    );
+    expect(binBalances.rows).toHaveLength(2);
+    expect(binBalances.rows).toEqual(expect.arrayContaining([
+      { location_id: heldBin.id, quantity_on_hand: '2.0000', quantity_reserved: '0.0000' },
+      { location_id: siblingBin.id, quantity_on_hand: '1.0000', quantity_reserved: '1.0000' },
+    ]));
 
     const aggregate = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
       "SELECT quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
