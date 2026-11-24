@@ -151,6 +151,7 @@ test("branch payload requires a valid source and a bounded plan array", () => {
 test("branch and run comparison inputs reject malformed UUIDs or objects", () => {
   assert.throws(() => buildAiStudioBranchPayload({ source_run_id: run, branch_from_step_index: 0, plan: JSON.stringify(plan), simulated_tool_responses: "[]" }), /object/);
   assert.deepEqual(buildAiStudioComparePayload({ left_run_id: run, right_run_id: sandbox }), { left_run_id: run, right_run_id: sandbox });
+  assert.throws(() => buildAiStudioComparePayload({ left_run_id: run, right_run_id: run }), /different/);
   assert.throws(() => buildAiStudioComparePayload({ left_run_id: run, right_run_id: "none" }), /UUID/);
 });
 
@@ -199,7 +200,8 @@ test("publish requests require catalogue, sandbox and simulation references", ()
   assert.throws(() => buildAiStudioPublishRequestPayload({ agent_definition_id: "bad", sandbox_id: sandbox, simulation_run_id: run, target_stage: "CANARY" }), /UUID/);
 });
 
-test("production publish references the supplied policy simulation and bounded reason", () => {
+test("production publish requires a policy simulation reference", () => {
+  assert.throws(() => buildAiStudioPublishRequestPayload({ agent_definition_id: agent, sandbox_id: sandbox, simulation_run_id: run, target_stage: "PRODUCTION" }), /policy simulation/);
   const payload = buildAiStudioPublishRequestPayload({ agent_definition_id: agent, sandbox_id: sandbox, simulation_run_id: run, policy_simulation_run_id: sandbox, target_stage: "PRODUCTION", reason: "Release candidate reviewed." });
   assert.equal(payload.policy_simulation_run_id, sandbox);
   assert.throws(() => buildAiStudioPublishRequestPayload({ agent_definition_id: agent, sandbox_id: sandbox, simulation_run_id: run, target_stage: "CANARY", reason: "x".repeat(2001) }), /reason/);
