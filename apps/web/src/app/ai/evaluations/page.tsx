@@ -30,7 +30,6 @@ type ForecastDraft = {
 
 const DOMAINS = ["PLANNING", "QUALITY", "MAINTENANCE", "FINANCE", "ENERGY"];
 const INPUT = "min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400";
-const AREA = INPUT + " min-h-24";
 const PRIMARY = "inline-flex min-h-9 items-center justify-center rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50";
 const SECONDARY = "inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50";
 const PANEL = "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm";
@@ -139,13 +138,14 @@ export default function AiOperationalEvaluationPage() {
   const [labelDraft, setLabelDraft] = useState<LabelDraft>(initialLabel());
   const [forecastDraft, setForecastDraft] = useState<ForecastDraft>(initialForecast());
 
-  const accuracyRows = rows(accuracy, "series");
+  const loaded = sessionStatus === "connected" && Boolean(activeFactoryId) && loadedFactory === activeFactoryId;
+  const accuracyRows = useMemo(() => loaded ? rows(accuracy, "series") : [], [accuracy, loaded]);
   const visibleSeries = useMemo(
     () => filterAiOperationalSeries(accuracyRows, { domain: domainFilter, metric_key: metricFilter, model_version: versionFilter }) as Row[],
-    [accuracy, domainFilter, metricFilter, versionFilter],
+    [accuracyRows, domainFilter, metricFilter, versionFilter],
   );
-  const calibrationRows = rows(calibration, "series");
-  const summary = summarizeAiOperationalSeries(accuracy, calibration, policies);
+  const calibrationRows = loaded ? rows(calibration, "series") : [];
+  const summary = summarizeAiOperationalSeries(loaded ? accuracy : null, loaded ? calibration : null, loaded ? policies : []);
 
   const load = useCallback(async () => {
     if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
@@ -171,7 +171,8 @@ export default function AiOperationalEvaluationPage() {
 
   useEffect(() => {
     if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
-    void load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [sessionStatus, activeFactoryId, canRead, load]);
 
   async function perform(action: () => Promise<unknown>, success: string) {
@@ -256,7 +257,6 @@ export default function AiOperationalEvaluationPage() {
   const candidate = record(currentComparison?.candidate);
   const delta = record(currentComparison?.delta);
   const checks = record(policyResult.checks);
-  const loaded = loadedFactory === activeFactoryId;
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
