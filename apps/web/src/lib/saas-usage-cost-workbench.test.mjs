@@ -236,6 +236,11 @@ test("provider invoice reconciliation rejects an inverted period", () => {
     period_start: "2026-11-30", period_end: "2026-11-01", currency: "USD",
     invoiced_provider_cost_minor: 1, idempotency_key: "provider-recon-inverted",
   }), /after/);
+  assert.throws(() => buildSaasProviderReconciliationPayload({
+    provider_code: "openai", invoice_reference: "INV", reconciliation_version: 1,
+    period_start: "2026-11-01", period_end: "2026-12-10", currency: "USD",
+    invoiced_provider_cost_minor: 1, idempotency_key: "provider-recon-too-long",
+  }), /35-day/);
 });
 
 test("client maps all usage, budget, workload, alert and provider routes", async () => {
