@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -72,11 +72,6 @@ function localDate(date = new Date()) {
   return adjusted.toISOString().slice(0, 10);
 }
 
-function localDateTimeInput() {
-  const adjusted = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
-  return adjusted.toISOString().slice(0, 16);
-}
-
 function localDateTimeToIso(value: string) {
   const parsed = new Date(value);
   if (!value || Number.isNaN(parsed.getTime())) throw new Error("Choose a valid local date and time.");
@@ -116,16 +111,6 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
       {children}
       {hint ? <span className="mt-1 block text-[11px] leading-4 text-slate-500">{hint}</span> : null}
     </label>
-  );
-}
-
-function Metric({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-bold tabular-nums text-slate-950">{typeof value === "number" ? value.toLocaleString() : value}</p>
-      <p className="mt-1 text-[10px] text-slate-500">{detail}</p>
-    </article>
   );
 }
 
@@ -192,6 +177,7 @@ export default function MaintenanceAssetReliabilityPage() {
   const visibleTab = tabAccess[tab] ? tab : defaultTab;
 
   const [loadedFactoryId, setLoadedFactoryId] = useState("");
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticeState | null>(null);
@@ -241,41 +227,49 @@ export default function MaintenanceAssetReliabilityPage() {
   const visibleWorkOrders = useMemo(() => filterMaintenanceRows(workOrders, workOrderSearch, workOrderStatusFilter), [workOrders, workOrderSearch, workOrderStatusFilter]);
   const summary = useMemo(() => summarizeMaintenanceWorkspace({ assets, plans, workOrders }), [assets, plans, workOrders]);
 
-  const load = useCallback(async () => {
-    if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
-    setLoading(true);
-    setNotice(null);
-    setLoadedFactoryId("");
-    try {
-      const tasks: Promise<unknown>[] = [];
-      const keys: string[] = [];
-      const add = (key: string, enabled: boolean, pathName: string) => {
-        if (enabled) { keys.push(key); tasks.push(request(pathName)); }
-      };
-      add("assets", permissions.assetsRead, "/maintenance/assets" + buildMaintenanceQuery({}, "assets"));
-      add("plans", permissions.pmRead, "/maintenance/pm-plans" + buildMaintenanceQuery({}, "plans"));
-      add("work_orders", permissions.workOrdersRead, "/maintenance/work-orders" + buildMaintenanceQuery({}, "work_orders"));
-      const values = await Promise.all(tasks);
-      const result = Object.fromEntries(keys.map((key, index) => [key, values[index]])) as Record<string, unknown>;
-      setAssets(list(result.assets, "assets"));
-      setPlans(list(result.plans, "plans"));
-      setWorkOrders(list(result.work_orders, "work_orders"));
-      setLoadedFactoryId(activeFactoryId);
-    } catch (cause) {
-      setNotice({ tone: "error", message: messageOf(cause) });
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMaintenanceData() {
+      if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
+      setLoading(true);
+      setNotice(null);
+      setLoadedFactoryId("");
+      try {
+        const tasks: Promise<unknown>[] = [];
+        const keys: string[] = [];
+        const add = (key: string, enabled: boolean, pathName: string) => {
+          if (enabled) {
+            keys.push(key);
+            tasks.push(request(pathName));
+          }
+        };
+        add("assets", permissions.assetsRead, "/maintenance/assets" + buildMaintenanceQuery({}, "assets"));
+        add("plans", permissions.pmRead, "/maintenance/pm-plans" + buildMaintenanceQuery({}, "plans"));
+        add("work_orders", permissions.workOrdersRead, "/maintenance/work-orders" + buildMaintenanceQuery({}, "work_orders"));
+        const values = await Promise.all(tasks);
+        if (cancelled) return;
+        const result = Object.fromEntries(keys.map((key, index) => [key, values[index]])) as Record<string, unknown>;
+        setAssets(list(result.assets, "assets"));
+        setPlans(list(result.plans, "plans"));
+        setWorkOrders(list(result.work_orders, "work_orders"));
+        setLoadedFactoryId(activeFactoryId);
+      } catch (cause) {
+        if (!cancelled) setNotice({ tone: "error", message: messageOf(cause) });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
+
+    const timer = window.setTimeout(() => void loadMaintenanceData(), 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [
     sessionStatus, activeFactoryId, canRead, request,
-    permissions.assetsRead, permissions.pmRead, permissions.workOrdersRead,
+    permissions.assetsRead, permissions.pmRead, permissions.workOrdersRead, refreshVersion,
   ]);
-
-  useEffect(() => {
-    if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, [sessionStatus, activeFactoryId, canRead, load]);
 
   async function refreshSelectedDetails() {
     const tasks: Promise<void>[] = [];
@@ -296,7 +290,7 @@ export default function MaintenanceAssetReliabilityPage() {
     setNotice(null);
     try {
       await action();
-      await load();
+      setRefreshVersion((current) => current + 1);
       await refreshSelectedDetails();
       setNotice({ tone: "success", message: success });
       return true;
@@ -570,7 +564,7 @@ export default function MaintenanceAssetReliabilityPage() {
             </div>
             <div className="flex items-center gap-2">
               <span className={"rounded-full px-3 py-1.5 text-[10px] font-bold " + (hasSession ? "bg-emerald-400/15 text-emerald-200" : "bg-amber-400/15 text-amber-200")}>{hasSession ? "SESSION CONNECTED" : "SESSION REQUIRED"}</span>
-              <button type="button" onClick={() => void load()} disabled={!hasSession || !canRead || loading} className="inline-flex min-h-9 items-center rounded-lg border border-white/20 px-3 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50">{loading ? "Refreshing…" : "Refresh data"}</button>
+              <button type="button" onClick={() => setRefreshVersion((current) => current + 1)} disabled={!hasSession || !canRead || loading} className="inline-flex min-h-9 items-center rounded-lg border border-white/20 px-3 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50">{loading ? "Refreshing…" : "Refresh data"}</button>
             </div>
           </div>
           <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
