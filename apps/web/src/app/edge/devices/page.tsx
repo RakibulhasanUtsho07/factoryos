@@ -284,7 +284,8 @@ export default function EdgeDeviceFleetWorkbenchPage() {
 
   useEffect(() => {
     if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
-    void load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [sessionStatus, activeFactoryId, canRead, load]);
 
   useEffect(() => {
