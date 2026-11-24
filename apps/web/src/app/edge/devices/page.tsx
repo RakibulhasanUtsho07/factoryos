@@ -216,7 +216,7 @@ export default function EdgeDeviceFleetWorkbenchPage() {
   const [controlDecision, setControlDecision] = useState<{ control: EdgeControl; action: "RESUME" | "REVOKE"; reason: string } | null>(null);
 
   const [loading, setLoading] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadedDeviceId, setDetailLoadedDeviceId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -226,6 +226,9 @@ export default function EdgeDeviceFleetWorkbenchPage() {
     [devices, search, statusFilter, protocolFilter],
   );
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId) ?? visibleDevices[0] ?? null;
+  const detailLoading = Boolean(selectedDevice && detailLoadedDeviceId !== selectedDevice.id);
+  const currentHealthReports = detailLoadedDeviceId === selectedDevice?.id ? healthReports : [];
+  const currentObservations = detailLoadedDeviceId === selectedDevice?.id ? observations : [];
   const summary = useMemo(() => summarizeEdgeDevices(devices), [devices]);
 
   const load = useCallback(async () => {
@@ -280,30 +283,13 @@ export default function EdgeDeviceFleetWorkbenchPage() {
   ]);
 
   useEffect(() => {
-    if (sessionStatus !== "connected" || !activeFactoryId || !canRead) {
-      setDevices([]);
-      setSigningKeys([]);
-      setControls([]);
-      setSelectedDeviceId("");
-      setCredentialReceipt(null);
-      setLoadedFactoryId("");
-      return;
-    }
+    if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
     void load();
   }, [sessionStatus, activeFactoryId, canRead, load]);
 
   useEffect(() => {
-    setCredentialReceipt(null);
-    setHealthReports([]);
-    setObservations([]);
-    setSelectedDeviceId("");
-    setDeviceOffset(0);
-  }, [activeFactoryId]);
-
-  useEffect(() => {
     if (!selectedDevice || loadedFactoryId !== activeFactoryId) return;
     let current = true;
-    setDetailLoading(true);
     const tasks = Promise.allSettled([
       canReadHealth
         ? request("/v2/edge/devices/" + encodeURIComponent(selectedDevice.id) + "/health?limit=25&offset=0")
@@ -315,10 +301,16 @@ export default function EdgeDeviceFleetWorkbenchPage() {
     void tasks.then((results) => {
       if (!current) return;
       if (results[0].status === "fulfilled" && results[0].value) setHealthReports(healthRows(results[0].value));
-      else if (results[0].status === "rejected") setError("Device health: " + messageOf(results[0].reason));
+      else {
+        setHealthReports([]);
+        if (results[0].status === "rejected") setError("Device health: " + messageOf(results[0].reason));
+      }
       if (results[1].status === "fulfilled" && results[1].value) setObservations(observationRows(results[1].value));
-      else if (results[1].status === "rejected") setError("Telemetry: " + messageOf(results[1].reason));
-      setDetailLoading(false);
+      else {
+        setObservations([]);
+        if (results[1].status === "rejected") setError("Telemetry: " + messageOf(results[1].reason));
+      }
+      setDetailLoadedDeviceId(selectedDevice.id);
     });
     return () => { current = false; };
   }, [selectedDevice?.id, loadedFactoryId, activeFactoryId, canReadHealth, canReadTelemetry, request]);
@@ -731,10 +723,10 @@ export default function EdgeDeviceFleetWorkbenchPage() {
                       <div className="rounded-xl border border-slate-200 p-3">
                         <h3 className="text-xs font-bold text-slate-900">Health report history</h3>
                         {!canReadHealth ? <p className="mt-3 text-xs text-slate-500">Missing permission: edge.devices.health.read.</p> : null}
-                        {canReadHealth && !detailLoading && !healthReports.length ? <div className="mt-3"><Empty>No health reports recorded for this device.</Empty></div> : null}
+                        {canReadHealth && !detailLoading && !currentHealthReports.length ? <div className="mt-3"><Empty>No health reports recorded for this device.</Empty></div> : null}
                         {canReadHealth && healthReports.length ? (
                           <div className="mt-3 space-y-2">
-                            {healthReports.map((report) => (
+                            {currentHealthReports.map((report) => (
                               <article key={String(report.id ?? report.healthEventId)} className="rounded-lg bg-slate-50 p-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2"><StatusPill value={report.runtimeStatus} /><span className="text-[10px] text-slate-500">{dateTime(report.reportedAt)}</span></div>
                                 <p className="mt-2 text-[11px] text-slate-700">Agent {textValue(report.agentVersion)} · {countValue(report.pendingBatches)} pending batches · {countValue(report.pendingBytes)} bytes</p>
@@ -749,12 +741,12 @@ export default function EdgeDeviceFleetWorkbenchPage() {
                       <div className="rounded-xl border border-slate-200 p-3">
                         <h3 className="text-xs font-bold text-slate-900">Recent observation stream</h3>
                         {!canReadTelemetry ? <p className="mt-3 text-xs text-slate-500">Missing permission: edge.telemetry.read.</p> : null}
-                        {canReadTelemetry && !detailLoading && !observations.length ? <div className="mt-3"><Empty>No telemetry observations recorded for this device.</Empty></div> : null}
+                        {canReadTelemetry && !detailLoading && !currentObservations.length ? <div className="mt-3"><Empty>No telemetry observations recorded for this device.</Empty></div> : null}
                         {canReadTelemetry && observations.length ? (
                           <div className="mt-3 overflow-x-auto">
                             <table className="w-full min-w-[520px] text-left text-[11px]">
                               <thead><tr className="border-b border-slate-200 text-[10px] uppercase text-slate-500"><th className="px-2 py-2">Signal</th><th className="px-2 py-2">Quality</th><th className="px-2 py-2">Source</th><th className="px-2 py-2">Observed</th><th className="px-2 py-2">Evidence</th></tr></thead>
-                              <tbody>{observations.map((observation) => <tr key={String(observation.id)} className="border-b border-slate-100"><td className="px-2 py-2 font-semibold text-slate-800">{textValue(observation.signalKey)}</td><td className="px-2 py-2"><StatusPill value={observation.quality} /></td><td className="px-2 py-2 text-slate-600">{textValue(observation.sourceMode)}</td><td className="px-2 py-2 text-slate-600">{dateTime(observation.observedAt)}</td><td className="px-2 py-2 font-mono text-[10px] text-slate-500">{textValue(observation.payloadHash).slice(0, 12)}</td></tr>)}</tbody>
+                              <tbody>{currentObservations.map((observation) => <tr key={String(observation.id)} className="border-b border-slate-100"><td className="px-2 py-2 font-semibold text-slate-800">{textValue(observation.signalKey)}</td><td className="px-2 py-2"><StatusPill value={observation.quality} /></td><td className="px-2 py-2 text-slate-600">{textValue(observation.sourceMode)}</td><td className="px-2 py-2 text-slate-600">{dateTime(observation.observedAt)}</td><td className="px-2 py-2 font-mono text-[10px] text-slate-500">{textValue(observation.payloadHash).slice(0, 12)}</td></tr>)}</tbody>
                             </table>
                           </div>
                         ) : null}
