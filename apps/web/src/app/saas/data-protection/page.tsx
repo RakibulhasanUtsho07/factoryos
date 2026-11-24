@@ -33,7 +33,7 @@ const CATEGORIES = [
   "BUSINESS_DATA", "AUDIT_LOG", "EVIDENCE", "APPROVALS", "EFFECTIVE_DATED_MASTER_DATA",
   "AI_CONTEXT", "LEARNING_EVALUATION", "INTEGRATION_METADATA", "FILE_REFERENCES", "IAM_ACCESS",
 ];
-const STORE_KINDS = ["OBJECT_STORAGE", "DATABASE", "FILE_STORAGE", "SEARCH_INDEX", "MESSAGE_ARCHIVE", "OTHER"];
+const STORE_KINDS = ["OBJECT_STORAGE", "CACHE", "SEARCH_INDEX", "VECTOR_STORE", "LEARNING_ARTIFACT", "EXTERNAL_PROVIDER", "REPLICA", "BACKUP"];
 const INPUT = "min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400";
 const AREA = INPUT + " min-h-24 font-mono text-xs leading-5";
 const PRIMARY = "inline-flex min-h-9 items-center justify-center rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50";
