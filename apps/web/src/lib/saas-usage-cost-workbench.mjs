@@ -47,9 +47,9 @@ function decimal(value, field, minimum = 0.000001, maximum = 1_000_000_000_000) 
   if (fraction.length > 6) throw new Error(field + " supports at most 6 decimal places.");
   return n;
 }
-function minor(value, field, minimum = 0) {
+function minor(value, field, minimum = 0, maximum = 9_000_000_000_000_000) {
   const n = finiteNumber(value, field);
-  if (!Number.isSafeInteger(n) || n < minimum || n > 9_000_000_000_000_000) {
+  if (!Number.isSafeInteger(n) || n < minimum || n > maximum) {
     throw new Error(field + " must be a supported integer in minor currency units.");
   }
   return n;
@@ -97,7 +97,7 @@ export function normalizeSaasRows(value, preferredKey) {
 export function buildSaasRateCardPayload(input = {}) {
   return {
     metric_code: enumValue(input.metric_code, METRICS, "metric_code"),
-    rate_version: minor(input.rate_version, "rate_version", 1),
+    rate_version: minor(input.rate_version, "rate_version", 1, 1_000_000),
     rate_minor_per_block: minor(input.rate_minor_per_block, "rate_minor_per_block"),
     block_quantity: decimal(input.block_quantity, "block_quantity"),
     currency: currency(input.currency),
@@ -141,7 +141,7 @@ export function buildSaasUsageReconciliationPayload(input = {}) {
   const selectedPeriod = period(input.period_start, input.period_end, 35);
   return {
     invoice_reference: text(input.invoice_reference, "invoice_reference", 180),
-    reconciliation_version: minor(input.reconciliation_version, "reconciliation_version", 1),
+    reconciliation_version: minor(input.reconciliation_version, "reconciliation_version", 1, 1_000_000),
     period_start: selectedPeriod.period_start,
     period_end: selectedPeriod.period_end,
     currency: currency(input.currency),
@@ -152,7 +152,7 @@ export function buildSaasUsageReconciliationPayload(input = {}) {
 export function buildSaasBudgetPayload(input = {}) {
   const budget_code = text(input.budget_code, "budget_code", 80);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(budget_code)) throw new Error("budget_code has an invalid format.");
-  const policy_version = minor(input.policy_version, "policy_version", 1);
+  const policy_version = minor(input.policy_version, "policy_version", 1, 1_000_000);
   const period_kind = enumValue(input.period_kind, new Set(["DAILY", "MONTHLY"]), "period_kind");
   const scope_level = enumValue(input.scope_level, new Set(["TENANT", "FACTORY"]), "scope_level");
   const soft_limit_minor = minor(input.soft_limit_minor, "soft_limit_minor");
@@ -171,7 +171,7 @@ export function buildSaasBudgetPayload(input = {}) {
   return {
     budget_code, policy_version, period_kind, scope_level,
     ...(input.metric_code ? { metric_code: enumValue(input.metric_code, METRICS, "metric_code") } : {}),
-    ...(input.capability_code?.trim() ? { capability_code: text(input.capability_code, "capability_code", 100) } : {}),
+    ...(input.capability_code?.trim() ? { capability_code: (() => { const code = text(input.capability_code, "capability_code", 100); if (!CAPABILITY.test(code)) throw new Error("capability_code has an invalid format."); return code; })() } : {}),
     ...(input.workload_class ? { workload_class: enumValue(input.workload_class, WORKLOADS, "workload_class") } : {}),
     currency: currency(input.currency), soft_limit_minor, hard_limit_minor,
     ...(input.pause_noncritical_on_hard_limit !== undefined ? { pause_noncritical_on_hard_limit: input.pause_noncritical_on_hard_limit } : {}),
