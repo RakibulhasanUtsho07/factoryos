@@ -176,7 +176,6 @@ export default function SaasCommercialBillingWorkbenchPage() {
     if (!connected) {
       return () => { live = false; };
     }
-    setLoading(true);
     const errors: Record<string, string> = {};
     const tasks: Promise<void>[] = [];
     if (canReadPlans) tasks.push((async () => {
