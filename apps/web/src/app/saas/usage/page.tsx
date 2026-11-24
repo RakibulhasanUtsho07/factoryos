@@ -150,7 +150,6 @@ export default function SaasUsageCostWorkbenchPage() {
   const [reportFrom, setReportFrom] = useState(dayInput(29));
   const [reportTo, setReportTo] = useState(dayInput(0));
   const [unreadOnly, setUnreadOnly] = useState(true);
-  const [currencyFilter, setCurrencyFilter] = useState("BDT");
   const [rateMetric, setRateMetric] = useState("AI_INPUT_TOKEN");
   const [rateVersion, setRateVersion] = useState("1");
   const [rateMinor, setRateMinor] = useState("50");
@@ -175,6 +174,7 @@ export default function SaasUsageCostWorkbenchPage() {
   const [budgetSoftLimit, setBudgetSoftLimit] = useState("100000");
   const [budgetHardLimit, setBudgetHardLimit] = useState("150000");
   const [budgetPauseNoncritical, setBudgetPauseNoncritical] = useState(false);
+  const [budgetPauseConfirmed, setBudgetPauseConfirmed] = useState(false);
   const [budgetAnomalyMultiplier, setBudgetAnomalyMultiplier] = useState("3");
   const [budgetAnomalyMinEvents, setBudgetAnomalyMinEvents] = useState("10");
   const [budgetEffectiveFrom, setBudgetEffectiveFrom] = useState(nowLocalInput());
@@ -183,7 +183,6 @@ export default function SaasUsageCostWorkbenchPage() {
   const [controlScope, setControlScope] = useState("FACTORY");
   const [controlReason, setControlReason] = useState("");
   const [controlConfirmed, setControlConfirmed] = useState(false);
-  const [alertPage, setAlertPage] = useState(0);
   const [adjustStart, setAdjustStart] = useState(dayInput(29));
   const [adjustEnd, setAdjustEnd] = useState(dayInput(0));
   const [adjustMetric, setAdjustMetric] = useState("");
@@ -290,7 +289,7 @@ export default function SaasUsageCostWorkbenchPage() {
       const result = await action();
       onSuccess?.(result);
       setLatestResponse(result);
-      setNotice({ tone: "success", message: title + " saved. Check the returned record and ledger status before continuing." });
+      setNotice({ tone: "success", message: title + " completed. Check the returned record and ledger status before continuing." });
       setRefreshTick((current) => current + 1);
       return result;
     } catch (cause) {
@@ -476,10 +475,16 @@ export default function SaasUsageCostWorkbenchPage() {
           <Field label="Minimum anomaly events"><input className={INPUT} type="number" min="3" max="100000" step="1" value={budgetAnomalyMinEvents} onChange={(event) => setBudgetAnomalyMinEvents(event.target.value)} /></Field>
           <Field label="Effective from"><input className={INPUT} type="datetime-local" value={budgetEffectiveFrom} onChange={(event) => setBudgetEffectiveFrom(event.target.value)} /></Field>
           <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
-            <input id="pause-noncritical" type="checkbox" checked={budgetPauseNoncritical} onChange={(event) => setBudgetPauseNoncritical(event.target.checked)} className="size-4" />
+            <input id="pause-noncritical" type="checkbox" checked={budgetPauseNoncritical} onChange={(event) => { setBudgetPauseNoncritical(event.target.checked); setBudgetPauseConfirmed(false); }} className="size-4" />
             <label htmlFor="pause-noncritical" className="text-xs leading-5 text-amber-950">Automatically pause EVALUATION, RED_TEAM, SHADOW_MODE and DEVELOPMENT if this policy reaches its hard limit.</label>
           </div>
-          <div className="flex items-end"><button className={PRIMARY} type="submit" disabled={busy || (budgetScope === "FACTORY" && !activeFactoryId)}>Create budget policy</button></div>
+          {budgetPauseNoncritical ? <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 sm:col-span-2 lg:col-span-4">
+            <label className="flex items-start gap-2 text-xs leading-5 text-rose-950">
+              <input type="checkbox" className="mt-1 size-4" checked={budgetPauseConfirmed} onChange={(event) => setBudgetPauseConfirmed(event.target.checked)} />
+              <span>I explicitly authorize this budget policy to automatically pause EVALUATION, RED_TEAM, SHADOW_MODE and DEVELOPMENT workloads when its hard limit is reached. PRODUCTION and NON_AI are never paused by this control.</span>
+            </label>
+          </div> : null}
+          <div className="flex items-end"><button className={PRIMARY} type="submit" disabled={busy || (budgetScope === "FACTORY" && !activeFactoryId) || (budgetPauseNoncritical && !budgetPauseConfirmed)}>Create budget policy</button></div>
         </form> : <Empty>saas.budgets.write is required to create budget policies.</Empty>}
       </Panel>
 
@@ -528,7 +533,7 @@ export default function SaasUsageCostWorkbenchPage() {
 
     {activeTab === "ALERTS" ? <Panel title="Budget and spend alerts" subtitle="Alerts can be WARNING, HARD_LIMIT, UNPRICED_USAGE or ANOMALY. Acknowledgement is per user and idempotent; it does not resolve the underlying budget or workload condition.">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <label className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={unreadOnly} onChange={(event) => { setUnreadOnly(event.target.checked); setAlertPage(0); }} className="size-4" />Unread only</label>
+        <label className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} className="size-4" />Unread only</label>
         <button type="button" className={SECONDARY} disabled={busy || !canReadAlerts} onClick={() => setRefreshTick((current) => current + 1)}>Refresh alerts</button>
       </div>
       {canReadAlerts && visibleAlerts.length ? <div className="space-y-2">
