@@ -40,6 +40,9 @@ function label(value: unknown, fallback = "—"): string {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return fallback;
 }
+function firstItem(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
+}
 function pretty(value: unknown): string {
   if (value === null || value === undefined) return "No result yet.";
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
