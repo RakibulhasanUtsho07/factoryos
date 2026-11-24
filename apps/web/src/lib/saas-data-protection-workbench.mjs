@@ -52,11 +52,6 @@ function schemaVersion(value, field) {
   if (!TRANSFER_SCHEMA.test(normalized)) throw new Error(field + " must use major.minor.patch schema notation.");
   return normalized;
 }
-function dateString(value, field) {
-  const normalized = text(value, field, 1, 40);
-  if (Number.isNaN(Date.parse(normalized))) throw new Error(field + " must be a valid date.");
-  return normalized;
-}
 
 export function normalizeDataProtectionRows(value, keyName) {
   if (Array.isArray(value)) return value;
