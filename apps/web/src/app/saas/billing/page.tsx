@@ -260,7 +260,7 @@ export default function SaasCommercialBillingWorkbenchPage() {
     return () => { live = false; };
   }, [
     connected, activeFactoryId, refreshTick, client,
-    canReadPlans, canReadSubscription, canReadMode, canReadBilling,
+    canReadPlans, canReadSubscription, canReadMode, canReadBilling, trialPlan,
   ]);
 
   const selectedCloseEntry = billingCloses.find((entry) => valueOf(row(entry.close).id) === selectedCloseId) ?? billingCloses[0] ?? null;
