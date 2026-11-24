@@ -23,8 +23,10 @@ export function buildPurchaseOrderUpdatePayload(input: Record<string, unknown>, 
 export function buildPurchaseOrderTransitionPayload(targetStatus: string, expectedVersion: unknown, reason?: string): Record<string, unknown>;
 export function buildGoodsReceiptPayload(input?: Record<string, unknown>): Record<string, unknown>;
 export function buildSupplierPerformanceQuery(input?: Record<string, unknown>): string;
-export function filterProcurementRows<T extends Record<string, unknown>>(rows?: T[], filters?: Record<string, unknown>, kind?: string): T[];
-export function summarizeProcurement(suppliers?: Array<Record<string, unknown>>, purchaseOrders?: Array<Record<string, unknown>>): {
+export function filterProcurementRows<T>(rows?: T[], filters?: Record<string, unknown>, kind?: string): T[];
+export function summarizeProcurement(suppliers?: object[], purchaseOrders?: object[]): {
   activeSuppliers: number; supplierCount: number; purchaseOrderCount: number;
-  draftCount: number; submittedCount: number; approvedCount: number; totalOpenValue: number;
+  draftCount: number; submittedCount: number; approvedCount: number;
+  openCurrencyCount: number; openValueCurrency: string; totalOpenValue: number | null;
+  openValueByCurrency: Record<string, number>;
 };

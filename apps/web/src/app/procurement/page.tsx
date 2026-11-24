@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
+import Link from "next/link";
+
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   buildGoodsReceiptPayload,
@@ -239,6 +241,14 @@ export default function ProcurementSupplierOperationsPage() {
   const [performanceLoading, setPerformanceLoading] = useState(false);
 
   const summary = useMemo(() => summarizeProcurement(suppliers, purchaseOrders), [suppliers, purchaseOrders]);
+  const openValueLabel = summary.openCurrencyCount === 1
+    ? money(summary.totalOpenValue, summary.openValueCurrency)
+    : summary.openCurrencyCount > 1 ? "Multi-currency" : "—";
+  const openValueDetail = summary.openCurrencyCount > 1
+    ? summary.openCurrencyCount + " currencies · totals are not added or FX-converted"
+    : summary.openCurrencyCount === 1
+      ? "Server-calculated total in " + summary.openValueCurrency
+      : "No draft, submitted or approved PO value loaded";
   const visibleSuppliers = useMemo(
     () => filterProcurementRows(suppliers, { search: supplierSearch, status: supplierStatus }, "suppliers") as Supplier[],
     [suppliers, supplierSearch, supplierStatus],
@@ -561,7 +571,7 @@ export default function ProcurementSupplierOperationsPage() {
   const performanceQuality = object(performance?.quality);
   const qualityEvents = Array.isArray(performanceQuality.evidence) ? performanceQuality.evidence as Array<Record<string, unknown>> : [];
   const qualityDefects = Array.isArray(performanceQuality.by_defect) ? performanceQuality.by_defect as Array<Record<string, unknown>> : [];
-  const quantityRows = Array.isArray(performance?.quantities_by_unit) ? performance?.quantities_by_unit : [];
+  const quantityRows = performance?.quantities_by_unit ?? [];
   const deliveryExceptions = Array.isArray(performance?.delivery_exceptions) ? performance?.delivery_exceptions : [];
 
   if (status !== "connected") {
@@ -675,7 +685,7 @@ export default function ProcurementSupplierOperationsPage() {
                     <tbody>
                       {visibleOrders.map((po) => (
                         <tr key={po.id} className={"cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 " + (po.id === selectedPoId ? "bg-blue-50/70" : "")}
-                          onClick={() => void openPurchaseOrder(po.id)}>
+                          onClick={() => setSelectedPoId(po.id)}>
                           <td className="py-3 pr-3">
                             <p className="font-bold text-slate-950">{po.po_number}</p>
                             <p className="mt-0.5 text-[11px] text-slate-500">{po.supplier_code} · {po.supplier_name}</p>
@@ -752,7 +762,7 @@ export default function ProcurementSupplierOperationsPage() {
                     {poDetail.status === "SUBMITTED" && canApproveOrders ? <button type="button" className={secondaryButton} disabled={busy} onClick={() => void transitionPurchaseOrder("REJECTED")}>Reject</button> : null}
                     {["DRAFT", "SUBMITTED"].includes(poDetail.status) && canWriteOrders ? <button type="button" className={dangerButton} disabled={busy} onClick={() => void transitionPurchaseOrder("CANCELLED")}>Cancel PO</button> : null}
                   </div>
-                  {(["SUBMITTED", "APPROVED", "REJECTED", "CANCELLED"].includes(poDetail.status)) && (poDetail.status === "SUBMITTED" ? canApproveOrders : canWriteOrders || canApproveOrders) ? (
+                  {((poDetail.status === "SUBMITTED" && (canApproveOrders || canWriteOrders)) || (poDetail.status === "DRAFT" && canWriteOrders)) ? (
                     <Field label="Decision / cancellation reason" hint="Required for rejection and cancellation; optional for submission and approval.">
                       <textarea value={transitionReason} onChange={(event) => setTransitionReason(event.target.value)} rows={2} maxLength={2000} className={inputClass} placeholder="Add a concise operational reason…" />
                     </Field>

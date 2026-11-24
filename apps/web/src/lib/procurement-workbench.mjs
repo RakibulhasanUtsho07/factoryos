@@ -301,6 +301,15 @@ export function summarizeProcurement(suppliers = [], purchaseOrders = []) {
   const supplierRows = Array.isArray(suppliers) ? suppliers : [];
   const poRows = Array.isArray(purchaseOrders) ? purchaseOrders : [];
   const statusCount = (status) => poRows.filter((row) => String(row.status ?? "").toUpperCase() === status).length;
+  const openValueByCurrency = {};
+  for (const row of poRows) {
+    if (!["DRAFT", "SUBMITTED", "APPROVED"].includes(String(row.status ?? "").toUpperCase())) continue;
+    const currency = clean(row.currency).toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) continue;
+    const amount = Number(row.total_amount);
+    if (Number.isFinite(amount)) openValueByCurrency[currency] = (openValueByCurrency[currency] ?? 0) + amount;
+  }
+  const currencies = Object.keys(openValueByCurrency);
   return {
     activeSuppliers: supplierRows.filter((row) => String(row.status ?? "").toUpperCase() === "ACTIVE").length,
     supplierCount: supplierRows.length,
@@ -308,7 +317,9 @@ export function summarizeProcurement(suppliers = [], purchaseOrders = []) {
     draftCount: statusCount("DRAFT"),
     submittedCount: statusCount("SUBMITTED"),
     approvedCount: statusCount("APPROVED"),
-    totalOpenValue: poRows.filter((row) => ["DRAFT", "SUBMITTED", "APPROVED"].includes(String(row.status ?? "").toUpperCase()))
-      .reduce((sum, row) => sum + (Number.isFinite(Number(row.total_amount)) ? Number(row.total_amount) : 0), 0),
+    openCurrencyCount: currencies.length,
+    openValueCurrency: currencies.length === 1 ? currencies[0] : "",
+    totalOpenValue: currencies.length === 1 ? openValueByCurrency[currencies[0]] : null,
+    openValueByCurrency,
   };
 }
