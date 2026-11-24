@@ -212,7 +212,7 @@ export function buildSaasProviderCostEventPayload(input = {}) {
   };
 }
 export function buildSaasProviderReconciliationPayload(input = {}) {
-  const selectedPeriod = period(input.period_start, input.period_end, 366);
+  const selectedPeriod = period(input.period_start, input.period_end, 35);
   const provider_code = text(input.provider_code, "provider_code", 60);
   if (!PROVIDER.test(provider_code)) throw new Error("provider_code has an invalid format.");
   return {
