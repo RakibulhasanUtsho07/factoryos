@@ -24,7 +24,7 @@ test("normalizes inbox item envelopes and safely handles invalid responses", () 
 test("builds bounded status and page-size query strings", () => {
   assert.equal(buildOperationalNotificationInboxQuery({ limit: 25 }), "?limit=25");
   assert.equal(buildOperationalNotificationInboxQuery({ limit: 200, status: "UNREAD" }), "?limit=200&status=UNREAD");
-  assert.throws(() => buildOperationalNotificationInboxQuery({ limit: 201 }), /between 1 and 200/);
+  assert.throws(() => buildOperationalNotificationInboxQuery({ limit: 201 }), /from 1 to 200/);
   assert.throws(() => buildOperationalNotificationInboxQuery({ status: "DELETED" }), /UNREAD or ACKNOWLEDGED/);
 });
 
