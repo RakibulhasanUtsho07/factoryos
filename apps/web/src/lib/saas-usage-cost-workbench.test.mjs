@@ -56,6 +56,7 @@ test("creates effective-dated meter rates with supported metric and currency", (
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, metric_code: "UNKNOWN" }), /metric_code/);
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, currency: "bdt" }), /currency/);
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, rate_version: 0 }), /rate_version/);
+  assert.throws(() => buildSaasRateCardPayload({ ...rateBase, rate_version: 1000001 }), /rate_version/);
   assert.throws(() => buildSaasRateCardPayload({ ...rateBase, rate_minor_per_block: 1.5 }), /minor currency/);
 });
 
@@ -128,6 +129,10 @@ test("usage invoice reconciliation enforces 35-day limit and non-negative minor 
     invoice_reference: "INV", reconciliation_version: 1, period_start: "2026-11-01", period_end: "2026-11-02",
     currency: "BDT", invoiced_amount_minor: -1, idempotency_key: "recon-negative",
   }), /minor currency/);
+  assert.throws(() => buildSaasUsageReconciliationPayload({
+    invoice_reference: "INV", reconciliation_version: 1000001, period_start: "2026-11-01", period_end: "2026-11-02",
+    currency: "BDT", invoiced_amount_minor: 1, idempotency_key: "recon-version-over",
+  }), /reconciliation_version/);
 });
 
 test("budget creation supports tenant scope and optional filters", () => {
@@ -153,6 +158,8 @@ test("budget policies validate anomaly signal bounds and filter formats", () => 
   assert.throws(() => buildSaasBudgetPayload({ ...budgetBase, anomaly_min_events: 2 }), /anomaly_min_events/);
   assert.throws(() => buildSaasBudgetPayload({ ...budgetBase, capability_code: "Bad Capability" }), /capability_code/);
   assert.throws(() => buildSaasBudgetPayload({ ...budgetBase, currency: "BDT!" }), /currency/);
+  assert.throws(() => buildSaasBudgetPayload({ ...budgetBase, capability_code: "Bad Capability" }), /capability_code/);
+  assert.throws(() => buildSaasBudgetPayload({ ...budgetBase, policy_version: 1000001 }), /policy_version/);
 });
 
 test("workload control permits only explicit non-critical AI workload classes", () => {
