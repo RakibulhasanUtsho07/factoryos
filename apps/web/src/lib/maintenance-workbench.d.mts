@@ -48,8 +48,8 @@ export function buildMaintenanceSparePartPayload(input?: Record<string, unknown>
 export function buildMaintenanceSparePartIssuePayload(input?: Record<string, unknown>): {
   expected_version: number; quantity: number; reason: string;
 };
-export function filterMaintenanceRows<T extends MaintenanceRow>(rows?: T[], search?: string, status?: string): T[];
+export function filterMaintenanceRows<T extends Record<string, unknown>>(rows?: T[], search?: string, status?: string): T[];
 export function summarizeMaintenanceWorkspace(input?: {
-  assets?: MaintenanceRow[]; plans?: MaintenanceRow[]; workOrders?: MaintenanceRow[];
+  assets?: Array<Record<string, unknown>>; plans?: Array<Record<string, unknown>>; workOrders?: Array<Record<string, unknown>>;
 }): Record<string, number>;
 export function validateMaintenanceIdempotencyKey(value: unknown): string;
