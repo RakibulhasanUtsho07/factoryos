@@ -3992,11 +3992,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       traceability_unit_id: string; quantity_on_hand: string; quantity_reserved: string;
     }>(
       "SELECT traceability_unit_id::text AS traceability_unit_id, " +
-      "quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
-      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "SUM(quantity_on_hand)::numeric(18,4)::text AS quantity_on_hand, " +
+      "SUM(quantity_reserved)::numeric(18,4)::text AS quantity_reserved " +
       "FROM inventory_traceability_location_balances " +
       "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=ANY($4::uuid[]) " +
-      "ORDER BY traceability_unit_id",
+      "GROUP BY traceability_unit_id ORDER BY traceability_unit_id",
       [tenantId, factoryId, itemId, [heldLotId, siblingLotId]],
     );
     expect(lotBalances.rows).toHaveLength(2);
