@@ -684,9 +684,10 @@ export default function SaasReleaseControlPlanePage() {
                           {canProfileControl && profileTransitionOptions.length > 0 ? (
                             <form className="rounded-xl border border-slate-200 p-3" onSubmit={submitProfileTransition}>
                               <h4 className="text-xs font-bold text-slate-900">Profile lifecycle transition</h4>
+                              {selectedProfileStatus === "MIGRATING" ? <p className="mt-1 text-[11px] leading-5 text-amber-800">Complete migration is a control-plane attestation. Verify the provider-side migration and evidence independently before recording completion.</p> : null}
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                 <Field label="Action"><select className={INPUT} value={effectiveProfileTransitionAction} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, action: event.currentTarget.value }))}>{profileTransitionOptions.map((action) => <option key={action} value={action}>{action.replaceAll("_", " ")}</option>)}</select></Field>
-                                {profileTransitionDraft.action === "START_MIGRATION" ? <>
+                                {effectiveProfileTransitionAction === "START_MIGRATION" ? <>
                                   <Field label="Target topology"><select className={INPUT} value={profileTransitionDraft.target_profile_type} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, target_profile_type: event.currentTarget.value as ProfileType }))}>{(["SHARED_SAAS", "SINGLE_TENANT", "DEDICATED_VPC", "HYBRID_EDGE_CLOUD"] as const).map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>
                                   <Field label="Target deployment reference"><input className={INPUT} value={profileTransitionDraft.target_deployment_reference} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, target_deployment_reference: event.currentTarget.value }))} maxLength={200} /></Field>
                                   <Field label="Target region"><input className={INPUT} value={profileTransitionDraft.target_region_code} onChange={(event) => setProfileTransitionDraft((current) => ({ ...current, target_region_code: event.currentTarget.value }))} maxLength={64} /></Field>
