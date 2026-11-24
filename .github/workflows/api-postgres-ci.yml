@@ -959,6 +959,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/212_quality_rework_genealogy_link_guard.sql
+          # Migration 245 scopes reservation ISSUE guards to the exact held LOT/SERIAL.
+          # The legacy 211 replay above restores shipment-only scoping, so reapply 245 last.
+          echo "Reapplying reservation-aware quality-hold issue guard after legacy quality guard replays"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/245_wms_quality_hold_reservation_issue_scope.sql
 
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
