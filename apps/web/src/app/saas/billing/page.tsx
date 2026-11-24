@@ -174,14 +174,6 @@ export default function SaasCommercialBillingWorkbenchPage() {
   useEffect(() => {
     let live = true;
     if (!connected) {
-      setPlans([]);
-      setSubscription(null);
-      setSubscriptionEvents([]);
-      setEntitlementMode(null);
-      setBillingAccount(null);
-      setBillingCloses([]);
-      setSelectedCloseId("");
-      setLoadErrors({});
       return () => { live = false; };
     }
     setLoading(true);
