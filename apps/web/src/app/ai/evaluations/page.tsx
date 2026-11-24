@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
+import type { AiOperationalSeries } from "@/lib/ai-operational-evaluation.mjs";
 import {
   buildAiEvaluationPolicyPayload,
   buildAiForecastReconciliationPayload,
@@ -139,7 +140,7 @@ export default function AiOperationalEvaluationPage() {
   const [forecastDraft, setForecastDraft] = useState<ForecastDraft>(initialForecast());
 
   const loaded = sessionStatus === "connected" && Boolean(activeFactoryId) && loadedFactory === activeFactoryId;
-  const accuracyRows = useMemo(() => loaded ? rows(accuracy, "series") : [], [accuracy, loaded]);
+  const accuracyRows = useMemo(() => loaded ? rows(accuracy, "series") as unknown as AiOperationalSeries[] : [], [accuracy, loaded]);
   const visibleSeries = useMemo(
     () => filterAiOperationalSeries(accuracyRows, { domain: domainFilter, metric_key: metricFilter, model_version: versionFilter }) as Row[],
     [accuracyRows, domainFilter, metricFilter, versionFilter],
@@ -358,7 +359,7 @@ export default function AiOperationalEvaluationPage() {
                     </div>
                   )}
                   {currentComparison.comparable ? <div className="mt-4 rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold text-slate-900">Candidate minus baseline</p><div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4"><div><p className="text-[10px] text-slate-500">MAE Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanAbsoluteError)}</p></div><div><p className="text-[10px] text-slate-500">MAPE Δ</p><p className="mt-1 font-semibold">{delta.meanAbsolutePercentageError === null ? "—" : percent(delta.meanAbsolutePercentageError)}</p></div><div><p className="text-[10px] text-slate-500">Signed error Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanSignedError)}</p></div><div><p className="text-[10px] text-slate-500">Within tolerance Δ</p><p className="mt-1 font-semibold">{percent(delta.withinToleranceRate)}</p></div></div></div> : null}
-                  {comparison.policyEvaluation ? <div className="mt-4 rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold text-slate-900">Policy evaluation · {display(policyResult.policyKey)} {display(policyResult.policyVersion)}</p><p className="mt-1 text-[10px] text-slate-500">Minimum samples per evaluated model: {countValue(policyResult.minimumSamples)}</p></div><Status value={policyResult.status} /></div><div className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(checks).map(([key, value]) => <div key={key} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-2 text-xs"><span className="text-slate-700">{key.replaceAll(/([A-Z])/g, " $1")}</span><Status value={value === null ? "INSUFFICIENT_DATA" : value ? "PASS" : "FAIL"} /></div>)}</div></div> : null}
+                  {currentComparison.policyEvaluation ? <div className="mt-4 rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold text-slate-900">Policy evaluation · {display(policyResult.policyKey)} {display(policyResult.policyVersion)}</p><p className="mt-1 text-[10px] text-slate-500">Minimum samples per evaluated model: {countValue(policyResult.minimumSamples)}</p></div><Status value={policyResult.status} /></div><div className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(checks).map(([key, value]) => <div key={key} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-2 text-xs"><span className="text-slate-700">{key.replaceAll(/([A-Z])/g, " $1")}</span><Status value={value === null ? "INSUFFICIENT_DATA" : value ? "PASS" : "FAIL"} /></div>)}</div></div> : null}
                   <p className="mt-3 text-[10px] leading-4 text-slate-500">Model comparison is an evidence view. It does not approve a release, change a production model, or authorize operational actions.</p>
                 </div>
               ) : null}
