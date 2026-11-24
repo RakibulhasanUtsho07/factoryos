@@ -3459,7 +3459,7 @@ export class InventoryReservationService {
            SELECT 1 FROM quality_holds qh
            WHERE qh.tenant_id=tu.tenant_id AND qh.factory_id=tu.factory_id
              AND qh.status='ACTIVE'
-             AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
+             AND (qh.traceability_unit_id=tu.id OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=tu.inventory_item_id))
          )
        ORDER BY a.allocation_sequence ASC FOR UPDATE OF a, tu`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],

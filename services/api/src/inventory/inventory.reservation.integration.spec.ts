@@ -3971,6 +3971,32 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     expect(afterHoldReservation).toMatchObject({ status: 'RESERVED', replayed: false });
 
+    // A unit-scoped hold on the earlier LOT must not strand reservations on its
+    // same-item sibling. Both the pre-hold and post-hold sibling reservations remain
+    // consumable; only an item-scoped hold is allowed to block every LOT.
+    const beforeHoldConsumption = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, beforeHoldReservation.id,
+      { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto,
+      'wms-fefo-quality-before-hold-consume-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(beforeHoldConsumption).toMatchObject({
+      status: 'CONSUMED',
+      consumed_quantity_this_request: '1.0000',
+    });
+    const afterHoldConsumption = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, afterHoldReservation.id,
+      { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto,
+      'wms-fefo-quality-after-hold-consume-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(afterHoldConsumption).toMatchObject({
+      status: 'CONSUMED',
+      consumed_quantity_this_request: '1.0000',
+    });
+
     const allocations = await adminPool.query<{
       reservation_id: string; traceability_unit_id: string; allocation_sequence: number;
       allocated_quantity: string; consumed_quantity: string;
@@ -3986,7 +4012,37 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(allocations.rows).toHaveLength(2);
     expect(allocations.rows.every((row) => row.traceability_unit_id === siblingLotId)).toBe(true);
     expect(allocations.rows.every((row) => row.allocation_sequence === 1 && row.allocated_quantity === '1.0000')).toBe(true);
-    expect(allocations.rows.every((row) => row.consumed_quantity === '0.0000')).toBe(true);
+    expect(allocations.rows.every((row) => row.consumed_quantity === '1.0000')).toBe(true);
+
+    const consumptionAllocations = await adminPool.query<{
+      reservation_id: string;
+      traceability_unit_id: string;
+      allocation_sequence: string;
+      quantity: string;
+    }>(
+      "SELECT c.reservation_id::text AS reservation_id, ca.traceability_unit_id::text AS traceability_unit_id, " +
+      "ca.allocation_sequence::text AS allocation_sequence, ca.quantity::numeric(18,4)::text AS quantity " +
+      "FROM inventory_reservation_consumption_traceability_allocations ca " +
+      "JOIN inventory_reservation_consumptions c ON c.id=ca.consumption_id " +
+      "WHERE c.tenant_id=$1 AND c.factory_id=$2 AND c.item_id=$3 AND c.reservation_id=ANY($4::uuid[]) " +
+      "ORDER BY c.reservation_id, ca.allocation_sequence",
+      [tenantId, factoryId, itemId, [beforeHoldReservation.id, afterHoldReservation.id]],
+    );
+    expect(consumptionAllocations.rows).toHaveLength(2);
+    expect(consumptionAllocations.rows).toEqual(expect.arrayContaining([
+      {
+        reservation_id: beforeHoldReservation.id,
+        traceability_unit_id: siblingLotId,
+        allocation_sequence: '1',
+        quantity: '1.0000',
+      },
+      {
+        reservation_id: afterHoldReservation.id,
+        traceability_unit_id: siblingLotId,
+        allocation_sequence: '1',
+        quantity: '1.0000',
+      },
+    ]));
 
     const lotBalances = await adminPool.query<{
       traceability_unit_id: string; quantity_on_hand: string; quantity_reserved: string;
@@ -4002,7 +4058,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(lotBalances.rows).toHaveLength(2);
     expect(lotBalances.rows).toEqual(expect.arrayContaining([
       { traceability_unit_id: heldLotId, quantity_on_hand: '2.0000', quantity_reserved: '0.0000' },
-      { traceability_unit_id: siblingLotId, quantity_on_hand: '2.0000', quantity_reserved: '2.0000' },
+      { traceability_unit_id: siblingLotId, quantity_on_hand: '0.0000', quantity_reserved: '0.0000' },
     ]));
 
     const binBalances = await adminPool.query<{
@@ -4018,7 +4074,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(binBalances.rows).toHaveLength(2);
     expect(binBalances.rows).toEqual(expect.arrayContaining([
       { location_id: heldBin.id, quantity_on_hand: '2.0000', quantity_reserved: '0.0000' },
-      { location_id: siblingBin.id, quantity_on_hand: '2.0000', quantity_reserved: '2.0000' },
+      { location_id: siblingBin.id, quantity_on_hand: '0.0000', quantity_reserved: '0.0000' },
     ]));
 
     const aggregate = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
@@ -4027,7 +4083,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       "FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3",
       [tenantId, factoryId, itemId],
     );
-    expect(aggregate.rows[0]).toEqual({ quantity_on_hand: '4.0000', quantity_reserved: '2.0000' });
+    expect(aggregate.rows[0]).toEqual({ quantity_on_hand: '2.0000', quantity_reserved: '0.0000' });
 
     const heldLotAllocationCount = await adminPool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM inventory_reservation_traceability_allocations " +
