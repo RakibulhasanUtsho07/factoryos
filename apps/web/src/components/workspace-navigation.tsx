@@ -35,6 +35,7 @@ const navigation = [
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
   { href: "/wms/rfid", label: "RFID HIL" },
   { href: "/ai/agents", label: "AI Agents" },
+  { href: "/ai/evaluations", label: "AI Model Evaluation" },
   { href: "/ai/studio", label: "AI Agent Studio" },
   { href: "/saas/usage", label: "SaaS Usage & Cost" },
   { href: "/saas/billing", label: "SaaS Billing" },
