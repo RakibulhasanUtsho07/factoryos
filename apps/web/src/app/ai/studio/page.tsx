@@ -167,7 +167,6 @@ export default function AiAgentStudioGovernancePage() {
     return createAiAgentStudioClient((path, options = {}) => request(path, options));
   }
 
-  const selectedDraft = drafts.find((draft) => String(draft.draftId ?? draft.draft_id ?? "") === selectedDraftId);
   const visibleDraftDetail = draftDetail && String(draftDetail.draftId ?? draftDetail.draft_id ?? "") === selectedDraftId ? draftDetail : null;
   const visibleAgents = loadedFactoryId === activeFactoryId ? agents : [];
   const visibleTemplates = loadedFactoryId === activeFactoryId ? templates : [];
@@ -226,7 +225,7 @@ export default function AiAgentStudioGovernancePage() {
     let cancelled = false;
     if (!connected || !canDraftRead || !selectedDraftId) return () => { cancelled = true; };
     const timer = window.setTimeout(() => {
-      void api().getDraft(selectedDraftId).then((result) => {
+      void createAiAgentStudioClient((path, options = {}) => request(path, options)).getDraft(selectedDraftId).then((result) => {
         if (!cancelled) setDraftDetail(record(result));
       }).catch((cause) => {
         if (!cancelled) setNotice({ tone: "error", message: messageOf(cause) });
@@ -239,7 +238,7 @@ export default function AiAgentStudioGovernancePage() {
     let cancelled = false;
     if (!connected || !canAgentsRead || !selectedAgentId) return () => { cancelled = true; };
     const timer = window.setTimeout(() => {
-      const apiClient = api();
+      const apiClient = createAiAgentStudioClient((path, options = {}) => request(path, options));
       void Promise.allSettled([apiClient.listEvaluationCases(selectedAgentId), apiClient.getEvaluationReport(selectedAgentId)]).then((results) => {
         if (cancelled) return;
         if (results[0].status === "fulfilled") {
