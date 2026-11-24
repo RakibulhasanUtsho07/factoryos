@@ -72,6 +72,10 @@ function safeManifest(value: unknown): Array<[string, string]> {
   }
   return fields;
 }
+function reviewedFieldCount(value: unknown): number {
+  const fields = row(value).reviewed_fields;
+  return Array.isArray(fields) ? fields.length : 0;
+}
 function safePrivacy(value: unknown): Array<[string, string]> {
   const assessment = row(value); const fields: Array<[string, string]> = [];
   for (const key of ["data_minimization_status", "residual_risk", "assessed_at"]) if (assessment[key] !== undefined) fields.push([key, textOf(assessment[key])]);
@@ -375,7 +379,7 @@ export default function SaasSandboxGovernancePage() {
             </Panel>
             <Panel title="Independent privacy reviewer" subtitle="Select a masked request. Requesters cannot approve their own dataset; backend IAM and tenant checks remain authoritative.">
               {!selected || selectedMode !== "MASKED" ? <Empty>Select a masked dataset from the approval queue.</Empty> : requesterSelf ? <Empty>This environment was requested by your user. A different authorized reviewer must approve it.</Empty> : !canApprove ? <Empty>You do not have masked-data approval permission.</Empty> : !canReview ? <Empty>The current environment status does not accept a new approval. Refresh and inspect the latest approval expiry.</Empty> : <form className="space-y-3" onSubmit={submitApproval}>
-                <div className="rounded-lg bg-slate-50 p-3"><p className="text-sm font-bold text-slate-900">{textOf(selected.environmentCode)}</p><p className="mt-1 text-xs text-slate-600">{textOf(selected.displayName)}</p><p className="mt-2 text-[10px] text-slate-500">Residual risk: {textOf(row(selected.privacyAssessment).residual_risk)} · Fields reviewed: {Array.isArray(row(selected.privacyAssessment).reviewed_fields) ? row(selected.privacyAssessment).reviewed_fields.length : 0}</p></div>
+                <div className="rounded-lg bg-slate-50 p-3"><p className="text-sm font-bold text-slate-900">{textOf(selected.environmentCode)}</p><p className="mt-1 text-xs text-slate-600">{textOf(selected.displayName)}</p><p className="mt-2 text-[10px] text-slate-500">Residual risk: {textOf(row(selected.privacyAssessment).residual_risk)} · Fields reviewed: {reviewedFieldCount(selected.privacyAssessment)}</p></div>
                 <Field label="Approval expiry"><input className={INPUT} type="datetime-local" required value={approval.approval_expires_at} onChange={(event) => setApproval((current) => ({ ...current, approval_expires_at: event.currentTarget.value }))} /></Field>
                 <Field label="Reviewer reason"><textarea className={AREA} required maxLength={1000} value={approval.reason} onChange={(event) => setApproval((current) => ({ ...current, reason: event.currentTarget.value }))} placeholder="Independent privacy review outcome" /></Field>
                 <button type="submit" className={PRIMARY} disabled={busy}>{busy ? "Saving approval..." : "Approve masked data"}</button>
