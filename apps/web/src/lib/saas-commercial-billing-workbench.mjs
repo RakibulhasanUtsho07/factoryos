@@ -138,9 +138,11 @@ export function buildSaasBillingAccountPayload(input = {}) {
   if (collectionMethod === "charge_automatically" && dueDays !== null) throw new Error("days_until_due must be omitted for automatic collection.");
   if (automaticTax && !["exclusive", "inclusive"].includes(taxBehavior)) throw new Error("tax_behavior is required when automatic tax is enabled.");
   if (!automaticTax && taxBehavior) throw new Error("tax_behavior is only valid when automatic tax is enabled.");
+  const providerCustomerId = text(input.provider_customer_id, "provider_customer_id", 120);
+  if (!/^cus_[A-Za-z0-9]+$/.test(providerCustomerId)) throw new Error("provider_customer_id must be a Stripe customer ID.");
   return {
     provider_code: "stripe",
-    provider_customer_id: text(input.provider_customer_id, "provider_customer_id", 120),
+    provider_customer_id: providerCustomerId,
     currency: currency(input.currency),
     collection_method: collectionMethod,
     ...(dueDays === null ? {} : { days_until_due: dueDays }),
