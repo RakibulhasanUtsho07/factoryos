@@ -21,6 +21,7 @@ const navigation = [
   { href: "/research", label: "Research & Evidence" },
   { href: "/should-cost", label: "Should-Cost Governance" },
   { href: "/maintenance", label: "Maintenance & Assets" },
+  { href: "/quality", label: "Quality Management" },
   { href: "/workforce", label: "Workforce Operations" },
   { href: "/operations/recovery", label: "Operations Recovery" },
   { href: "/integrations", label: "Integration Reliability" },
