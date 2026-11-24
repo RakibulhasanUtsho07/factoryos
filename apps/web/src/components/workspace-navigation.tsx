@@ -34,6 +34,7 @@ const navigation = [
   { href: "/ai/agents", label: "AI Agents" },
   { href: "/ai/studio", label: "AI Agent Studio" },
   { href: "/saas/usage", label: "SaaS Usage & Cost" },
+  { href: "/admin/governance", label: "Identity & Governance" },
 ] as const;
 
 export function WorkspaceNavigation() {
