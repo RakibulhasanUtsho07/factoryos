@@ -76,7 +76,7 @@ export function normalizePhysicalRunDetail(value) {
   return {
     run: record(source.run),
     events: Array.isArray(source.events) ? source.events : [],
-    idempotent: source.idempotent === true,
+    idempotent: root.idempotent === true || source.idempotent === true,
   };
 }
 export function summarizeReleaseRollouts(input) {
