@@ -41,10 +41,10 @@ function finiteNumber(value, field) {
 }
 function decimal(value, field, minimum = 0.000001, maximum = 1_000_000_000_000) {
   const n = finiteNumber(value, field);
-  if (n < minimum || n > maximum) throw new Error(field + " is outside the supported range.");
   const raw = String(value).toLowerCase();
   const fraction = raw.includes("e") ? "" : raw.split(".")[1] ?? "";
   if (fraction.length > 6) throw new Error(field + " supports at most 6 decimal places.");
+  if (n < minimum || n > maximum) throw new Error(field + " is outside the supported range.");
   return n;
 }
 function minor(value, field, minimum = 0, maximum = 9_000_000_000_000_000) {
