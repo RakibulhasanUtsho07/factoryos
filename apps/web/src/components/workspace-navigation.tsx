@@ -28,6 +28,7 @@ const navigation = [
   { href: "/notifications", label: "Notification Inbox" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
+  { href: "/orders", label: "Sales Orders" },
   { href: "/uom", label: "UoM Governance" },
   { href: "/wms", label: "Warehouse" },
   { href: "/wms/browser-acceptance", label: "Browser HIL" },
