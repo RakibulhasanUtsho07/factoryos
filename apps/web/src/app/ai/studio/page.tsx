@@ -307,6 +307,7 @@ export default function AiAgentStudioGovernancePage() {
     if (item.id === "EVALUATION") return canAgentsRead || canAgentsWrite;
     return canPublish || canPromote || canRollback;
   });
+  const activeTab = tabs.some((item) => item.id === tab) ? tab : tabs[0]?.id ?? "OVERVIEW";
 
   if (!connected) return <main className="space-y-5 p-4 sm:p-6">
     <header className="rounded-2xl bg-slate-950 px-5 py-6 text-white">
@@ -359,10 +360,10 @@ export default function AiAgentStudioGovernancePage() {
     </div> : null}
 
     <nav className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1" aria-label="AI Agent Studio sections">
-      {tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={"min-w-max rounded-lg px-3 py-2 text-xs font-semibold " + (tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100")}>{item.label}</button>)}
+      {tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} aria-current={activeTab === item.id ? "page" : undefined} className={"min-w-max rounded-lg px-3 py-2 text-xs font-semibold " + (tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100")}>{item.label}</button>)}
     </nav>
 
-    {tab === "OVERVIEW" ? <div className="grid gap-4 xl:grid-cols-2">
+    {activeTab === "OVERVIEW" ? <div className="grid gap-4 xl:grid-cols-2">
       <Panel title="Governed agent lifecycle" subtitle="Each stage has separate permissions and API-side eligibility checks. Draft approval does not create an agent definition or grant tools.">
         <ol className="space-y-3">
           {[
@@ -409,7 +410,7 @@ export default function AiAgentStudioGovernancePage() {
       </Panel>
     </div> : null}
 
-    {tab === "DRAFTS" ? <div className="space-y-4">
+    {activeTab === "DRAFTS" ? <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Template catalogue" subtitle="Templates generate reviewable drafts only. They do not grant tool entitlements or issue action tokens.">
           {canDraftRead && templates.length ? <div className="space-y-2">
@@ -480,7 +481,7 @@ export default function AiAgentStudioGovernancePage() {
       </div>
     </div> : null}
 
-    {tab === "SIMULATION" ? <div className="space-y-4">
+    {activeTab === "SIMULATION" ? <div className="space-y-4">
       <Panel title="Create isolated sandbox simulation" subtitle="Use a catalogue-backed agent specification. Every tool id, version and action type must match the registered tool definition. Responses are simulation fixtures, not tool invocations.">
         {canAgentsWrite ? <form className="space-y-3" onSubmit={(event) => onSubmit(event, "Sandbox creation", () => api().createSandbox(buildAiStudioSandboxPayload({
           name: sandboxName, agent_spec: agentSpecJson, plan: planStepJson,
@@ -570,7 +571,7 @@ export default function AiAgentStudioGovernancePage() {
       </Panel>
     </div> : null}
 
-    {tab === "POLICY" ? <div className="grid gap-4 xl:grid-cols-2">
+    {activeTab === "POLICY" ? <div className="grid gap-4 xl:grid-cols-2">
       <Panel title="Historical policy simulation" subtitle="The backend runs each historical event through the PolicyService and persists a simulation record. Every event needs an expected outcome for complete expectations.">
         <p className="mb-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">This evaluates policy evidence only. It does not authorize or execute the historical action.</p>
         <Field label="Sandbox UUID"><input className={INPUT} value={sandboxId} onChange={(event) => setSandboxId(event.target.value)} /></Field>
@@ -609,7 +610,7 @@ export default function AiAgentStudioGovernancePage() {
       </Panel>
     </div> : null}
 
-    {tab === "EVALUATION" ? <div className="space-y-4">
+    {activeTab === "EVALUATION" ? <div className="space-y-4">
       <Panel title="Select catalogue definition" subtitle="Evaluation cases are bound to an immutable Agent Catalogue definition.">
         <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
           <Field label="Agent definition"><select className={INPUT} value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
@@ -663,7 +664,7 @@ export default function AiAgentStudioGovernancePage() {
       </div>
     </div> : null}
 
-    {tab === "RELEASE" ? <div className="space-y-4">
+    {activeTab === "RELEASE" ? <div className="space-y-4">
       <Panel title="Request publication" subtitle="This creates a controlled request only; it does not promote or activate an agent. The API validates all source IDs and evidence in this factory.">
         {canPublish ? <form className="space-y-3" onSubmit={(event) => onSubmit(event, "Publication request", () => api().requestPublication(buildAiStudioPublishRequestPayload({
           agent_definition_id: publishAgentId, sandbox_id: publishSandboxId, simulation_run_id: publishRunId,
