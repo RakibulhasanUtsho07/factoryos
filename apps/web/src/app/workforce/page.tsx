@@ -162,6 +162,7 @@ function Table({ headers, children }: { headers: string[]; children: ReactNode }
 export default function WorkforceOperationsPage() {
   const { status: sessionStatus, activeFactoryId, snapshot, hasPermission, request } = useFactoryOsSession();
   const currentUserId = snapshot?.user.id ?? "";
+  const [tab, setTab] = useState<Tab>("PEOPLE");
 
   const permissions = {
     workersRead: hasPermission("workforce.workers.read"),
@@ -196,7 +197,6 @@ export default function WorkforceOperationsPage() {
       : tabAccess.PRODUCTIVITY ? "PRODUCTIVITY" : "SELF";
   const visibleTab = tabAccess[tab] ? tab : defaultTab;
 
-  const [tab, setTab] = useState<Tab>("PEOPLE");
   const [loadedFactoryId, setLoadedFactoryId] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
