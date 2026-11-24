@@ -133,11 +133,11 @@ export default function AiOperationalEvaluationPage() {
     domain: "PLANNING", metric_key: "", baseline_model_version: "", candidate_model_version: "", policy_key: "",
   });
   const [comparison, setComparison] = useState<Row | null>(null);
+  const [comparisonFactoryId, setComparisonFactoryId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<PolicyDraft>(initialPolicy());
   const [policyOpen, setPolicyOpen] = useState(false);
   const [labelDraft, setLabelDraft] = useState<LabelDraft>(initialLabel());
   const [forecastDraft, setForecastDraft] = useState<ForecastDraft>(initialForecast());
-  const [latestWrite, setLatestWrite] = useState<Row | null>(null);
 
   const accuracyRows = rows(accuracy, "series");
   const visibleSeries = useMemo(
@@ -170,20 +170,14 @@ export default function AiOperationalEvaluationPage() {
   }, [sessionStatus, activeFactoryId, canRead, request, domainFilter, metricFilter, versionFilter, bins]);
 
   useEffect(() => {
-    if (sessionStatus === "connected" && activeFactoryId && canRead) void load();
-    else { setAccuracy(null); setCalibration(null); setPolicies([]); setLoadedFactory(""); }
+    if (sessionStatus !== "connected" || !activeFactoryId || !canRead) return;
+    void load();
   }, [sessionStatus, activeFactoryId, canRead, load]);
-
-  useEffect(() => {
-    setComparison(null);
-    setLatestWrite(null);
-  }, [activeFactoryId]);
 
   async function perform(action: () => Promise<unknown>, success: string) {
     setBusy(true); setError(""); setNotice("");
     try {
-      const result = await action();
-      setLatestWrite(record(result));
+      await action();
       await load();
       setNotice(success);
       return true;
@@ -202,6 +196,7 @@ export default function AiOperationalEvaluationPage() {
     try {
       const result = await request("/v2/ai/operational-evaluations/model-comparison" + query);
       setComparison(record(result));
+      setComparisonFactoryId(activeFactoryId);
       setNotice("Model comparison loaded for the last 90 days. Policy result is evidence only, not a deployment authorization.");
     } catch (cause) { setError(messageOf(cause)); }
     finally { setBusy(false); }
@@ -255,10 +250,11 @@ export default function AiOperationalEvaluationPage() {
   }
 
   const hasSession = sessionStatus === "connected" && Boolean(activeFactoryId);
-  const policyResult = record(comparison?.policyEvaluation);
-  const baseline = record(comparison?.baseline);
-  const candidate = record(comparison?.candidate);
-  const delta = record(comparison?.delta);
+  const currentComparison = comparisonFactoryId === activeFactoryId ? comparison : null;
+  const policyResult = record(currentComparison?.policyEvaluation);
+  const baseline = record(currentComparison?.baseline);
+  const candidate = record(currentComparison?.candidate);
+  const delta = record(currentComparison?.delta);
   const checks = record(policyResult.checks);
   const loaded = loadedFactory === activeFactoryId;
 
@@ -353,15 +349,15 @@ export default function AiOperationalEvaluationPage() {
                   <div className="flex items-end"><button type="submit" className={PRIMARY} disabled={busy}>Run comparison</button></div>
                 </form>
               </div>
-              {comparison ? (
+              {currentComparison ? (
                 <div className={PANEL}>
-                  <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-bold text-slate-950">90-day comparison result</h3><p className="mt-1 text-[10px] text-slate-500">{display(comparison.domain)} · {display(comparison.metricKey)}</p></div><Status value={comparison.comparisonMode} /></div>
-                  {!comparison.comparable ? <div className="mt-4"><Empty>Both model versions need eligible forecast evaluation samples before they can be compared.</Empty></div> : (
+                  <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-bold text-slate-950">90-day comparison result</h3><p className="mt-1 text-[10px] text-slate-500">{display(currentComparison.domain)} · {display(currentComparison.metricKey)}</p></div><Status value={currentComparison.comparisonMode} /></div>
+                  {!currentComparison.comparable ? <div className="mt-4"><Empty>Both model versions need eligible forecast evaluation samples before they can be compared.</Empty></div> : (
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       {[{ title: "Baseline", model: baseline }, { title: "Candidate", model: candidate }].map(({ title, model }) => <article key={title} className="rounded-xl border border-slate-200 p-3"><p className="text-xs font-bold text-slate-900">{title} · {display(model.modelVersion)}</p><div className="mt-3 grid grid-cols-2 gap-3 text-xs"><div><p className="text-[10px] text-slate-500">Samples</p><p className="mt-1 font-bold">{countValue(model.sampleCount)}</p></div><div><p className="text-[10px] text-slate-500">MAE</p><p className="mt-1 font-bold">{numberValue(model.meanAbsoluteError)}</p></div><div><p className="text-[10px] text-slate-500">MAPE</p><p className="mt-1 font-bold">{model.meanAbsolutePercentageError === null ? "—" : percent(model.meanAbsolutePercentageError)}</p></div><div><p className="text-[10px] text-slate-500">Within tolerance</p><p className="mt-1 font-bold">{percent(model.withinToleranceRate)}</p></div></div></article>)}
                     </div>
                   )}
-                  {comparison.comparable ? <div className="mt-4 rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold text-slate-900">Candidate minus baseline</p><div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4"><div><p className="text-[10px] text-slate-500">MAE Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanAbsoluteError)}</p></div><div><p className="text-[10px] text-slate-500">MAPE Δ</p><p className="mt-1 font-semibold">{delta.meanAbsolutePercentageError === null ? "—" : percent(delta.meanAbsolutePercentageError)}</p></div><div><p className="text-[10px] text-slate-500">Signed error Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanSignedError)}</p></div><div><p className="text-[10px] text-slate-500">Within tolerance Δ</p><p className="mt-1 font-semibold">{percent(delta.withinToleranceRate)}</p></div></div></div> : null}
+                  {currentComparison.comparable ? <div className="mt-4 rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold text-slate-900">Candidate minus baseline</p><div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4"><div><p className="text-[10px] text-slate-500">MAE Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanAbsoluteError)}</p></div><div><p className="text-[10px] text-slate-500">MAPE Δ</p><p className="mt-1 font-semibold">{delta.meanAbsolutePercentageError === null ? "—" : percent(delta.meanAbsolutePercentageError)}</p></div><div><p className="text-[10px] text-slate-500">Signed error Δ</p><p className="mt-1 font-semibold">{numberValue(delta.meanSignedError)}</p></div><div><p className="text-[10px] text-slate-500">Within tolerance Δ</p><p className="mt-1 font-semibold">{percent(delta.withinToleranceRate)}</p></div></div></div> : null}
                   {comparison.policyEvaluation ? <div className="mt-4 rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold text-slate-900">Policy evaluation · {display(policyResult.policyKey)} {display(policyResult.policyVersion)}</p><p className="mt-1 text-[10px] text-slate-500">Minimum samples per evaluated model: {countValue(policyResult.minimumSamples)}</p></div><Status value={policyResult.status} /></div><div className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(checks).map(([key, value]) => <div key={key} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-2 text-xs"><span className="text-slate-700">{key.replaceAll(/([A-Z])/g, " $1")}</span><Status value={value === null ? "INSUFFICIENT_DATA" : value ? "PASS" : "FAIL"} /></div>)}</div></div> : null}
                   <p className="mt-3 text-[10px] leading-4 text-slate-500">Model comparison is an evidence view. It does not approve a release, change a production model, or authorize operational actions.</p>
                 </div>
@@ -438,7 +434,6 @@ export default function AiOperationalEvaluationPage() {
         </>
       ) : null}
 
-      {latestWrite ? <section className={PANEL}><h2 className="text-xs font-bold text-slate-900">Latest write response</h2><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] leading-5 text-slate-100">{JSON.stringify(latestWrite, null, 2)}</pre></section> : null}
       <footer className="border-t border-slate-200 pt-4 text-[10px] leading-5 text-slate-500">Metrics and calibration summarize loaded factory data for a rolling 90-day window. A policy result with insufficient samples is not a pass. This workbench records evaluations and displays evidence; it does not promote models or authorize AI operational actions.</footer>
     </main>
   );
