@@ -25,6 +25,7 @@ const navigation = [
   { href: "/workforce", label: "Workforce Operations" },
   { href: "/operations/recovery", label: "Operations Recovery" },
   { href: "/integrations", label: "Integration Reliability" },
+  { href: "/edge/devices", label: "Edge Device Fleet" },
   { href: "/notifications", label: "Notification Inbox" },
   { href: "/mrp", label: "MRP Planning" },
   { href: "/products", label: "Product Engineering" },
