@@ -72,8 +72,8 @@ test("builds correctly scoped organization, factory, module and agent releases",
   assert.equal("factory_id" in org, false);
   const factory = buildCreateReleasePayload({ ...base, rollout_key: "FACTORY-01", scope_type: "FACTORY", factory_id: factoryId });
   assert.equal(factory.factory_id, factoryId);
-  const module = buildCreateReleasePayload({ ...base, rollout_key: "MODULE-01", scope_type: "MODULE", module_key: "inventory.core" });
-  assert.equal(module.module_key, "inventory.core");
+  const moduleRelease = buildCreateReleasePayload({ ...base, rollout_key: "MODULE-01", scope_type: "MODULE", module_key: "inventory.core" });
+  assert.equal(moduleRelease.module_key, "inventory.core");
   const agent = buildCreateReleasePayload({ ...base, rollout_key: "AGENT-01", scope_type: "AGENT", agent_key: "planner.agent", module_key: "planning.core" });
   assert.equal(agent.agent_key, "planner.agent");
   assert.equal(agent.module_key, "planning.core");
