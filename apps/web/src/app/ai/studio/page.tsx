@@ -128,6 +128,7 @@ export default function AiAgentStudioGovernancePage() {
   const [runDetail, setRunDetail] = useState<Row | null>(null);
   const [stepIndex, setStepIndex] = useState("0");
   const [stepDetail, setStepDetail] = useState<Row | null>(null);
+  const [comparisonResult, setComparisonResult] = useState<Row | null>(null);
   const [policyResult, setPolicyResult] = useState<Row | null>(null);
   const [evaluationResult, setEvaluationResult] = useState<Row | null>(null);
   const [publishRequest, setPublishRequest] = useState<Row | null>(null);
@@ -570,7 +571,8 @@ export default function AiAgentStudioGovernancePage() {
           <Field label="Left simulation run UUID"><input className={INPUT} value={leftRunId} onChange={(event) => setLeftRunId(event.target.value)} /></Field>
           <Field label="Right simulation run UUID"><input className={INPUT} value={rightRunId} onChange={(event) => setRightRunId(event.target.value)} /></Field>
         </div>
-        <button type="button" className={SECONDARY + " mt-3"} disabled={busy || !canAgentsRead || !sandboxId} onClick={() => void perform("Simulation comparison", () => api().compareRuns(sandboxId, buildAiStudioComparePayload({ left_run_id: leftRunId, right_run_id: rightRunId })))}>Compare runs</button>
+        <button type="button" className={SECONDARY + " mt-3"} disabled={busy || !canAgentsRead || !sandboxId} onClick={() => void perform("Simulation comparison", () => api().compareRuns(sandboxId, buildAiStudioComparePayload({ left_run_id: leftRunId, right_run_id: rightRunId })), (value) => setComparisonResult(record(value)))}>Compare runs</button>
+        {comparisonResult ? <div className="mt-3"><Json title="Run comparison result" value={comparisonResult} /></div> : null}
       </Panel>
     </div> : null}
 
@@ -608,6 +610,7 @@ export default function AiAgentStudioGovernancePage() {
             <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold">{label(entry.eventKey)}</span><State value={entry.actualOutcome} /></div>
             <p className="mt-1 text-[11px] text-slate-600">{label(entry.action)} · expected {label(entry.expectedOutcome, "not supplied")} · match {String(entry.matchedExpectedOutcome ?? "not evaluated")}</p>
             <p className="mt-1 text-[10px] leading-4 text-slate-500">{label(entry.reason)}</p>
+            <p className="mt-1 text-[10px] leading-4 text-slate-500">Policy {label(entry.policyKey, "—")} v{label(entry.policyVersion)} · risk {label(entry.riskClass)} · approval required {String(entry.approvalRequired)} · safe default {String(entry.safeDefault)}</p>
           </article>)}
         </div> : <Empty>Run a policy simulation to inspect drift, policy version, risk class, safe-default and event-level reasoning.</Empty>}
       </Panel>
