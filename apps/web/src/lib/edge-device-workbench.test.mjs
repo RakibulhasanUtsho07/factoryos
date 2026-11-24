@@ -103,7 +103,7 @@ test("builds signing-key revocation reasons with a mandatory rationale", () => {
   assert.deepEqual(buildEdgeSigningKeyRevocationPayload("Compromised signing key confirmed by incident response"), {
     reason: "Compromised signing key confirmed by incident response",
   });
-  assert.throws(() => buildEdgeSigningKeyRevocationPayload("too short"), /8 to 300/);
+  assert.throws(() => buildEdgeSigningKeyRevocationPayload("short"), /8 to 300/);
 });
 
 test("filters devices by safe visible metadata without inspecting capability values", () => {
@@ -123,7 +123,7 @@ test("summarizes device status and latest health separately", () => {
     { status: "ACTIVE", latestHealth: { runtimeStatus: "DEGRADED" } },
     { status: "PAUSED", lastSeenAt: null, latestHealth: { runtimeStatus: "NEEDS_ATTENTION" } },
     { status: "REVOKED", lastSeenAt: null },
-  ]), { total: 4, active: 2, paused: 1, revoked: 1, healthy: 1, attention: 2, neverSeen: 2 });
+  ]), { total: 4, active: 2, paused: 1, revoked: 1, healthy: 1, attention: 2, neverSeen: 3 });
 });
 
 test("validates UUIDs and returns a redacted payload preview", () => {
