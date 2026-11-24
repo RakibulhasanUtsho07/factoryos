@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   buildCreateSandboxPayload, buildMaskedApprovalPayload, buildSandboxPhysicalPayload,
@@ -32,9 +32,6 @@ function textOf(value: unknown, fallback = "—"): string {
 function dateTime(value: unknown): string {
   if (typeof value !== "string" || !value) return "Not recorded";
   const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-function dateInput(value: Date): string {
-  return new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 function errorOf(cause: unknown): string { return cause instanceof Error ? cause.message : "The SaaS sandbox request could not be completed."; }
 function digestShort(value: unknown): string {
@@ -112,6 +109,8 @@ export default function SaasSandboxGovernancePage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [clockNow, setClockNow] = useState(0);
+  const selectedIdRef = useRef("");
 
   const [showCreate, setShowCreate] = useState(false);
   const [createMode, setCreateMode] = useState<DataMode>("SYNTHETIC");
@@ -120,12 +119,12 @@ export default function SaasSandboxGovernancePage() {
     generator: "factoryos-synthetic-fixture-generator", generator_version: "1.0.0",
     schema_version: "v1", seed: "factoryos-demo-seed", record_count: "1000",
     dataset_reference: "", masking_policy_version: "masking-v1",
-    masked_at: dateInput(new Date(Date.now() - 60 * 60 * 1000)),
+    masked_at: "",
     checksum_sha256: "", residual_risk: "LOW" as "LOW" | "MEDIUM",
-    reviewed_fields: "email, phone", assessed_at: dateInput(new Date(Date.now() - 30 * 60 * 1000)),
+    reviewed_fields: "email, phone", assessed_at: "",
   });
   const [approval, setApproval] = useState({
-    approval_expires_at: dateInput(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)), reason: "",
+    approval_expires_at: "", reason: "",
   });
   const [transition, setTransition] = useState({ action: "SUSPEND" as Transition, reason: "" });
   const [physicalTargetId, setPhysicalTargetId] = useState("");
@@ -136,8 +135,8 @@ export default function SaasSandboxGovernancePage() {
   const filtered = useMemo(() => filterSandboxes(environments, filters), [environments, filters]);
   const queue = useMemo(() => environments.filter((item) => item.dataMode === "MASKED" && (
     item.effectiveStatus === "PENDING_APPROVAL" || item.effectiveStatus === "APPROVAL_EXPIRED" ||
-    (item.status === "SUSPENDED" && item.approvalExpiresAt && Date.parse(textOf(item.approvalExpiresAt)) <= Date.now())
-  )), [environments]);
+    (clockNow > 0 && item.status === "SUSPENDED" && item.approvalExpiresAt && Date.parse(textOf(item.approvalExpiresAt)) <= clockNow)
+  )), [environments, clockNow]);
   const currentUserId = textOf(snapshot?.user.id, "");
   const requesterSelf = Boolean(selected && textOf(selected.approvalRequestedBy, "") === currentUserId);
   const selectedStatus = textOf(selected?.status, "");
@@ -145,7 +144,7 @@ export default function SaasSandboxGovernancePage() {
   const selectedMode = textOf(selected?.dataMode, "");
   const approvalExpired = selectedMode === "MASKED" && (
     selectedEffective === "APPROVAL_EXPIRED" ||
-    (selected?.approvalExpiresAt !== null && selected?.approvalExpiresAt !== undefined && Date.parse(textOf(selected.approvalExpiresAt)) <= Date.now())
+    (clockNow > 0 && selected?.approvalExpiresAt !== null && selected?.approvalExpiresAt !== undefined && Date.parse(textOf(selected.approvalExpiresAt)) <= clockNow)
   );
   const canReview = Boolean(selected && selectedMode === "MASKED" && canApprove && !requesterSelf &&
     (selectedStatus === "PENDING_APPROVAL" || approvalExpired));
@@ -169,10 +168,13 @@ export default function SaasSandboxGovernancePage() {
         canReadPhysical ? client.listPhysicalRuns(50, 0) : Promise.resolve({ runs: [] }),
       ]);
       if (!live) return;
+      setClockNow(Date.now());
       if (envResult.status === "fulfilled") {
         const next = normalizeSandboxRows(envResult.value).map(row);
         setEnvironments(next);
-        const chosenId = next.some((item) => textOf(item.id, "") === selectedId) ? selectedId : textOf(next[0]?.id, "");
+        const currentSelectedId = selectedIdRef.current;
+        const chosenId = next.some((item) => textOf(item.id, "") === currentSelectedId) ? currentSelectedId : textOf(next[0]?.id, "");
+        selectedIdRef.current = chosenId;
         setSelectedId(chosenId);
         const chosen = next.find((item) => textOf(item.id, "") === chosenId) ?? null;
         setSelected(chosen ? row(chosen) : null);
@@ -192,6 +194,7 @@ export default function SaasSandboxGovernancePage() {
   }, [connected, canRead, canReadPhysical, client, refreshTick]);
 
   const selectEnvironment = async (id: string) => {
+    selectedIdRef.current = id;
     setSelectedId(id);
     setSelected(row(environments.find((item) => textOf(item.id) === id)));
     setDetailLoading(true); setDetailError("");
