@@ -41,11 +41,20 @@ function safeCapabilityProfile(value) {
   if (!serialized || new TextEncoder().encode(serialized).byteLength > 4096) {
     throw new Error("Capability profile cannot exceed 4 KiB.");
   }
-  for (const key of Object.keys(profile)) {
-    if (["__proto__", "prototype", "constructor"].includes(key) || SENSITIVE_KEY.test(key)) {
-      throw new Error("Capability profile contains an unsafe or credential-like field.");
+  function rejectSensitiveFields(value, path) {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => rejectSensitiveFields(item, path + "[" + index + "]"));
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (["__proto__", "prototype", "constructor"].includes(key) || SENSITIVE_KEY.test(key)) {
+        throw new Error(path + " contains an unsafe or credential-like field.");
+      }
+      rejectSensitiveFields(child, path + "." + key);
     }
   }
+  rejectSensitiveFields(profile, "capability_profile");
   return profile;
 }
 

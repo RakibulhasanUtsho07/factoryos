@@ -50,6 +50,7 @@ test("rejects malformed device identifiers and protocol values", () => {
 test("rejects unsafe capability fields and oversized capability documents", () => {
   assert.throws(() => buildEdgeDevicePayload({ ...validDevice, capability_profile: { access_token: "should-not-be-sent" } }), /credential-like field/);
   assert.throws(() => buildEdgeDevicePayload({ ...validDevice, capability_profile: { constructor: "unsafe" } }), /unsafe/);
+  assert.throws(() => buildEdgeDevicePayload({ ...validDevice, capability_profile: { signals: [{ nested: { refresh_token: "hidden" } }] } }), /credential-like field/);
   assert.throws(() => buildEdgeDevicePayload({ ...validDevice, capability_profile: "[]" }), /JSON object/);
   assert.throws(() => buildEdgeDevicePayload({ ...validDevice, capability_profile: { description: "x".repeat(5000) } }), /4 KiB/);
 });
