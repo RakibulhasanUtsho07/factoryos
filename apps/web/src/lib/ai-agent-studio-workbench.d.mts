@@ -1,0 +1,42 @@
+export type AiStudioOutcome = "ALLOWED" | "APPROVAL_REQUIRED" | "DENIED";
+export type AiStudioEvaluationKind = "EXPECTED_TOOL_CALL" | "EXPECTED_REFUSAL" | "RED_TEAM_POLICY_BYPASS" | "EXPECTED_COMPENSATION" | "PRIVACY_NO_SECRET_LEAKAGE";
+export interface AiStudioRequestOptions { method?: string; body?: unknown; }
+export interface AiAgentStudioClient {
+  listAgents(): Promise<unknown>;
+  listTemplates(): Promise<unknown>;
+  getTemplate(key: string): Promise<unknown>;
+  createTemplateDraft(key: string, body: Record<string, unknown>): Promise<unknown>;
+  listDrafts(): Promise<unknown>;
+  getDraft(draftId: string): Promise<unknown>;
+  createDraft(body: Record<string, unknown>): Promise<unknown>;
+  reviewDraft(draftId: string, body: Record<string, unknown>): Promise<unknown>;
+  createSandbox(body: Record<string, unknown>): Promise<unknown>;
+  getRun(sandboxId: string, runId: string): Promise<unknown>;
+  inspectStep(sandboxId: string, runId: string, stepIndex: number): Promise<unknown>;
+  replayRun(sandboxId: string, body: Record<string, unknown>): Promise<unknown>;
+  branchRun(sandboxId: string, body: Record<string, unknown>): Promise<unknown>;
+  compareRuns(sandboxId: string, body: Record<string, unknown>): Promise<unknown>;
+  simulatePolicies(sandboxId: string, body: Record<string, unknown>): Promise<unknown>;
+  listEvaluationCases(definitionId: string): Promise<unknown>;
+  createEvaluationCase(definitionId: string, body: Record<string, unknown>): Promise<unknown>;
+  evaluateCase(definitionId: string, caseId: string, body: Record<string, unknown>): Promise<unknown>;
+  getEvaluationReport(definitionId: string): Promise<unknown>;
+  requestPublication(body: Record<string, unknown>): Promise<unknown>;
+  approvePublication(requestId: string): Promise<unknown>;
+  promotePublication(requestId: string): Promise<unknown>;
+  rollbackDeployment(deploymentId: string, body: Record<string, unknown>): Promise<unknown>;
+}
+export function normalizeAiStudioRows(value: unknown, preferredKey?: string): unknown[];
+export function buildAiStudioDraftPayload(input?: Record<string, unknown>): { prompt: string; title?: string };
+export function buildAiStudioTemplateDraftPayload(input?: Record<string, unknown>): Record<string, string>;
+export function buildAiStudioDraftReviewPayload(input?: Record<string, unknown>): { decision: "APPROVE" | "REJECT"; notes?: string };
+export function buildAiStudioSandboxPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildAiStudioPolicySimulationPayload(input?: Record<string, unknown>): { historical_events: Array<Record<string, unknown>> };
+export function buildAiStudioReplayPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildAiStudioBranchPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildAiStudioComparePayload(input?: Record<string, unknown>): { left_run_id: string; right_run_id: string };
+export function buildAiStudioEvaluationCasePayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildAiStudioEvaluationRunPayload(input?: Record<string, unknown>): { simulation_run_id: string };
+export function buildAiStudioPublishRequestPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildAiStudioRollbackPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function createAiAgentStudioClient(request: (path: string, options?: AiStudioRequestOptions) => Promise<unknown>): AiAgentStudioClient;
