@@ -403,7 +403,6 @@ export default function SaasReleaseControlPlanePage() {
   };
 
   const confirmPhysical = async () => {
-    event.preventDefault();
     if (!physicalTarget || !physicalAcknowledged) return;
     setBusy(true); setNotice(null);
     try {
