@@ -226,6 +226,10 @@ export default function SaasDataProtectionWorkbenchPage() {
   const unresolvedErasureCount = erasures.filter((item) => !["COMPLETED", "REJECTED", "CANCELLED"].includes(valueOf(item.status).toUpperCase())).length;
   const activeHoldCount = holds.filter((item) => !["RELEASED", "CLOSED"].includes(valueOf(item.status).toUpperCase())).length;
   const pendingTargetCount = targets.filter((item) => ["PENDING", "REVIEW"].includes(valueOf(item.status).toUpperCase())).length;
+  const activityRows: Array<Row & { _source: string }> = [
+    ...retentionRuns.slice(0, 12).map((item) => ({ ...item, _source: "RETENTION" })),
+    ...financeRuns.slice(0, 8).map((item) => ({ ...item, _source: "FINANCE" })),
+  ].slice(0, 16);
   const selectedPolicyInScope = selectedPolicy?.__factoryId === activeFactoryId ? selectedPolicy : null;
   const selectedHoldInScope = selectedHold?.__factoryId === activeFactoryId ? selectedHold : null;
   const selectedErasureInScope = selectedErasure?.__factoryId === activeFactoryId ? selectedErasure : null;
@@ -386,7 +390,7 @@ export default function SaasDataProtectionWorkbenchPage() {
       <Panel title="Recent lifecycle activity" subtitle="Latest retention and finance executions returned by the API.">
         {retentionRuns.length || financeRuns.length ? <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-xs">
           <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="pb-2 pr-3">Operation</th><th className="pb-2 pr-3">Category / version</th><th className="pb-2 pr-3">Mode</th><th className="pb-2 pr-3">Status</th><th className="pb-2">Created</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">{[...retentionRuns.slice(0, 12).map((item) => ({ ...item, _source: "RETENTION" })), ...financeRuns.slice(0, 8).map((item) => ({ ...item, _source: "FINANCE" }))].slice(0, 16).map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="py-3 pr-3 font-semibold text-slate-800">{valueOf(item._source)}</td><td className="py-3 pr-3">{valueOf(item.categoryCode ?? item.category_code ?? item.version)}</td><td className="py-3 pr-3">{valueOf(item.mode)}</td><td className="py-3 pr-3"><Status value={item.status} /></td><td className="py-3">{dateOf(item.createdAt ?? item.created_at ?? item.startedAt)}</td></tr>)}</tbody>
+          <tbody className="divide-y divide-slate-100">{activityRows.map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="py-3 pr-3 font-semibold text-slate-800">{valueOf(item._source)}</td><td className="py-3 pr-3">{valueOf(item.categoryCode ?? item.category_code ?? item.version)}</td><td className="py-3 pr-3">{valueOf(item.mode)}</td><td className="py-3 pr-3"><Status value={item.status} /></td><td className="py-3">{dateOf(item.createdAt ?? item.created_at ?? item.startedAt)}</td></tr>)}</tbody>
         </table></div> : <Empty>No retention executions returned yet.</Empty>}
       </Panel>
     </> : null}
