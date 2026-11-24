@@ -3,6 +3,7 @@ const DATASET_CATEGORIES = new Set([
   "AI_CONTEXT", "LEARNING_EVALUATION", "INTEGRATION_METADATA", "FILE_REFERENCES", "IAM_ACCESS",
 ]);
 const DISPOSITIONS = new Set(["DELETE", "ANONYMIZE", "REVIEW"]);
+const EXTERNAL_STORE_KINDS = new Set(["OBJECT_STORAGE", "CACHE", "SEARCH_INDEX", "VECTOR_STORE", "LEARNING_ARTIFACT", "EXTERNAL_PROVIDER", "REPLICA", "BACKUP"]);
 const REVIEW_DECISIONS = new Set(["APPROVE", "REJECT"]);
 const EXTERNAL_REVIEW_DECISIONS = new Set(["APPROVE", "REJECT", "PAUSE", "RESUME"]);
 const TRANSFER_SCHEMA = /^\d{1,8}\.\d{1,8}\.\d{1,8}$/;
@@ -152,7 +153,7 @@ export function buildExternalTargetPayload(input = {}) {
   if (new Set(categories).size !== categories.length) throw new Error("External-target categories must be unique.");
   return {
     target_id: targetId,
-    store_kind: text(input.store_kind, "store_kind", 1, 100),
+    store_kind: enumValue(input.store_kind, EXTERNAL_STORE_KINDS, "store_kind"),
     adapter_key: adapterKey,
     config_reference: configReference,
     categories,
