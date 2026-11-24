@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
@@ -134,7 +135,7 @@ export default function SaasDataProtectionWorkbenchPage() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [data, setData] = useState<WorkspaceData>({});
-  const [latestResponse, setLatestResponse] = useState<unknown>(null);
+  const [latestResponse, setLatestResponse] = useState<{ factoryId: string; data: unknown } | null>(null);
 
   const [policyCategory, setPolicyCategory] = useState("BUSINESS_DATA");
   const [policyDays, setPolicyDays] = useState("365");
@@ -161,7 +162,7 @@ export default function SaasDataProtectionWorkbenchPage() {
   const [erasureDecision, setErasureDecision] = useState("APPROVE");
   const [erasureActionReason, setErasureActionReason] = useState("");
   const [erasureActionConfirmed, setErasureActionConfirmed] = useState(false);
-  const [erasureRunRows, setErasureRunRows] = useState<unknown>(null);
+  const [erasureRunRows, setErasureRunRows] = useState<{ factoryId: string; data: unknown } | null>(null);
 
   const [exportSchema, setExportSchema] = useState("2.1.0");
   const [exportCategories, setExportCategories] = useState<string[]>(["BUSINESS_DATA", "AUDIT_LOG", "EVIDENCE", "APPROVALS", "EFFECTIVE_DATED_MASTER_DATA", "IAM_ACCESS"]);
@@ -170,7 +171,7 @@ export default function SaasDataProtectionWorkbenchPage() {
   const [migrationSchema, setMigrationSchema] = useState("2.1.0");
   const [migrationReason, setMigrationReason] = useState("");
   const [selectedTransfer, setSelectedTransfer] = useState<Row | null>(null);
-  const [transferHistory, setTransferHistory] = useState<unknown>(null);
+  const [transferHistory, setTransferHistory] = useState<{ factoryId: string; data: unknown } | null>(null);
   const [migrationAction, setMigrationAction] = useState("START");
   const [migrationActionReason, setMigrationActionReason] = useState("");
   const [migrationBundleReference, setMigrationBundleReference] = useState("");
@@ -207,20 +208,30 @@ export default function SaasDataProtectionWorkbenchPage() {
   const api = (): SaasDataProtectionClient => createSaasDataProtectionClient((path, options = {}) => request(path, options));
 
   const visibleData = loadedFactoryId === activeFactoryId ? data : {};
-  const policies = list(visibleData.policies);
-  const holds = list(visibleData.holds);
-  const erasures = list(visibleData.erasures);
-  const retentionRuns = list(visibleData.retentionRuns);
-  const targets = list(visibleData.targets);
-  const exports = list(visibleData.exports);
-  const migrations = list(visibleData.migrations);
-  const compatibility = list(visibleData.compatibility);
-  const financePolicies = list(visibleData.financePolicies);
-  const financeRuns = list(visibleData.financeRuns);
+  const currentLatestResponse = latestResponse?.factoryId === activeFactoryId ? latestResponse.data : null;
+  const currentTransferHistory = transferHistory?.factoryId === activeFactoryId ? transferHistory.data : null;
+  const currentErasureRunRows = erasureRunRows?.factoryId === activeFactoryId ? erasureRunRows.data : null;
+  const currentBackupEvidence = backupEvidence.__factoryId === activeFactoryId ? backupEvidence : {};
+  const policies = canReadRetention ? list(visibleData.policies) : [];
+  const holds = canReadRetention ? list(visibleData.holds) : [];
+  const erasures = canReadRetention ? list(visibleData.erasures) : [];
+  const retentionRuns = canReadRetention ? list(visibleData.retentionRuns) : [];
+  const targets = canReadRetention ? list(visibleData.targets) : [];
+  const exports = canReadTransfers ? list(visibleData.exports) : [];
+  const migrations = canReadTransfers ? list(visibleData.migrations) : [];
+  const compatibility = canReadTransfers ? list(visibleData.compatibility) : [];
+  const financePolicies = canReadRetention ? list(visibleData.financePolicies) : [];
+  const financeRuns = canReadRetention ? list(visibleData.financeRuns) : [];
   const factoryName = snapshot?.factories.find((factory) => factory.id === activeFactoryId)?.name ?? activeFactoryId;
   const unresolvedErasureCount = erasures.filter((item) => !["COMPLETED", "REJECTED", "CANCELLED"].includes(valueOf(item.status).toUpperCase())).length;
   const activeHoldCount = holds.filter((item) => !["RELEASED", "CLOSED"].includes(valueOf(item.status).toUpperCase())).length;
   const pendingTargetCount = targets.filter((item) => ["PENDING", "REVIEW"].includes(valueOf(item.status).toUpperCase())).length;
+  const selectedPolicyInScope = selectedPolicy?.__factoryId === activeFactoryId ? selectedPolicy : null;
+  const selectedHoldInScope = selectedHold?.__factoryId === activeFactoryId ? selectedHold : null;
+  const selectedErasureInScope = selectedErasure?.__factoryId === activeFactoryId ? selectedErasure : null;
+  const selectedTransferInScope = selectedTransfer?.__factoryId === activeFactoryId ? selectedTransfer : null;
+  const selectedTargetInScope = selectedTarget?.__factoryId === activeFactoryId ? selectedTarget : null;
+  const selectedFinanceInScope = selectedFinance?.__factoryId === activeFactoryId ? selectedFinance : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -275,7 +286,7 @@ export default function SaasDataProtectionWorkbenchPage() {
     setNotice(null);
     try {
       const result = await work();
-      setLatestResponse(result);
+      setLatestResponse({ factoryId: activeFactoryId, data: result });
       setNotice({ tone: "success", message: label + " completed. The server response is recorded below." });
       if (refresh) setRefreshTick((value) => value + 1);
     } catch (cause) {
@@ -307,7 +318,7 @@ export default function SaasDataProtectionWorkbenchPage() {
       next[key] = value;
       if (error) errors.push(key + ": " + error);
     }
-    setBackupEvidence(next);
+    setBackupEvidence({ ...next, __factoryId: activeFactoryId });
     setBackupError(errors.join(" · "));
     setBackupLoading(false);
   }
@@ -323,7 +334,7 @@ export default function SaasDataProtectionWorkbenchPage() {
         <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">SaaS governance</p>
         <h1 className="mt-2 text-2xl font-bold text-slate-950">Data Protection & Lifecycle</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Connect an authenticated FactoryOS session and select an active factory to inspect tenant retention, legal holds, erasure, transfer and backup evidence.</p>
-        <a href="/session" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white">Connect session</a>
+        <Link href="/session" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white">Connect session</Link>
       </div>
     </main>;
   }
@@ -395,12 +406,12 @@ export default function SaasDataProtectionWorkbenchPage() {
         </form>}
       </Panel>
       <Panel title="Retention policies" subtitle="Run a DRY_RUN first. EXECUTE is a destructive lifecycle action and requires execute permission plus explicit confirmation.">
-        {policies.length ? <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="pb-2 pr-3">Category</th><th className="pb-2 pr-3">Retention</th><th className="pb-2 pr-3">Disposition</th><th className="pb-2 pr-3">Version</th><th className="pb-2 pr-3">Status</th><th className="pb-2">Action</th></tr></thead><tbody className="divide-y divide-slate-100">{policies.map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="py-3 pr-3 font-semibold">{valueOf(item.categoryCode ?? item.category_code)}</td><td className="py-3 pr-3">{valueOf(item.retentionDays ?? item.retention_days)} days</td><td className="py-3 pr-3">{valueOf(item.disposition)}</td><td className="py-3 pr-3">{valueOf(item.version)}</td><td className="py-3 pr-3"><Status value={item.status ?? "VERSIONED"} /></td><td className="py-3"><button type="button" className={SECONDARY} onClick={() => { setSelectedPolicy(item); setPolicyRunReason(""); setPolicyRunMode("DRY_RUN"); setPolicyExecuteConfirmed(false); }}>Run policy…</button></td></tr>)}</tbody></table></div> : <Empty>No retention policy versions returned.</Empty>}
-        {selectedPolicy ? <form className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2" onSubmit={(event) => submit(event, "Retention policy run", () => api().runPolicy(valueOf(selectedPolicy.categoryCode ?? selectedPolicy.category_code), buildRetentionRunPayload({
-          mode: policyRunMode, expected_policy_version: selectedPolicy.version, reason: policyRunReason,
+        {policies.length ? <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="pb-2 pr-3">Category</th><th className="pb-2 pr-3">Retention</th><th className="pb-2 pr-3">Disposition</th><th className="pb-2 pr-3">Version</th><th className="pb-2 pr-3">Status</th><th className="pb-2">Action</th></tr></thead><tbody className="divide-y divide-slate-100">{policies.map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="py-3 pr-3 font-semibold">{valueOf(item.categoryCode ?? item.category_code)}</td><td className="py-3 pr-3">{valueOf(item.retentionDays ?? item.retention_days)} days</td><td className="py-3 pr-3">{valueOf(item.disposition)}</td><td className="py-3 pr-3">{valueOf(item.version)}</td><td className="py-3 pr-3"><Status value={item.status ?? "VERSIONED"} /></td><td className="py-3"><button type="button" className={SECONDARY} onClick={() => { setSelectedPolicy({ ...item, __factoryId: activeFactoryId }); setPolicyRunReason(""); setPolicyRunMode("DRY_RUN"); setPolicyExecuteConfirmed(false); }}>Run policy…</button></td></tr>)}</tbody></table></div> : <Empty>No retention policy versions returned.</Empty>}
+        {selectedPolicyInScope ? <form className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2" onSubmit={(event) => submit(event, "Retention policy run", () => api().runPolicy(valueOf(selectedPolicyInScope.categoryCode ?? selectedPolicyInScope.category_code), buildRetentionRunPayload({
+          mode: policyRunMode, expected_policy_version: selectedPolicyInScope.version, reason: policyRunReason,
           idempotency_key: idempotencyKey("retention-run"),
         })))}>
-          <div className="sm:col-span-2"><p className="text-xs font-bold text-slate-900">Selected: {valueOf(selectedPolicy.categoryCode ?? selectedPolicy.category_code)} · version {valueOf(selectedPolicy.version)}</p></div>
+          <div className="sm:col-span-2"><p className="text-xs font-bold text-slate-900">Selected: {valueOf(selectedPolicyInScope.categoryCode ?? selectedPolicyInScope.category_code)} · version {valueOf(selectedPolicyInScope.version)}</p></div>
           <Field label="Run mode"><Select value={policyRunMode} onChange={setPolicyRunMode} options={["DRY_RUN", "EXECUTE"]} /></Field>
           <Field label="Reason"><input className={INPUT} value={policyRunReason} onChange={(event) => setPolicyRunReason(event.target.value)} required minLength={3} maxLength={1000} /></Field>
           {policyRunMode === "EXECUTE" ? <label className="flex items-start gap-2 text-xs leading-5 text-rose-800 sm:col-span-2"><input type="checkbox" checked={policyExecuteConfirmed} onChange={(event) => setPolicyExecuteConfirmed(event.target.checked)} />I understand EXECUTE may delete or anonymize eligible tenant data according to this policy.</label> : null}
@@ -419,9 +430,9 @@ export default function SaasDataProtectionWorkbenchPage() {
           </form>}
         </Panel>
         <Panel title="Legal holds" subtitle="Release is a controlled approval action with optimistic version checking.">
-          {holds.length ? <div className="space-y-2">{holds.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.caseReference ?? item.case_reference ?? item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.categories)} · version {valueOf(item.version)}</p>{canApproveRetention && !["RELEASED", "CLOSED"].includes(valueOf(item.status).toUpperCase()) ? <button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedHold(item); setHoldReleaseReason(""); }}>Prepare release…</button> : null}</div>)}</div> : <Empty>No legal holds returned.</Empty>}
-          {selectedHold ? <form className="mt-3 space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3" onSubmit={(event) => submit(event, "Legal hold release", () => api().releaseLegalHold(valueOf(selectedHold.id), buildLegalHoldReleasePayload({ expected_version: selectedHold.version, reason: holdReleaseReason })))}>
-            <p className="text-xs font-semibold text-amber-950">Release {valueOf(selectedHold.caseReference ?? selectedHold.case_reference)}?</p>
+          {holds.length ? <div className="space-y-2">{holds.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.caseReference ?? item.case_reference ?? item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.categories)} · version {valueOf(item.version)}</p>{canApproveRetention && !["RELEASED", "CLOSED"].includes(valueOf(item.status).toUpperCase()) ? <button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedHold({ ...item, __factoryId: activeFactoryId }); setHoldReleaseReason(""); }}>Prepare release…</button> : null}</div>)}</div> : <Empty>No legal holds returned.</Empty>}
+          {selectedHoldInScope ? <form className="mt-3 space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3" onSubmit={(event) => submit(event, "Legal hold release", () => api().releaseLegalHold(valueOf(selectedHoldInScope.id), buildLegalHoldReleasePayload({ expected_version: selectedHoldInScope.version, reason: holdReleaseReason })))}>
+            <p className="text-xs font-semibold text-amber-950">Release {valueOf(selectedHoldInScope.caseReference ?? selectedHoldInScope.case_reference)}?</p>
             <Field label="Release reason"><textarea className={AREA} value={holdReleaseReason} onChange={(event) => setHoldReleaseReason(event.target.value)} required minLength={3} maxLength={1000} /></Field>
             <div className="flex gap-2"><button className={DANGER} disabled={busy}>Release hold</button><button type="button" className={SECONDARY} onClick={() => setSelectedHold(null)}>Cancel</button></div>
           </form> : null}
@@ -440,14 +451,14 @@ export default function SaasDataProtectionWorkbenchPage() {
           </form>}
         </Panel>
         <Panel title="Finance retention versions" subtitle="Review and run by immutable version. Finance-specific permissions are required in addition to ordinary read access.">
-          {financePolicies.length ? <div className="space-y-2">{financePolicies.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">Version {valueOf(item.version)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.financeAdapterKey ?? item.finance_adapter_key)} · {valueOf(item.retentionDays ?? item.retention_days)} days</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" className={SECONDARY} disabled={!canReviewFinance || busy} onClick={() => { setSelectedFinance(item); setFinanceDecision("APPROVE"); setFinanceActionReason(""); }}>Review…</button><button type="button" className={SECONDARY} disabled={!canExecuteFinance || busy} onClick={() => { setSelectedFinance(item); setFinanceRunMode("DRY_RUN"); setFinanceActionReason(""); setFinanceRunConfirmed(false); }}>Run…</button></div></div>)}</div> : <Empty>No finance retention versions returned.</Empty>}
-          {selectedFinance ? <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-semibold">Selected version {valueOf(selectedFinance.version)}</p>
-            <form className="space-y-2" onSubmit={(event) => submit(event, "Finance retention review", () => api().reviewFinancePolicy(Number(selectedFinance.version), buildFinanceRetentionReviewPayload({ decision: financeDecision, expected_version: selectedFinance.version, reason: financeActionReason })))}>
+          {financePolicies.length ? <div className="space-y-2">{financePolicies.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">Version {valueOf(item.version)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.financeAdapterKey ?? item.finance_adapter_key)} · {valueOf(item.retentionDays ?? item.retention_days)} days</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" className={SECONDARY} disabled={!canReviewFinance || busy} onClick={() => { setSelectedFinance({ ...item, __factoryId: activeFactoryId }); setFinanceDecision("APPROVE"); setFinanceActionReason(""); }}>Review…</button><button type="button" className={SECONDARY} disabled={!canExecuteFinance || busy} onClick={() => { setSelectedFinance({ ...item, __factoryId: activeFactoryId }); setFinanceRunMode("DRY_RUN"); setFinanceActionReason(""); setFinanceRunConfirmed(false); }}>Run…</button></div></div>)}</div> : <Empty>No finance retention versions returned.</Empty>}
+          {selectedFinanceInScope ? <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold">Selected version {valueOf(selectedFinanceInScope.version)}</p>
+            <form className="space-y-2" onSubmit={(event) => submit(event, "Finance retention review", () => api().reviewFinancePolicy(Number(selectedFinanceInScope.version), buildFinanceRetentionReviewPayload({ decision: financeDecision, expected_version: selectedFinanceInScope.version, reason: financeActionReason })))}>
               <div className="grid gap-2 sm:grid-cols-2"><Field label="Decision"><Select value={financeDecision} onChange={setFinanceDecision} options={["APPROVE", "REJECT"]} /></Field><Field label="Review reason"><input className={INPUT} value={financeActionReason} onChange={(event) => setFinanceActionReason(event.target.value)} required minLength={3} /></Field></div>
               <button className={SECONDARY} disabled={busy || !canReviewFinance}>Submit review</button>
             </form>
-            <form className="space-y-2 border-t border-slate-200 pt-3" onSubmit={(event) => submit(event, "Finance retention run", () => api().runFinancePolicy(Number(selectedFinance.version), buildFinanceRetentionRunPayload({ mode: financeRunMode, expected_policy_version: selectedFinance.version, reason: financeActionReason, idempotency_key: idempotencyKey("finance-run") })))}>
+            <form className="space-y-2 border-t border-slate-200 pt-3" onSubmit={(event) => submit(event, "Finance retention run", () => api().runFinancePolicy(Number(selectedFinanceInScope.version), buildFinanceRetentionRunPayload({ mode: financeRunMode, expected_policy_version: selectedFinanceInScope.version, reason: financeActionReason, idempotency_key: idempotencyKey("finance-run") })))}>
               <div className="grid gap-2 sm:grid-cols-2"><Field label="Run mode"><Select value={financeRunMode} onChange={setFinanceRunMode} options={["DRY_RUN", "EXECUTE"]} /></Field><Field label="Run reason"><input className={INPUT} value={financeActionReason} onChange={(event) => setFinanceActionReason(event.target.value)} required minLength={3} /></Field></div>
               {financeRunMode === "EXECUTE" ? <label className="flex gap-2 text-[10px] leading-4 text-rose-800"><input type="checkbox" checked={financeRunConfirmed} onChange={(event) => setFinanceRunConfirmed(event.target.checked)} />I explicitly authorize execution for this reviewed finance policy version.</label> : null}
               <button className={financeRunMode === "EXECUTE" ? DANGER : SECONDARY} disabled={busy || !canExecuteFinance || (financeRunMode === "EXECUTE" && !financeRunConfirmed)}>Run finance retention</button>
@@ -475,12 +486,12 @@ export default function SaasDataProtectionWorkbenchPage() {
         </form>}
       </Panel>
       <Panel title="Erasure request register" subtitle="Select a request to inspect its current version and prepare review, execution or downstream propagation.">
-        {erasures.length ? <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-xs"><thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="pb-2 pr-3">Request</th><th className="pb-2 pr-3">Categories</th><th className="pb-2 pr-3">Version</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Created</th><th className="pb-2">Detail</th></tr></thead><tbody className="divide-y divide-slate-100">{erasures.map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="max-w-52 truncate py-3 pr-3 font-mono text-[10px]">{valueOf(item.id)}</td><td className="py-3 pr-3">{valueOf(item.categories)}</td><td className="py-3 pr-3">{valueOf(item.version)}</td><td className="py-3 pr-3"><Status value={item.status} /></td><td className="py-3 pr-3">{dateOf(item.createdAt ?? item.created_at)}</td><td className="py-3"><button type="button" className={SECONDARY} onClick={() => { setSelectedErasure(item); setErasureActionReason(""); setErasureActionConfirmed(false); setErasureRunRows(null); }}>Select</button></td></tr>)}</tbody></table></div> : <Empty>No erasure requests returned.</Empty>}
-        {selectedErasure ? <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">Request {valueOf(selectedErasure.id)}</strong><Status value={selectedErasure.status} /></div>
-          <p className="text-[10px] text-slate-500">Expected version {valueOf(selectedErasure.version)} · Export {valueOf(selectedErasure.exportTransferId ?? selectedErasure.export_transfer_id)}</p>
+        {erasures.length ? <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-xs"><thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="pb-2 pr-3">Request</th><th className="pb-2 pr-3">Categories</th><th className="pb-2 pr-3">Version</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Created</th><th className="pb-2">Detail</th></tr></thead><tbody className="divide-y divide-slate-100">{erasures.map((item, index) => <tr key={valueOf(item.id, String(index))}><td className="max-w-52 truncate py-3 pr-3 font-mono text-[10px]">{valueOf(item.id)}</td><td className="py-3 pr-3">{valueOf(item.categories)}</td><td className="py-3 pr-3">{valueOf(item.version)}</td><td className="py-3 pr-3"><Status value={item.status} /></td><td className="py-3 pr-3">{dateOf(item.createdAt ?? item.created_at)}</td><td className="py-3"><button type="button" className={SECONDARY} onClick={() => { setSelectedErasure({ ...item, __factoryId: activeFactoryId }); setErasureActionReason(""); setErasureActionConfirmed(false); setErasureRunRows(null); }}>Select</button></td></tr>)}</tbody></table></div> : <Empty>No erasure requests returned.</Empty>}
+        {selectedErasureInScope ? <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">Request {valueOf(selectedErasureInScope.id)}</strong><Status value={selectedErasureInScope.status} /></div>
+          <p className="text-[10px] text-slate-500">Expected version {valueOf(selectedErasureInScope.version)} · Export {valueOf(selectedErasureInScope.exportTransferId ?? selectedErasureInScope.export_transfer_id)}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <form className="space-y-2 rounded-lg border border-slate-200 bg-white p-3" onSubmit={(event) => submit(event, "Erasure review", () => api().reviewErasureRequest(valueOf(selectedErasure.id), buildErasureReviewPayload({ decision: erasureDecision, expected_version: selectedErasure.version, reason: erasureActionReason })))}>
+            <form className="space-y-2 rounded-lg border border-slate-200 bg-white p-3" onSubmit={(event) => submit(event, "Erasure review", () => api().reviewErasureRequest(valueOf(selectedErasureInScope.id), buildErasureReviewPayload({ decision: erasureDecision, expected_version: selectedErasureInScope.version, reason: erasureActionReason })))}>
               <p className="text-xs font-bold">Maker-checker review</p>
               <Field label="Decision"><Select value={erasureDecision} onChange={setErasureDecision} options={["APPROVE", "REJECT"]} /></Field>
               <Field label="Review reason"><textarea className={AREA} value={erasureActionReason} onChange={(event) => setErasureActionReason(event.target.value)} required minLength={3} /></Field>
@@ -491,16 +502,16 @@ export default function SaasDataProtectionWorkbenchPage() {
               <Field label="Action reason"><textarea className={AREA} value={erasureActionReason} onChange={(event) => setErasureActionReason(event.target.value)} required minLength={3} /></Field>
               <label className="flex gap-2 text-[10px] leading-4 text-rose-800"><input type="checkbox" checked={erasureActionConfirmed} onChange={(event) => setErasureActionConfirmed(event.target.checked)} />I have checked the approved request, legal holds and required external targets before taking the next step.</label>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className={DANGER} disabled={busy || !canExecuteRetention || !erasureActionConfirmed} onClick={() => void perform("Erasure execution", () => api().executeErasure(valueOf(selectedErasure.id), buildErasureExecutionPayload({ expected_version: selectedErasure.version, reason: erasureActionReason, idempotency_key: idempotencyKey("erasure-execute") })))}>Execute erasure</button>
-                <button type="button" className={DANGER} disabled={busy || !canPropagate || !erasureActionConfirmed} onClick={() => void perform("Erasure propagation", () => api().propagateErasure(valueOf(selectedErasure.id), buildErasurePropagationPayload({ expected_version: selectedErasure.version, reason: erasureActionReason, idempotency_key: idempotencyKey("erasure-propagate") })))}>Propagate externally</button>
+                <button type="button" className={DANGER} disabled={busy || !canExecuteRetention || !erasureActionConfirmed} onClick={() => void perform("Erasure execution", () => api().executeErasure(valueOf(selectedErasureInScope.id), buildErasureExecutionPayload({ expected_version: selectedErasureInScope.version, reason: erasureActionReason, idempotency_key: idempotencyKey("erasure-execute") })))}>Execute erasure</button>
+                <button type="button" className={DANGER} disabled={busy || !canPropagate || !erasureActionConfirmed} onClick={() => void perform("Erasure propagation", () => api().propagateErasure(valueOf(selectedErasureInScope.id), buildErasurePropagationPayload({ expected_version: selectedErasureInScope.version, reason: erasureActionReason, idempotency_key: idempotencyKey("erasure-propagate") })))}>Propagate externally</button>
               </div>
-              <div className="flex flex-wrap gap-2 pt-1"><button type="button" className={SECONDARY} disabled={busy || !canReadRetention} onClick={() => void perform("Erasure execution history", async () => { const value = await api().listErasureRuns(valueOf(selectedErasure.id)); setErasureRunRows(value); return value; }, false)}>Load execution history</button><button type="button" className={SECONDARY} disabled={busy || !canReadRetention} onClick={() => void perform("Erasure propagation history", async () => { const value = await api().listPropagationRuns(valueOf(selectedErasure.id)); setErasureRunRows(value); return value; }, false)}>Load propagation history</button></div>
+              <div className="flex flex-wrap gap-2 pt-1"><button type="button" className={SECONDARY} disabled={busy || !canReadRetention} onClick={() => void perform("Erasure execution history", async () => { const value = await api().listErasureRuns(valueOf(selectedErasureInScope.id)); setErasureRunRows({ factoryId: activeFactoryId, data: value }); return value; }, false)}>Load execution history</button><button type="button" className={SECONDARY} disabled={busy || !canReadRetention} onClick={() => void perform("Erasure propagation history", async () => { const value = await api().listPropagationRuns(valueOf(selectedErasureInScope.id)); setErasureRunRows(value); return value; }, false)}>Load propagation history</button></div>
               {!canApproveRetention ? <p className="text-[10px] text-slate-500">Review requires saas.data_retention.approve.</p> : null}
               {!canExecuteRetention ? <p className="text-[10px] text-slate-500">Execution requires saas.data_retention.execute.</p> : null}
               {!canPropagate ? <p className="text-[10px] text-slate-500">Propagation requires saas.data_retention.propagate.</p> : null}
             </div>
           </div>
-          {erasureRunRows !== null ? <JsonPanel title="Erasure history response" data={erasureRunRows} /> : null}
+          {currentErasureRunRows !== null ? <JsonPanel title="Erasure history response" data={currentErasureRunRows} /> : null}
         </div> : null}
       </Panel>
     </div> : null}
@@ -517,7 +528,7 @@ export default function SaasDataProtectionWorkbenchPage() {
         </form>}
       </Panel>
       <Panel title="Tenant export operations" subtitle="Only process an export after its request is reviewed under the applicable operational controls.">
-        {exports.length ? <div className="space-y-2">{exports.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">Version {valueOf(item.version)} · schema {valueOf(item.sourceSchemaVersion ?? item.source_schema_version)} · {dateOf(item.createdAt ?? item.created_at)}</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" className={SECONDARY} disabled={!canReadTransfers || busy} onClick={() => { setSelectedTransfer(item); void perform("Transfer history", async () => { const value = await api().listTransferHistory(valueOf(item.id)); setTransferHistory(value); return value; }, false); }}>History</button><button type="button" className={PRIMARY} disabled={!canExecuteTransfers || busy} onClick={() => void perform("Export processing", () => api().processExport(valueOf(item.id)))}>Process export</button></div></div>)}</div> : <Empty>No tenant export operations returned.</Empty>}
+        {exports.length ? <div className="space-y-2">{exports.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">Version {valueOf(item.version)} · schema {valueOf(item.sourceSchemaVersion ?? item.source_schema_version)} · {dateOf(item.createdAt ?? item.created_at)}</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" className={SECONDARY} disabled={!canReadTransfers || busy} onClick={() => { setSelectedTransfer({ ...item, __factoryId: activeFactoryId }); void perform("Transfer history", async () => { const value = await api().listTransferHistory(valueOf(item.id)); setTransferHistory({ factoryId: activeFactoryId, data: value }); return value; }, false); }}>History</button><button type="button" className={PRIMARY} disabled={!canExecuteTransfers || busy} onClick={() => void perform("Export processing", () => api().processExport(valueOf(item.id)))}>Process export</button></div></div>)}</div> : <Empty>No tenant export operations returned.</Empty>}
       </Panel>
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Validate tenant migration" subtitle="Validation references an existing source transfer and a target semantic schema version.">
@@ -536,9 +547,9 @@ export default function SaasDataProtectionWorkbenchPage() {
         </Panel>
       </div>
       <Panel title="Migration operations" subtitle="Each transition is optimistic-version checked. COMPLETE requires a target bundle and explicit preservation verification.">
-        {migrations.length ? <div className="space-y-2">{migrations.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">Version {valueOf(item.version)} · {valueOf(item.sourceSchemaVersion ?? item.source_schema_version)} → {valueOf(item.targetSchemaVersion ?? item.target_schema_version)}</p><button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedTransfer(item); setMigrationAction("START"); setMigrationActionReason(""); setMigrationConfirmed(false); }}>Prepare transition…</button></div>)}</div> : <Empty>No migration operations returned.</Empty>}
-        {selectedTransfer && (selectedTransfer.operationType === "MIGRATION" || selectedTransfer.operation_type === "MIGRATION") ? <form className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4" onSubmit={(event) => submit(event, "Migration transition", () => api().transitionMigration(valueOf(selectedTransfer.id), buildMigrationTransitionPayload({
-          action: migrationAction, expected_version: selectedTransfer.version, reason: migrationActionReason,
+        {migrations.length ? <div className="space-y-2">{migrations.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">Version {valueOf(item.version)} · {valueOf(item.sourceSchemaVersion ?? item.source_schema_version)} → {valueOf(item.targetSchemaVersion ?? item.target_schema_version)}</p><button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedTransfer({ ...item, __factoryId: activeFactoryId }); setMigrationAction("START"); setMigrationActionReason(""); setMigrationConfirmed(false); }}>Prepare transition…</button></div>)}</div> : <Empty>No migration operations returned.</Empty>}
+        {selectedTransferInScope && (selectedTransferInScope.operationType === "MIGRATION" || selectedTransferInScope.operation_type === "MIGRATION") ? <form className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4" onSubmit={(event) => submit(event, "Migration transition", () => api().transitionMigration(valueOf(selectedTransferInScope.id), buildMigrationTransitionPayload({
+          action: migrationAction, expected_version: selectedTransferInScope.version, reason: migrationActionReason,
           idempotency_key: idempotencyKey("migration-transition"),
           ...(migrationAction === "COMPLETE" ? {
             target_bundle_reference: migrationBundleReference,
@@ -547,14 +558,14 @@ export default function SaasDataProtectionWorkbenchPage() {
             preservation_verified: migrationPreservationVerified,
           } : {}),
         })))}>
-          <p className="text-xs font-bold">Transfer {valueOf(selectedTransfer.id)} · version {valueOf(selectedTransfer.version)}</p>
+          <p className="text-xs font-bold">Transfer {valueOf(selectedTransferInScope.id)} · version {valueOf(selectedTransferInScope.version)}</p>
           <div className="grid gap-3 sm:grid-cols-2"><Field label="Transition"><Select value={migrationAction} onChange={setMigrationAction} options={["START", "COMPLETE", "FAIL", "CANCEL"]} /></Field><Field label="Reason"><input className={INPUT} value={migrationActionReason} onChange={(event) => setMigrationActionReason(event.target.value)} minLength={3} required /></Field></div>
           {migrationAction === "COMPLETE" ? <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3"><div className="grid gap-3 sm:grid-cols-2"><Field label="Target bundle reference"><input className={INPUT} value={migrationBundleReference} onChange={(event) => setMigrationBundleReference(event.target.value)} required /></Field><Field label="Target bundle SHA-256"><input className={INPUT} value={migrationBundleDigest} onChange={(event) => setMigrationBundleDigest(event.target.value)} required minLength={64} maxLength={64} /></Field></div><Field label="Target dataset manifest JSON"><textarea className={AREA} value={migrationManifest} onChange={(event) => setMigrationManifest(event.target.value)} required /></Field><label className="flex gap-2 text-[10px] text-amber-950"><input type="checkbox" checked={migrationPreservationVerified} onChange={(event) => setMigrationPreservationVerified(event.target.checked)} />I independently verified required preservation evidence.</label></div> : null}
           <label className="flex gap-2 text-[10px] text-rose-800"><input type="checkbox" checked={migrationConfirmed} onChange={(event) => setMigrationConfirmed(event.target.checked)} />I have verified the selected source/target transfer and current state before applying this transition.</label>
           <div className="flex flex-wrap gap-2"><button className={migrationAction === "COMPLETE" || migrationAction === "CANCEL" || migrationAction === "FAIL" ? DANGER : PRIMARY} disabled={busy || !canExecuteTransfers || !migrationConfirmed || (migrationAction === "COMPLETE" && !migrationPreservationVerified)}>Apply migration transition</button><button type="button" className={SECONDARY} onClick={() => setSelectedTransfer(null)}>Cancel</button></div>
         </form> : null}
       </Panel>
-      {transferHistory !== null ? <Panel title="Selected transfer history"><JsonPanel title="History response" data={transferHistory} /></Panel> : null}
+      {currentTransferHistory !== null ? <Panel title="Selected transfer history"><JsonPanel title="History response" data={currentTransferHistory} /></Panel> : null}
     </div> : null}
 
     {tab === "TARGETS" ? <div className="space-y-4">
@@ -573,11 +584,11 @@ export default function SaasDataProtectionWorkbenchPage() {
         </form>}
       </Panel>
       <Panel title="External target register" subtitle="Approve, reject, pause or resume using the server-returned expected state.">
-        {targets.length ? <div className="space-y-2">{targets.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.targetId ?? item.target_id ?? item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.storeKind ?? item.store_kind)} · {valueOf(item.adapterKey ?? item.adapter_key)} · {valueOf(item.categories)}</p>{canApproveRetention ? <button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedTarget(item); setTargetDecision("APPROVE"); setTargetReviewReason(""); }}>Review target…</button> : null}</div>)}</div> : <Empty>No external data targets returned.</Empty>}
-        {selectedTarget ? <form className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2" onSubmit={(event) => submit(event, "External target review", () => api().reviewExternalTarget(valueOf(selectedTarget.targetId ?? selectedTarget.target_id ?? selectedTarget.id), buildExternalTargetReviewPayload({
-          decision: targetDecision, expected_status: selectedTarget.status, reason: targetReviewReason,
+        {targets.length ? <div className="space-y-2">{targets.map((item, index) => <div key={valueOf(item.id, String(index))} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs">{valueOf(item.targetId ?? item.target_id ?? item.id)}</strong><Status value={item.status} /></div><p className="mt-1 text-[10px] text-slate-500">{valueOf(item.storeKind ?? item.store_kind)} · {valueOf(item.adapterKey ?? item.adapter_key)} · {valueOf(item.categories)}</p>{canApproveRetention ? <button type="button" className={SECONDARY + " mt-2"} onClick={() => { setSelectedTarget({ ...item, __factoryId: activeFactoryId }); setTargetDecision("APPROVE"); setTargetReviewReason(""); }}>Review target…</button> : null}</div>)}</div> : <Empty>No external data targets returned.</Empty>}
+        {selectedTargetInScope ? <form className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2" onSubmit={(event) => submit(event, "External target review", () => api().reviewExternalTarget(valueOf(selectedTargetInScope.targetId ?? selectedTargetInScope.target_id ?? selectedTargetInScope.id), buildExternalTargetReviewPayload({
+          decision: targetDecision, expected_status: selectedTargetInScope.status, reason: targetReviewReason,
         })))}>
-          <p className="text-xs font-bold sm:col-span-2">Selected {valueOf(selectedTarget.targetId ?? selectedTarget.target_id ?? selectedTarget.id)} · expected status {valueOf(selectedTarget.status)}</p>
+          <p className="text-xs font-bold sm:col-span-2">Selected {valueOf(selectedTargetInScope.targetId ?? selectedTargetInScope.target_id ?? selectedTargetInScope.id)} · expected status {valueOf(selectedTargetInScope.status)}</p>
           <Field label="Decision"><Select value={targetDecision} onChange={setTargetDecision} options={["APPROVE", "REJECT", "PAUSE", "RESUME"]} /></Field>
           <Field label="Review reason"><input className={INPUT} value={targetReviewReason} onChange={(event) => setTargetReviewReason(event.target.value)} required minLength={3} maxLength={1000} /></Field>
           <div className="flex gap-2 sm:col-span-2"><button className={SECONDARY} disabled={busy || !canApproveRetention}>Submit target review</button><button type="button" className={SECONDARY} onClick={() => setSelectedTarget(null)}>Cancel</button></div>
@@ -593,18 +604,18 @@ export default function SaasDataProtectionWorkbenchPage() {
         </div>}
         {backupError ? <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-[10px] leading-5 text-amber-950">{backupError}</p> : null}
       </Panel>
-      {Object.keys(backupEvidence).length ? <section className="grid gap-4 lg:grid-cols-2">
-        <JsonPanel title="Provider acceptance · latest" data={backupEvidence.providerLatest} />
-        <JsonPanel title="Provider acceptance · current" data={backupEvidence.providerCurrent} />
-        <JsonPanel title="Backup writer inventory · latest" data={backupEvidence.writerLatest} />
-        <JsonPanel title="Backup writer inventory · current" data={backupEvidence.writerCurrent} />
-        <JsonPanel title="Backup copy-class coverage · current" data={backupEvidence.copyClassCoverage} />
-        <JsonPanel title="External copy coverage · current" data={backupEvidence.externalCopyCoverage} />
+      {Object.keys(currentBackupEvidence).filter((key) => key !== "__factoryId").length ? <section className="grid gap-4 lg:grid-cols-2">
+        <JsonPanel title="Provider acceptance · latest" data={currentBackupEvidence.providerLatest} />
+        <JsonPanel title="Provider acceptance · current" data={currentBackupEvidence.providerCurrent} />
+        <JsonPanel title="Backup writer inventory · latest" data={currentBackupEvidence.writerLatest} />
+        <JsonPanel title="Backup writer inventory · current" data={currentBackupEvidence.writerCurrent} />
+        <JsonPanel title="Backup copy-class coverage · current" data={currentBackupEvidence.copyClassCoverage} />
+        <JsonPanel title="External copy coverage · current" data={currentBackupEvidence.externalCopyCoverage} />
       </section> : <Empty>Select a category and load its evidence records. No provider-level acceptance is assumed from missing or stale evidence.</Empty>}
     </div> : null}
 
     <Panel title="Latest API response" subtitle="The most recent successful command response is shown for operator traceability. Sensitive tokens are never requested or rendered by this page.">
-      {latestResponse === null ? <Empty>No write/action response recorded in this page session.</Empty> : <JsonPanel title="Server response" data={latestResponse} />}
+      {currentLatestResponse === null ? <Empty>No write/action response recorded in this page session.</Empty> : <JsonPanel title="Server response" data={currentLatestResponse} />}
     </Panel>
     <p className="px-1 text-[10px] leading-5 text-slate-500">Tenant and active-factory identity are taken from the shared authenticated FactoryOS session. Browser permission checks only control visibility; backend IAM permission guards, tenant scoping, optimistic versions, legal holds, audit records and lifecycle validations remain authoritative. Execution must be independently reviewed and tested before production use.</p>
   </main>;
