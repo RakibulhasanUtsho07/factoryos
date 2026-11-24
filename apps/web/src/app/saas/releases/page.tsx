@@ -327,10 +327,10 @@ export default function SaasReleaseControlPlanePage() {
     setBusy(true); setNotice(null);
     try {
       await client.transitionRelease(selectedReleaseKey, buildReleaseTransitionPayload({
-        ...releaseTransitionDraft, expected_version: Number(selectedRelease.version),
+        ...releaseTransitionDraft, action: effectiveReleaseTransitionAction, expected_version: Number(selectedRelease.version),
         idempotency_key: globalThis.crypto.randomUUID(),
       }));
-      setNotice({ tone: "success", message: selectedReleaseKey + " transition " + releaseTransitionDraft.action + " was recorded." });
+      setNotice({ tone: "success", message: selectedReleaseKey + " transition " + effectiveReleaseTransitionAction + " was recorded." });
       refreshAll();
     } catch (cause) { setNotice({ tone: "error", message: errorOf(cause) }); }
     finally { setBusy(false); }
@@ -383,7 +383,7 @@ export default function SaasReleaseControlPlanePage() {
       const scope = textOf(selectedProfile.scopeType);
       if (scope === "FACTORY") await client.transitionFactoryProfile(textOf(selectedProfile.factoryId), payload);
       else await client.transitionTenantProfile(payload);
-      setNotice({ tone: "success", message: "Deployment profile transition " + profileTransitionDraft.action + " was recorded. Reloading the effective profile." });
+      setNotice({ tone: "success", message: "Deployment profile transition " + effectiveProfileTransitionAction + " was recorded. Reloading the effective profile." });
       refreshAll();
     } catch (cause) { setNotice({ tone: "error", message: errorOf(cause) }); }
     finally { setBusy(false); }
