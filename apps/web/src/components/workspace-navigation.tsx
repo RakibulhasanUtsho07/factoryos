@@ -38,6 +38,7 @@ const navigation = [
   { href: "/saas/usage", label: "SaaS Usage & Cost" },
   { href: "/saas/billing", label: "SaaS Billing" },
   { href: "/saas/data-protection", label: "Data Protection" },
+  { href: "/saas/releases", label: "Release & Deployment" },
   { href: "/admin/governance", label: "Identity & Governance" },
 ] as const;
 
