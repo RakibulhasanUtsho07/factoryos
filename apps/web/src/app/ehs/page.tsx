@@ -775,7 +775,8 @@ export default function EhsSafetyComplianceWorkbenchPage() {
                 <EvidenceBox evidence={action.verification_evidence??action.completion_evidence} reason={action.last_change_reason}/>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {canIncidentManage&&["OPEN","IN_PROGRESS","READY_FOR_VERIFICATION"].includes(action.status)?<button type="button" className={secondaryButton} onClick={()=>openEditor("CAPA_TRANSITION",{action_id:action.id,action:action.status==="OPEN"?"START":action.status==="IN_PROGRESS"?"SUBMIT_FOR_VERIFICATION":"REOPEN",reason:""})}>Update action</button>:null}
-                  {canCapaVerify&&action.status==="READY_FOR_VERIFICATION"?<button type="button" className={primaryButton} onClick={()=>openEditor("CAPA_TRANSITION",{action_id:action.id,action:"VERIFY",reason:"Independent verification",verification_evidence_ref:""})}>Verify independently</button>:null}
+                  {canCapaVerify&&action.status==="READY_FOR_VERIFICATION"&&action.submitted_by_user_id!==currentUserId?<button type="button" className={primaryButton} onClick={()=>openEditor("CAPA_TRANSITION",{action_id:action.id,action:"VERIFY",reason:"Independent verification",verification_evidence_ref:""})}>Verify independently</button>:null}
+                {canCapaVerify&&action.status==="READY_FOR_VERIFICATION"&&action.submitted_by_user_id===currentUserId?<p className="mt-2 text-[10px] font-medium text-amber-900">The submitting user cannot verify this corrective action from this session.</p>:null}
                 </div>
               </div>)}
               {!correctiveActions.length?<Empty>{relatedLoading?"Loading corrective actions…":"No corrective actions linked to this incident yet."}</Empty>:null}
@@ -813,7 +814,8 @@ export default function EhsSafetyComplianceWorkbenchPage() {
           <EvidenceBox evidence={selectedPermit.closure_evidence} reason={selectedPermit.last_change_reason}/>
           <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
             {selectedPermit.status==="DRAFT"&&canPermitExecute?<button type="button" className={primaryButton} onClick={()=>startPermitTransition("SUBMIT")}>Submit for approval</button>:null}
-            {selectedPermit.status==="PENDING_APPROVAL"&&canPermitApprove?<><button type="button" className={primaryButton} onClick={()=>startPermitTransition("APPROVE")}>Approve permit</button><button type="button" className={warningButton} onClick={()=>startPermitTransition("REJECT")}>Reject permit</button></>:null}
+            {selectedPermit.status==="PENDING_APPROVAL"&&canPermitApprove&&selectedPermit.requested_by_user_id!==currentUserId?<><button type="button" className={primaryButton} onClick={()=>startPermitTransition("APPROVE")}>Approve permit</button><button type="button" className={warningButton} onClick={()=>startPermitTransition("REJECT")}>Reject permit</button></>:null}
+            {selectedPermit.status==="PENDING_APPROVAL"&&canPermitApprove&&selectedPermit.requested_by_user_id===currentUserId?<p className="self-center text-[10px] font-medium text-amber-900">The permit requester cannot approve their own permit from this session.</p>:null}
             {selectedPermit.status==="APPROVED"&&selectedPermit.requires_isolation&&canPermitExecute?<button type="button" className={secondaryButton} onClick={()=>startPermitTransition("VERIFY_ISOLATION")}>Verify isolation</button>:null}
             {selectedPermit.status==="APPROVED"&&canPermitExecute&&permitIsolationVerified?<button type="button" className={primaryButton} onClick={()=>startPermitTransition("ACTIVATE")}>Activate permit</button>:null}
             {selectedPermit.status==="APPROVED"&&canPermitExecute&&!permitIsolationVerified?<p className="self-center text-[10px] font-medium text-amber-900">Verify every declared isolation point before permit activation.</p>:null}
