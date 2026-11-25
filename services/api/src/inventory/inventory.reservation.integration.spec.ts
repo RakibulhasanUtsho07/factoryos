@@ -4630,13 +4630,13 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
         const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
           const waiting = await adminPool.query<{ count: string }>(
-            \`SELECT count(*)::text AS count
-             FROM pg_stat_activity
-             WHERE datname=current_database()
-               AND pid<>pg_backend_pid()
-               AND wait_event_type='Lock'
-               AND query_start >= $1::timestamptz
-               AND query ILIKE $2\`,
+            'SELECT count(*)::text AS count ' +
+            'FROM pg_stat_activity ' +
+            'WHERE datname=current_database() ' +
+            'AND pid<>pg_backend_pid() ' +
+            "AND wait_event_type='Lock' " +
+            'AND query_start >= $1::timestamptz ' +
+            'AND query ILIKE $2',
             [waitStartedAt, pattern],
           );
           if (Number(waiting.rows[0]?.count ?? 0) > 0) return;
