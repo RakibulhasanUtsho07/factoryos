@@ -4507,4 +4507,217 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(quarantineEventCount.rows[0]?.count).toBe('1');
   }, 30000);
 
+  it('serializes a traceability-unit HOLD before a competing FEFO reservation', async () => {
+    const itemId = await createItem('2.0000');
+    const token = randomUUID().slice(0, 8).toUpperCase();
+    const defaultResult = await adminPool.query<{ id: string }>(
+      "SELECT id::text AS id FROM inventory_locations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'",
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-HOLD-RACE-WH-' + token, name: 'FEFO quality hold race warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const bin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-HOLD-RACE-BIN-' + token, name: 'FEFO quality hold race picking BIN', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, bin.id);
+
+    const policy = await adminPool.query<{ id: string }>(
+      "INSERT INTO inventory_material_allocation_policies (" +
+      "tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy, " +
+      "require_traceability, created_by_user_id, updated_by_user_id" +
+      ") VALUES ($1,$2,'MATERIAL',$3,'FEFO',TRUE,$4,$4) RETURNING id::text AS id",
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+    if (!policy.rows[0]?.id) throw new Error('FEFO material policy fixture was not created');
+    policyIds.push(policy.rows[0].id);
+
+    const dateResult = await adminPool.query<{ current_date: string }>(
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
+    );
+    const currentDate = dateResult.rows[0]?.current_date;
+    if (!currentDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate)) {
+      throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO quality-hold race fixtures');
+    }
+    const expiryDate = new Date(currentDate + 'T00:00:00.000Z');
+    expiryDate.setUTCDate(expiryDate.getUTCDate() + 30);
+    const expiry = expiryDate.toISOString().slice(0, 10);
+
+    const code = 'LOT-FEFO-HOLD-RACE-' + token;
+    const lot = await traceabilityService.createUnit(
+      TEST_USER_ID, tenantId, factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'MATERIAL',
+        unit_code: code,
+        barcode_value: 'BAR-' + code,
+        inventory_item_id: itemId,
+        quantity: 2,
+        unit: 'PCS',
+        expires_at: expiry,
+        attributes: {},
+      } as never,
+      'wms-fefo-hold-race-lot-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    if (!lot.id) throw new Error('FEFO quality-hold race LOT fixture was not created');
+
+    const putAway = await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        movement_purpose: 'PUT_AWAY',
+        source_location_id: defaultLocationId,
+        destination_location_id: bin.id,
+        traceability_unit_id: lot.id,
+        quantity: 2,
+      } as never,
+      'wms-fefo-hold-race-putaway-' + token,
+      null,
+      randomUUID(),
+    );
+    expect(putAway.replayed).toBe(false);
+
+    const qualityContext = {
+      userId: TEST_USER_ID,
+      tenantId,
+      factoryId,
+      requestId: randomUUID(),
+      traceId: randomUUID(),
+    };
+    const inspection = await qualityService.createInspection(
+      qualityContext,
+      { inspection_type: 'INVENTORY', target_type: 'TRACEABILITY_UNIT', target_id: lot.id, sample_quantity: 1 } as never,
+      'wms-fefo-hold-race-inspection-' + token,
+    );
+
+    // Hold the exact inventory-item lock used by reservation planning. Queue the
+    // quality HOLD first and the reservation second, then release the blocker.
+    // PostgreSQL must serialize the HOLD commit before the reservation's candidate query.
+    const blocker = await adminPool.connect();
+    let blockerOpen = false;
+    let holdPromise: ReturnType<QualityService['decideInspection']> | undefined;
+    let reservationPromise: ReturnType<InventoryReservationService['createReservation']> | undefined;
+    try {
+      await blocker.query('BEGIN');
+      blockerOpen = true;
+      await blocker.query(
+        'SELECT id FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+        [itemId, tenantId, factoryId],
+      );
+
+      const waitStartedAt = new Date().toISOString();
+      holdPromise = qualityService.decideInspection(
+        qualityContext,
+        inspection.id,
+        {
+          expected_version: Number(inspection.row_version),
+          action: 'HOLD',
+          reason: 'Serialize FEFO reservation planning behind an inventory-backed quality hold',
+        } as never,
+        'wms-fefo-hold-race-decision-' + token,
+      );
+
+      const waitForBlockedQuery = async (pattern: string, description: string): Promise<void> => {
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          const waiting = await adminPool.query<{ count: string }>(
+            \`SELECT count(*)::text AS count
+             FROM pg_stat_activity
+             WHERE datname=current_database()
+               AND pid<>pg_backend_pid()
+               AND wait_event_type='Lock'
+               AND query_start >= $1::timestamptz
+               AND query ILIKE $2\`,
+            [waitStartedAt, pattern],
+          );
+          if (Number(waiting.rows[0]?.count ?? 0) > 0) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error(description + ' did not block on the inventory-item lock');
+      };
+
+      await waitForBlockedQuery('%FROM inventory_items%', 'Quality HOLD');
+
+      const inspectionBeforeRelease = await adminPool.query<{ status: string }>(
+        'SELECT status FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+        [inspection.id, tenantId, factoryId],
+      );
+      expect(inspectionBeforeRelease.rows[0]?.status).toBe('OPEN');
+
+      reservationPromise = service.createReservation(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+        { quantity: 1, location_id: bin.id } as CreateInventoryReservationDto,
+        'wms-fefo-hold-race-reservation-' + token,
+        randomUUID(),
+        randomUUID(),
+      );
+      await waitForBlockedQuery('%status%FROM inventory_items%', 'FEFO reservation');
+
+      await blocker.query('COMMIT');
+      blockerOpen = false;
+    } finally {
+      if (blockerOpen) await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+
+    if (!holdPromise || !reservationPromise) throw new Error('FEFO quality-hold race operations were not started');
+    const holdDecision = await holdPromise;
+    expect(holdDecision).toMatchObject({ status: 'ON_HOLD', replayed: false });
+    await expect(reservationPromise).rejects.toThrow(/Insufficient eligible FEFO lot\/serial stock/i);
+
+    const persistedHold = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM quality_holds " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id=$3 AND status='ACTIVE'",
+      [tenantId, factoryId, lot.id],
+    );
+    expect(persistedHold.rows[0]?.count).toBe('1');
+
+    const reservations = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_reservations WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3',
+      [tenantId, factoryId, itemId],
+    );
+    expect(reservations.rows[0]?.count).toBe('0');
+
+    const allocations = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_reservation_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3',
+      [tenantId, factoryId, itemId],
+    );
+    expect(allocations.rows[0]?.count).toBe('0');
+
+    const lotBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      "SELECT SUM(quantity_on_hand)::numeric(18,4)::text AS quantity_on_hand, " +
+      "SUM(quantity_reserved)::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_traceability_location_balances " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4",
+      [tenantId, factoryId, itemId, lot.id],
+    );
+    expect(lotBalance.rows[0]).toEqual({ quantity_on_hand: '2.0000', quantity_reserved: '0.0000' });
+
+    const binBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      "SELECT quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4",
+      [tenantId, factoryId, itemId, bin.id],
+    );
+    expect(binBalance.rows[0]).toEqual({ quantity_on_hand: '2.0000', quantity_reserved: '0.0000' });
+
+    const aggregate = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      "SELECT quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3",
+      [tenantId, factoryId, itemId],
+    );
+    expect(aggregate.rows[0]).toEqual({ quantity_on_hand: '2.0000', quantity_reserved: '0.0000' });
+  }, 30000);
+
+
 });

@@ -440,6 +440,21 @@ export class QualityService {
         if(Number(defects.rows[0]?.count??0)>0) throw new ConflictException('Resolve or disposition defects before cancelling an inspection');
         next='CANCELLED';
       }
+      // Serialize inventory-backed quality holds with reservation planning.
+      // Reservation paths lock the inventory item before selecting LOT/SERIAL candidates;
+      // taking the same lock here gives HOLD and reservation a single transaction order.
+      if ((dto.action === 'FAIL' || dto.action === 'HOLD') && q.inventory_item_id) {
+        const itemLock = await client.query<{ id: string }>(
+          `SELECT id::text AS id
+           FROM inventory_items
+           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+           FOR UPDATE`,
+          [q.inventory_item_id, c.tenantId, c.factoryId],
+        );
+        if (!itemLock.rows[0]) {
+          throw new ConflictException('Inventory item for quality hold was not found in this factory');
+        }
+      }
       const upd=await client.query("UPDATE quality_inspections SET status=$1,row_version=row_version+1,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
         [next,c.userId,id,c.tenantId,c.factoryId,q.row_version]);
       const version=Number(upd.rows[0]?.row_version??0);
