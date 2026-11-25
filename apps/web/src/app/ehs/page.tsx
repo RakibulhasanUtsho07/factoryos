@@ -138,17 +138,6 @@ function EvidenceBox({ evidence, reason }: { evidence: unknown; reason: unknown 
     {evidence ? <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(evidence, null, 2)}</pre> : null}
   </div>;
 }
-function evidenceFromDraft(draft: Record<string, string>, prefix: string) {
-  const reference = draft[prefix + "_evidence_ref"]?.trim() ?? "";
-  const notes = draft[prefix + "_evidence_notes"]?.trim() ?? "";
-  return { reference, notes };
-}
-function parseCodeEvidence(value: string, delimiter = "|") {
-  return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
-    const index = line.indexOf(delimiter);
-    return index < 0 ? { code: line, evidence: "" } : { code: line.slice(0, index).trim(), evidence: line.slice(index + 1).trim() };
-  });
-}
 
 export default function EhsSafetyComplianceWorkbenchPage() {
   const { status, snapshot, activeFactoryId, hasPermission, request } = useFactoryOsSession();
@@ -198,6 +187,8 @@ export default function EhsSafetyComplianceWorkbenchPage() {
   const selectedDrill = drills.find(item => item.id === selectedDrillId) ?? null;
   const selectedChemical = chemicals.find(item => item.id === selectedChemicalId) ?? null;
   const selectedContractor = contractors.find(item => item.id === selectedContractorId) ?? null;
+  const permitIsolationVerified = selectedPermit?.requires_isolation !== true || Boolean(selectedPermit.isolation_verified_at);
+  const drillHasCompletionEvidence = Boolean(selectedDrill && numberOf(selectedDrill.present_count) > 0 && numberOf(selectedDrill.response_count) > 0);
   const activeFactory = snapshot?.factories.find(factory => factory.id === activeFactoryId);
   const summary = useMemo(() => summarizeEhs({ incidents, permits, drills, chemicals, contractors }), [incidents, permits, drills, chemicals, contractors]);
 
@@ -221,17 +212,6 @@ export default function EhsSafetyComplianceWorkbenchPage() {
     (statusFilter === "ALL" || item.status === statusFilter)
     && [item.contractor_code,item.company_name,item.person_name].some(value => String(value ?? "").toLowerCase().includes(search.toLowerCase()))
   ), [contractors,statusFilter,search]);
-
-  const loadList = useCallback(async (
-    endpoint: string,
-    permitted: boolean,
-    setter: (rows: EhsItem[]) => void,
-    kind?: string,
-  ) => {
-    if (!permitted) { setter([]); return; }
-    const response = await request(endpoint + (kind ? buildEhsListQuery({ limit: 100 }, kind) : "?limit=100"));
-    setter(normalizeEhsRows(response) as EhsItem[]);
-  }, [request]);
 
   const loadWorkspace = useCallback(async () => {
     if (!connected) {
@@ -612,7 +592,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         </>;
       case "DRILL_TRANSITION":
         return <>
-          <Field label="Drill action"><select className={inputClass} value={draft.action??""} onChange={e=>update("action",e.target.value)}>{["START","COMPLETE","CANCEL"].map(v=><option key={v}>{v}</option>)}</select></Field>
+          <Field label="Drill action"><select className={inputClass} value={draft.action??""} onChange={e=>update("action",e.target.value)}>{selectedDrill?.status==="PLANNED"?<option>START</option>:null}{selectedDrill?.status==="IN_PROGRESS"&&drillHasCompletionEvidence?<option>COMPLETE</option>:null}{["PLANNED","IN_PROGRESS"].includes(selectedDrill?.status??"")?<option>CANCEL</option>:null}</select></Field>
           <Field label="Reason"><textarea required rows={2} className={inputClass} value={draft.reason??""} onChange={e=>update("reason",e.target.value)}/></Field>
           {draft.action==="COMPLETE"?<><Field label="Outcome summary"><textarea required rows={3} maxLength={4000} className={inputClass} value={draft.outcome_summary??""} onChange={e=>update("outcome_summary",e.target.value)}/></Field><Field label="Close-out evidence reference"><input required className={inputClass} value={draft.close_evidence_ref??""} onChange={e=>update("close_evidence_ref",e.target.value)}/></Field><Field label="Evidence notes"><textarea rows={2} className={inputClass} value={draft.close_evidence_notes??""} onChange={e=>update("close_evidence_notes",e.target.value)}/></Field></>:null}
         </>;
@@ -674,7 +654,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         </>;
       case "CONTRACTOR_TRANSITION":
         return <>
-          <Field label="Induction action"><select className={inputClass} value={draft.action??"REVOKE"} onChange={e=>update("action",e.target.value)}><option>REVOKE</option><option>EXPIRE</option></select></Field>
+          <Field label="Induction action"><select className={inputClass} value={draft.action??"REVOKE"} onChange={e=>update("action",e.target.value)}><option>REVOKE</option>{selectedContractor&&Date.parse(String(selectedContractor.expires_at??""))<=Date.now()?<option>EXPIRE</option>:null}</select></Field>
           <Field label="Reason"><textarea required rows={3} maxLength={2000} className={inputClass} value={draft.reason??""} onChange={e=>update("reason",e.target.value)}/></Field>
         </>;
       default:
@@ -835,7 +815,8 @@ export default function EhsSafetyComplianceWorkbenchPage() {
             {selectedPermit.status==="DRAFT"&&canPermitExecute?<button type="button" className={primaryButton} onClick={()=>startPermitTransition("SUBMIT")}>Submit for approval</button>:null}
             {selectedPermit.status==="PENDING_APPROVAL"&&canPermitApprove?<><button type="button" className={primaryButton} onClick={()=>startPermitTransition("APPROVE")}>Approve permit</button><button type="button" className={warningButton} onClick={()=>startPermitTransition("REJECT")}>Reject permit</button></>:null}
             {selectedPermit.status==="APPROVED"&&selectedPermit.requires_isolation&&canPermitExecute?<button type="button" className={secondaryButton} onClick={()=>startPermitTransition("VERIFY_ISOLATION")}>Verify isolation</button>:null}
-            {selectedPermit.status==="APPROVED"&&canPermitExecute?<button type="button" className={primaryButton} onClick={()=>startPermitTransition("ACTIVATE")}>Activate permit</button>:null}
+            {selectedPermit.status==="APPROVED"&&canPermitExecute&&permitIsolationVerified?<button type="button" className={primaryButton} onClick={()=>startPermitTransition("ACTIVATE")}>Activate permit</button>:null}
+            {selectedPermit.status==="APPROVED"&&canPermitExecute&&!permitIsolationVerified?<p className="self-center text-[10px] font-medium text-amber-900">Verify every declared isolation point before permit activation.</p>:null}
             {selectedPermit.status==="ACTIVE"&&canPermitExecute?<><button type="button" className={primaryButton} onClick={()=>startPermitTransition("CLOSE")}>Close permit</button><button type="button" className={dangerButton} onClick={()=>startPermitTransition("EXPIRE")}>Expire permit</button></>:null}
             {["DRAFT","PENDING_APPROVAL","APPROVED"].includes(selectedPermit.status)&&canPermitExecute?<button type="button" className={dangerButton} onClick={()=>startPermitTransition("CANCEL")}>Cancel permit</button>:null}
           </div>
@@ -865,7 +846,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
             <EvidenceBox evidence={selectedDrill.close_evidence} reason={selectedDrill.last_change_reason}/>
             {canDrillManage?<div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
               {selectedDrill.status==="PLANNED"?<button type="button" className={primaryButton} onClick={()=>openEditor("DRILL_TRANSITION",{action:"START",reason:"Drill started"})}>Start drill</button>:null}
-              {selectedDrill.status==="IN_PROGRESS"?<><button type="button" className={secondaryButton} onClick={()=>openEditor("ATTENDANCE_CREATE",{attendance_status:"PRESENT"})}>Record attendance</button><button type="button" className={secondaryButton} onClick={()=>openEditor("RESPONSE_CREATE",{occurred_at:dateTimeLocal()})}>Record response</button><button type="button" className={primaryButton} onClick={()=>openEditor("DRILL_TRANSITION",{action:"COMPLETE",reason:"Drill completed",outcome_summary:"",close_evidence_ref:""})}>Complete drill</button></>:null}
+              {selectedDrill.status==="IN_PROGRESS"?<><button type="button" className={secondaryButton} onClick={()=>openEditor("ATTENDANCE_CREATE",{attendance_status:"PRESENT"})}>Record attendance</button><button type="button" className={secondaryButton} onClick={()=>openEditor("RESPONSE_CREATE",{occurred_at:dateTimeLocal()})}>Record response</button><button type="button" disabled={!drillHasCompletionEvidence} className={primaryButton} onClick={()=>openEditor("DRILL_TRANSITION",{action:"COMPLETE",reason:"Drill completed",outcome_summary:"",close_evidence_ref:""})}>Complete drill</button>{!drillHasCompletionEvidence?<p className="self-center text-[10px] text-amber-900">At least one PRESENT attendee and one response are required first.</p>:null}</>:null}
               {["PLANNED","IN_PROGRESS"].includes(selectedDrill.status)?<button type="button" className={dangerButton} onClick={()=>openEditor("DRILL_TRANSITION",{action:"CANCEL",reason:""})}>Cancel drill</button>:null}
             </div>:null}
           </Panel>
