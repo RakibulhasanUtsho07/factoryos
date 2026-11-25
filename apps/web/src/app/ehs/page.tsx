@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   buildEhsAttendancePayload,
@@ -241,28 +241,38 @@ export default function EhsSafetyComplianceWorkbenchPage() {
     }
     setLoading(true);
     setError("");
-    const tasks: Array<Promise<void>> = [];
     const errors: string[] = [];
-    const safe = async (name: string, endpoint: string, permitted: boolean, setter: (rows: EhsItem[]) => void, kind?: string) => {
-      try { await loadList(endpoint, permitted, setter, kind); }
-      catch (cause) { errors.push(name + ": " + messageOf(cause)); setter([]); }
+    const safe = async (
+      name: string,
+      endpoint: string,
+      permitted: boolean,
+      setter: (rows: EhsItem[]) => void,
+      kind: string,
+      select: Dispatch<SetStateAction<string>>,
+    ) => {
+      if (!permitted) { setter([]); select(""); return; }
+      try {
+        const response = await request(endpoint + buildEhsListQuery({ limit: 100 }, kind));
+        const next = normalizeEhsRows(response) as EhsItem[];
+        setter(next);
+        select(current => current && next.some(item => item.id === current) ? current : next[0]?.id ?? "");
+      } catch (cause) {
+        errors.push(name + ": " + messageOf(cause));
+        setter([]);
+        select("");
+      }
     };
-    tasks.push(safe("Incidents","/ehs/incidents",canIncidentRead,setIncidents,"incidents"));
-    tasks.push(safe("Permits","/ehs/permits",canPermitRead,setPermits,"permits"));
-    tasks.push(safe("Drills","/ehs/drills",canDrillRead,setDrills,"drills"));
-    tasks.push(safe("Chemical SDS","/ehs/chemicals",canChemicalRead,setChemicals,"chemicals"));
-    tasks.push(safe("Contractor inductions","/ehs/contractors/inductions",canContractorRead,setContractors,"contractors"));
-    await Promise.all(tasks);
-    setSelectedIncidentId(current => current && incidents.some(item => item.id === current) ? current : "");
-    setSelectedPermitId(current => current && permits.some(item => item.id === current) ? current : "");
-    setSelectedDrillId(current => current && drills.some(item => item.id === current) ? current : "");
-    setSelectedChemicalId(current => current && chemicals.some(item => item.id === current) ? current : "");
-    setSelectedContractorId(current => current && contractors.some(item => item.id === current) ? current : "");
+    await Promise.all([
+      safe("Incidents","/ehs/incidents",canIncidentRead,setIncidents,"incidents",setSelectedIncidentId),
+      safe("Permits","/ehs/permits",canPermitRead,setPermits,"permits",setSelectedPermitId),
+      safe("Drills","/ehs/drills",canDrillRead,setDrills,"drills",setSelectedDrillId),
+      safe("Chemical SDS","/ehs/chemicals",canChemicalRead,setChemicals,"chemicals",setSelectedChemicalId),
+      safe("Contractor inductions","/ehs/contractors/inductions",canContractorRead,setContractors,"contractors",setSelectedContractorId),
+    ]);
     if (errors.length) setError(errors.join(" · "));
     setLoading(false);
   }, [
-    connected,canIncidentRead,canPermitRead,canDrillRead,canChemicalRead,canContractorRead,
-    loadList,incidents,permits,drills,chemicals,contractors
+    connected,canIncidentRead,canPermitRead,canDrillRead,canChemicalRead,canContractorRead,request
   ]);
 
   useEffect(() => {
@@ -377,9 +387,11 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         }
         case "CAPA_TRANSITION": {
           const action = correctiveActions.find(item => item.id === draft.action_id);
-          if (!action || !canIncidentManage) throw new Error("Select a corrective action and confirm management permission.");
           const command = draft.action ?? "";
-          if (command === "VERIFY" && !canCapaVerify) throw new Error("Independent verification permission is required.");
+          if (!action) throw new Error("Select a corrective action before continuing.");
+          if (command === "VERIFY" ? !canCapaVerify : !canIncidentManage) {
+            throw new Error(command === "VERIFY" ? "Independent verification permission is required." : "Corrective-action management permission is required.");
+          }
           await request("/ehs/corrective-actions/" + encodeURIComponent(action.id) + (command === "VERIFY" ? "/verify" : "/transition"), {
             method: "POST",
             body: buildEhsCorrectiveActionTransitionPayload({
@@ -889,7 +901,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         <p className="mt-3 break-all text-[10px] text-blue-800"><a href={String(selectedChemical.sds_document_uri??"#")} target="_blank" rel="noreferrer">Open controlled SDS document reference</a></p>
         <EvidenceBox evidence={null} reason={selectedChemical.last_change_reason}/>
         {canChemicalManage?<div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-          {["DRAFT","INACTIVE"].includes(selectedChemical.status)?<button type="button" className={primaryButton} onClick={()=>openEditor("CHEMICAL_TRANSITION",{action:"ACTIVATE",reason:"Independent SDS review"})}>Activate SDS</button>:null}
+          {["DRAFT","INACTIVE"].includes(selectedChemical.status)&&selectedChemical.created_by_user_id!==currentUserId?<button type="button" className={primaryButton} onClick={()=>openEditor("CHEMICAL_TRANSITION",{action:"ACTIVATE",reason:"Independent SDS review"})}>Activate SDS</button>:null}
           {selectedChemical.status==="ACTIVE"?<button type="button" className={warningButton} onClick={()=>openEditor("CHEMICAL_TRANSITION",{action:"DEACTIVATE",reason:""})}>Deactivate</button>:null}
           {["DRAFT","ACTIVE","INACTIVE"].includes(selectedChemical.status)?<button type="button" className={dangerButton} onClick={()=>openEditor("CHEMICAL_TRANSITION",{action:"RETIRE",reason:""})}>Retire revision</button>:null}
         </div>:null}
