@@ -4122,4 +4122,389 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(heldLotAllocationCount.rows[0]?.count).toBe('0');
   }, 30000);
 
+
+
+  it('allocates FEFO only from eligible active picking BINs and active parents', async () => {
+    const token = randomUUID().slice(0, 8);
+    const itemId = await createItem('10.0000');
+    const defaultResult = await adminPool.query<{ id: string }>(
+      "SELECT id::text AS id FROM inventory_locations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'",
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const activeWarehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-WH-' + token, name: 'FEFO eligible warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const nonPickingWarehouseBin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-NOPICK-' + token, name: 'Non-picking FEFO BIN', location_type: 'BIN', parent_location_id: activeWarehouse.id, picking_enabled: false } as never,
+      null, randomUUID(),
+    );
+    const disabledBin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-DISABLED-' + token, name: 'Disabled FEFO BIN', location_type: 'BIN', parent_location_id: activeWarehouse.id } as never,
+      null, randomUUID(),
+    );
+    const validBin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-VALID-' + token, name: 'Eligible FEFO BIN', location_type: 'BIN', parent_location_id: activeWarehouse.id } as never,
+      null, randomUUID(),
+    );
+    const inactiveWarehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-INACTIVE-WH-' + token, name: 'Inactive-parent FEFO warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const inactiveParentBin = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-FEFO-ELIG-INACTIVE-PARENT-BIN-' + token, name: 'BIN under inactive warehouse', location_type: 'BIN', parent_location_id: inactiveWarehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(
+      activeWarehouse.id, nonPickingWarehouseBin.id, disabledBin.id, validBin.id,
+      inactiveWarehouse.id, inactiveParentBin.id,
+    );
+
+    const dateResult = await adminPool.query<{ current_date: string }>(
+      "SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS current_date",
+    );
+    const currentDate = dateResult.rows[0]?.current_date;
+    if (!currentDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate)) {
+      throw new Error('PostgreSQL CURRENT_DATE is unavailable for FEFO eligibility fixtures');
+    }
+    const expiryAt = (offsetDays: number): string => {
+      const date = new Date(currentDate + 'T00:00:00.000Z');
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    };
+    const createLot = async (label: string, quantity: number, expiry: string): Promise<string> => {
+      const code = 'LOT-FEFO-ELIG-' + label + '-' + token;
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, factoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: code,
+          barcode_value: 'BAR-' + code,
+          inventory_item_id: itemId,
+          quantity,
+          unit: 'PCS',
+          external_reference: 'SUPPLIER-' + code,
+          expires_at: expiry,
+          attributes: {},
+        } as never,
+        'wms-fefo-elig-lot-' + label + '-' + token,
+        randomUUID(),
+        randomUUID(),
+      );
+      if (!unit.id) throw new Error('FEFO eligibility LOT fixture was not created');
+      return unit.id;
+    };
+
+    const validLotId = await createLot('VALID', 2, expiryAt(90));
+    const nonPickingLotId = await createLot('NON-PICKING', 1, expiryAt(7));
+    const disabledBinLotId = await createLot('DISABLED-BIN', 1, expiryAt(8));
+    const inactiveParentLotId = await createLot('INACTIVE-PARENT', 1, expiryAt(9));
+    const expiredLotId = await createLot('EXPIRED', 1, expiryAt(2));
+    const damagedLotId = await createLot('DAMAGED', 1, expiryAt(5));
+    const attributeHeldLotId = await createLot('ATTRIBUTE-HELD', 1, expiryAt(6));
+    const qualityHeldLotId = await createLot('QUALITY-HELD', 1, expiryAt(3));
+    const quarantinedLotId = await createLot('QUARANTINED', 1, expiryAt(4));
+    const excludedLotIds = [
+      nonPickingLotId, disabledBinLotId, inactiveParentLotId, expiredLotId,
+      damagedLotId, attributeHeldLotId, qualityHeldLotId, quarantinedLotId,
+    ];
+    const allLotIds = [validLotId, ...excludedLotIds];
+
+    const policy = await adminPool.query<{ id: string }>(
+      "INSERT INTO inventory_material_allocation_policies (" +
+      "tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy, " +
+      "require_traceability, created_by_user_id, updated_by_user_id" +
+      ") VALUES ($1,$2,'MATERIAL',$3,'FEFO',TRUE,$4,$4) RETURNING id::text AS id",
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+    if (!policy.rows[0]?.id) throw new Error('FEFO material policy fixture was not created');
+    policyIds.push(policy.rows[0].id);
+
+    const putAway = async (unitId: string, locationId: string, quantity: number, label: string) => {
+      const result = await locationService.transferStock(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+        {
+          movement_purpose: 'PUT_AWAY',
+          source_location_id: defaultLocationId,
+          destination_location_id: locationId,
+          traceability_unit_id: unitId,
+          quantity,
+        } as never,
+        'wms-fefo-elig-putaway-' + label + '-' + token,
+        null,
+        randomUUID(),
+      );
+      expect(result.replayed).toBe(false);
+    };
+    await putAway(validLotId, validBin.id, 2, 'valid');
+    await putAway(nonPickingLotId, nonPickingWarehouseBin.id, 1, 'non-picking');
+    await putAway(disabledBinLotId, disabledBin.id, 1, 'disabled-bin');
+    await putAway(inactiveParentLotId, inactiveParentBin.id, 1, 'inactive-parent');
+    await putAway(expiredLotId, validBin.id, 1, 'expired');
+    await putAway(damagedLotId, validBin.id, 1, 'damaged');
+    await putAway(attributeHeldLotId, validBin.id, 1, 'attribute-held');
+    await putAway(qualityHeldLotId, validBin.id, 1, 'quality-held');
+    await putAway(quarantinedLotId, validBin.id, 1, 'quarantined');
+
+    const disabledBinUpdate = await adminPool.query<{ id: string }>(
+      "UPDATE inventory_locations SET status='DISABLED', updated_at=clock_timestamp() " +
+      "WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 RETURNING id::text AS id",
+      [disabledBin.id, tenantId, factoryId],
+    );
+    expect(disabledBinUpdate.rows).toHaveLength(1);
+    const inactiveWarehouseUpdate = await adminPool.query<{ id: string }>(
+      "UPDATE inventory_locations SET status='DISABLED', updated_at=clock_timestamp() " +
+      "WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 RETURNING id::text AS id",
+      [inactiveWarehouse.id, tenantId, factoryId],
+    );
+    expect(inactiveWarehouseUpdate.rows).toHaveLength(1);
+
+    // These fixture-only updates simulate time passing after put-away and a later
+    // inspection finding. Production traceability identities remain immutable.
+    const fixtureClient = await adminPool.connect();
+    try {
+      await fixtureClient.query('BEGIN');
+      await fixtureClient.query("SET LOCAL session_replication_role = replica");
+      await fixtureClient.query(
+        "UPDATE traceability_units SET expires_at=$1::date WHERE id=$2 AND tenant_id=$3 AND factory_id=$4",
+        [expiryAt(-1), expiredLotId, tenantId, factoryId],
+      );
+      await fixtureClient.query(
+        "UPDATE traceability_units SET attributes=$1::jsonb WHERE id=$2 AND tenant_id=$3 AND factory_id=$4",
+        [JSON.stringify({ damaged: true, condition: 'DAMAGED' }), damagedLotId, tenantId, factoryId],
+      );
+      await fixtureClient.query(
+        "UPDATE traceability_units SET attributes=$1::jsonb WHERE id=$2 AND tenant_id=$3 AND factory_id=$4",
+        [JSON.stringify({ held: true, condition: 'HELD' }), attributeHeldLotId, tenantId, factoryId],
+      );
+      await fixtureClient.query('COMMIT');
+    } catch (error) {
+      await fixtureClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      fixtureClient.release();
+    }
+
+    const qualityContext = {
+      userId: TEST_USER_ID,
+      tenantId,
+      factoryId,
+      requestId: randomUUID(),
+      traceId: randomUUID(),
+    };
+    const inspection = await qualityService.createInspection(
+      qualityContext,
+      { inspection_type: 'INVENTORY', target_type: 'TRACEABILITY_UNIT', target_id: qualityHeldLotId, sample_quantity: 1 } as never,
+      'wms-fefo-elig-quality-inspection-' + token,
+    );
+    const heldDecision = await qualityService.decideInspection(
+      qualityContext,
+      inspection.id,
+      {
+        expected_version: Number(inspection.row_version),
+        action: 'HOLD',
+        reason: 'Exclude this earlier-expiry LOT while retaining eligible same-item stock',
+      } as never,
+      'wms-fefo-elig-quality-decision-' + token,
+    );
+    expect(heldDecision).toMatchObject({ status: 'ON_HOLD' });
+
+    const quarantineDecision = await traceabilityService.changeUnitStatus(
+      TEST_USER_ID, tenantId, factoryId, quarantinedLotId,
+      { target_status: 'QUARANTINED', reason: 'FEFO eligibility regression quarantine fixture' } as never,
+      'wms-fefo-elig-quarantine-' + token,
+      randomUUID(),
+      randomUUID(),
+    );
+    expect(quarantineDecision.to_status).toBe('QUARANTINED');
+
+    const workOrderId = randomUUID();
+    const allocations = await integrationDatabase.transaction(
+      { tenantId, userId: TEST_USER_ID },
+      async (client) => service.reserveWorkOrderMaterialRequirement(client, {
+        userId: TEST_USER_ID,
+        tenantId,
+        factoryId,
+        workOrderId,
+        workOrderNumber: 'WO-FEFO-ELIG-' + token,
+        requirementId: randomUUID(),
+        bomLineId: randomUUID(),
+        itemId,
+        itemUnit: 'PCS',
+        lineNumber: 1,
+        quantity: '2.0000',
+        correlationId: randomUUID(),
+      }),
+    );
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0]).toMatchObject({
+      locationId: validBin.id,
+      quantity: '2.0000',
+    });
+
+    const persistedAllocations = await adminPool.query<{
+      reservation_id: string;
+      traceability_unit_id: string;
+      location_id: string;
+      allocation_sequence: number;
+      allocated_quantity: string;
+    }>(
+      "SELECT a.reservation_id::text AS reservation_id, a.traceability_unit_id::text AS traceability_unit_id, " +
+      "a.location_id::text AS location_id, a.allocation_sequence::int AS allocation_sequence, " +
+      "a.allocated_quantity::numeric(18,4)::text AS allocated_quantity " +
+      "FROM inventory_reservation_traceability_allocations a " +
+      "WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=ANY($4::uuid[]) " +
+      "ORDER BY a.allocation_sequence",
+      [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId)],
+    );
+    expect(persistedAllocations.rows).toEqual([{
+      reservation_id: allocations[0]!.reservationId,
+      traceability_unit_id: validLotId,
+      location_id: validBin.id,
+      allocation_sequence: 1,
+      allocated_quantity: '2.0000',
+    }]);
+
+    const excludedAllocationCount = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM inventory_reservation_traceability_allocations " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=ANY($4::uuid[])",
+      [tenantId, factoryId, itemId, excludedLotIds],
+    );
+    expect(excludedAllocationCount.rows[0]?.count).toBe('0');
+
+    const lotBalances = await adminPool.query<{
+      traceability_unit_id: string;
+      quantity_on_hand: string;
+      quantity_reserved: string;
+    }>(
+      "SELECT traceability_unit_id::text AS traceability_unit_id, " +
+      "SUM(quantity_on_hand)::numeric(18,4)::text AS quantity_on_hand, " +
+      "SUM(quantity_reserved)::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_traceability_location_balances " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=ANY($4::uuid[]) " +
+      "GROUP BY traceability_unit_id",
+      [tenantId, factoryId, itemId, allLotIds],
+    );
+    expect(lotBalances.rows).toHaveLength(allLotIds.length);
+    const lotBalanceById = new Map(lotBalances.rows.map((row) => [row.traceability_unit_id, row]));
+    expect(lotBalanceById.get(validLotId)).toMatchObject({
+      quantity_on_hand: '2.0000',
+      quantity_reserved: '2.0000',
+    });
+    for (const excludedId of excludedLotIds) {
+      expect(lotBalanceById.get(excludedId)).toMatchObject({
+        quantity_on_hand: '1.0000',
+        quantity_reserved: '0.0000',
+      });
+    }
+
+    const binBalances = await adminPool.query<{
+      location_id: string;
+      quantity_on_hand: string;
+      quantity_reserved: string;
+    }>(
+      "SELECT location_id::text AS location_id, quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 " +
+      "AND location_id=ANY($4::uuid[])",
+      [tenantId, factoryId, itemId, [validBin.id, nonPickingWarehouseBin.id, disabledBin.id, inactiveParentBin.id]],
+    );
+    const binBalanceById = new Map(binBalances.rows.map((row) => [row.location_id, row]));
+    expect(binBalanceById.get(validBin.id)).toMatchObject({
+      quantity_on_hand: '7.0000',
+      quantity_reserved: '2.0000',
+    });
+    expect(binBalanceById.get(nonPickingWarehouseBin.id)).toMatchObject({
+      quantity_on_hand: '1.0000',
+      quantity_reserved: '0.0000',
+    });
+    expect(binBalanceById.get(disabledBin.id)).toMatchObject({
+      quantity_on_hand: '1.0000',
+      quantity_reserved: '0.0000',
+    });
+    expect(binBalanceById.get(inactiveParentBin.id)).toMatchObject({
+      quantity_on_hand: '1.0000',
+      quantity_reserved: '0.0000',
+    });
+
+    const aggregate = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      "SELECT quantity_on_hand::numeric(18,4)::text AS quantity_on_hand, " +
+      "quantity_reserved::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3",
+      [tenantId, factoryId, itemId],
+    );
+    expect(aggregate.rows[0]).toEqual({
+      quantity_on_hand: '10.0000',
+      quantity_reserved: '2.0000',
+    });
+    const traceabilityTotals = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      "SELECT SUM(quantity_on_hand)::numeric(18,4)::text AS quantity_on_hand, " +
+      "SUM(quantity_reserved)::numeric(18,4)::text AS quantity_reserved " +
+      "FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3",
+      [tenantId, factoryId, itemId],
+    );
+    expect(traceabilityTotals.rows[0]).toEqual({
+      quantity_on_hand: '10.0000',
+      quantity_reserved: '2.0000',
+    });
+
+    const persistedLocations = await adminPool.query<{
+      id: string;
+      status: string;
+      picking_enabled: boolean;
+      parent_status: string | null;
+    }>(
+      "SELECT l.id::text AS id, l.status, l.picking_enabled, parent.status AS parent_status " +
+      "FROM inventory_locations l LEFT JOIN inventory_locations parent " +
+      "ON parent.id=l.parent_location_id AND parent.tenant_id=l.tenant_id AND parent.factory_id=l.factory_id " +
+      "WHERE l.tenant_id=$1 AND l.factory_id=$2 AND l.id=ANY($3::uuid[])",
+      [tenantId, factoryId, [validBin.id, nonPickingWarehouseBin.id, disabledBin.id, inactiveParentBin.id]],
+    );
+    const locationById = new Map(persistedLocations.rows.map((row) => [row.id, row]));
+    expect(locationById.get(validBin.id)).toMatchObject({
+      status: 'ACTIVE',
+      picking_enabled: true,
+      parent_status: 'ACTIVE',
+    });
+    expect(locationById.get(nonPickingWarehouseBin.id)).toMatchObject({
+      status: 'ACTIVE',
+      picking_enabled: false,
+      parent_status: 'ACTIVE',
+    });
+    expect(locationById.get(disabledBin.id)).toMatchObject({
+      status: 'DISABLED',
+      picking_enabled: true,
+      parent_status: 'ACTIVE',
+    });
+    expect(locationById.get(inactiveParentBin.id)).toMatchObject({
+      status: 'ACTIVE',
+      picking_enabled: true,
+      parent_status: 'DISABLED',
+    });
+
+    const qualityHoldCount = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM quality_holds " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND traceability_unit_id=$3 AND status='ACTIVE'",
+      [tenantId, factoryId, qualityHeldLotId],
+    );
+    expect(qualityHoldCount.rows[0]?.count).toBe('1');
+    const quarantineEventCount = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM traceability_unit_status_events " +
+      "WHERE tenant_id=$1 AND factory_id=$2 AND unit_id=$3 AND to_status='QUARANTINED'",
+      [tenantId, factoryId, quarantinedLotId],
+    );
+    expect(quarantineEventCount.rows[0]?.count).toBe('1');
+  }, 30000);
+
 });
