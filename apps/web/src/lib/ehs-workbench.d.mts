@@ -1,0 +1,20 @@
+export function normalizeEhsRows(value: unknown, preferredKey?: string): unknown[];
+export function buildEhsListQuery(input?: Record<string, unknown>, kind?: string): string;
+export function buildEhsIncidentPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsIncidentTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsCorrectiveActionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsCorrectiveActionTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsPermitPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsPermitTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsDrillPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsDrillTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsAttendancePayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsDrillResponsePayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsChemicalPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsChemicalTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsContractorPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function buildEhsContractorTransitionPayload(input?: Record<string, unknown>): Record<string, unknown>;
+export function summarizeEhs(input?: Record<string, unknown>): {
+ incidentOpen: number; incidentCritical: number; permitsAwaitingApproval: number;
+ permitsActive: number; drillsInProgress: number; chemicalReviewDue: number; contractorActive: number;
+};
