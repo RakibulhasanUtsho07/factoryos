@@ -11,7 +11,8 @@ import {
 const ID="a3d0a8b2-8aef-4f9d-9d20-8819ee43f2a9";
 const ID2="b3d0a8b2-8aef-4f9d-9d20-8819ee43f2a9";
 const NOW="2026-11-25T08:00:00.000Z";
-const FUTURE="2026-11-25T09:00:00.000Z";
+const FUTURE="2027-01-01T09:00:00.000Z";
+const PERMIT_END="2026-11-25T09:00:00.000Z";
 const PAST="2026-11-24T08:00:00.000Z";
 
 test("normalizes EHS lists and rejects unsupported list statuses",()=>{
@@ -74,7 +75,7 @@ test("builds versioned corrective action and independent verification evidence",
 
 test("requires isolation for high-risk permits and enforces the seven-day validity window",()=>{
  const base={permit_number:"PTW-1",permit_type:"ELECTRICAL_LOTO",risk_level:"CRITICAL",title:"Isolate press",
-  work_scope:"Lock out and test",location:"Press 1",valid_from:NOW,expires_at:FUTURE};
+  work_scope:"Lock out and test",location:"Press 1",valid_from:NOW,expires_at:PERMIT_END};
  assert.throws(()=>buildEhsPermitPayload(base),/at least one isolation point/);
  const payload=buildEhsPermitPayload({
   ...base,isolation_points:[{code:"MAIN",description:"Main supply breaker"}]
