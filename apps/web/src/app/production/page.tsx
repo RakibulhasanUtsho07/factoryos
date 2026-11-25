@@ -255,7 +255,6 @@ export default function ProductionShopFloorWorkbenchPage() {
     workOrders as Array<Record<string, unknown>>,
     materialRadar as Array<Record<string, unknown>>,
   ), [workOrders, materialRadar]);
-  const selected = workOrders.find((item) => item.id === selectedId) ?? null;
   const operations = detail?.operations ?? [];
   const finalOperation = operations.length
     ? [...operations].sort((a, b) => a.step_number - b.step_number)[operations.length - 1] ?? null
@@ -687,7 +686,7 @@ export default function ProductionShopFloorWorkbenchPage() {
                         {canOperate && detail.status === "IN_PROGRESS" ? <span className="self-center text-[10px] text-slate-500">Release reserves each BOM requirement before shop-floor execution.</span> : null}
                       </div>
                       {transitionCommand ? (
-                        <form className="mt-4 space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3" onSubmit={(event) => { event.preventDefault(); void transitionWorkOrder(transitionCommand); }}>
+                        <form className="mt-4 space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3" onSubmit={(event) => { event.preventDefault(); if (transitionCommand) void transitionWorkOrder(transitionCommand); }}>
                           <Field label={transitionCommand === "CANCEL" ? "Cancellation reason" : "Hold reason"}>
                             <textarea required rows={2} maxLength={1000} value={transitionReason} onChange={(event) => setTransitionReason(event.target.value)} className={inputClass} placeholder="Explain the production decision…" />
                           </Field>
