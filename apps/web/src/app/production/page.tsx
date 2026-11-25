@@ -535,9 +535,9 @@ export default function ProductionShopFloorWorkbenchPage() {
         idempotencyKey: "production-output-" + window.crypto.randomUUID(),
       }));
       setOutputEditorId("");
-      setNotice("Output posted. Good " + quantity(result.good_quantity) + " · scrap " + quantity(result.scrap_quantity)
-        + " · finished-good movement " + textOf(result.finished_good_movement_id, "recorded by API")
-        + " · yield " + textOf(result.output_yield_percentage, "—") + "%.");
+      setNotice("Output report and finished-good posting committed. Finished-good movement "
+        + textOf(result.finished_good_movement_id, "recorded by API")
+        + " · cumulative yield " + textOf(result.output_yield_percentage, "—") + "%.");
       await loadWorkOrders();
       await loadDetail(detail.id);
     } catch (cause) {
@@ -660,7 +660,7 @@ export default function ProductionShopFloorWorkbenchPage() {
                         <div className="min-w-0">
                           <h2 className="text-lg font-bold text-slate-950">{detail.work_order_number}</h2>
                           <p className="mt-1 text-xs text-slate-600">{textOf(detail.product_code, "Product")} · {textOf(detail.product_name, "Product revision pinned")}</p>
-                          <p className="mt-1 text-[10px] text-slate-500">Source sales order {textOf(detail.source_order_number, detail.source_order_id.slice(0, 8))} · product revision {textOf(detail.product_version_number, detail.product_version_id.slice(0, 8))}</p>
+                          <p className="mt-1 text-[10px] text-slate-500">Source sales order {textOf(detail.source_order_number, detail.source_order_id.slice(0, 8))} · product revision {textOf(detail.product_version_number, textOf(detail.product_version_id).slice(0, 8))}</p>
                         </div>
                         <div className="grid grid-cols-2 gap-3 text-xs sm:min-w-48">
                           <div><p className="text-[10px] uppercase text-slate-500">Target</p><p className="mt-1 font-bold text-slate-950">{quantity(detail.target_quantity)}</p></div>
