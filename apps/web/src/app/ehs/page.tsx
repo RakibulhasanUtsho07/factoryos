@@ -157,6 +157,8 @@ export default function EhsSafetyComplianceWorkbenchPage() {
   const canContractorRead = hasPermission("ehs.contractors.read");
   const canContractorManage = hasPermission("ehs.contractors.manage");
   const currentUserId = snapshot?.user?.id ?? "";
+  const [clockNow, setClockNow] = useState(0);
+  useEffect(() => { const timer = window.setTimeout(() => setClockNow(Date.now()), 0); return () => window.clearTimeout(timer); }, []);
 
   const [tab, setTab] = useState<Tab>("incidents");
   const [incidents, setIncidents] = useState<EhsItem[]>([]);
@@ -654,7 +656,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         </>;
       case "CONTRACTOR_TRANSITION":
         return <>
-          <Field label="Induction action"><select className={inputClass} value={draft.action??"REVOKE"} onChange={e=>update("action",e.target.value)}><option>REVOKE</option>{selectedContractor&&Date.parse(String(selectedContractor.expires_at??""))<=Date.now()?<option>EXPIRE</option>:null}</select></Field>
+          <Field label="Induction action"><select className={inputClass} value={draft.action??"REVOKE"} onChange={e=>update("action",e.target.value)}><option>REVOKE</option>{selectedContractor&&clockNow>0&&Date.parse(String(selectedContractor.expires_at??""))<=clockNow?<option>EXPIRE</option>:null}</select></Field>
           <Field label="Reason"><textarea required rows={3} maxLength={2000} className={inputClass} value={draft.reason??""} onChange={e=>update("reason",e.target.value)}/></Field>
         </>;
       default:
