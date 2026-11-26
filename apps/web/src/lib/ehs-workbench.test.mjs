@@ -137,7 +137,7 @@ test("validates controlled SDS document URIs and independent activation payloads
  };
  assert.equal(buildEhsChemicalPayload(dto).chemical_code,"CHEM-1");
  assert.throws(()=>buildEhsChemicalPayload({...dto,sds_document_uri:"file:///etc/passwd"}),/credential-free/);
- assert.throws(()=>buildEhsChemicalPayload({...dto,sds_review_due_at:PAST}),/precede/);
+ assert.throws(()=>buildEhsChemicalPayload({...dto,sds_review_due_at:"2026-11-23T08:00:00.000Z"}),/precede/);
  assert.deepEqual(buildEhsChemicalTransitionPayload({action:"ACTIVATE",expected_version:1,reason:"Independent review"}),{
   expected_version:1,action:"ACTIVATE",reason:"Independent review"
  });
@@ -149,7 +149,7 @@ test("requires completed past contractor induction, topics, evidence and reasone
   induction_at:PAST,expires_at:FUTURE,topics:["PPE","Evacuation"],evidence:{attendance_ref:"IND-22"}
  };
  assert.equal(buildEhsContractorPayload(input).contractor_code,"SUB-1");
- assert.throws(()=>buildEhsContractorPayload({...input,induction_at:FUTURE}),/future induction/);
+ assert.throws(()=>buildEhsContractorPayload({...input,induction_at:FUTURE,expires_at:"2027-01-02T09:00:00.000Z"}),/future induction/);
  assert.throws(()=>buildEhsContractorPayload({...input,evidence:{}}),/structured evidence/);
  assert.equal(buildEhsContractorTransitionPayload({action:"REVOKE",expected_version:2,reason:"Badge invalid"}).action,"REVOKE");
 });
