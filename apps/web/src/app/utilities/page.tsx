@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import { useFactoryOsSession } from "@/components/auth/factoryos-session-provider";
 import {
   buildUtilityAllocationReversePayload, buildUtilityEventPayload, buildUtilityEventTransitionPayload,
@@ -195,7 +196,7 @@ export default function UtilitiesEnergyWorkbenchPage() {
     setLoading(true);
     setError("");
     const errors: string[] = [];
-    const safe = async (name: string, endpoint: string, permitted: boolean, setter: (rows: Item[]) => void, select?: (id: string) => void) => {
+    const safe = async (name: string, endpoint: string, permitted: boolean, setter: (rows: Item[]) => void, select?: Dispatch<SetStateAction<string>>) => {
       if (!permitted) { setter([]); select?.(""); return; }
       try {
         const response = await request(endpoint);
@@ -417,7 +418,6 @@ export default function UtilitiesEnergyWorkbenchPage() {
   };
 
   const selectedMeterLabel = selectedMeter ? str(selectedMeter.meter_code) + " · " + str(selectedMeter.name) : "No meter selected";
-  const selectedWorkOrder = (id: string) => workOrders.find(item => item.id === id);
   const reversedIds = new Set(allocations.filter(item => String(item.allocation_kind) === "REVERSAL").map(item => String(item.reverses_allocation_id ?? "")));
 
   return <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
@@ -435,7 +435,7 @@ export default function UtilitiesEnergyWorkbenchPage() {
 
     {!connected ? <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
       Connect an authenticated FactoryOS session and select an active factory before opening the utility workspace. All records are scoped by the server session.
-      <a href="/session" className="ml-2 font-semibold underline">Open session setup</a>
+      <Link href="/session" className="ml-2 font-semibold underline">Open session setup</Link>
     </div> : null}
     {error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-800">{error}</div> : null}
     {notice ? <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">{notice}</div> : null}
@@ -544,18 +544,18 @@ export default function UtilitiesEnergyWorkbenchPage() {
             <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-slate-950">{str(item.source_system_code)} / {str(item.source_meter_code)}</p><p className="mt-1 text-[10px] text-slate-500">{str(item.vendor_adapter)} → {str(item.meter_code)} · factor {str(item.factor_to_meter_unit)}</p></div><Pill value={str(item.status,"DRAFT")} /></div>
             <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-slate-500"><span>Source unit: {str(item.source_unit_code)}</span><span>Meter unit: {str(item.meter_unit_code)}</span><span>Credential configured: {item.credential_configured ? "Yes · reference only" : "No"}</span></div>
             {item.config_metadata ? <p className="mt-1 break-all text-[10px] text-slate-400">Metadata: {JSON.stringify(item.config_metadata)}</p> : null}
-            {canSourceManage && !["RETIRED"].includes(String(item.status)) ? <div className="mt-3 flex justify-end"><button type="button" onClick={() => beginBindingTransition(item)} className={secondaryButton}>Change state</button></div> : null}
+            {canSourceManage && !["RETIRED"].includes(String(item.status)) && !((["DRAFT","INACTIVE"].includes(String(item.status))) && String(item.created_by_user_id) === currentUserId) ? <div className="mt-3 flex justify-end"><button type="button" onClick={() => beginBindingTransition(item)} className={secondaryButton}>Change state</button></div> : null}
           </article>)}
         </div> : <Empty>{canMeterRead ? "No source bindings are registered." : "Your session does not have utilities.meters.read permission."}</Empty>}
       </Panel>
 
       <Panel title="Threshold policies" subtitle="Define consumption, cost or intensity thresholds. The API requires a separate user to activate a policy created by another user."
-        action={canAlertManage ? <button type="button" onClick={() => openEditor("POLICY_CREATE",{metric:"CONSUMPTION",comparison:"GT",threshold_value:"",threshold_unit_code:"kWh",severity:"HIGH",meter_id:"",utility_type:"ELECTRICITY"})} className={primaryButton}>+ Create policy</button> : null}>
+        action={canAlertManage ? <button type="button" onClick={() => openEditor("POLICY_CREATE",{metric:"CONSUMPTION",comparison:"GT",threshold_value:"",threshold_unit_code:"kWh",severity:"HIGH",meter_id:"",utility_type:""})} className={primaryButton}>+ Create policy</button> : null}>
         {policies.length ? <div className="space-y-2">
           {policies.map(item => <article key={item.id} className="rounded-xl border border-slate-200 p-3">
             <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-slate-950">{str(item.policy_code)} · {str(item.name)}</p><p className="mt-1 text-[10px] text-slate-500">{str(item.metric)} {str(item.comparison)} {numberLabel(item.threshold_value)} {str(item.threshold_unit_code)}</p></div><Pill value={str(item.status,"DRAFT")} /></div>
             <p className="mt-2 text-[10px] text-slate-500">{item.meter_id ? "Meter-specific policy" : "Utility type: " + str(item.utility_type)} · {str(item.severity)} severity · version {str(item.row_version)}</p>
-            {canAlertManage && !["RETIRED"].includes(String(item.status)) && !(item.status === "DRAFT" && String(item.created_by_user_id) === currentUserId) ? <div className="mt-3 flex justify-end"><button type="button" onClick={() => beginPolicyTransition(item)} className={secondaryButton}>Change state</button></div> : null}
+            {canAlertManage && !["RETIRED"].includes(String(item.status)) && !((["DRAFT","INACTIVE"].includes(String(item.status))) && String(item.created_by_user_id) === currentUserId) ? <div className="mt-3 flex justify-end"><button type="button" onClick={() => beginPolicyTransition(item)} className={secondaryButton}>Change state</button></div> : null}
             {item.status === "DRAFT" && String(item.created_by_user_id) === currentUserId ? <p className="mt-2 text-[10px] text-amber-700">Created by this session user. A different authorized approver must activate it.</p> : null}
           </article>)}
         </div> : <Empty>{canAlertRead ? "No threshold policies are registered." : "Your session does not have utilities.alerts.read permission."}</Empty>}
@@ -694,7 +694,7 @@ export default function UtilitiesEnergyWorkbenchPage() {
             <Field label="Policy code" name="policy_code" value={draft.policy_code ?? ""} onChange={update} />
             <Field label="Policy name" name="name" value={draft.name ?? ""} onChange={update} />
             <SelectField label="Target meter (optional)" name="meter_id" value={draft.meter_id ?? ""} onChange={update} required={false} options={[{value:"",label:"Use utility type instead"},...meters.filter(item=>item.status==="ACTIVE").map(item=>({value:item.id,label:str(item.meter_code)+" · "+str(item.name)}))]} />
-            <SelectField label="Utility type" name="utility_type" value={draft.utility_type ?? "ELECTRICITY"} onChange={update} options={["ELECTRICITY","GAS","STEAM","WATER","COMPRESSED_AIR","FUEL","OTHER"].map(value=>({value,label:value.replaceAll("_"," ")}))} />
+            <SelectField label="Utility type" name="utility_type" value={draft.utility_type ?? "ELECTRICITY"} onChange={update} options={[{value:"",label:"No type (meter-specific)"},...["ELECTRICITY","GAS","STEAM","WATER","COMPRESSED_AIR","FUEL","OTHER"].map(value=>({value,label:value.replaceAll("_"," ")}))]} />
             <SelectField label="Metric" name="metric" value={draft.metric ?? "CONSUMPTION"} onChange={update} options={[{value:"CONSUMPTION",label:"Consumption"},{value:"COST",label:"Cost"},{value:"INTENSITY",label:"Intensity"}]} />
             <SelectField label="Comparison" name="comparison" value={draft.comparison ?? "GT"} onChange={update} options={[{value:"GT",label:"Greater than"},{value:"GTE",label:"Greater than or equal"},{value:"LT",label:"Less than"},{value:"LTE",label:"Less than or equal"}]} />
             <Field label="Threshold value" name="threshold_value" value={draft.threshold_value ?? ""} onChange={update} type="number" min="0" step="0.00000001" />
