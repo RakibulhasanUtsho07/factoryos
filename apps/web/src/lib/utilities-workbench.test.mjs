@@ -88,7 +88,7 @@ test("threshold policies must bind a target and maintain comparable units",()=>{
  assert.equal(payload.metric,"COST");
  assert.equal(payload.comparison,"GT");
  assert.equal("utility_type" in payload,false,"meter-specific policies derive target utility type from selected meter");
- assert.throws(()=>buildUtilityThresholdPolicyPayload({policy_code:"X",name:"No target",metric:"COST",comparison:"GT",threshold_value:1,threshold_unit_code:"BDT",severity:"LOW"}),/select a meter/);
+ assert.throws(()=>buildUtilityThresholdPolicyPayload({policy_code:"X",name:"No target",metric:"COST",comparison:"GT",threshold_value:1,threshold_unit_code:"BDT",severity:"LOW"}),/Select a meter/);
  assert.throws(()=>buildUtilityThresholdPolicyPayload({policy_code:"X",name:"Bad",utility_type:"WATER",metric:"BAD",comparison:"GT",threshold_value:1,threshold_unit_code:"m3",severity:"LOW"}),/metric/);
 });
 

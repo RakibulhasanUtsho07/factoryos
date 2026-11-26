@@ -37,7 +37,7 @@ function integer(value, field, min = 1, max = 2147483647) {
 }
 function decimal(value, field, min = 0, maxPlaces = 8) {
   const raw = String(value ?? "").trim();
-  if (!/^(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/.test(raw)) throw new Error(field + " must be a plain decimal with up to " + maxPlaces + " fractional digits.");
+  if (!/^-?(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/.test(raw)) throw new Error(field + " must be a plain decimal with up to " + maxPlaces + " fractional digits.");
   const places = (raw.split(".")[1] ?? "").length;
   const number = Number(raw);
   if (!Number.isFinite(number) || number < min || places > maxPlaces) throw new Error(field + " is outside the supported numeric range.");
