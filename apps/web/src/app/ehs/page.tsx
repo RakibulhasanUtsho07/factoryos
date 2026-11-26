@@ -742,7 +742,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
             {visibleIncidents.map(item=><button type="button" key={item.id} onClick={()=>setSelectedIncidentId(item.id)} className={"w-full rounded-xl border p-3 text-left hover:bg-slate-50 "+(selectedIncidentId===item.id?"border-blue-300 bg-blue-50/60":"border-slate-200")}>
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold text-slate-950">{textOf(item.incident_number)} · {textOf(item.title)}</span><StatusPill value={item.status}/></div>
               <p className="mt-1 text-[10px] text-slate-500">{textOf(item.incident_type)} · {textOf(item.location)} · {localDateTimeLabel(item.occurred_at)}</p>
-              <div className="mt-2 flex flex-wrap items-center gap-2"><StatusPill value={textOf(item.severity)}/><span className="text-[10px] text-slate-500">Version {textOf(item.row_version)}</span>{item.due_at?<span className="text-[10px] text-slate-500">Due {dateTimeLabel(item.due_at)}</span>:null}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2"><StatusPill value={textOf(item.severity)}/><span className="text-[10px] text-slate-500">Version {textOf(item.row_version)}</span>{item.due_at?<span className="text-[10px] text-slate-500">Due {localDateTimeLabel(item.due_at)}</span>:null}</div>
             </button>)}
             {!visibleIncidents.length?<Empty>{loading?"Loading incidents…":"No incidents match the current filter."}</Empty>:null}
           </div>
@@ -772,7 +772,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
             <div className="space-y-2">
               {correctiveActions.map(action=><div key={action.id} className="rounded-xl border border-slate-200 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold text-slate-950">{textOf(action.action_number)} · {textOf(action.description)}</p><StatusPill value={action.status}/></div>
-                <p className="mt-1 text-[10px] text-slate-500">Owner {textOf(action.assigned_owner_user_id)} · Due {dateTimeLabel(action.due_at)} · v{numberOf(action.row_version)}</p>
+                <p className="mt-1 text-[10px] text-slate-500">Owner {textOf(action.assigned_owner_user_id)} · Due {localDateTimeLabel(action.due_at)} · v{numberOf(action.row_version)}</p>
                 {action.root_cause?<p className="mt-1 text-[10px] text-slate-600">Root cause: {String(action.root_cause)}</p>:null}
                 <EvidenceBox evidence={action.verification_evidence??action.completion_evidence} reason={action.last_change_reason}/>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -795,7 +795,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
           <div className="mt-4"><SearchFilter search={search} onSearch={setSearch} status={statusFilter} onStatus={setStatusFilter} statuses={["DRAFT","PENDING_APPROVAL","APPROVED","REJECTED","ACTIVE","CLOSED","CANCELLED","EXPIRED"]}/></div>
           <div className="mt-4 space-y-2">{visiblePermits.map(item=><button type="button" key={item.id} onClick={()=>setSelectedPermitId(item.id)} className={"w-full rounded-xl border p-3 text-left hover:bg-slate-50 "+(selectedPermitId===item.id?"border-blue-300 bg-blue-50/60":"border-slate-200")}>
             <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold text-slate-950">{textOf(item.permit_number)} · {textOf(item.title)}</p><StatusPill value={item.status}/></div>
-            <p className="mt-1 text-[10px] text-slate-500">{textOf(item.permit_type)} · {textOf(item.location)} · valid until {dateTimeLabel(item.expires_at)}</p>
+            <p className="mt-1 text-[10px] text-slate-500">{textOf(item.permit_type)} · {textOf(item.location)} · valid until {localDateTimeLabel(item.expires_at)}</p>
             <div className="mt-2 flex flex-wrap gap-2"><StatusPill value={textOf(item.risk_level)}/>{item.requires_isolation?<span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-semibold text-violet-800">Isolation required</span>:null}<span className="text-[10px] text-slate-500">v{numberOf(item.row_version)}</span></div>
           </button>)}{!visiblePermits.length?<Empty>No permits match this filter.</Empty>:null}</div>
         </>}
@@ -805,7 +805,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
           <h3 className="text-sm font-bold text-slate-950">{textOf(selectedPermit.permit_number)} · {textOf(selectedPermit.title)}</h3>
           <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-700">{textOf(selectedPermit.work_scope)}</p>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div><p className="text-[9px] uppercase text-slate-500">Permit validity</p><p className="mt-1 text-xs text-slate-800">{dateTimeLabel(selectedPermit.valid_from)} — {dateTimeLabel(selectedPermit.expires_at)}</p></div>
+            <div><p className="text-[9px] uppercase text-slate-500">Permit validity</p><p className="mt-1 text-xs text-slate-800">{localDateTimeLabel(selectedPermit.valid_from)} — {localDateTimeLabel(selectedPermit.expires_at)}</p></div>
             <div><p className="text-[9px] uppercase text-slate-500">Linked work order</p><p className="mt-1 break-all text-xs text-slate-800">{textOf(selectedPermit.work_order_id)}</p></div>
             <div><p className="text-[9px] uppercase text-slate-500">Approved by</p><p className="mt-1 break-all text-xs text-slate-800">{textOf(selectedPermit.approved_by_user_id)}</p></div>
             <div><p className="text-[9px] uppercase text-slate-500">Isolation verified by</p><p className="mt-1 break-all text-xs text-slate-800">{textOf(selectedPermit.isolation_verified_by_user_id)}</p></div>
@@ -835,7 +835,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
           <div className="mt-4"><SearchFilter search={search} onSearch={setSearch} status={statusFilter} onStatus={setStatusFilter} statuses={["PLANNED","IN_PROGRESS","COMPLETED","CANCELLED"]}/></div>
           <div className="mt-4 space-y-2">{visibleDrills.map(item=><button key={item.id} type="button" onClick={()=>setSelectedDrillId(item.id)} className={"w-full rounded-xl border p-3 text-left hover:bg-slate-50 "+(selectedDrillId===item.id?"border-blue-300 bg-blue-50/60":"border-slate-200")}>
             <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold text-slate-950">{textOf(item.drill_number)} · {textOf(item.title)}</p><StatusPill value={item.status}/></div>
-            <p className="mt-1 text-[10px] text-slate-500">{textOf(item.drill_type)} · {textOf(item.location)} · {dateTimeLabel(item.planned_at)}</p>
+            <p className="mt-1 text-[10px] text-slate-500">{textOf(item.drill_type)} · {textOf(item.location)} · {localDateTimeLabel(item.planned_at)}</p>
             <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-slate-600"><span>{numberOf(item.present_count)} present / {numberOf(item.attendance_count)} attendance</span><span>{numberOf(item.response_count)} responses</span><span>v{numberOf(item.row_version)}</span></div>
           </button>)}{!visibleDrills.length?<Empty>No emergency drills match this filter.</Empty>:null}</div>
         </>}
@@ -844,7 +844,7 @@ export default function EhsSafetyComplianceWorkbenchPage() {
         {selectedDrill?<>
           <Panel title="Drill execution" subtitle="Completion requires at least one PRESENT attendee and one recorded response/action." action={<StatusPill value={selectedDrill.status}/>}>
             <h3 className="text-sm font-bold text-slate-950">{textOf(selectedDrill.drill_number)} · {textOf(selectedDrill.title)}</h3>
-            <p className="mt-1 text-xs text-slate-600">{textOf(selectedDrill.drill_type)} · {textOf(selectedDrill.location)} · planned {dateTimeLabel(selectedDrill.planned_at)}</p>
+            <p className="mt-1 text-xs text-slate-600">{textOf(selectedDrill.drill_type)} · {textOf(selectedDrill.location)} · planned {localDateTimeLabel(selectedDrill.planned_at)}</p>
             <div className="mt-3 grid grid-cols-3 gap-2"><Metric label="Attendance" value={numberOf(selectedDrill.attendance_count)} hint={numberOf(selectedDrill.present_count)+" present"}/><Metric label="Responses" value={numberOf(selectedDrill.response_count)} hint="Persisted action evidence"/><Metric label="Version" value={"v"+numberOf(selectedDrill.row_version)} hint="Expected-version guard"/></div>
             {selectedDrill.outcome_summary?<p className="mt-3 text-xs leading-5 text-slate-700">{String(selectedDrill.outcome_summary)}</p>:null}
             <EvidenceBox evidence={selectedDrill.close_evidence} reason={selectedDrill.last_change_reason}/>
