@@ -3242,6 +3242,8 @@ export class InventoryReservationService {
       require_traceability: boolean;
       has_lot: boolean;
       has_serial: boolean;
+      has_registered_lot: boolean;
+      has_registered_serial: boolean;
       has_identity: boolean;
     }>(
       `
@@ -3278,25 +3280,26 @@ export class InventoryReservationService {
            WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='FACTORY'),
           FALSE
         ) AS require_traceability,
-        COALESCE(bool_or(tu.unit_type = 'LOT' AND EXISTS (
+        COALESCE(bool_or(tu.status = 'ACTIVE' AND tu.unit_type = 'LOT' AND EXISTS (
           SELECT 1 FROM inventory_traceability_location_balances active_lot
           WHERE active_lot.tenant_id = tu.tenant_id AND active_lot.factory_id = tu.factory_id
             AND active_lot.item_id = tu.inventory_item_id
             AND active_lot.traceability_unit_id = tu.id AND active_lot.quantity_on_hand > 0
         )), FALSE) AS has_lot,
-        COALESCE(bool_or(tu.unit_type = 'SERIAL' AND EXISTS (
+        COALESCE(bool_or(tu.status = 'ACTIVE' AND tu.unit_type = 'SERIAL' AND EXISTS (
           SELECT 1 FROM inventory_traceability_location_balances active_serial
           WHERE active_serial.tenant_id = tu.tenant_id AND active_serial.factory_id = tu.factory_id
             AND active_serial.item_id = tu.inventory_item_id
             AND active_serial.traceability_unit_id = tu.id AND active_serial.quantity_on_hand > 0
         )), FALSE) AS has_serial,
+        COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_registered_lot,
+        COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_registered_serial,
         (count(tu.id) > 0) AS has_identity
       FROM inventory_items i
       LEFT JOIN traceability_units tu
         ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
        AND tu.inventory_item_id = i.id
        AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
-       AND tu.status = 'ACTIVE'
       WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = $3
       GROUP BY i.id
       `,
@@ -3311,11 +3314,14 @@ export class InventoryReservationService {
       return { enforced: false, policy, allocations: [] };
     }
     const unitType: 'LOT' | 'SERIAL' = policy === 'LOT' ? 'LOT'
-      : policy === 'SERIAL' ? 'SERIAL' : identities?.has_lot ? 'LOT' : 'SERIAL';
-    if (unitType === 'LOT' && !identities?.has_lot) {
+      : policy === 'SERIAL' ? 'SERIAL'
+        : identities?.has_lot ? 'LOT'
+          : identities?.has_serial ? 'SERIAL'
+            : identities?.has_registered_lot ? 'LOT' : 'SERIAL';
+    if (unitType === 'LOT' && !identities?.has_registered_lot) {
       throw new ConflictException('Material allocation policy requires registered lot identities');
     }
-    if (unitType === 'SERIAL' && !identities?.has_serial) {
+    if (unitType === 'SERIAL' && !identities?.has_registered_serial) {
       throw new ConflictException('Material allocation policy requires registered serial identities');
     }
     const requestedUnits = this.decimalToUnits(input.quantity);
@@ -3353,7 +3359,7 @@ export class InventoryReservationService {
           SELECT 1 FROM quality_holds qh
           WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
             AND qh.status = 'ACTIVE'
-            AND (qh.inventory_item_id = tu.inventory_item_id OR qh.traceability_unit_id = tu.id)
+            AND (qh.traceability_unit_id = tu.id OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id = tu.inventory_item_id))
         )
         AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
         AND l.location_type = 'BIN'
@@ -3459,7 +3465,7 @@ export class InventoryReservationService {
            SELECT 1 FROM quality_holds qh
            WHERE qh.tenant_id=tu.tenant_id AND qh.factory_id=tu.factory_id
              AND qh.status='ACTIVE'
-             AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
+             AND (qh.traceability_unit_id=tu.id OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=tu.inventory_item_id))
          )
        ORDER BY a.allocation_sequence ASC FOR UPDATE OF a, tu`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],

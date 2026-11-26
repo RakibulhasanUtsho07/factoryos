@@ -372,7 +372,7 @@ describe('InventoryReservationService', () => {
     const laterLot = randomUUID();
     client.query
       .mockResolvedValueOnce(queryRows([{
-        allocation_policy: 'FEFO', has_lot: true, has_serial: false, has_identity: true,
+        allocation_policy: 'FEFO', has_lot: true, has_serial: false, has_registered_lot: true, has_registered_serial: false, has_identity: true,
       }]))
       .mockResolvedValueOnce(queryRows([
         {
@@ -423,7 +423,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '0.0000' }]))
       .mockResolvedValueOnce(queryRows([{
         allocation_policy: 'FEFO', require_traceability: true,
-        has_lot: true, has_serial: false, has_identity: true,
+        has_lot: true, has_serial: false, has_registered_lot: true, has_registered_serial: false, has_identity: true,
       }]))
       .mockResolvedValueOnce(queryRows([
         {
