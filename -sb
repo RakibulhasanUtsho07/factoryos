@@ -1,0 +1,14 @@
+[1mdiff --git a/apps/web/next-env.d.ts b/apps/web/next-env.d.ts[m
+[1mindex a419cbe4..ce4e94a6 100644[m
+[1m--- a/apps/web/next-env.d.ts[m
+[1m+++ b/apps/web/next-env.d.ts[m
+[36m@@ -1,7 +1,7 @@[m
+ /// <reference types="next" />[m
+ /// <reference types="next/image-types/global" />[m
+[31m-import "./.next/dev/types/routes.d.ts";[m
+[31m-import "./.next/dev/types/root-params.d.ts";[m
+[32m+[m[32mimport "./.next/types/routes.d.ts";[m
+[32m+[m[32mimport "./.next/types/root-params.d.ts";[m
+ [m
+ // NOTE: This file should not be edited[m
+ // see https://nextjs.org/docs/app/api-reference/config/typescript for more information.[m
