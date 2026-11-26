@@ -4,7 +4,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -54,6 +56,7 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
     setActiveFactoryId("");
     setError("");
     setStatus("disconnected");
+    window.location.href = "/auth/logout";
   }, [sessionClient]);
 
   const connect = useCallback(async (input: ConnectInput) => {
@@ -99,6 +102,25 @@ export function FactoryOsSessionProvider({ children }: { children: ReactNode }) 
       throw cause instanceof Error ? cause : new Error(message);
     }
   }, [sessionClient]);
+
+  const restoredRef = useRef(false);
+
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    if (status !== "disconnected") return;
+    fetch("/auth/session")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.accessToken || !data?.tenantId) return;
+        return connect({
+          apiOrigin: process.env.NEXT_PUBLIC_FACTORYOS_API_URL ?? "http://localhost:3001",
+          accessToken: data.accessToken,
+          tenantId: data.tenantId,
+        }).catch(() => {});
+      })
+      .catch(() => {});
+  }, [status, connect]);
 
   const selectFactory = useCallback((factoryId: string) => {
     if (!factoryId) {

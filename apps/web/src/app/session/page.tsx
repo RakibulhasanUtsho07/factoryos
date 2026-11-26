@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import {
   useFactoryOsSession,
@@ -25,6 +25,14 @@ export default function WorkspaceSessionPage() {
   const [accessToken, setAccessToken] = useState("");
   const [localError, setLocalError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") {
+      window.location.href = "/login";
+    }
+  }, []);
+
+  if (process.env.NODE_ENV === "production") return null;
 
   async function handleConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
