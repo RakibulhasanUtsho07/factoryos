@@ -21,6 +21,7 @@ const navigation = [
   { href: "/procurement", label: "Procurement & Suppliers" },
   { href: "/production", label: "Production & Shop Floor" },
   { href: "/ehs", label: "EHS Safety & Compliance" },
+  { href: "/utilities", label: "Utilities & Energy" },
   { href: "/research", label: "Research & Evidence" },
   { href: "/should-cost", label: "Should-Cost Governance" },
   { href: "/maintenance", label: "Maintenance & Assets" },
