@@ -4889,8 +4889,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   it('uses traceability_settings FIFO fallback for supplier-backed LOTs under competing demand', async () => {
     const token = randomUUID().slice(0, 8).toUpperCase();
     const factoryResult = await adminPool.query<{ id: string }>(
-      \`INSERT INTO factories (tenant_id, code, name, status)
-       VALUES ($1,$2,$3,'ACTIVE') RETURNING id::text AS id\`,
+      `INSERT INTO factories (tenant_id, code, name, status)
+       VALUES ($1,$2,$3,'ACTIVE') RETURNING id::text AS id`,
       [tenantId, 'WP02-SETTINGS-FIFO-' + token, 'WP02 traceability-settings FIFO fallback site'],
     );
     const scopedFactoryId = factoryResult.rows[0]?.id;
@@ -4898,8 +4898,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     factoryIds.push(scopedFactoryId);
 
     const defaultLocationResult = await adminPool.query<{ id: string }>(
-      \`SELECT id::text AS id FROM inventory_locations
-       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'\`,
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
       [tenantId, scopedFactoryId],
     );
     const defaultLocationId = defaultLocationResult.rows[0]?.id;
@@ -4907,10 +4907,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     locationIds.push(defaultLocationId);
 
     const itemResult = await adminPool.query<{ id: string }>(
-      \`INSERT INTO inventory_items (
+      `INSERT INTO inventory_items (
          tenant_id, factory_id, sku, name, unit, created_by_user_id
        ) VALUES ($1,$2,$3,$4,'PCS',$5)
-       RETURNING id::text AS id\`,
+       RETURNING id::text AS id`,
       [tenantId, scopedFactoryId, 'WP02-SETTINGS-FIFO-ITEM-' + token,
         'WP02 traceability-settings FIFO fallback material', TEST_USER_ID],
     );
@@ -4918,9 +4918,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     if (!itemId) throw new Error('Traceability-settings FIFO fallback item was not created');
     itemIds.push(itemId);
     await adminPool.query(
-      \`INSERT INTO inventory_stock_balances (
+      `INSERT INTO inventory_stock_balances (
          tenant_id, factory_id, item_id, quantity_on_hand, quantity_reserved
-       ) VALUES ($1,$2,$3,6.0000,0)\`,
+       ) VALUES ($1,$2,$3,6.0000,0)`,
       [tenantId, scopedFactoryId, itemId],
     );
 
@@ -4939,9 +4939,9 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(settingsAfter.updated_by_user_id).toBe(TEST_USER_ID);
 
     const overrides = await adminPool.query<{ count: string }>(
-      \`SELECT count(*)::text AS count
+      `SELECT count(*)::text AS count
        FROM inventory_material_allocation_policies
-       WHERE tenant_id=$1 AND factory_id=$2\`,
+       WHERE tenant_id=$1 AND factory_id=$2`,
       [tenantId, scopedFactoryId],
     );
     expect(overrides.rows[0]?.count).toBe('0');
@@ -5028,8 +5028,8 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       expect(approved.status).toBe('APPROVED');
 
       const poLine = await adminPool.query<{ id: string }>(
-        \`SELECT id::text AS id FROM purchase_order_lines
-         WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id=$3 AND line_number=1\`,
+        `SELECT id::text AS id FROM purchase_order_lines
+         WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id=$3 AND line_number=1`,
         [tenantId, scopedFactoryId, po.id],
       );
       const poLineId = poLine.rows[0]?.id;
@@ -5089,7 +5089,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       received_at: string; unit_goods_receipt_id: string | null; expires_at: string;
       accepted_quantity: string;
     }>(
-      \`SELECT gr.id::text AS receipt_id, gr.status, po.supplier_id::text AS supplier_id,
+      `SELECT gr.id::text AS receipt_id, gr.status, po.supplier_id::text AS supplier_id,
               gr.posted_at::text AS posted_at, gr.received_at::text AS received_at,
               tu.goods_receipt_id::text AS unit_goods_receipt_id,
               tu.expires_at::text AS expires_at, gl.accepted_quantity::text AS accepted_quantity
@@ -5102,7 +5102,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
          AND tu.tenant_id=gl.tenant_id AND tu.factory_id=gl.factory_id
        WHERE gr.tenant_id=$1 AND gr.factory_id=$2
          AND gr.id=ANY($3::uuid[])
-       ORDER BY gr.posted_at, gr.id\`,
+       ORDER BY gr.posted_at, gr.id`,
       [tenantId, scopedFactoryId, [olderReceivedLaterExpiryLot.receiptId, newerReceivedEarlierExpiryLot.receiptId]],
     );
     expect(provenance.rows).toHaveLength(2);
@@ -5133,7 +5133,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     }
 
     const effectivePolicy = await adminPool.query<{ allocation_policy: string }>(
-      \`SELECT COALESCE(
+      `SELECT COALESCE(
          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
           WHERE p.tenant_id=i.tenant_id AND p.factory_id=i.factory_id
             AND p.policy_scope='MATERIAL' AND p.inventory_item_id=i.id),
@@ -5148,7 +5148,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
          'FIFO'
        ) AS allocation_policy
        FROM inventory_items i
-       WHERE i.tenant_id=$1 AND i.factory_id=$2 AND i.id=$3\`,
+       WHERE i.tenant_id=$1 AND i.factory_id=$2 AND i.id=$3`,
       [tenantId, scopedFactoryId, itemId],
     );
     expect(effectivePolicy.rows[0]?.allocation_policy).toBe('FIFO');
@@ -5171,10 +5171,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       .toContain('Insufficient eligible FIFO lot/serial stock');
 
     const reservations = await adminPool.query<{ id: string; quantity: string; status: string }>(
-      \`SELECT id::text AS id, quantity::text AS quantity, status
+      `SELECT id::text AS id, quantity::text AS quantity, status
        FROM inventory_reservations
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
-       ORDER BY created_at, id\`,
+       ORDER BY created_at, id`,
       [tenantId, scopedFactoryId, itemId],
     );
     expect(reservations.rows).toHaveLength(1);
@@ -5185,7 +5185,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       supplier_id: string; receipt_status: string; posted_at: string;
       effective_posted_at: string | null; expires_at: string; accepted_quantity: string;
     }>(
-      \`SELECT a.traceability_unit_id::text AS traceability_unit_id,
+      `SELECT a.traceability_unit_id::text AS traceability_unit_id,
               a.allocation_sequence::int AS allocation_sequence,
               a.allocated_quantity::text AS allocated_quantity,
               po.supplier_id::text AS supplier_id, gr.status AS receipt_status,
@@ -5204,7 +5204,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
          AND effective_gr.tenant_id=tu.tenant_id AND effective_gr.factory_id=tu.factory_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
          AND a.reservation_id=$4
-       ORDER BY a.allocation_sequence\`,
+       ORDER BY a.allocation_sequence`,
       [tenantId, scopedFactoryId, itemId, reservations.rows[0]!.id],
     );
     expect(allocations.rows).toHaveLength(2);
@@ -5225,12 +5225,12 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const lotBalances = await adminPool.query<{
       traceability_unit_id: string; quantity_on_hand: string; quantity_reserved: string;
     }>(
-      \`SELECT traceability_unit_id::text AS traceability_unit_id,
+      `SELECT traceability_unit_id::text AS traceability_unit_id,
               quantity_on_hand::text AS quantity_on_hand,
               quantity_reserved::text AS quantity_reserved
        FROM inventory_traceability_location_balances
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4
-       ORDER BY traceability_unit_id\`,
+       ORDER BY traceability_unit_id`,
       [tenantId, scopedFactoryId, itemId, bin.id],
     );
     expect(lotBalances.rows).toHaveLength(2);
@@ -5242,14 +5242,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const balances = await adminPool.query<{
       stock_on_hand: string; stock_reserved: string; bin_on_hand: string; bin_reserved: string;
     }>(
-      \`SELECT s.quantity_on_hand::text AS stock_on_hand,
+      `SELECT s.quantity_on_hand::text AS stock_on_hand,
               s.quantity_reserved::text AS stock_reserved,
               b.quantity_on_hand::text AS bin_on_hand,
               b.quantity_reserved::text AS bin_reserved
        FROM inventory_stock_balances s
        JOIN inventory_location_balances b
          ON b.tenant_id=s.tenant_id AND b.factory_id=s.factory_id AND b.item_id=s.item_id
-       WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4\`,
+       WHERE s.tenant_id=$1 AND s.factory_id=$2 AND s.item_id=$3 AND b.location_id=$4`,
       [tenantId, scopedFactoryId, itemId, bin.id],
     );
     expect(balances.rows).toEqual([{
