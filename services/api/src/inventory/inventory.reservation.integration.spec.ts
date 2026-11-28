@@ -4920,7 +4920,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     await adminPool.query(
       `INSERT INTO inventory_stock_balances (
          tenant_id, factory_id, item_id, quantity_on_hand, quantity_reserved
-       ) VALUES ($1,$2,$3,6.0000,0)`,
+       ) VALUES ($1,$2,$3,0.0000,0)`,
       [tenantId, scopedFactoryId, itemId],
     );
 
